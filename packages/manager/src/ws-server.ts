@@ -6,6 +6,8 @@ import * as store from "./store.js";
 import * as appManager from "./app-manager.js";
 import { startMonitoring, stopMonitoring, getDockerBin } from "./monitor.js";
 import { handleChat } from "./chat.js";
+import { startLogCapture, getLogBuffer, clearLogBuffer } from "./log-capture.js";
+import { setPtyEventCallback, spawnPty, writePty, resizePty, closePty, closeAllPtys } from "./pty-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -186,6 +188,40 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "logs:subscribe": {
+      send(ws, { type: "logs:backlog", payload: { source: "manager", data: getLogBuffer() } });
+      break;
+    }
+
+    case "logs:clear": {
+      clearLogBuffer();
+      break;
+    }
+
+    case "terminal:spawn": {
+      const { id, cols, rows } = msg.payload;
+      spawnPty(id, cols || 80, rows || 24);
+      break;
+    }
+
+    case "terminal:data": {
+      const { id, data } = msg.payload;
+      writePty(id, data);
+      break;
+    }
+
+    case "terminal:resize": {
+      const { id, cols, rows } = msg.payload;
+      resizePty(id, cols, rows);
+      break;
+    }
+
+    case "terminal:close": {
+      const { id } = msg.payload;
+      closePty(id);
+      break;
+    }
+
     default:
       send(ws, {
         type: "error",
@@ -205,6 +241,16 @@ export function createServer(): WebSocketServer {
     broadcast({ type: "stats", payload: stats });
   });
 
+  // Capture manager stdout/stderr and broadcast to clients
+  startLogCapture((data) => {
+    broadcast({ type: "logs:data", payload: { source: "manager", data } });
+  });
+
+  // Forward PTY events to all clients
+  setPtyEventCallback((event) => {
+    broadcast(event as WsMessage);
+  });
+
   wss.on("connection", (ws) => {
     clients.add(ws);
     console.log(`Client connected (${clients.size} total)`);
@@ -214,6 +260,13 @@ export function createServer(): WebSocketServer {
     const logs = appManager.getAllLogBuffers();
     for (const [id, data] of Object.entries(logs)) {
       send(ws, { type: "app:log", payload: { id, stream: "stdout", data } });
+    }
+
+    // Send logs sources and backlog
+    send(ws, { type: "logs:sources", payload: { sources: ["manager"] } });
+    const logBacklog = getLogBuffer();
+    if (logBacklog) {
+      send(ws, { type: "logs:backlog", payload: { source: "manager", data: logBacklog } });
     }
 
     ws.on("message", (raw) => {
@@ -244,6 +297,7 @@ export function createServer(): WebSocketServer {
 export function shutdown(wss: WebSocketServer): void {
   stopMonitoring();
   appManager.stopAll();
+  closeAllPtys();
   for (const ws of clients) {
     ws.close();
   }

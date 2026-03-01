@@ -20,4 +20,12 @@ contextBridge.exposeInMainWorld("genie", {
   deleteEntry: (path: string) => ipcRenderer.invoke("delete-entry", path),
   openInFinder: (path: string) => ipcRenderer.invoke("open-in-finder", path),
   openFile: (path: string) => ipcRenderer.invoke("open-file", path),
+
+  // Docs
+  docsListFiles: () => ipcRenderer.invoke("docs:list"),
+  docsReadFile: (filename: string) => ipcRenderer.invoke("docs:read", filename),
+  docsWriteFile: (filename: string, content: string) =>
+    ipcRenderer.invoke("docs:write", filename, content),
+  docsDeleteFile: (filename: string) =>
+    ipcRenderer.invoke("docs:delete", filename),
 });

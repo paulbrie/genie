@@ -1,6 +1,6 @@
 import { DeepSubject } from "subjecto";
 import { stripAnsi } from "@/lib/utils";
-import { genie, type DirEntry } from "@/lib/genie-api";
+import { genie, type DirEntry, type DocFile } from "@/lib/genie-api";
 import { wsSend } from "@/lib/ws";
 
 // --- Types ---
@@ -90,13 +90,34 @@ export interface ChatState {
   toolUses: ToolUse[];
 }
 
-type NavKey = "apps" | "processes" | "docker";
+export interface DocsState {
+  files: DocFile[];
+  selectedFile: string | null;
+  content: string;
+  editing: boolean;
+  loading: boolean;
+}
+
+export type NavKey = "apps" | "processes" | "docker" | "docs" | "logs" | "terminal";
 
 interface UiState {
   activeNav: NavKey;
   selectedAppId: string | null;
   processSortBy: "cpu" | "mem";
   filterPortsOnly: boolean;
+}
+
+export interface LogsState {
+  activeSource: string;
+  sources: string[];
+  buffers: Record<string, string>;
+}
+
+export interface TerminalState {
+  sessionId: string | null;
+  connected: boolean;
+  bottomPanelOpen: boolean;
+  bottomPanelHeight: number;
 }
 
 export interface AppState {
@@ -116,6 +137,9 @@ export interface AppState {
   pendingRestoreAppId: string | null;
   fileExplorer: FileExplorerState;
   chat: ChatState;
+  docs: DocsState;
+  logs: LogsState;
+  terminal: TerminalState;
 }
 
 const MAX_LOG_BUFFER = 50000;
@@ -155,6 +179,24 @@ export const store = new DeepSubject<AppState>({
     loading: false,
     streamingContent: "",
     toolUses: [],
+  },
+  docs: {
+    files: [],
+    selectedFile: null,
+    content: "",
+    editing: false,
+    loading: false,
+  },
+  logs: {
+    activeSource: "manager",
+    sources: ["manager"],
+    buffers: {},
+  },
+  terminal: {
+    sessionId: null,
+    connected: false,
+    bottomPanelOpen: false,
+    bottomPanelHeight: 200,
   },
 });
 
@@ -216,6 +258,29 @@ export function clearLogs(appId: string): void {
   s.logBuffers[appId] = "";
 }
 
+// --- Logs actions ---
+
+export function switchLogSource(source: string): void {
+  store.getValue().logs.activeSource = source;
+}
+
+export function clearManagerLogs(): void {
+  const s = store.getValue();
+  s.logs.buffers[s.logs.activeSource] = "";
+  wsSend("logs:clear", { source: s.logs.activeSource });
+}
+
+// --- Terminal actions ---
+
+export function toggleTerminalBottomPanel(): void {
+  const s = store.getValue();
+  s.terminal.bottomPanelOpen = !s.terminal.bottomPanelOpen;
+}
+
+export function setTerminalBottomPanelHeight(height: number): void {
+  store.getValue().terminal.bottomPanelHeight = Math.max(100, Math.min(500, height));
+}
+
 // --- Chat actions ---
 
 export function sendChatMessage(text: string): void {
@@ -227,6 +292,62 @@ export function sendChatMessage(text: string): void {
   // Send plain objects to avoid proxy serialization issues
   const plain = s.chat.messages.map((m: ChatMessage) => ({ role: m.role, content: m.content }));
   wsSend("chat:send", { messages: plain });
+}
+
+// --- Docs actions ---
+
+export async function loadDocsList(): Promise<void> {
+  const s = store.getValue();
+  s.docs.loading = true;
+  const result = await genie.docsListFiles();
+  s.docs.files = result.ok ? result.files : [];
+  s.docs.loading = false;
+}
+
+export async function openDoc(filename: string): Promise<void> {
+  const s = store.getValue();
+  s.docs.loading = true;
+  const result = await genie.docsReadFile(filename);
+  if (result.ok) {
+    s.docs.selectedFile = filename;
+    s.docs.content = result.content;
+    s.docs.editing = false;
+  }
+  s.docs.loading = false;
+}
+
+export async function saveDoc(filename: string, content: string): Promise<void> {
+  const s = store.getValue();
+  s.docs.loading = true;
+  const result = await genie.docsWriteFile(filename, content);
+  if (result.ok) {
+    s.docs.content = content;
+    s.docs.editing = false;
+  }
+  s.docs.loading = false;
+  await loadDocsList();
+}
+
+export async function deleteDoc(filename: string): Promise<void> {
+  const s = store.getValue();
+  s.docs.loading = true;
+  const result = await genie.docsDeleteFile(filename);
+  if (result.ok) {
+    if (s.docs.selectedFile === filename) {
+      s.docs.selectedFile = null;
+      s.docs.content = "";
+      s.docs.editing = false;
+    }
+  }
+  s.docs.loading = false;
+  await loadDocsList();
+}
+
+export async function createNewDoc(filename: string): Promise<void> {
+  const name = filename.endsWith(".md") ? filename : `${filename}.md`;
+  await genie.docsWriteFile(name, "");
+  await loadDocsList();
+  await openDoc(name);
 }
 
 // --- File Explorer actions ---
@@ -442,6 +563,52 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
       break;
     }
 
+    case "logs:data": {
+      const { source, data } = msg.payload;
+      const clean = stripAnsi(data);
+      if (!s.logs.buffers[source]) s.logs.buffers[source] = "";
+      s.logs.buffers[source] += clean;
+      if (s.logs.buffers[source].length > MAX_LOG_BUFFER) {
+        s.logs.buffers[source] = s.logs.buffers[source].slice(-MAX_LOG_BUFFER);
+      }
+      break;
+    }
+
+    case "logs:backlog": {
+      const { source, data } = msg.payload;
+      s.logs.buffers[source] = stripAnsi(data);
+      break;
+    }
+
+    case "logs:sources": {
+      s.logs.sources = msg.payload.sources;
+      break;
+    }
+
+    case "terminal:data": {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("genie:terminal:data", { detail: msg.payload })
+        );
+      }
+      break;
+    }
+
+    case "terminal:exit": {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("genie:terminal:exit", { detail: msg.payload })
+        );
+      }
+      s.terminal.connected = false;
+      break;
+    }
+
+    case "terminal:error": {
+      console.error("Terminal error:", msg.payload.message);
+      break;
+    }
+
     case "error":
       console.error("Manager error:", msg.payload.message);
       break;
@@ -471,7 +638,7 @@ export function loadUiState(): void {
     const s = store.getValue();
     s.processSortBy = saved.processSortBy;
     s.filterPortsOnly = saved.filterPortsOnly ?? false;
-    if (saved.activeNav === "processes" || saved.activeNav === "docker") {
+    if (saved.activeNav && saved.activeNav !== "apps") {
       s.activeNav = saved.activeNav;
     } else if (saved.selectedAppId) {
       s.pendingRestoreAppId = saved.selectedAppId;

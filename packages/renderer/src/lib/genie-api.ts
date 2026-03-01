@@ -24,6 +24,23 @@ export interface FsResult {
   error?: string;
 }
 
+export interface DocFile {
+  name: string;
+  path: string;
+}
+
+export interface DocsListResult {
+  ok: boolean;
+  files: DocFile[];
+  error?: string;
+}
+
+export interface DocsReadResult {
+  ok: boolean;
+  content: string;
+  error?: string;
+}
+
 export interface GenieAPI {
   startManager: () => Promise<boolean>;
   stopManager: () => Promise<boolean>;
@@ -41,6 +58,12 @@ export interface GenieAPI {
   deleteEntry: (path: string) => Promise<FsResult>;
   openInFinder: (path: string) => Promise<FsResult>;
   openFile: (path: string) => Promise<FsResult>;
+
+  // Docs
+  docsListFiles: () => Promise<DocsListResult>;
+  docsReadFile: (filename: string) => Promise<DocsReadResult>;
+  docsWriteFile: (filename: string, content: string) => Promise<FsResult>;
+  docsDeleteFile: (filename: string) => Promise<FsResult>;
 }
 
 declare global {
@@ -87,4 +110,16 @@ export const genie = {
     getGenie()?.openInFinder(path) ?? Promise.resolve(noopFs),
   openFile: (path: string) =>
     getGenie()?.openFile(path) ?? Promise.resolve(noopFs),
+
+  // Docs
+  docsListFiles: () =>
+    getGenie()?.docsListFiles?.() ??
+    Promise.resolve({ ok: false, files: [], error: "Not available" }),
+  docsReadFile: (filename: string) =>
+    getGenie()?.docsReadFile?.(filename) ??
+    Promise.resolve({ ok: false, content: "", error: "Not available" }),
+  docsWriteFile: (filename: string, content: string) =>
+    getGenie()?.docsWriteFile?.(filename, content) ?? Promise.resolve(noopFs),
+  docsDeleteFile: (filename: string) =>
+    getGenie()?.docsDeleteFile?.(filename) ?? Promise.resolve(noopFs),
 };

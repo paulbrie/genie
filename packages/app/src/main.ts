@@ -13,6 +13,7 @@ import {
   stat,
   readdir,
   readFile,
+  writeFile,
   mkdir,
   rename,
 } from "node:fs/promises";
@@ -336,6 +337,57 @@ app.whenReady().then(() => {
   ipcMain.handle("open-file", async (_event, filePath: string) => {
     try {
       await shell.openPath(filePath);
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // --- Docs IPC handlers ---
+
+  const DOCS_DIR = path.join(PROJECT_ROOT, "docs");
+
+  ipcMain.handle("docs:list", async () => {
+    try {
+      await mkdir(DOCS_DIR, { recursive: true });
+      const items = await readdir(DOCS_DIR);
+      const files = items
+        .filter((name) => name.endsWith(".md"))
+        .map((name) => ({ name, path: path.join(DOCS_DIR, name) }));
+      return { ok: true, files };
+    } catch (err: any) {
+      return { ok: false, error: err.message, files: [] };
+    }
+  });
+
+  ipcMain.handle("docs:read", async (_event, filename: string) => {
+    try {
+      const filePath = path.join(DOCS_DIR, filename);
+      const content = await readFile(filePath, "utf-8");
+      return { ok: true, content };
+    } catch (err: any) {
+      return { ok: false, error: err.message, content: "" };
+    }
+  });
+
+  ipcMain.handle(
+    "docs:write",
+    async (_event, filename: string, content: string) => {
+      try {
+        await mkdir(DOCS_DIR, { recursive: true });
+        const filePath = path.join(DOCS_DIR, filename);
+        await writeFile(filePath, content, "utf-8");
+        return { ok: true };
+      } catch (err: any) {
+        return { ok: false, error: err.message };
+      }
+    }
+  );
+
+  ipcMain.handle("docs:delete", async (_event, filename: string) => {
+    try {
+      const filePath = path.join(DOCS_DIR, filename);
+      await shell.trashItem(filePath);
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err.message };

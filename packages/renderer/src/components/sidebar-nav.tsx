@@ -1,21 +1,21 @@
 "use client";
 
 import { useDeepSubject } from "subjecto/react";
-import { LayoutGrid, Activity, Container } from "lucide-react";
-import { store, switchNav, type DockerInfo } from "@/store";
+import { LayoutGrid, Activity, Container, FileText, ScrollText, TerminalSquare } from "lucide-react";
+import { store, switchNav, type DockerInfo, type NavKey } from "@/store";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { key: "apps" as const, label: "Apps", icon: LayoutGrid },
   { key: "processes" as const, label: "Processes", icon: Activity },
   { key: "docker" as const, label: "Docker", icon: Container },
+  { key: "docs" as const, label: "Docs", icon: FileText },
+  { key: "logs" as const, label: "Logs", icon: ScrollText },
+  { key: "terminal" as const, label: "Terminal", icon: TerminalSquare },
 ];
 
 export function SidebarNav() {
-  const activeNav = useDeepSubject(store, "activeNav") as
-    | "apps"
-    | "processes"
-    | "docker";
+  const activeNav = useDeepSubject(store, "activeNav") as NavKey;
   const docker = useDeepSubject(store, "docker") as DockerInfo;
 
   return (

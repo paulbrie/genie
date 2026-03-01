@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useDeepSubject } from "subjecto/react";
-import { store, loadUiState, type AppDef } from "@/store";
+import { store, loadUiState, type AppDef, type NavKey } from "@/store";
 import { genie } from "@/lib/genie-api";
 import { connectWs, setManagerRunning } from "@/lib/ws";
 import { Sidebar } from "@/components/sidebar";
@@ -11,14 +11,15 @@ import { AppDetail } from "@/components/app-detail";
 import { AddAppForm } from "@/components/add-app-form";
 import { ProcessesPanel } from "@/components/processes-panel";
 import { DockerPanel } from "@/components/docker-panel";
+import { DocsPanel } from "@/components/docs-panel";
+import { LogsPanel } from "@/components/logs-panel";
+import { TerminalPanel } from "@/components/terminal-panel";
+import { TerminalBottomPanel } from "@/components/terminal-bottom-panel";
 import { ChatPanel } from "@/components/chat-panel";
 import { FileExplorerPanel } from "@/components/file-explorer";
 
 function MainPanel() {
-  const activeNav = useDeepSubject(store, "activeNav") as
-    | "apps"
-    | "processes"
-    | "docker";
+  const activeNav = useDeepSubject(store, "activeNav") as NavKey;
   const selectedAppId = useDeepSubject(
     store,
     "selectedAppId"
@@ -35,6 +36,18 @@ function MainPanel() {
 
   if (activeNav === "docker") {
     return <DockerPanel />;
+  }
+
+  if (activeNav === "docs") {
+    return <DocsPanel />;
+  }
+
+  if (activeNav === "logs") {
+    return <LogsPanel />;
+  }
+
+  if (activeNav === "terminal") {
+    return <TerminalPanel />;
   }
 
   if (showAddForm) {
@@ -86,6 +99,7 @@ export default function Home() {
         <div className="h-[38px] shrink-0 [-webkit-app-region:drag]" />
         <MainPanel />
         <ChatPanel />
+        <TerminalBottomPanel />
       </main>
       <FileExplorerPanel />
     </div>

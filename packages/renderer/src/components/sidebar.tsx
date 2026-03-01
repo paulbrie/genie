@@ -1,7 +1,8 @@
 "use client";
 
 import { useDeepSubject } from "subjecto/react";
-import { store } from "@/store";
+import { TerminalSquare } from "lucide-react";
+import { store, toggleTerminalBottomPanel } from "@/store";
 import { genie } from "@/lib/genie-api";
 import { connectWs, disconnectWs, setManagerRunning } from "@/lib/ws";
 import { SystemStats } from "@/components/system-stats";
@@ -68,9 +69,29 @@ export function Sidebar() {
       <SystemStats />
       <SidebarNav />
       <AppsList />
-      <div className="mt-auto pt-2 border-t border-surface0">
+      <div className="mt-auto pt-2 border-t border-surface0 flex flex-col gap-0.5">
         <FileExplorerToggle />
+        <TerminalToggle />
       </div>
     </aside>
+  );
+}
+
+function TerminalToggle() {
+  const open = useDeepSubject(store, "terminal/bottomPanelOpen") as boolean;
+
+  return (
+    <button
+      onClick={toggleTerminalBottomPanel}
+      className={cn(
+        "flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-sm text-subtext0",
+        "hover:bg-surface0 hover:text-text transition-colors",
+        open && "bg-surface0 text-text"
+      )}
+      title="Toggle Terminal Panel"
+    >
+      <TerminalSquare size={16} />
+      <span>Terminal</span>
+    </button>
   );
 }
