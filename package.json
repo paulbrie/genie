@@ -1,0 +1,25 @@
+{
+  "name": "genie",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "npm run build && electron packages/app",
+    "dev": "npm run build:app && concurrently -k \"npm run dev:renderer\" \"sleep 3 && npm run dev:electron\"",
+    "dev:renderer": "cd packages/renderer && next dev",
+    "dev:electron": "npm run build:app && electron packages/app",
+    "build:app": "tsc -p packages/app/tsconfig.json",
+    "build:renderer": "cd packages/renderer && next build",
+    "build:manager": "tsc -p packages/manager/tsconfig.json",
+    "build": "npm run build:manager && npm run build:app && npm run build:renderer",
+    "manager": "npx tsx packages/manager/src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "dotenv": "^17.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  }
+}

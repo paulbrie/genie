@@ -1,0 +1,174 @@
+@import "tailwindcss";
+
+@source "../";
+
+@theme {
+  /* Catppuccin Mocha — "base" renamed to "background" to avoid text-base collision */
+  --color-background: #1e1e2e;
+  --color-mantle: #181825;
+  --color-crust: #11111b;
+  --color-surface0: #313244;
+  --color-surface1: #45475a;
+  --color-surface2: #585b70;
+  --color-overlay0: #6c7086;
+  --color-overlay1: #7f849c;
+  --color-subtext0: #a6adc8;
+  --color-subtext1: #bac2de;
+  --color-text: #cdd6f4;
+  --color-mauve: #cba6f7;
+  --color-lavender: #b4befe;
+  --color-blue: #89b4fa;
+  --color-green: #a6e3a1;
+  --color-yellow: #f9e2af;
+  --color-red: #f38ba8;
+  --color-peach: #fab387;
+
+  /* Compact font sizes matching the original UI
+     Tailwind v4 uses --text-* for font-size utilities */
+  --text-2xs: 8px;
+  --text-2xs--line-height: 1.2;
+  --text-xs: 10px;
+  --text-xs--line-height: 1.4;
+  --text-sm: 11px;
+  --text-sm--line-height: 1.4;
+  --text-base: 12px;
+  --text-base--line-height: 1.5;
+  --text-md: 13px;
+  --text-md--line-height: 1.5;
+  --text-lg: 14px;
+  --text-lg--line-height: 1.5;
+  --text-xl: 15px;
+  --text-xl--line-height: 1.5;
+  --text-2xl: 16px;
+  --text-2xl--line-height: 1.4;
+  --text-3xl: 18px;
+  --text-3xl--line-height: 1.4;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", "Fira Code", monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  background: var(--color-background);
+  color: var(--color-text);
+  overflow: hidden;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+/* Scrollbar: overlay, transparent gutter, show only on scroll */
+@utility scrollbar-thin {
+  overflow: overlay;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+    background: transparent;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 2px;
+    transition: background 0.2s;
+  }
+  &:hover::-webkit-scrollbar-thumb {
+    background: var(--color-surface1);
+  }
+  &::-webkit-scrollbar-thumb:active {
+    background: var(--color-surface2);
+  }
+}
+
+/* Tabular nums utility */
+@utility tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chat markdown styles */
+.chat-markdown {
+  line-height: 1.5;
+
+  p { margin: 0.25em 0; }
+  p:first-child { margin-top: 0; }
+  p:last-child { margin-bottom: 0; }
+
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--color-surface0);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  pre {
+    background: var(--color-surface0);
+    border-radius: 4px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    margin: 0.4em 0;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+  }
+
+  ul, ol {
+    margin: 0.3em 0;
+    padding-left: 1.4em;
+  }
+  li { margin: 0.15em 0; }
+  ul { list-style: disc; }
+  ol { list-style: decimal; }
+
+  h1, h2, h3, h4 {
+    font-weight: 600;
+    margin: 0.5em 0 0.2em;
+  }
+  h1 { font-size: 1.2em; }
+  h2 { font-size: 1.1em; }
+  h3 { font-size: 1.05em; }
+
+  blockquote {
+    border-left: 2px solid var(--color-surface2);
+    padding-left: 8px;
+    margin: 0.3em 0;
+    color: var(--color-subtext0);
+  }
+
+  table {
+    border-collapse: collapse;
+    margin: 0.4em 0;
+    width: 100%;
+    font-size: 0.95em;
+  }
+  th, td {
+    border: 1px solid var(--color-surface1);
+    padding: 4px 8px;
+    text-align: left;
+  }
+  th {
+    background: var(--color-surface0);
+    font-weight: 600;
+  }
+  tr:nth-child(even) {
+    background: var(--color-mantle);
+  }
+
+  a {
+    color: var(--color-blue);
+    text-decoration: underline;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--color-surface1);
+    margin: 0.5em 0;
+  }
+}
