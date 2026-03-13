@@ -173,8 +173,18 @@ export async function handleOAuthCallback(
 
     const token = createToken(user.id);
 
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(`<html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4"><div style="text-align:center"><h2>Signed in as ${user.name}</h2><p>You can close this tab and return to Genie.</p></div></body></html>`);
+    const frontendUrl = process.env.FRONTEND_URL || "https://genie.teleporthq.ai";
+    // Check Origin/Referer to decide: redirect to frontend or show close-tab message
+    const origin = req.headers.origin || req.headers.referer || "";
+    const isExtension = origin.includes("chrome-extension://");
+
+    if (isExtension) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4"><div style="text-align:center"><h2>Signed in as ${user.name}</h2><p>You can close this tab and return to Genie.</p></div></body></html>`);
+    } else {
+      res.writeHead(302, { Location: `${frontendUrl}?token=${encodeURIComponent(token)}` });
+      res.end();
+    }
 
     onSuccess(user, token);
   } catch (err: unknown) {

@@ -53,7 +53,23 @@ export function connectWs(): void {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    // Don't send app:list etc. yet — wait for auth
+
+    // Check for token in URL (from OAuth redirect)
+    const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get("token");
+    if (urlToken) {
+      setStoredToken(urlToken);
+      // Clean URL
+      window.history.replaceState({}, "", window.location.pathname);
+      sendAuthToken(urlToken);
+      return;
+    }
+
+    // Try stored token
+    const storedToken = getStoredToken();
+    if (storedToken) {
+      sendAuthToken(storedToken);
+    }
   };
 
   ws.onmessage = (event) => {
