@@ -35,7 +35,7 @@ interface TerminalInstance {
   sessionId: string;
 }
 
-let activeInstance: TerminalInstance | null = null;
+const instances = new Map<string, TerminalInstance>();
 
 export function createTerminal(
   container: HTMLElement,
@@ -44,7 +44,7 @@ export function createTerminal(
   const terminal = new Terminal({
     theme: THEME,
     fontFamily: '"SF Mono", "Fira Code", monospace',
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 1.4,
     cursorBlink: true,
     allowProposedApi: true,
@@ -54,9 +54,10 @@ export function createTerminal(
   terminal.loadAddon(fitAddon);
   terminal.open(container);
 
-  // Initial fit
+  // Initial fit + focus
   requestAnimationFrame(() => {
     fitAddon.fit();
+    terminal.focus();
   });
 
   // Wire input to WS
@@ -81,22 +82,95 @@ export function createTerminal(
   });
   resizeObserver.observe(container);
 
-  activeInstance = { terminal, fitAddon, resizeObserver, sessionId };
+  instances.set(sessionId, { terminal, fitAddon, resizeObserver, sessionId });
 
   return terminal;
 }
 
-export function getActiveTerminal(): TerminalInstance | null {
-  return activeInstance;
+export function writeToTerminal(sessionId: string, data: string): void {
+  instances.get(sessionId)?.terminal.write(data);
 }
 
-export function writeToTerminal(data: string): void {
-  activeInstance?.terminal.write(data);
+export function focusTerminal(sessionId: string): void {
+  instances.get(sessionId)?.terminal.focus();
 }
 
-export function disposeTerminal(): void {
-  if (!activeInstance) return;
-  activeInstance.resizeObserver.disconnect();
-  activeInstance.terminal.dispose();
-  activeInstance = null;
+export function refitTerminal(sessionId: string): void {
+  const inst = instances.get(sessionId);
+  if (!inst) return;
+  try {
+    inst.fitAddon.fit();
+  } catch {
+    // ignore
+  }
+}
+
+export function hasTerminal(sessionId: string): boolean {
+  return instances.has(sessionId);
+}
+
+export function reattachTerminal(sessionId: string, newContainer: HTMLElement): boolean {
+  const inst = instances.get(sessionId);
+  if (!inst) return false;
+
+  // Disconnect old observer
+  inst.resizeObserver.disconnect();
+
+  // Move xterm DOM to new container
+  const xtermElement = inst.terminal.element;
+  if (xtermElement && xtermElement.parentElement !== newContainer) {
+    newContainer.appendChild(xtermElement);
+  }
+
+  // Create new ResizeObserver on the new container
+  const resizeObserver = new ResizeObserver(() => {
+    requestAnimationFrame(() => {
+      try {
+        inst.fitAddon.fit();
+        wsSend("terminal:resize", {
+          id: sessionId,
+          cols: inst.terminal.cols,
+          rows: inst.terminal.rows,
+        });
+      } catch {
+        // ignore resize errors during teardown
+      }
+    });
+  });
+  resizeObserver.observe(newContainer);
+  inst.resizeObserver = resizeObserver;
+
+  // Refit + focus
+  requestAnimationFrame(() => {
+    try {
+      inst.fitAddon.fit();
+      inst.terminal.focus();
+    } catch {}
+  });
+
+  return true;
+}
+
+/** Immediately detach observer and remove from map; defer xterm.dispose() */
+export function disposeTerminal(sessionId: string): void {
+  const inst = instances.get(sessionId);
+  if (!inst) return;
+  inst.resizeObserver.disconnect();
+  instances.delete(sessionId);
+  setTimeout(() => {
+    try { inst.terminal.dispose(); } catch { /* element may already be detached */ }
+  }, 0);
+}
+
+export function disposeAllTerminals(): void {
+  const all = [...instances.values()];
+  for (const inst of all) {
+    inst.resizeObserver.disconnect();
+  }
+  instances.clear();
+  setTimeout(() => {
+    for (const inst of all) {
+      try { inst.terminal.dispose(); } catch { /* ignore */ }
+    }
+  }, 0);
 }

@@ -145,7 +145,7 @@ async function collectPortMap(): Promise<Map<number, string>> {
 async function collectProcesses(): Promise<ProcessInfo[]> {
   try {
     const [{ stdout }, portMap] = await Promise.all([
-      execFileAsync("ps", ["-axo", "pid=,user=,pcpu=,rss=,comm="]),
+      execFileAsync("ps", ["-axo", "pid=,ppid=,user=,pcpu=,rss=,state=,comm="]),
       collectPortMap(),
     ]);
     const lines = stdout.trim().split("\n");
@@ -154,16 +154,20 @@ async function collectProcesses(): Promise<ProcessInfo[]> {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const parts = trimmed.split(/\s+/);
-      if (parts.length < 5) continue;
+      if (parts.length < 7) continue;
       const pid = parseInt(parts[0], 10);
-      const user = parts[1];
-      const cpu = parseFloat(parts[2]);
-      const rss = parseInt(parts[3], 10);
-      const comm = parts.slice(4).join(" ");
+      const ppid = parseInt(parts[1], 10);
+      const user = parts[2];
+      const cpu = parseFloat(parts[3]);
+      const rss = parseInt(parts[4], 10);
+      const state = parts[5];
+      const comm = parts.slice(6).join(" ");
       if (isNaN(pid)) continue;
+      if (state.includes("Z")) continue;
       const name = comm.includes("/") ? comm.split("/").pop()! : comm;
       procs.push({
         pid,
+        ppid: isNaN(ppid) ? 0 : ppid,
         name,
         cpu: Math.round(cpu * 10) / 10,
         mem: Math.round((rss / 1024) * 10) / 10,
@@ -269,9 +273,6 @@ async function collectDockerInfo(processes: ProcessInfo[]): Promise<DockerInfo> 
 
 export async function collectStats(): Promise<StatsPayload> {
   const systemCpu = getCpuUsage();
-  const totalMem = os.totalmem();
-  const freeMem = os.freemem();
-  const systemMem = Math.round(((totalMem - freeMem) / totalMem) * 100);
 
   const pids = getRunningPids();
   const appStats: StatsPayload["apps"] = {};
@@ -301,6 +302,18 @@ export async function collectStats(): Promise<StatsPayload> {
   ]);
 
   cachedProcesses = processes;
+
+  // Compute mem% from vm_stat data (wired + app + compressed) for an accurate
+  // "pressure" reading.  Fall back to os.freemem() if vm_stat failed.
+  let systemMem: number;
+  if (memoryInfo) {
+    const activeBytes = memoryInfo.wired + memoryInfo.appMem + memoryInfo.compressed;
+    systemMem = Math.round((activeBytes / memoryInfo.physical) * 100);
+  } else {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    systemMem = Math.round(((totalMem - freeMem) / totalMem) * 100);
+  }
 
   return {
     system: { cpu: systemCpu, mem: systemMem, memory: memoryInfo ?? undefined },
@@ -352,6 +365,17 @@ export function startMonitoring(
   // Docker collection on a separate, slower cycle
   refreshDockerInfo();
   dockerIntervalId = setInterval(refreshDockerInfo, 5000);
+}
+
+export function setMonitoringInterval(
+  onStats: (stats: StatsPayload) => void,
+  intervalMs: number,
+): void {
+  if (intervalId) clearInterval(intervalId);
+  intervalId = setInterval(async () => {
+    const stats = await collectStats();
+    onStats(stats);
+  }, intervalMs);
 }
 
 export function stopMonitoring(): void {

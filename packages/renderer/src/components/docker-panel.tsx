@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { useDeepSubject } from "subjecto/react";
-import { store, type DockerInfo, type DockerContainerInfo } from "@/store";
-import { ExternalLink, Loader2, ChevronRight } from "lucide-react";
+import { useSubject } from "subjecto/react";
+import { $docker, type DockerInfo, type DockerContainerInfo } from "@/store";
+import { ExternalLink, Loader2, ChevronRight, Play, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DockerContextMenu } from "@/components/docker-context-menu";
 import { wsSend } from "@/lib/ws";
 import { cn } from "@/lib/utils";
+import { ViewHeader } from "@/components/view-header";
 
 function stateDot(state: string) {
   if (state === "running") return "bg-green";
@@ -51,21 +52,24 @@ function groupContainers(containers: DockerContainerInfo[]): { groups: Container
   return { groups, standalone };
 }
 
-const COLS = "grid grid-cols-[16px_1fr_1fr_80px_1fr_56px_72px] gap-2";
+const COLS = "grid grid-cols-[16px_1fr_1fr_80px_1fr_56px_72px_28px] gap-2";
 
 function ContainerRow({
   c,
   isPending,
   isContextTarget,
   onContextMenu,
+  onAction,
   indent,
 }: {
   c: DockerContainerInfo;
   isPending: boolean;
   isContextTarget: boolean;
   onContextMenu: (e: React.MouseEvent, c: DockerContainerInfo) => void;
+  onAction: (id: string, action: "docker:start" | "docker:stop") => void;
   indent?: boolean;
 }) {
+  const isRunning = c.state === "running";
   return (
     <div
       onContextMenu={(e) => onContextMenu(e, c)}
@@ -86,29 +90,44 @@ function ContainerRow({
       <span className="whitespace-nowrap overflow-hidden text-ellipsis">
         {c.service || c.name}
       </span>
-      <span className="whitespace-nowrap overflow-hidden text-ellipsis text-overlay0 text-xs">
+      <span className="whitespace-nowrap overflow-hidden text-ellipsis text-overlay0 text-md">
         {c.image}
       </span>
-      <span className="text-xs text-subtext1 capitalize">
+      <span className="text-md text-subtext1 capitalize">
         {isPending
-          ? c.state === "running" ? "stopping…" : "starting…"
+          ? isRunning ? "stopping…" : "starting…"
           : c.state}
       </span>
-      <span className="text-blue text-xs tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">
+      <span className="text-blue text-md tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">
         {c.ports}
       </span>
-      <span className="text-right tabular-nums text-subtext1 text-xs">
-        {c.state === "running" ? `${c.cpu}%` : "-"}
+      <span className="text-right tabular-nums text-subtext1 text-md">
+        {isRunning ? `${c.cpu}%` : "-"}
       </span>
-      <span className="text-right tabular-nums text-subtext1 text-xs">
-        {c.state === "running" ? `${c.mem}M` : "-"}
+      <span className="text-right tabular-nums text-subtext1 text-md">
+        {isRunning ? `${c.mem}M` : "-"}
+      </span>
+      <span className="flex items-center justify-center">
+        <button
+          onClick={(e) => { e.stopPropagation(); onAction(c.id, isRunning ? "docker:stop" : "docker:start"); }}
+          disabled={isPending}
+          className={cn(
+            "p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-default",
+            isRunning
+              ? "text-red hover:bg-red/10"
+              : "text-green hover:bg-green/10"
+          )}
+          title={isRunning ? "Stop" : "Start"}
+        >
+          {isRunning ? <Square size={12} /> : <Play size={12} />}
+        </button>
       </span>
     </div>
   );
 }
 
 export function DockerPanel() {
-  const docker = useDeepSubject(store, "docker") as DockerInfo;
+  const [docker] = useSubject($docker);
 
   const [daemonPending, setDaemonPending] = useState(false);
   const [pendingContainers, setPendingContainers] = useState<Set<string>>(new Set());
@@ -189,47 +208,31 @@ export function DockerPanel() {
 
   return (
     <div className="flex-1 flex flex-col px-5 pb-5 overflow-hidden">
-      {/* Header */}
-      <div className="flex justify-between items-center pb-3 border-b border-surface0 mb-2">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-subtext0">
-            Docker
-          </h2>
-          {daemonPending ? (
-            <Loader2 size={12} className="animate-spin text-overlay0" />
-          ) : (
-            <span
-              className={cn(
-                "w-2 h-2 rounded-full shrink-0",
-                docker.daemonRunning ? "bg-green" : "bg-red"
-              )}
-            />
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => wsSend("docker:open", {})}
-            className="flex items-center gap-1 text-xs text-blue hover:text-sapphire cursor-pointer bg-transparent border-none"
-          >
-            Open Docker
-            <ExternalLink size={12} />
-          </button>
-          <Button
-            size="sm"
-            onClick={handleDaemonToggle}
-            disabled={daemonPending}
-          >
-            {daemonPending
-              ? docker.daemonRunning ? "Stopping…" : "Starting…"
-              : docker.daemonRunning ? "Stop Daemon" : "Start Daemon"}
-          </Button>
-          {docker.daemonRunning && (
-            <span className="text-sm tabular-nums text-subtext1">
-              {runningCount} / {totalCount}
-            </span>
-          )}
-        </div>
-      </div>
+      <ViewHeader
+        title="Docker"
+        actions={
+          <>
+            <Button size="sm" variant="ghost" onClick={() => wsSend("docker:open", {})}>
+              Open Docker
+              <ExternalLink size={12} />
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleDaemonToggle}
+              disabled={daemonPending}
+            >
+              {daemonPending
+                ? docker.daemonRunning ? "Stopping…" : "Starting…"
+                : docker.daemonRunning ? "Stop Daemon" : "Start Daemon"}
+            </Button>
+            {docker.daemonRunning && (
+              <span className="text-md tabular-nums text-subtext1">
+                {runningCount} / {totalCount}
+              </span>
+            )}
+          </>
+        }
+      />
 
       {/* Content */}
       {!docker.daemonRunning && !daemonPending ? (
@@ -248,7 +251,7 @@ export function DockerPanel() {
       ) : (
         <div className="flex-1 overflow-y-auto flex flex-col scrollbar-thin">
           {/* Header row */}
-          <div className={cn(COLS, "px-2.5 py-1.5 text-xs font-bold uppercase tracking-wide text-overlay0 sticky top-0 bg-background")}>
+          <div className={cn(COLS, "px-2.5 py-1.5 text-md font-bold uppercase tracking-wide text-overlay0 sticky top-0 bg-background")}>
             <span />
             <span>Name</span>
             <span>Image</span>
@@ -256,6 +259,7 @@ export function DockerPanel() {
             <span>Ports</span>
             <span>CPU</span>
             <span>MEM</span>
+            <span />
           </div>
 
           {/* Compose project groups */}
@@ -276,8 +280,8 @@ export function DockerPanel() {
                     )}
                   />
                   <span className={cn("w-2 h-2 rounded-full shrink-0", groupDot(g.containers))} />
-                  <span className="text-sm font-semibold text-text">{g.project}</span>
-                  <span className="text-xs text-overlay0">
+                  <span className="text-md font-semibold text-text">{g.project}</span>
+                  <span className="text-md text-overlay0">
                     {running}/{g.containers.length}
                   </span>
                 </button>
@@ -289,6 +293,7 @@ export function DockerPanel() {
                       isPending={pendingContainers.has(c.id)}
                       isContextTarget={contextTargetId === c.id}
                       onContextMenu={handleContextMenu}
+                      onAction={handleContainerAction}
                       indent
                     />
                   ))}
@@ -304,6 +309,7 @@ export function DockerPanel() {
               isPending={pendingContainers.has(c.id)}
               isContextTarget={contextTargetId === c.id}
               onContextMenu={handleContextMenu}
+              onAction={handleContainerAction}
             />
           ))}
         </div>

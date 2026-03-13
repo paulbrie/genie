@@ -3,6 +3,10 @@
 
 @source "../";
 
+.xterm-screen {
+  padding: 4px;
+}
+
 @theme {
   /* Catppuccin Mocha — "base" renamed to "background" to avoid text-base collision */
   --color-background: #1e1e2e;
@@ -50,6 +54,41 @@
   --font-mono: "SF Mono", "Fira Code", monospace;
 }
 
+/* Animated gradient border for streaming Claude responses */
+@property --genie-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes genie-border-spin {
+  to { --genie-angle: 360deg; }
+}
+
+.genie-streaming-border {
+  position: relative;
+  isolation: isolate;
+}
+
+.genie-streaming-border::before {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 14px;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--genie-angle),
+    transparent 40%,
+    var(--color-mauve) 50%,
+    var(--color-blue) 55%,
+    transparent 65%
+  );
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: genie-border-spin 2.5s linear infinite;
+  pointer-events: none;
+}
+
 body {
   font-family: var(--font-sans);
   font-size: 13px;
@@ -58,6 +97,26 @@ body {
   overflow: hidden;
   user-select: none;
   -webkit-app-region: no-drag;
+}
+
+/* Global scrollbar: thin, transparent gutter, visible on hover */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background: transparent;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-surface1);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-surface2);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* Scrollbar: overlay, transparent gutter, show only on scroll */
@@ -89,11 +148,22 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* DB drawer slide-in */
+@keyframes dbDrawerSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
 /* Chat markdown styles */
 .chat-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 
-  p { margin: 0.25em 0; }
+  p { margin: 0.75em 0; line-height: 1.6; }
   p:first-child { margin-top: 0; }
   p:last-child { margin-bottom: 0; }
 
@@ -124,13 +194,28 @@ body {
     margin: 0.3em 0;
     padding-left: 1.4em;
   }
-  li { margin: 0.15em 0; }
+  li { margin: 0.3em 0; line-height: 1.6; }
+  li > p { margin: 0.25em 0; }
   ul { list-style: disc; }
   ol { list-style: decimal; }
+
+  .contains-task-list {
+    list-style: none;
+    padding-left: 0.2em;
+  }
+  .task-list-item {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4em;
+  }
+  .task-list-item > span:first-child {
+    flex-shrink: 0;
+  }
 
   h1, h2, h3, h4 {
     font-weight: 600;
     margin: 0.5em 0 0.2em;
+    line-height: 1.35;
   }
   h1 { font-size: 1.2em; }
   h2 { font-size: 1.1em; }

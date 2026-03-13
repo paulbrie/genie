@@ -1,26 +1,21 @@
 "use client";
 
-import { useDeepSubject } from "subjecto/react";
-import { store, selectApp, showAddForm, type AppDef } from "@/store";
-import { Button } from "@/components/ui/button";
+import { useSubject } from "subjecto/react";
+import { $apps, $selectedAppId, type AppDef } from "@/store";
 import { cn } from "@/lib/utils";
+import { useNavigate } from "@/lib/navigation";
 
 export function AppsList() {
-  const apps = useDeepSubject(store, "apps") as AppDef[];
-  const selectedAppId = useDeepSubject(
-    store,
-    "selectedAppId"
-  ) as string | null;
+  const [apps] = useSubject($apps);
+  const [selectedAppId] = useSubject($selectedAppId);
+  const { navigateToApp } = useNavigate();
 
   return (
     <>
       <div className="flex justify-between items-center">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-subtext0">
+        <h2 className="text-md font-semibold uppercase tracking-wide text-subtext0">
           Apps
         </h2>
-        <Button size="sm" onClick={() => showAddForm()}>
-          + Add
-        </Button>
       </div>
       {apps.length === 0 ? (
         <div className="text-center text-overlay0 text-base py-5">
@@ -31,7 +26,7 @@ export function AppsList() {
           {apps.map((app) => (
             <button
               key={app.id}
-              onClick={() => selectApp(app.id)}
+              onClick={() => navigateToApp(app.id)}
               className={cn(
                 "flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer transition-colors duration-150",
                 "border-none bg-transparent text-left w-full",
@@ -41,7 +36,7 @@ export function AppsList() {
               )}
             >
               <StatusDot status={app.status} />
-              <span className="font-medium text-base whitespace-nowrap overflow-hidden text-ellipsis">
+              <span className="font-medium text-lg whitespace-nowrap overflow-hidden text-ellipsis">
                 {app.name}
               </span>
             </button>

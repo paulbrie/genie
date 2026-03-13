@@ -1,3 +1,5 @@
+import { wsRequest } from "@/lib/ws";
+
 export interface DirEntry {
   name: string;
   path: string;
@@ -24,102 +26,57 @@ export interface FsResult {
   error?: string;
 }
 
-export interface DocFile {
-  name: string;
-  path: string;
+export interface AppSettings {
+  defaultEditor: string;
+  digitaloceanApiToken: string;
+  gitlabDeployKey: string;
+  gitToken: string;
 }
-
-export interface DocsListResult {
-  ok: boolean;
-  files: DocFile[];
-  error?: string;
-}
-
-export interface DocsReadResult {
-  ok: boolean;
-  content: string;
-  error?: string;
-}
-
-export interface GenieAPI {
-  startManager: () => Promise<boolean>;
-  stopManager: () => Promise<boolean>;
-  getManagerStatus: () => Promise<boolean>;
-  onManagerStatus: (cb: (running: boolean) => void) => void;
-  restartApp: () => Promise<void>;
-  pickFolder: () => Promise<string | null>;
-
-  // File explorer
-  getHomePath: () => Promise<string>;
-  readDirectory: (path: string) => Promise<ReadDirResult>;
-  readFile: (path: string) => Promise<ReadFileResult>;
-  createFolder: (path: string) => Promise<FsResult>;
-  renameEntry: (oldPath: string, newPath: string) => Promise<FsResult>;
-  deleteEntry: (path: string) => Promise<FsResult>;
-  openInFinder: (path: string) => Promise<FsResult>;
-  openFile: (path: string) => Promise<FsResult>;
-
-  // Docs
-  docsListFiles: () => Promise<DocsListResult>;
-  docsReadFile: (filename: string) => Promise<DocsReadResult>;
-  docsWriteFile: (filename: string, content: string) => Promise<FsResult>;
-  docsDeleteFile: (filename: string) => Promise<FsResult>;
-}
-
-declare global {
-  interface Window {
-    genie: GenieAPI;
-  }
-}
-
-function getGenie(): GenieAPI | null {
-  if (typeof window !== "undefined" && window.genie) {
-    return window.genie;
-  }
-  return null;
-}
-
-const noopFs: FsResult = { ok: false, error: "Not available" };
 
 export const genie = {
-  startManager: () => getGenie()?.startManager() ?? Promise.resolve(false),
-  stopManager: () => getGenie()?.stopManager() ?? Promise.resolve(false),
-  getManagerStatus: () =>
-    getGenie()?.getManagerStatus() ?? Promise.resolve(false),
-  onManagerStatus: (cb: (running: boolean) => void) => {
-    getGenie()?.onManagerStatus(cb);
+  // No-ops — manager runs independently
+  startManager: () => Promise.resolve(true),
+  stopManager: () => Promise.resolve(true),
+  getManagerStatus: () => Promise.resolve(true),
+  onManagerStatus: (_cb: (running: boolean) => void) => {},
+  restartApp: () => Promise.resolve(),
+
+  // No native folder picker in browser
+  pickFolder: () => Promise.resolve(null as string | null),
+
+  // Open external links in a new tab
+  openExternal: (url: string) => {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return Promise.resolve();
   },
-  restartApp: () => getGenie()?.restartApp() ?? Promise.resolve(),
-  pickFolder: () => getGenie()?.pickFolder() ?? Promise.resolve(null),
+
+  // Settings
+  getSettings: (): Promise<AppSettings> =>
+    wsRequest<AppSettings>("settings:get").then(({ reqId, ...rest }: any) => ({
+      defaultEditor: "",
+      digitaloceanApiToken: "",
+      gitlabDeployKey: "",
+      gitToken: "",
+      ...rest,
+    })),
+  saveSettings: (settings: AppSettings): Promise<FsResult> =>
+    wsRequest("settings:save", settings as any),
 
   // File explorer
-  getHomePath: () => getGenie()?.getHomePath() ?? Promise.resolve("/"),
-  readDirectory: (path: string) =>
-    getGenie()?.readDirectory(path) ??
-    Promise.resolve({ ok: false, error: "Not available" } as ReadDirResult),
-  readFile: (path: string) =>
-    getGenie()?.readFile(path) ??
-    Promise.resolve({ ok: false, error: "Not available" } as ReadFileResult),
-  createFolder: (path: string) =>
-    getGenie()?.createFolder(path) ?? Promise.resolve(noopFs),
-  renameEntry: (oldPath: string, newPath: string) =>
-    getGenie()?.renameEntry(oldPath, newPath) ?? Promise.resolve(noopFs),
-  deleteEntry: (path: string) =>
-    getGenie()?.deleteEntry(path) ?? Promise.resolve(noopFs),
-  openInFinder: (path: string) =>
-    getGenie()?.openInFinder(path) ?? Promise.resolve(noopFs),
-  openFile: (path: string) =>
-    getGenie()?.openFile(path) ?? Promise.resolve(noopFs),
-
-  // Docs
-  docsListFiles: () =>
-    getGenie()?.docsListFiles?.() ??
-    Promise.resolve({ ok: false, files: [], error: "Not available" }),
-  docsReadFile: (filename: string) =>
-    getGenie()?.docsReadFile?.(filename) ??
-    Promise.resolve({ ok: false, content: "", error: "Not available" }),
-  docsWriteFile: (filename: string, content: string) =>
-    getGenie()?.docsWriteFile?.(filename, content) ?? Promise.resolve(noopFs),
-  docsDeleteFile: (filename: string) =>
-    getGenie()?.docsDeleteFile?.(filename) ?? Promise.resolve(noopFs),
+  getHomePath: (): Promise<string> =>
+    wsRequest<{ path: string }>("fs:homePath").then((r) => r.path),
+  readDirectory: (path: string): Promise<ReadDirResult> =>
+    wsRequest("fs:readDirectory", { path }),
+  readFile: (path: string): Promise<ReadFileResult> =>
+    wsRequest("fs:readFile", { path }),
+  createFolder: (path: string): Promise<FsResult> =>
+    wsRequest("fs:createFolder", { path }),
+  renameEntry: (oldPath: string, newPath: string): Promise<FsResult> =>
+    wsRequest("fs:renameEntry", { oldPath, newPath }),
+  deleteEntry: (path: string): Promise<FsResult> =>
+    wsRequest("fs:deleteEntry", { path }),
+  openInFinder: (path: string): Promise<FsResult> =>
+    wsRequest("fs:openInFinder", { path }),
+  openFile: (path: string): Promise<FsResult> =>
+    wsRequest("fs:openFile", { path }),
 };

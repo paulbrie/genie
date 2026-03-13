@@ -28,3 +28,41 @@ const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)/g;
 export function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
+
+export interface ParsedPort {
+  hostPort: number;
+  containerPort: number;
+  protocol: string;
+}
+
+export function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+export function findBySlug<T extends { name: string }>(
+  items: T[],
+  slug: string
+): T | undefined {
+  return items.find((item) => slugify(item.name) === slug);
+}
+
+export function parseDockerPorts(ports: string): ParsedPort[] {
+  if (!ports) return [];
+  const seen = new Set<number>();
+  const result: ParsedPort[] = [];
+  const mappings = ports.split(",").map((s) => s.trim());
+  for (const m of mappings) {
+    const match = m.match(/:(\d+)->(\d+)\/(\w+)/);
+    if (!match) continue;
+    const hostPort = parseInt(match[1], 10);
+    const containerPort = parseInt(match[2], 10);
+    const protocol = match[3];
+    if (seen.has(hostPort)) continue;
+    seen.add(hostPort);
+    result.push({ hostPort, containerPort, protocol });
+  }
+  return result;
+}

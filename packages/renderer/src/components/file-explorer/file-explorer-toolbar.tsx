@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useDeepSubject } from "subjecto/react";
+import { useSubject } from "subjecto/react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -9,13 +9,12 @@ import {
   FolderPlus,
   RefreshCw,
 } from "lucide-react";
-import { store, navigateBack, navigateForward, navigateUp, navigateTo, refreshDirectory } from "@/store";
+import { $fileExplorer, navigateBack, navigateForward, navigateUp, navigateTo, refreshDirectory } from "@/store";
 import { genie } from "@/lib/genie-api";
 
 export function FileExplorerToolbar() {
-  const currentPath = useDeepSubject(store, "fileExplorer/currentPath") as string;
-  const historyIndex = useDeepSubject(store, "fileExplorer/historyIndex") as number;
-  const history = useDeepSubject(store, "fileExplorer/history") as string[];
+  const [fileExplorer] = useSubject($fileExplorer);
+  const { currentPath, historyIndex, history } = fileExplorer;
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
 
@@ -83,7 +82,7 @@ export function FileExplorerToolbar() {
       </div>
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-0.5 text-xs text-overlay0 overflow-x-auto min-h-[20px] scrollbar-none">
+      <div className="flex items-center gap-0.5 text-md text-overlay0 overflow-x-auto min-h-[20px] scrollbar-none">
         <button
           onClick={() => navigateTo("/")}
           className="shrink-0 hover:text-text px-0.5 rounded hover:bg-surface1"
@@ -126,7 +125,7 @@ export function FileExplorerToolbar() {
           }}
           onBlur={handleCreateFolder}
           placeholder="New folder name…"
-          className="bg-surface0 border border-surface1 rounded px-2 py-1 text-xs text-text outline-none focus:border-mauve"
+          className="bg-surface0 border border-surface1 rounded px-2 py-1 text-md text-text outline-none focus:border-mauve"
         />
       )}
     </div>

@@ -1,8 +1,29 @@
-import * as pty from "node-pty";
+import { existsSync } from "node:fs";
+
+const MAX_SCROLLBACK = 100_000; // chars
 
 interface PtySession {
-  proc: pty.IPty;
+  proc: any;
   id: string;
+  ownerId: string;
+  collaboratorIds: Set<string>;
+  scrollback: string;
+}
+
+let ptyModule: typeof import("node-pty") | null = null;
+let ptyLoadError: string | null = null;
+
+async function loadPty(): Promise<typeof import("node-pty") | null> {
+  if (ptyModule) return ptyModule;
+  if (ptyLoadError) return null;
+  try {
+    ptyModule = await import("node-pty");
+    return ptyModule;
+  } catch (err: any) {
+    ptyLoadError = err.message;
+    console.error("Failed to load node-pty:", err.message);
+    return null;
+  }
 }
 
 const sessions = new Map<string, PtySession>();
@@ -12,22 +33,91 @@ export function setPtyEventCallback(cb: (event: { type: string; payload: any }) 
   eventCallback = cb;
 }
 
-export function spawnPty(id: string, cols: number, rows: number): void {
+let cachedShell: string | null = null;
+
+function resolveShell(): string {
+  if (cachedShell) return cachedShell;
+  const candidates = [
+    process.env.SHELL,
+    "/bin/zsh",
+    "/bin/bash",
+    "/bin/sh",
+  ];
+  for (const sh of candidates) {
+    if (sh && existsSync(sh)) {
+      cachedShell = sh;
+      return sh;
+    }
+  }
+  cachedShell = "/bin/sh";
+  return cachedShell;
+}
+
+let cachedEnv: Record<string, string> | null = null;
+
+function buildCleanEnv(): Record<string, string> {
+  if (cachedEnv) return cachedEnv;
+  const clean: Record<string, string> = {};
+  for (const [key, val] of Object.entries(process.env)) {
+    if (val !== undefined) clean[key] = val;
+  }
+  if (!clean.PATH || clean.PATH === "") {
+    clean.PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+  }
+  cachedEnv = clean;
+  return cachedEnv;
+}
+
+export async function spawnPty(
+  id: string,
+  cols: number,
+  rows: number,
+  command?: string,
+  spawnCwd?: string,
+  ownerId?: string,
+): Promise<void> {
   if (sessions.has(id)) return;
 
-  const shell = process.env.SHELL || "/bin/zsh";
-  const proc = pty.spawn(shell, [], {
-    name: "xterm-256color",
-    cols,
-    rows,
-    cwd: process.env.HOME || "/",
-    env: process.env as Record<string, string>,
-  });
+  const pty = await loadPty();
+  if (!pty) {
+    eventCallback?.({
+      type: "terminal:error",
+      payload: { id, message: `node-pty not available: ${ptyLoadError}` },
+    });
+    return;
+  }
 
-  const session: PtySession = { proc, id };
+  const shell = resolveShell();
+  const cwd = spawnCwd || process.env.HOME || "/tmp";
+  const env = buildCleanEnv();
+  const args = command ? ["-c", command] : [];
+
+  let proc: any;
+  try {
+    proc = pty.spawn(shell, args, {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd,
+      env,
+    });
+  } catch (err: any) {
+    console.error(`Failed to spawn PTY (shell=${shell}, cwd=${cwd}):`, err.message);
+    eventCallback?.({
+      type: "terminal:error",
+      payload: { id, message: `Failed to spawn shell: ${err.message}` },
+    });
+    return;
+  }
+
+  const session: PtySession = { proc, id, ownerId: ownerId || "", collaboratorIds: new Set(), scrollback: "" };
   sessions.set(id, session);
 
   proc.onData((data: string) => {
+    session.scrollback += data;
+    if (session.scrollback.length > MAX_SCROLLBACK) {
+      session.scrollback = session.scrollback.slice(-MAX_SCROLLBACK);
+    }
     eventCallback?.({ type: "terminal:data", payload: { id, data } });
   });
 
@@ -61,8 +151,78 @@ export function closePty(id: string): void {
 }
 
 export function closeAllPtys(): void {
-  for (const [id, session] of sessions) {
+  for (const [, session] of sessions) {
     session.proc.kill();
-    sessions.delete(id);
   }
+  sessions.clear();
+}
+
+export function getSessionAccess(sessionId: string): { ownerId: string; collaboratorIds: string[] } | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  return { ownerId: session.ownerId, collaboratorIds: [...session.collaboratorIds] };
+}
+
+export function getScrollback(sessionId: string): string {
+  const session = sessions.get(sessionId);
+  return session?.scrollback ?? "";
+}
+
+export function addCollaborator(sessionId: string, userId: string): boolean {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  session.collaboratorIds.add(userId);
+  return true;
+}
+
+export function removeCollaborator(sessionId: string, userId: string): void {
+  const session = sessions.get(sessionId);
+  if (session) session.collaboratorIds.delete(userId);
+}
+
+export function isAuthorized(sessionId: string, userId: string): boolean {
+  const session = sessions.get(sessionId);
+  if (!session) return true; // allow if session not tracked
+  return session.ownerId === userId || session.collaboratorIds.has(userId);
+}
+
+export function getSessionsByUser(userId: string): string[] {
+  const result: string[] = [];
+  for (const [id, session] of sessions) {
+    if (session.ownerId === userId || session.collaboratorIds.has(userId)) {
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+export function getUserSessionDetails(userId: string): Array<{
+  id: string;
+  ownerId: string;
+  collaboratorIds: string[];
+  isOwner: boolean;
+}> {
+  const result = [];
+  for (const [id, session] of sessions) {
+    if (session.ownerId === userId || session.collaboratorIds.has(userId)) {
+      result.push({
+        id,
+        ownerId: session.ownerId,
+        collaboratorIds: [...session.collaboratorIds],
+        isOwner: session.ownerId === userId,
+      });
+    }
+  }
+  return result;
+}
+
+export function removeCollaboratorFromAll(userId: string): string[] {
+  const affected: string[] = [];
+  for (const [id, session] of sessions) {
+    if (session.collaboratorIds.has(userId)) {
+      session.collaboratorIds.delete(userId);
+      affected.push(id);
+    }
+  }
+  return affected;
 }

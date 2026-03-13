@@ -1,0 +1,142 @@
+import type { NavKey, DropletsSubTab, AiSubTab } from "@/store";
+
+export type ProjectTab = "files" | "commands" | "cloud" | "deploy-history" | "settings";
+export type AdminTab = "database" | "droplets" | "ai" | "backup";
+
+// Bidirectional NavKey ↔ URL segment maps (all lowercase)
+const NAV_TO_PATH: Record<NavKey, string> = {
+  apps: "apps",
+  projects: "projects",
+  processes: "processes",
+
+  docker: "docker",
+  docs: "docs",
+  logs: "logs",
+  terminal: "terminal",
+  chat: "chat",
+  tracker: "tracker",
+  settings: "settings",
+  admin: "admin",
+  architecture: "architecture",
+};
+
+const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
+  Object.entries(NAV_TO_PATH).map(([k, v]) => [v, k as NavKey])
+) as Record<string, NavKey>;
+
+const VALID_PROJECT_TABS = new Set<ProjectTab>([
+  "files",
+  "commands",
+  "cloud",
+  "deploy-history",
+  "settings",
+]);
+
+const VALID_ADMIN_TABS = new Set<AdminTab>(["database", "droplets", "ai", "backup"]);
+
+const VALID_DROPLETS_SUBTABS = new Set<DropletsSubTab>([
+  "instances",
+  "templates",
+  "configs",
+  "sshkey",
+]);
+
+const VALID_AI_SUBTABS = new Set<AiSubTab>(["costs", "settings"]);
+
+// --- URL builders ---
+
+export function buildNavPath(nav: NavKey): string {
+  if (nav === "admin") return "/admin/database";
+  return `/${NAV_TO_PATH[nav]}`;
+}
+
+export function buildAppPath(slug: string): string {
+  return `/apps/${slug}`;
+}
+
+export function buildProjectPath(slug: string, tab?: ProjectTab): string {
+  const t = tab || "files";
+  return `/projects/${slug}/${t}`;
+}
+
+export function buildAdminPath(adminTab: AdminTab, subTab?: DropletsSubTab | AiSubTab): string {
+  if (adminTab === "droplets") {
+    const sub = subTab ? `/${subTab}` : "/instances";
+    return `/admin/droplets${sub}`;
+  }
+  if (adminTab === "ai") {
+    const sub = subTab ? `/${subTab}` : "/costs";
+    return `/admin/ai${sub}`;
+  }
+  return `/admin/${adminTab}`;
+}
+
+// --- URL parser ---
+
+export interface ParsedRoute {
+  nav: NavKey;
+  entitySlug?: string;
+  tab?: ProjectTab;
+  adminTab?: AdminTab;
+  dropletsSubTab?: DropletsSubTab;
+  aiSubTab?: AiSubTab;
+}
+
+export function parseRoute(slugSegments: string[]): ParsedRoute | null {
+  if (!slugSegments || slugSegments.length === 0) return null;
+
+  const first = slugSegments[0].toLowerCase();
+  const nav = PATH_TO_NAV[first];
+  if (!nav) return null;
+
+  // No entity slug
+  if (slugSegments.length === 1) {
+    return { nav };
+  }
+
+  const entitySlug = slugSegments[1];
+
+  // Admin sub-routes: /admin/database, /admin/droplets/..., /admin/ai/...
+  if (nav === "admin") {
+    const seg1 = slugSegments[1]?.toLowerCase();
+    if (seg1 && VALID_ADMIN_TABS.has(seg1 as AdminTab)) {
+      const adminTab = seg1 as AdminTab;
+      if (adminTab === "droplets" && slugSegments.length >= 3) {
+        const seg2 = slugSegments[2]?.toLowerCase();
+        if (VALID_DROPLETS_SUBTABS.has(seg2 as DropletsSubTab)) {
+          return { nav, adminTab, dropletsSubTab: seg2 as DropletsSubTab };
+        }
+      }
+      if (adminTab === "ai" && slugSegments.length >= 3) {
+        const seg2 = slugSegments[2]?.toLowerCase();
+        if (VALID_AI_SUBTABS.has(seg2 as AiSubTab)) {
+          return { nav, adminTab, aiSubTab: seg2 as AiSubTab };
+        }
+      }
+      return {
+        nav,
+        adminTab,
+        dropletsSubTab: adminTab === "droplets" ? "instances" : undefined,
+        aiSubTab: adminTab === "ai" ? "costs" : undefined,
+      };
+    }
+    return { nav };
+  }
+
+  // Apps entity
+  if (nav === "apps") {
+    return { nav, entitySlug };
+  }
+
+  // Projects entity + optional tab (default to "files")
+  if (nav === "projects") {
+    const tab =
+      slugSegments.length >= 3 && VALID_PROJECT_TABS.has(slugSegments[2] as ProjectTab)
+        ? (slugSegments[2] as ProjectTab)
+        : "files";
+    return { nav, entitySlug, tab };
+  }
+
+  // Other navs don't have sub-routes
+  return { nav };
+}

@@ -5,19 +5,34 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "db:push": "drizzle-kit push",
+    "postinstall": "node -e \"const p=require('path'),fs=require('fs');const d=p.join(p.dirname(require.resolve('node-pty')),'..','prebuilds');if(fs.existsSync(d)){const r=fs.readdirSync(d);r.forEach(a=>{const h=p.join(d,a,'spawn-helper');if(fs.existsSync(h))fs.chmodSync(h,0o755)})}\""
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@sendgrid/mail": "^8.1.6",
+    "archiver": "^7.0.1",
+    "drizzle-orm": "^0.44.0",
+    "google-auth-library": "^9.15.1",
+    "js-yaml": "^4.1.1",
+    "jsonwebtoken": "^9.0.2",
     "node-pty": "^1.1.0",
     "pidusage": "^3.0.2",
+    "postgres": "^3.4.5",
+    "ssh2": "^1.17.0",
     "uuid": "^11.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^22.13.0",
+    "@types/ssh2": "^1.15.5",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.14",
+    "drizzle-kit": "^0.31.9",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

@@ -8,6 +8,7 @@ interface ProcessContextMenuProps {
   x: number;
   y: number;
   onClose: () => void;
+  onKill?: (pid: number) => void;
 }
 
 export function ProcessContextMenu({
@@ -15,9 +16,11 @@ export function ProcessContextMenu({
   x,
   y,
   onClose,
+  onKill,
 }: ProcessContextMenuProps) {
   function handleKill() {
-    wsSend("process:kill", { pid });
+    if (onKill) onKill(pid);
+    else wsSend("process:kill", { pid });
     onClose();
   }
 

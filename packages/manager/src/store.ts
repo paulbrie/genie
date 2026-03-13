@@ -8,19 +8,18 @@ const GENIE_DIR = path.join(os.homedir(), ".genie");
 const APPS_FILE = path.join(GENIE_DIR, "apps.json");
 
 function ensureDir(): void {
-  if (!fs.existsSync(GENIE_DIR)) {
-    fs.mkdirSync(GENIE_DIR, { recursive: true });
-  }
+  fs.mkdirSync(GENIE_DIR, { recursive: true });
 }
 
 export function load(): AppDef[] {
   ensureDir();
-  if (!fs.existsSync(APPS_FILE)) {
-    fs.writeFileSync(APPS_FILE, "[]", "utf-8");
-    return [];
+  try {
+    const raw = fs.readFileSync(APPS_FILE, "utf-8");
+    return JSON.parse(raw);
+  } catch (err: any) {
+    if (err.code === "ENOENT") return [];
+    throw err;
   }
-  const raw = fs.readFileSync(APPS_FILE, "utf-8");
-  return JSON.parse(raw);
 }
 
 export function save(apps: AppDef[]): void {

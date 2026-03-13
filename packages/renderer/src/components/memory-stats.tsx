@@ -1,7 +1,7 @@
 "use client";
 
-import { useDeepSubject } from "subjecto/react";
-import { store, type MemoryInfo } from "@/store";
+import { useSubject } from "subjecto/react";
+import { $system, type MemoryInfo } from "@/store";
 import { formatBytes } from "@/lib/utils";
 import {
   Tooltip,
@@ -10,10 +10,8 @@ import {
 } from "@/components/ui/tooltip";
 
 export function MemoryStats() {
-  const memory = useDeepSubject(
-    store,
-    "system/memory"
-  ) as MemoryInfo | null;
+  const [system] = useSubject($system);
+  const memory = system.memory as MemoryInfo | null;
 
   if (!memory) return null;
 
@@ -26,10 +24,10 @@ export function MemoryStats() {
       {/* Gauge section */}
       <div className="flex flex-col gap-1.5 min-w-[180px] flex-1">
         <div className="flex justify-between items-baseline">
-          <span className="text-xs font-bold uppercase tracking-wide text-subtext0">
+          <span className="text-md font-bold uppercase tracking-wide text-subtext0">
             Memory Pressure
           </span>
-          <span className="text-sm font-semibold tabular-nums text-text">
+          <span className="text-md font-semibold tabular-nums text-text">
             {formatBytes(memory.used)} / {formatBytes(memory.physical)}
           </span>
         </div>
@@ -85,7 +83,7 @@ function LegendItem({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="flex items-center gap-1 text-xs text-overlay0 cursor-default">
+        <span className="flex items-center gap-1 text-md text-overlay0 cursor-default">
           <span className={`w-2 h-2 rounded-sm shrink-0 ${color}`} />
           {label}
         </span>
@@ -108,10 +106,10 @@ function MemStatRow({
     <Tooltip>
       <TooltipTrigger asChild>
         <div className="flex items-baseline gap-2 cursor-default">
-          <span className="text-sm text-subtext0 whitespace-nowrap">
+          <span className="text-md text-subtext0 whitespace-nowrap">
             {label}
           </span>
-          <span className="text-sm font-semibold tabular-nums text-text ml-auto whitespace-nowrap">
+          <span className="text-md font-semibold tabular-nums text-text ml-auto whitespace-nowrap">
             {value}
           </span>
         </div>

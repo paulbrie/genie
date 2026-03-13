@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Genie Assistant</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1e2e; }
+    #genie-iframe {
+      width: 100%; height: 100%; border: none; display: block;
+    }
+    #genie-fallback {
+      display: none;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; height: 100%; padding: 32px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #a6adc8; text-align: center;
+    }
+    #genie-fallback p { font-size: 13px; line-height: 1.6; }
+    #genie-retry {
+      padding: 8px 20px; background: #cba6f7; color: #1e1e2e;
+      border: none; border-radius: 8px; font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: background 0.15s;
+    }
+    #genie-retry:hover { background: #b4befe; }
+  </style>
+</head>
+<body>
+  <iframe id="genie-iframe" src="http://localhost:3000/extension"></iframe>
+  <div id="genie-fallback">
+    <p>Cannot connect to Genie renderer.<br />Make sure it's running on localhost:3000.</p>
+    <button id="genie-retry">Retry</button>
+  </div>
+  <script src="bridge.js"></script>
+</body>
+</html>

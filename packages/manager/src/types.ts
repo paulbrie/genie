@@ -1,10 +1,77 @@
+export type ProcessStatus = "running" | "stopped" | "crashed";
+
+export type ConversationType = "dm" | "room";
+
+export interface ProjectCommand {
+  id: string;
+  name: string;
+  command: string;
+  mode?: "inline" | "terminal";
+}
+
+export interface VpsConnectionConfig {
+  host: string;
+  port: number;
+  username: string;
+  privateKeyPath: string;
+}
+
+export interface VpsServiceInfo {
+  name: string;
+  service: string;
+  status: string;
+  state: string;
+  ports: string;
+}
+
+export interface DoDropletInfo {
+  dropletId: number;
+  ipAddress: string;
+  region: string;
+  size: string;
+}
+
+export interface VpsInfo {
+  connection: VpsConnectionConfig;
+  services: VpsServiceInfo[];
+  digitalocean?: DoDropletInfo;
+}
+
+export interface VpsInstance {
+  id: string;        // UUID
+  label: string;     // "production", "staging", etc.
+  connection: VpsConnectionConfig;
+  services: VpsServiceInfo[];
+  digitalocean?: DoDropletInfo;
+  deployFailed?: boolean;
+  deployError?: string;
+}
+
+export interface ProjectDef {
+  id: string;
+  name: string;
+  commands: ProjectCommand[];
+  commandStatuses: Record<string, ProcessStatus>;
+  vpsInstances: VpsInstance[];
+  vpsRegion?: string;
+  vpsSize?: string;
+  vpsBaseImageId?: number;
+  vpsBaseImageConfigName?: string;
+  setupFiles?: Record<string, string>;
+  secrets?: { key: string; value: string }[];
+  doToken?: string;
+  gitlabDeployKey?: string;
+  dbUrl?: string;
+  gitFolders?: string[];
+}
+
 export interface AppDef {
   id: string;
   name: string;
   command: string;
   cwd?: string;
   env?: Record<string, string>;
-  status: "running" | "stopped" | "crashed";
+  status: ProcessStatus;
 }
 
 export interface WsMessage {
@@ -36,6 +103,7 @@ export interface SystemStats {
 
 export interface ProcessInfo {
   pid: number;
+  ppid: number;
   name: string;
   cpu: number;
   mem: number;
@@ -69,3 +137,112 @@ export interface StatsPayload {
   processes: ProcessInfo[];
   docker: DockerInfo;
 }
+
+// --- Chrome Extension types ---
+
+export type ClientType = "web" | "chrome-extension";
+
+export type DomAction =
+  | "click"
+  | "type"
+  | "select"
+  | "scroll"
+  | "read_text"
+  | "read_attr"
+  | "get_snapshot"
+  | "navigate"
+  | "wait_for";
+
+export interface DomActionParams {
+  selector?: string;
+  value?: string;
+  url?: string;
+  attribute?: string;
+  direction?: "up" | "down";
+  amount?: number;
+  timeout?: number;
+}
+
+export type DomActionExecutor = (
+  action: DomAction,
+  params: DomActionParams,
+) => Promise<{ success: boolean; result: string }>;
+
+// --- VPS Agent stdio message types ---
+
+export interface AgentInitMessage {
+  type: "init";
+  apiKey: string;
+  projectDir: string;
+  maxToolRounds?: number;
+}
+
+export interface AgentChatMessage {
+  type: "chat";
+  messages: { role: "user" | "assistant"; content: string }[];
+  context?: string;
+  domSnapshot?: string;
+}
+
+export interface AgentStopMessage {
+  type: "stop";
+}
+
+export interface AgentBrowserResultMessage {
+  type: "browser:result";
+  requestId: string;
+  success: boolean;
+  result: string;
+}
+
+export type AgentInboundMessage =
+  | AgentInitMessage
+  | AgentChatMessage
+  | AgentStopMessage
+  | AgentBrowserResultMessage;
+
+export interface AgentReadyMessage {
+  type: "ready";
+}
+
+export interface AgentTokenMessage {
+  type: "token";
+  token: string;
+}
+
+export interface AgentToolMessage {
+  type: "tool";
+  name: string;
+  input: Record<string, unknown>;
+  result: string;
+}
+
+export interface AgentDoneMessage {
+  type: "done";
+  fullContent: string;
+}
+
+export interface AgentErrorMessage {
+  type: "error";
+  message: string;
+}
+
+export interface AgentBrowserRequestMessage {
+  type: "browser:request";
+  requestId: string;
+  action: string;
+  params: Record<string, unknown>;
+}
+
+export interface AgentStoppedMessage {
+  type: "stopped";
+}
+
+export type AgentOutboundMessage =
+  | AgentReadyMessage
+  | AgentTokenMessage
+  | AgentToolMessage
+  | AgentDoneMessage
+  | AgentErrorMessage
+  | AgentBrowserRequestMessage
+  | AgentStoppedMessage;

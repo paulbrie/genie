@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useDeepSubject } from "subjecto/react";
+import { useSubject } from "subjecto/react";
 import {
   Folder,
   File,
@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  store,
+  $fileExplorer,
   navigateTo,
   selectFileEntry,
   setRenamingEntry,
@@ -75,18 +75,18 @@ function InlineRenameInput({ entry }: { entry: DirEntry }) {
         e.stopPropagation();
       }}
       onBlur={handleSubmit}
-      className="flex-1 min-w-0 bg-surface0 border border-mauve rounded px-1 py-0.5 text-xs text-text outline-none"
+      className="flex-1 min-w-0 bg-surface0 border border-mauve rounded px-1 py-0.5 text-md text-text outline-none"
       onClick={(e) => e.stopPropagation()}
     />
   );
 }
 
 export function FileList() {
-  const entries = useDeepSubject(store, "fileExplorer/entries") as DirEntry[];
-  const loading = useDeepSubject(store, "fileExplorer/loading") as boolean;
-  const error = useDeepSubject(store, "fileExplorer/error") as string | null;
-  const selectedEntry = useDeepSubject(store, "fileExplorer/selectedEntry") as string | null;
-  const renamingEntry = useDeepSubject(store, "fileExplorer/renamingEntry") as string | null;
+  const [fileExplorer] = useSubject($fileExplorer);
+  const { entries, loading, error, selectedEntry, renamingEntry } = fileExplorer;
+
+  // Slow-click rename: click on already-selected entry → wait 400ms → rename
+  const renameTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -96,7 +96,7 @@ export function FileList() {
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center text-overlay0 text-sm">
+      <div className="flex-1 flex items-center justify-center text-overlay0 text-md">
         Loading…
       </div>
     );
@@ -104,7 +104,7 @@ export function FileList() {
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center text-red text-sm px-4 text-center">
+      <div className="flex-1 flex items-center justify-center text-red text-md px-4 text-center">
         {error}
       </div>
     );
@@ -118,7 +118,7 @@ export function FileList() {
 
   if (sorted.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-overlay0 text-sm">
+      <div className="flex-1 flex items-center justify-center text-overlay0 text-md">
         Empty directory
       </div>
     );
@@ -149,12 +149,28 @@ export function FileList() {
           <div
             key={entry.path}
             className={cn(
-              "flex items-center gap-2 px-2 py-1 rounded cursor-default text-sm select-none",
+              "flex items-center gap-2 px-2 py-1 rounded cursor-default text-md select-none",
               "hover:bg-surface0",
               isSelected && "bg-surface0"
             )}
-            onClick={() => selectFileEntry(entry.path)}
-            onDoubleClick={() => handleDoubleClick(entry)}
+            onClick={() => {
+              // If clicking the already-selected entry, start slow-click rename timer
+              if (selectedEntry === entry.path && !isRenaming) {
+                if (renameTimer.current) clearTimeout(renameTimer.current);
+                renameTimer.current = setTimeout(() => {
+                  renameTimer.current = null;
+                  setRenamingEntry(entry.path);
+                }, 500);
+              } else {
+                if (renameTimer.current) { clearTimeout(renameTimer.current); renameTimer.current = null; }
+                selectFileEntry(entry.path);
+              }
+            }}
+            onDoubleClick={() => {
+              // Cancel any pending rename timer on fast double-click
+              if (renameTimer.current) { clearTimeout(renameTimer.current); renameTimer.current = null; }
+              handleDoubleClick(entry);
+            }}
             onContextMenu={(e) => handleContextMenu(e, entry)}
           >
             <Icon
@@ -168,7 +184,7 @@ export function FileList() {
               <InlineRenameInput entry={entry} />
             ) : (
               <>
-                <span className="flex-1 truncate text-text text-xs">
+                <span className="flex-1 truncate text-text text-md">
                   {entry.name}
                 </span>
                 {!entry.isDirectory && (

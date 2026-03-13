@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { AppDef } from "./types.js";
 import * as store from "./store.js";
+import { LogBuffer } from "./log-buffer.js";
 
 type EventCallback = (event: {
   type: string;
@@ -8,29 +9,15 @@ type EventCallback = (event: {
 }) => void;
 
 const processes = new Map<string, ChildProcess>();
-const logBuffers = new Map<string, string>();
-const MAX_LOG_BUFFER = 50000;
+const logs = new LogBuffer();
 let onEvent: EventCallback = () => {};
 
 export function getLogBuffer(id: string): string {
-  return logBuffers.get(id) || "";
+  return logs.get(id);
 }
 
 export function getAllLogBuffers(): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const [id, buf] of logBuffers) {
-    if (buf) result[id] = buf;
-  }
-  return result;
-}
-
-function appendLogBuffer(id: string, data: string): void {
-  let buf = logBuffers.get(id) || "";
-  buf += data;
-  if (buf.length > MAX_LOG_BUFFER) {
-    buf = buf.slice(-MAX_LOG_BUFFER);
-  }
-  logBuffers.set(id, buf);
+  return logs.getAll();
 }
 
 export function setEventCallback(cb: EventCallback): void {
@@ -65,7 +52,7 @@ export function startApp(id: string): boolean {
 
   child.stdout?.on("data", (data: Buffer) => {
     const text = data.toString();
-    appendLogBuffer(id, text);
+    logs.append(id, text);
     onEvent({
       type: "app:log",
       payload: { id, stream: "stdout", data: text },
@@ -74,7 +61,7 @@ export function startApp(id: string): boolean {
 
   child.stderr?.on("data", (data: Buffer) => {
     const text = data.toString();
-    appendLogBuffer(id, text);
+    logs.append(id, text);
     onEvent({
       type: "app:log",
       payload: { id, stream: "stderr", data: text },

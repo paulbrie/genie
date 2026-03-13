@@ -41,6 +41,7 @@ export function FileContextMenu({
   }
 
   async function handleDelete() {
+    if (!confirm("Delete permanently?")) return;
     await genie.deleteEntry(entry.path);
     await refreshDirectory();
     onClose();
@@ -56,7 +57,7 @@ export function FileContextMenu({
       </ContextMenuItem>
       <ContextMenuItem onClick={handleRename}>Rename</ContextMenuItem>
       <ContextMenuItem onClick={handleDelete} className="text-red">
-        Move to Trash
+        Delete
       </ContextMenuItem>
     </ContextMenu>
   );

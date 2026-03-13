@@ -1,7 +1,10 @@
 import "dotenv/config";
+import { seedClaude } from "./db/seed.js";
 import { createServer, shutdown } from "./ws-server.js";
 
-const wss = createServer();
+// Seed the Claude agent user, then start the WS server
+await seedClaude();
+const wss = await createServer();
 
 function gracefulShutdown(): void {
   console.log("\nShutting down Genie manager...");

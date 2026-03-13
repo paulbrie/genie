@@ -1,0 +1,158 @@
+import type { BackgroundMessage, PanelMessage } from "../shared/types";
+
+const RENDERER_URL = "http://localhost:3000/extension";
+const IFRAME_ID = "genie-iframe";
+const FALLBACK_ID = "genie-fallback";
+
+let port: chrome.runtime.Port | null = null;
+let iframe: HTMLIFrameElement | null = null;
+let iframeReady = false;
+
+// Current extension context (updated by service worker)
+let currentProject: any = null;
+let currentTabUrl = "";
+
+function getIframe(): HTMLIFrameElement | null {
+  return document.getElementById(IFRAME_ID) as HTMLIFrameElement | null;
+}
+
+function showFallback(): void {
+  const fb = document.getElementById(FALLBACK_ID);
+  if (fb) fb.style.display = "flex";
+  const ifr = getIframe();
+  if (ifr) ifr.style.display = "none";
+}
+
+function hideFallback(): void {
+  const fb = document.getElementById(FALLBACK_ID);
+  if (fb) fb.style.display = "none";
+  const ifr = getIframe();
+  if (ifr) ifr.style.display = "block";
+}
+
+// --- Connect to service worker ---
+
+function connectPort(): void {
+  port = chrome.runtime.connect({ name: "genie-panel" });
+
+  port.onMessage.addListener((msg: BackgroundMessage) => {
+    switch (msg.type) {
+      case "project:detected":
+        currentProject = msg.project;
+        currentTabUrl = msg.tabUrl;
+        // Forward to iframe
+        if (iframeReady && iframe?.contentWindow) {
+          iframe.contentWindow.postMessage(
+            { type: "genie:context-update", project: msg.project, tabUrl: msg.tabUrl },
+            "*",
+          );
+        }
+        break;
+
+      case "dom:snapshot":
+        // Forward snapshot result to iframe
+        if (iframe?.contentWindow) {
+          iframe.contentWindow.postMessage(
+            { type: "genie:snapshot-result", snapshot: (msg as any).html },
+            "*",
+          );
+        }
+        break;
+    }
+  });
+
+  port.onDisconnect.addListener(() => {
+    port = null;
+    // Try to reconnect after a delay
+    setTimeout(connectPort, 2000);
+  });
+}
+
+// --- iframe load handling ---
+
+function initIframe(): void {
+  iframe = getIframe();
+  if (!iframe) return;
+
+  iframe.addEventListener("load", () => {
+    // Check if iframe loaded successfully by trying to access contentWindow
+    if (!iframe?.contentWindow) {
+      showFallback();
+      return;
+    }
+
+    iframeReady = true;
+    hideFallback();
+
+    // Request a proactive DOM snapshot, then send genie:init
+    if (port) {
+      port.postMessage({ type: "get:snapshot" } satisfies PanelMessage);
+    }
+
+    // Send init after a brief delay to let snapshot arrive
+    // If no snapshot arrives, send init with empty snapshot
+    setTimeout(() => {
+      if (iframe?.contentWindow) {
+        iframe.contentWindow.postMessage(
+          {
+            type: "genie:init",
+            project: currentProject,
+            tabUrl: currentTabUrl,
+            snapshot: "",
+          },
+          "*",
+        );
+      }
+    }, 100);
+  });
+
+  iframe.addEventListener("error", () => {
+    showFallback();
+  });
+}
+
+// --- Listen for messages from iframe ---
+
+window.addEventListener("message", (event) => {
+  const data = event.data;
+  if (!data?.type?.startsWith("genie:")) return;
+
+  switch (data.type) {
+    case "genie:request-snapshot":
+      // iframe wants a fresh DOM snapshot → ask service worker
+      if (port) {
+        // Listen for the snapshot response and forward it
+        port.postMessage({ type: "get:snapshot" } satisfies PanelMessage);
+      }
+      break;
+
+    case "genie:navigate":
+      // iframe wants to navigate the active browser tab to a URL
+      if (data.url && port) {
+        port.postMessage({ type: "navigate", url: data.url } satisfies PanelMessage);
+      }
+      break;
+  }
+});
+
+// --- Retry button ---
+
+function setupRetry(): void {
+  const btn = document.getElementById("genie-retry");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      if (iframe) {
+        iframe.src = RENDERER_URL;
+        hideFallback();
+      }
+    });
+  }
+}
+
+// --- Init ---
+
+document.addEventListener("DOMContentLoaded", () => {
+  connectPort();
+  initIframe();
+  setupRetry();
+});

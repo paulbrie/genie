@@ -1,15 +1,15 @@
 "use client";
 
 import { useCallback, useRef } from "react";
-import { useDeepSubject } from "subjecto/react";
+import { useSubject } from "subjecto/react";
 import { X } from "lucide-react";
-import { store, toggleFileExplorer, setFileExplorerPanelWidth } from "@/store";
+import { $fileExplorer, toggleFileExplorer, setFileExplorerPanelWidth } from "@/store";
 import { FileExplorerToolbar } from "./file-explorer-toolbar";
 import { FileList } from "./file-list";
 
 export function FileExplorerPanel() {
-  const open = useDeepSubject(store, "fileExplorer/open") as boolean;
-  const panelWidth = useDeepSubject(store, "fileExplorer/panelWidth") as number;
+  const [fileExplorer] = useSubject($fileExplorer);
+  const { open, panelWidth } = fileExplorer;
   const dragging = useRef(false);
 
   const handleMouseDown = useCallback(
@@ -53,7 +53,7 @@ export function FileExplorerPanel() {
 
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-[38px] pb-1.5">
-        <h2 className="text-sm font-semibold text-text">Files</h2>
+        <h2 className="text-md font-semibold text-text">Files</h2>
         <button
           onClick={toggleFileExplorer}
           className="p-1 rounded hover:bg-surface1 text-overlay0 hover:text-text"
