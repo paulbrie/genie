@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // deploy trigger
+  output: "standalone",
   basePath: "",
   images: { unoptimized: true },
   transpilePackages: ["react-markdown", "remark-gfm"],
