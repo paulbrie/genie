@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const MANAGER_URL = process.env.NEXT_PUBLIC_WS_URL?.replace("ws://", "http://").replace("wss://", "https://") || "http://localhost:9876";
+const MANAGER_URL = (process.env.NEXT_PUBLIC_WS_URL || "wss://api.genie.teleporthq.ai").replace("ws://", "http://").replace("wss://", "https://");
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ key: string }> }) {
   const { key } = await params;

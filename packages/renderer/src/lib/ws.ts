@@ -44,7 +44,7 @@ export function connectWs(): void {
   if (typeof window === "undefined") return;
   if (ws && ws.readyState <= 1) return;
 
-  const url = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:9876";
+  const url = process.env.NEXT_PUBLIC_WS_URL || (window.location.hostname !== "localhost" ? "wss://api.genie.teleporthq.ai" : "ws://localhost:9876");
   ws = new WebSocket(url);
 
   ws.onopen = () => {
