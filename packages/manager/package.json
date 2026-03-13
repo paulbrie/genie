@@ -22,7 +22,11 @@
     "postgres": "^3.4.5",
     "ssh2": "^1.17.0",
     "uuid": "^11.1.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "ai": "^6.0.0",
+    "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/fireworks": "^2.0.40",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/archiver": "^7.0.0",
