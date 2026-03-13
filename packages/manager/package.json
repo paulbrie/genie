@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "build": "tsc && tsc -p ../vps-agent/tsconfig.json",
+    "build": "tsc",
     "db:push": "drizzle-kit push",
     "postinstall": "node -e \"const p=require('path'),fs=require('fs');const d=p.join(p.dirname(require.resolve('node-pty')),'..','prebuilds');if(fs.existsSync(d)){const r=fs.readdirSync(d);r.forEach(a=>{const h=p.join(d,a,'spawn-helper');if(fs.existsSync(h))fs.chmodSync(h,0o755)})}\""
   },
