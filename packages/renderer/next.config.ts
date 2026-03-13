@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 
+// build-cache-bust: 1
 console.log("[next.config] NEXT_PUBLIC_WS_URL =", process.env.NEXT_PUBLIC_WS_URL ?? "(not set)");
 
 const nextConfig: NextConfig = {
