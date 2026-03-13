@@ -39,6 +39,10 @@ export function LoginScreen() {
         <p className="text-md text-overlay0 max-w-[240px] text-center">
           Your account is used to persist chat conversations and settings.
         </p>
+
+        <pre className="text-xs text-overlay0 mt-4 max-w-[400px] overflow-auto whitespace-pre-wrap break-all">
+          WS_URL: {process.env.NEXT_PUBLIC_WS_URL ?? "(not set)"}
+        </pre>
       </div>
     </div>
   );
