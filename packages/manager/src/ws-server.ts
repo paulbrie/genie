@@ -2,7 +2,13 @@ import { WebSocketServer, type WebSocket } from "ws";
 import http from "node:http";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import type { WsMessage } from "./types.js";
+import type { WsMessage as WsMessageBase } from "./types.js";
+
+/** Internal WsMessage variant with typed payload for handler convenience */
+interface WsMessage extends Omit<WsMessageBase, 'payload'> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: Record<string, any>;
+}
 import * as store from "./store.js";
 import * as appManager from "./app-manager.js";
 import * as projectService from "./project-service.js";
@@ -158,7 +164,7 @@ const VERSION_FILE = `${VPS_AGENT_REMOTE_BASE}/.version`;
 /** Resolve a VPS connection config from projectId + instanceId */
 async function getVpsConnection(projectId: string, instanceId: string): Promise<VpsConnectionConfig> {
   const project = await projectService.getById(projectId);
-  const inst = project?.vpsInstances.find((v: any) => v.id === instanceId);
+  const inst = project?.vpsInstances.find((v) => v.id === instanceId);
   if (!inst) throw new Error("VPS instance not found");
   return inst.connection;
 }
@@ -175,7 +181,7 @@ function parseTableList(out: string): { name: string; rowCount: number | null }[
 }
 
 /** Parse psql CSV output into columns + rows */
-function parseCsvResult(out: string): { columns: string[]; rows: Record<string, any>[]; rowCount: number; error?: string } {
+function parseCsvResult(out: string): { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string } {
   const lines = out.trim().split("\n");
   if (lines.length === 0 || out.includes("ERROR") || out.includes("FATAL")) {
     return { columns: [], rows: [], rowCount: 0, error: out.trim() };
@@ -184,13 +190,13 @@ function parseCsvResult(out: string): { columns: string[]; rows: Record<string, 
   // First line is header
   const headerLine = lines[0];
   const columns = parseCsvLine(headerLine);
-  const rows: Record<string, any>[] = [];
+  const rows: Record<string, unknown>[] = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line || line.startsWith("(") || line.startsWith("--")) continue;
     const values = parseCsvLine(line);
-    const row: Record<string, any> = {};
+    const row: Record<string, unknown> = {};
     columns.forEach((col, j) => { row[col] = values[j] ?? null; });
     rows.push(row);
   }
@@ -426,8 +432,8 @@ async function routeChatToVpsAgent(
   try {
     send(ws, { type: "chat:status", payload: { status: "Connecting to VPS..." } });
     sshSession = await connectSsh(instance.connection, { timeoutMs: 30_000 });
-  } catch (err: any) {
-    console.error(`SSH connect failed for Claude Code: ${err.message}`);
+  } catch (err: unknown) {
+    console.error(`SSH connect failed for Claude Code: ${(err instanceof Error ? err.message : String(err))}`);
     return false;
   }
 
@@ -525,7 +531,18 @@ async function routeChatToVpsAgent(
     let currentToolName = "";
     let currentToolInput = "";
 
-    function processStreamEvent(event: any) {
+    function processStreamEvent(event: {
+      type?: string;
+      subtype?: string;
+      session_id?: string;
+      content_block?: { type?: string; name?: string };
+      delta?: { type?: string; text?: string; partial_json?: string };
+      message?: { content?: Array<{ type: string; text?: string; name: string; input?: unknown }> };
+      model?: string;
+      claude_code_version?: string;
+      result?: string;
+      [key: string]: unknown;
+    }) {
       // Extract session_id from any event that has it
       if (event.session_id) sessionId = event.session_id;
 
@@ -553,7 +570,7 @@ async function routeChatToVpsAgent(
 
         case "content_block_stop":
           if (currentToolName) {
-            let parsedInput: any = {};
+            let parsedInput: Record<string, unknown> = {};
             try { parsedInput = JSON.parse(currentToolInput); } catch {}
             toolUses.push({ name: currentToolName, input: parsedInput, result: "" });
             send(ws, { type: "chat:tool", payload: { name: currentToolName, input: parsedInput, result: "" } });
@@ -669,9 +686,9 @@ async function routeChatToVpsAgent(
     send(ws, { type: "chat:status", payload: { status: "" } });
     send(ws, { type: "chat:done", payload: {} });
     onComplete?.(fullContent, toolUses);
-  } catch (err: any) {
+  } catch (err: unknown) {
     activeChatAbortControllers.delete(ws);
-    send(ws, { type: "chat:error", payload: { message: err.message || "Claude Code failed" } });
+    send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) || "Claude Code failed" } });
   } finally {
     sshSession.close();
   }
@@ -689,7 +706,7 @@ async function syncDropletStatuses(): Promise<void> {
   try {
     const client = createDoClient(doToken);
     const droplets = await client.listDroplets("genie");
-    knownAliveDropletIds = new Set(droplets.map((d: any) => d.id));
+    knownAliveDropletIds = new Set(droplets.map((d) => d.id));
     lastDropletSync = Date.now();
 
     // Find projects whose droplet is gone
@@ -717,7 +734,7 @@ async function syncDropletStatuses(): Promise<void> {
 
 const execFileAsync = promisify(execFile);
 
-const PORT = 9876;
+const PORT = Number(process.env.PORT) || 9876;
 
 interface ClientState {
   userId: string | null;
@@ -822,8 +839,8 @@ async function setupPersistentMcpTunnel(extensionWs: WebSocket, userId: string):
     await sshSession.exec(mergeScript);
 
     console.log(`[mcp-persistent] Tunnel ready for user ${userId} → VPS ${instance.connection.host}:${MCP_BROWSER_REMOTE_PORT}`);
-  } catch (err: any) {
-    console.error(`[mcp-persistent] Failed to set up persistent tunnel: ${err.message}`);
+  } catch (err: unknown) {
+    console.error(`[mcp-persistent] Failed to set up persistent tunnel: ${(err instanceof Error ? err.message : String(err))}`);
   }
 }
 
@@ -952,14 +969,15 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
           },
         );
         send(ws, { type: "auth:google:url", payload: { url: authUrl } });
-      } catch (err: any) {
-        send(ws, { type: "auth:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        send(ws, { type: "auth:error", payload: { message } });
       }
       return true;
     }
 
     case "auth:token": {
-      const { token } = msg.payload;
+      const { token } = msg.payload as { token: string };
       const decoded = verifyToken(token);
       if (decoded) {
         const user = await getUserById(decoded.userId);
@@ -1062,7 +1080,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     send(ws, { type: "extension:identified", payload: {} });
     // Set up persistent MCP browser tunnel in background
     setupPersistentMcpTunnel(ws, userId).catch(err =>
-      console.error(`[mcp-persistent] Setup error: ${err.message}`)
+      console.error(`[mcp-persistent] Setup error: ${(err instanceof Error ? err.message : String(err))}`)
     );
     return;
   }
@@ -1141,10 +1159,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const { pid } = msg.payload;
       try {
         process.kill(pid, "SIGTERM");
-      } catch (err: any) {
+      } catch (err: unknown) {
         send(ws, {
           type: "error",
-          payload: { message: `Failed to kill process ${pid}: ${err.message}` },
+          payload: { message: `Failed to kill process ${pid}: ${(err instanceof Error ? err.message : String(err))}` },
         });
       }
       break;
@@ -1153,10 +1171,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "docker:open": {
       try {
         await execFileAsync("/usr/bin/open", ["-a", "Docker"]);
-      } catch (err: any) {
+      } catch (err: unknown) {
         send(ws, {
           type: "error",
-          payload: { message: `Failed to open Docker: ${err.message}` },
+          payload: { message: `Failed to open Docker: ${(err instanceof Error ? err.message : String(err))}` },
         });
       }
       break;
@@ -1165,10 +1183,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "docker:daemon:start": {
       try {
         await execFileAsync("/usr/bin/open", ["-a", "Docker"]);
-      } catch (err: any) {
+      } catch (err: unknown) {
         send(ws, {
           type: "error",
-          payload: { message: `Failed to start Docker: ${err.message}` },
+          payload: { message: `Failed to start Docker: ${(err instanceof Error ? err.message : String(err))}` },
         });
       }
       break;
@@ -1177,10 +1195,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "docker:daemon:stop": {
       try {
         await execFileAsync("/usr/bin/killall", ["Docker Desktop"]);
-      } catch (err: any) {
+      } catch (err: unknown) {
         send(ws, {
           type: "error",
-          payload: { message: `Failed to stop Docker: ${err.message}` },
+          payload: { message: `Failed to stop Docker: ${(err instanceof Error ? err.message : String(err))}` },
         });
       }
       break;
@@ -1195,10 +1213,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       }
       try {
         await execFileAsync(bin, ["start", id]);
-      } catch (err: any) {
+      } catch (err: unknown) {
         send(ws, {
           type: "error",
-          payload: { message: `Failed to start container ${id}: ${err.message}` },
+          payload: { message: `Failed to start container ${id}: ${(err instanceof Error ? err.message : String(err))}` },
         });
       }
       break;
@@ -1213,10 +1231,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       }
       try {
         await execFileAsync(bin, ["stop", id]);
-      } catch (err: any) {
+      } catch (err: unknown) {
         send(ws, {
           type: "error",
-          payload: { message: `Failed to stop container ${id}: ${err.message}` },
+          payload: { message: `Failed to stop container ${id}: ${(err instanceof Error ? err.message : String(err))}` },
         });
       }
       break;
@@ -1299,9 +1317,9 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             send(ws, { type: "chat:error", payload: { message: "Claude Code requires a VPS instance. Select a project with a VPS deployment." } });
             activeChatAbortControllers.delete(ws);
             return;
-          } catch (routeErr: any) {
-            console.error("Claude Code routing failed:", routeErr.message);
-            send(ws, { type: "chat:error", payload: { message: `Claude Code error: ${routeErr.message}` } });
+          } catch (routeErr: unknown) {
+            console.error("Claude Code routing failed:", (routeErr instanceof Error ? routeErr.message : String(routeErr)));
+            send(ws, { type: "chat:error", payload: { message: `Claude Code error: ${(routeErr instanceof Error ? routeErr.message : String(routeErr))}` } });
             activeChatAbortControllers.delete(ws);
             return;
           }
@@ -1386,7 +1404,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         );
       })().catch((err) => {
         activeChatAbortControllers.delete(ws);
-        send(ws, { type: "chat:error", payload: { message: err.message || "Chat failed" } });
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) || "Chat failed" } });
       });
       break;
     }
@@ -1408,7 +1426,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const admin = await isAdmin(userId);
         const sessions = await assistantLogService.listUserSessions(admin ? null : userId, 50);
         send(ws, { type: "chat:sessions:list", payload: { sessions } });
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("[chat:sessions:list] error:", err);
       }
       break;
@@ -1422,11 +1440,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const messages = rows.map((r) => ({
           role: r.role as "user" | "assistant",
           content: r.content,
-          toolUses: r.toolUses as any[] | null,
+          toolUses: r.toolUses as unknown[] | null,
           createdAt: r.createdAt,
         }));
         send(ws, { type: "chat:session:loaded", payload: { sessionId, messages } });
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("[chat:session:load] error:", err);
       }
       break;
@@ -1438,7 +1456,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         await assistantLogService.renameSession(sessionId, name);
         send(ws, { type: "chat:session:renamed", payload: { sessionId, name } });
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("[chat:session:rename] error:", err);
       }
       break;
@@ -1450,7 +1468,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         await assistantLogService.deleteSession(sessionId);
         send(ws, { type: "chat:session:deleted", payload: { sessionId } });
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("[chat:session:delete] error:", err);
       }
       break;
@@ -1467,8 +1485,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           online: connectedUserIds.includes(u.id),
         }));
         send(ws, { type: "chat:users:list", payload: { users: usersWithStatus } });
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1477,8 +1495,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const conversations = await chatService.getUserConversations(userId);
         send(ws, { type: "chat:conversations:list", payload: { conversations } });
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1506,8 +1524,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           const memberConvs = await chatService.getUserConversations(member.userId);
           sendToUser(member.userId, { type: "chat:conversations:list", payload: { conversations: memberConvs } });
         }
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1519,8 +1537,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const messages = await chatService.getMessages(conversationId, effectiveLimit, before);
         const members = await chatService.getConversationMembers(conversationId);
         send(ws, { type: "chat:messages:list", payload: { conversationId, messages, members, hasMore: messages.length === effectiveLimit } });
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1530,8 +1548,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { conversationId, limit, before } = msg.payload;
         const messages = await chatService.getMessages(conversationId, limit || 50, before);
         send(ws, { type: "chat:messages:list", payload: { conversationId, messages, hasMore: messages.length === (limit || 50) } });
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1595,8 +1613,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             }
           }
         }
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1624,8 +1642,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         // Send refreshed conversation list to the added user
         const addedUserConvs = await chatService.getUserConversations(targetUserId);
         sendToUser(targetUserId, { type: "chat:conversations:list", payload: { conversations: addedUserConvs } });
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1646,8 +1664,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         // Send refreshed conversation list to removed user
         const removedUserConvs = await chatService.getUserConversations(targetUserId);
         sendToUser(targetUserId, { type: "chat:conversations:list", payload: { conversations: removedUserConvs } });
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1664,8 +1682,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             payload: { conversationId, messageId, reactions: result.reactions },
           });
         }
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1684,8 +1702,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             payload: { conversationId, messageId, content: result.content, editedAt: result.editedAt },
           });
         }
-      } catch (err: any) {
-        send(ws, { type: "chat:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -1968,8 +1986,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         let session: SshSession;
         try {
           session = await connectSsh(conn, { timeoutMs: 30_000 });
-        } catch (err: any) {
-          send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: 1, error: `SSH connection failed: ${err.message}` } });
+        } catch (err: unknown) {
+          send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: 1, error: `SSH connection failed: ${(err instanceof Error ? err.message : String(err))}` } });
           break;
         }
         activeCommandSessions.set(cmdKey, session);
@@ -1978,8 +1996,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             send(ws, { type: "project:command:output", payload: { projectId, commandId, data: chunk } });
           });
           send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: 0 } });
-        } catch (err: any) {
-          send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: 1, error: err.message } });
+        } catch (err: unknown) {
+          send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: 1, error: (err instanceof Error ? err.message : String(err)) } });
         } finally {
           session.close();
           activeCommandSessions.delete(cmdKey);
@@ -2027,8 +2045,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       let session: SshSession;
       try {
         session = await connectSsh(conn, { timeoutMs: 15_000 });
-      } catch (err: any) {
-        gitReply("git:error", { message: `SSH failed: ${err.message}` });
+      } catch (err: unknown) {
+        gitReply("git:error", { message: `SSH failed: ${(err instanceof Error ? err.message : String(err))}` });
         break;
       }
       const cwd = folder || "/opt/project";
@@ -2109,8 +2127,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             break;
           }
         }
-      } catch (err: any) {
-        gitReply("git:error", { message: err.message });
+      } catch (err: unknown) {
+        gitReply("git:error", { message: (err instanceof Error ? err.message : String(err)) });
       } finally {
         session.close();
       }
@@ -2122,8 +2140,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "docs:list": {
       try {
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2136,8 +2154,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } else {
           send(ws, { type: "docs:content", payload: doc });
         }
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2148,8 +2166,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const doc = await docsService.createDoc(userId, title, content, folderId, projectId);
         send(ws, { type: "docs:created", payload: doc });
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2167,8 +2185,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             await sendDocsListToUser(uid);
           }
         }
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2183,8 +2201,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           send(ws, { type: "docs:deleted", payload: { docId } });
           await sendDocsList(ws, userId);
         }
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2194,8 +2212,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { name, parentId, projectId } = msg.payload;
         await docsService.createFolder(userId, name, parentId, projectId);
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2205,8 +2223,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { folderId, name } = msg.payload;
         await docsService.renameFolder(userId, folderId, name);
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2216,8 +2234,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { folderId } = msg.payload;
         await docsService.deleteFolder(userId, folderId);
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2227,8 +2245,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { docId, folderId } = msg.payload;
         await docsService.moveDoc(userId, docId, folderId ?? null);
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2240,8 +2258,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const shares = await docsService.getDocShares(userId, docId);
         send(ws, { type: "docs:shares", payload: { docId, shares: shares.map((s) => ({ ...s, createdAt: s.createdAt.toISOString() })) } });
         await sendDocsListToUser(targetUserId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2253,8 +2271,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const shares = await docsService.getDocShares(userId, docId);
         send(ws, { type: "docs:shares", payload: { docId, shares: shares.map((s) => ({ ...s, createdAt: s.createdAt.toISOString() })) } });
         await sendDocsListToUser(targetUserId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2264,8 +2282,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { docId } = msg.payload;
         const shares = await docsService.getDocShares(userId, docId);
         send(ws, { type: "docs:shares", payload: { docId, shares: shares.map((s) => ({ ...s, createdAt: s.createdAt.toISOString() })) } });
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2274,8 +2292,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const zipBuffer = await docsService.exportDocsAsZip(userId);
         send(ws, { type: "docs:download:zip", payload: { data: zipBuffer.toString("base64") } });
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2286,8 +2304,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const result = await docsService.toggleDocPublic(userId, docId);
         send(ws, { type: "docs:public-toggled", payload: result });
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2298,8 +2316,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const result = await docsService.toggleFolderPublic(userId, folderId);
         send(ws, { type: "docs:folder:public-toggled", payload: result });
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2309,8 +2327,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { docId, projectId } = msg.payload;
         await docsService.setDocProject(userId, docId, projectId ?? null);
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2320,8 +2338,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { folderId, projectId } = msg.payload;
         await docsService.setFolderProject(userId, folderId, projectId ?? null);
         await sendDocsList(ws, userId);
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2335,8 +2353,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } else {
           send(ws, { type: "docs:public-content", payload: doc });
         }
-      } catch (err: any) {
-        send(ws, { type: "docs:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2623,34 +2641,35 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           send(ws, { type: "vps:deploy:progress", payload: { projectId: doProjectId, instanceId: newDoInstanceId, message: "Created AGENT.md — ask Genie to explore your codebase to build memory." } });
         }
         send(ws, { type: "vps:deploy:done", payload: { projectId: doProjectId, instanceId: newDoInstanceId, services: instance.services, deployLogId: doDeployLogId } });
-      }).catch(async (err: any) => {
+      }).catch(async (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
         activeDoAbortControllers.delete(doProjectId);
-        await doDb.update(deployLogs).set({ status: "error", progress: doProgressAcc, error: err.message, endedAt: new Date() }).where(eq(deployLogs.id, doDeployLogId));
+        await doDb.update(deployLogs).set({ status: "error", progress: doProgressAcc, error: (err instanceof Error ? err.message : String(err)), endedAt: new Date() }).where(eq(deployLogs.id, doDeployLogId));
         // If the droplet was created, attach it to the project as a failed instance
-        if (err.dropletId) {
+        if (((err as Error & { dropletId?: number }).dropletId)) {
           const failedInstance: import("./types.js").VpsInstance = {
             id: newDoInstanceId,
             label: doLabel || "production",
             connection: {
-              host: err.dropletIp || "unknown",
+              host: ((err as Error & { dropletIp?: string }).dropletIp) || "unknown",
               port: 22,
               username: "root",
               privateKeyPath: path.join(os.homedir(), ".genie", "ssh", "genie_ed25519"),
             },
             services: [],
             digitalocean: {
-              dropletId: err.dropletId,
-              ipAddress: err.dropletIp || "unknown",
+              dropletId: ((err as Error & { dropletId?: number }).dropletId)!,
+              ipAddress: ((err as Error & { dropletIp?: string }).dropletIp) || "unknown",
               region: doProject.vpsRegion || "unknown",
               size: doProject.vpsSize || "unknown",
             },
             deployFailed: true,
-            deployError: err.message,
+            deployError: (err instanceof Error ? err.message : String(err)),
           };
           await projectService.addVpsInstance(doProjectId, failedInstance);
           broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
         }
-        send(ws, { type: "vps:deploy:error", payload: { projectId: doProjectId, instanceId: newDoInstanceId, message: err.message, deployLogId: doDeployLogId, ...(err.dropletId ? { failedDroplet: { dropletId: err.dropletId, ipAddress: err.dropletIp } } : {}) } });
+        send(ws, { type: "vps:deploy:error", payload: { projectId: doProjectId, instanceId: newDoInstanceId, message: (err instanceof Error ? err.message : String(err)), deployLogId: doDeployLogId, ...(((err as Error & { dropletId?: number }).dropletId) ? { failedDroplet: { dropletId: ((err as Error & { dropletId?: number }).dropletId), ipAddress: ((err as Error & { dropletIp?: string }).dropletIp) } } : {}) } });
       });
       break;
     }
@@ -2680,8 +2699,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
         }
         send(ws, { type: "do:destroy-failed-droplet:done", payload: { dropletId: failedDropletId } });
-      } catch (err: any) {
-        send(ws, { type: "do:destroy-failed-droplet:error", payload: { dropletId: failedDropletId, message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "do:destroy-failed-droplet:error", payload: { dropletId: failedDropletId, message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2696,8 +2715,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const hostname = await session.exec("hostname");
         session.close();
         send(ws, { type: "vps:test-connection:ok", payload: { hostname: hostname.trim() } });
-      } catch (err: any) {
-        send(ws, { type: "vps:test-connection:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:test-connection:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2780,9 +2799,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           send(ws, { type: "vps:deploy:progress", payload: { projectId, instanceId: newSshInstanceId, message: "Created AGENT.md — ask Genie to explore your codebase to build memory." } });
         }
         send(ws, { type: "vps:deploy:done", payload: { projectId, instanceId: newSshInstanceId, services: instance.services, deployLogId: vpsDeployLogId } });
-      }).catch(async (err: any) => {
-        await vpsDb.update(deployLogs).set({ status: "error", progress: vpsProgressAcc, error: err.message, endedAt: new Date() }).where(eq(deployLogs.id, vpsDeployLogId));
-        send(ws, { type: "vps:deploy:error", payload: { projectId, instanceId: newSshInstanceId, message: err.message, deployLogId: vpsDeployLogId } });
+      }).catch(async (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        await vpsDb.update(deployLogs).set({ status: "error", progress: vpsProgressAcc, error: message, endedAt: new Date() }).where(eq(deployLogs.id, vpsDeployLogId));
+        send(ws, { type: "vps:deploy:error", payload: { projectId, instanceId: newSshInstanceId, message: (err instanceof Error ? err.message : String(err)), deployLogId: vpsDeployLogId } });
       });
       break;
     }
@@ -2808,8 +2828,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         await projectService.updateVpsInstance(projectId, instanceId, { services: containers });
         send(ws, { type: "vps:status:update", payload: { projectId, instanceId, services: containers } });
         broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
-      } catch (err: any) {
-        send(ws, { type: "error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2832,8 +2852,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const stats = await vpsStats(vpsInst.connection);
         send(ws, { type: "vps:stats:result", payload: { projectId, instanceId, stats } });
-      } catch (err: any) {
-        send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2854,8 +2874,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           session.close();
         }
         send(ws, { type: "vps:process:kill:result", payload: { projectId, instanceId, pid, ok: true } });
-      } catch (err: any) {
-        send(ws, { type: "vps:process:kill:result", payload: { projectId, instanceId, pid, ok: false, error: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:process:kill:result", payload: { projectId, instanceId, pid, ok: false, error: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2871,8 +2891,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const logs = await vpsLogs(project!.name, vpsInst.connection, serviceName, tail);
         send(ws, { type: "vps:logs:data", payload: { projectId, instanceId, serviceName, logs } });
-      } catch (err: any) {
-        send(ws, { type: "error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2900,8 +2920,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         await projectService.removeVpsInstance(projectId, instanceId);
         broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
         send(ws, { type: "vps:teardown:done", payload: { projectId, instanceId } });
-      } catch (err: any) {
-        send(ws, { type: "vps:teardown:error", payload: { projectId, instanceId, message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:teardown:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2918,19 +2938,19 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "tracker:list": {
       try {
         await sendTrackerList(ws);
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
 
     case "tracker:issue:create": {
       try {
-        const issue = await trackerService.createIssue(userId, msg.payload);
-        send(ws, { type: "tracker:issue:created", payload: issue });
+        const issue = await trackerService.createIssue(userId, msg.payload as { projectId: string; title: string; description?: string; status?: string; priority?: string; assigneeId?: string | null; labelIds?: string[] });
+        send(ws, { type: "tracker:issue:created", payload: issue as Record<string, unknown> });
         await broadcastTrackerList();
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2945,8 +2965,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           broadcast({ type: "tracker:issue:updated", payload: issue });
           await broadcastTrackerList();
         }
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2961,8 +2981,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           broadcast({ type: "tracker:issue:deleted", payload: { issueId } });
           await broadcastTrackerList();
         }
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2972,8 +2992,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { issueId, sortOrder } = msg.payload;
         await trackerService.reorderIssue(issueId, sortOrder);
         await broadcastTrackerList();
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2983,8 +3003,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { name, color } = msg.payload;
         await trackerService.createLabel(userId, name, color);
         await broadcastTrackerList();
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -2994,8 +3014,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { labelId, ...fields } = msg.payload;
         await trackerService.updateLabel(userId, labelId, fields);
         await broadcastTrackerList();
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3005,8 +3025,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { labelId } = msg.payload;
         await trackerService.deleteLabel(userId, labelId);
         await broadcastTrackerList();
-      } catch (err: any) {
-        send(ws, { type: "tracker:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3017,8 +3037,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const tables = await adminService.listTables();
         send(ws, { type: "admin:tables", payload: { tables } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3029,8 +3049,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const columns = await adminService.getTableColumns(tableName);
         const primaryKey = await adminService.getPrimaryKey(tableName);
         send(ws, { type: "admin:table:columns", payload: { tableName, columns, primaryKey } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3040,8 +3060,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { tableName, page, pageSize, orderBy, orderDir } = msg.payload;
         const result = await adminService.getTableRows(tableName, { page, pageSize, orderBy, orderDir });
         send(ws, { type: "admin:table:rows", payload: result });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3051,8 +3071,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { tableName, pkCol, pkVal } = msg.payload;
         const row = await adminService.getRow(tableName, pkCol, pkVal);
         send(ws, { type: "admin:row:get", payload: { row } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3062,8 +3082,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { tableName, data } = msg.payload;
         const row = await adminService.insertRow(tableName, data);
         send(ws, { type: "admin:row:inserted", payload: { tableName, row } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3073,8 +3093,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { tableName, pkCol, pkVal, data } = msg.payload;
         const row = await adminService.updateRow(tableName, pkCol, pkVal, data);
         send(ws, { type: "admin:row:updated", payload: { tableName, row } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3084,8 +3104,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { tableName, pkCol, pkVal } = msg.payload;
         const row = await adminService.deleteRow(tableName, pkCol, pkVal);
         send(ws, { type: "admin:row:deleted", payload: { tableName, row } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3095,8 +3115,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { query } = msg.payload;
         const result = await adminService.executeRawSql(query);
         send(ws, { type: "admin:sql:result", payload: result });
-      } catch (err: any) {
-        send(ws, { type: "admin:sql:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:sql:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3108,8 +3128,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         try {
           const backupPath = await backupService.createBackup();
           send(ws, { type: "admin:drizzle:push:output", payload: { data: `Backup saved: ${backupPath}\n\n` } });
-        } catch (backupErr: any) {
-          send(ws, { type: "admin:drizzle:push:output", payload: { data: `Backup warning: ${backupErr.message}\n\n` } });
+        } catch (backupErr: unknown) {
+          send(ws, { type: "admin:drizzle:push:output", payload: { data: `Backup warning: ${(backupErr instanceof Error ? backupErr.message : String(backupErr))}\n\n` } });
         }
 
         const dir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
@@ -3129,11 +3149,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           send(ws, { type: "admin:drizzle:push:done", payload: { code } });
         });
         child.on("error", (err) => {
-          sendChunk(`\nError: ${err.message}\n`);
+          sendChunk(`\nError: ${(err instanceof Error ? err.message : String(err))}\n`);
           send(ws, { type: "admin:drizzle:push:done", payload: { code: 1 } });
         });
-      } catch (err: any) {
-        send(ws, { type: "admin:drizzle:push:output", payload: { data: `Error: ${err.message}\n` } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:drizzle:push:output", payload: { data: `Error: ${(err instanceof Error ? err.message : String(err))}\n` } });
         send(ws, { type: "admin:drizzle:push:done", payload: { code: 1 } });
       }
       break;
@@ -3143,8 +3163,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const files = backupService.listBackups();
         send(ws, { type: "admin:backups:list", payload: { files } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3154,8 +3174,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         await backupService.createBackup();
         const files = backupService.listBackups();
         send(ws, { type: "admin:backups:created", payload: { files } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3165,8 +3185,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         backupService.deleteBackup(msg.payload.name);
         const files = backupService.listBackups();
         send(ws, { type: "admin:backups:deleted", payload: { files } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3190,8 +3210,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         }
         send(ws, { type: "admin:droplets:list", payload: { droplets, projectMap } });
-      } catch (err: any) {
-        send(ws, { type: "admin:droplets:list", payload: { droplets: [], error: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:droplets:list", payload: { droplets: [], error: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3214,8 +3234,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         }
         send(ws, { type: "admin:droplets:deleted", payload: { dropletId } });
-      } catch (err: any) {
-        send(ws, { type: "admin:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3237,7 +3257,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           send(ws, { type: "admin:droplets:stats", payload: { stats: {} } });
           break;
         }
-        const results: Record<number, any> = {};
+        const results: Record<number, unknown> = {};
         await Promise.allSettled(
           ids.map(async (id) => {
             try {
@@ -3247,7 +3267,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           })
         );
         send(ws, { type: "admin:droplets:stats", payload: { stats: results } });
-      } catch (err: any) {
+      } catch (err: unknown) {
         send(ws, { type: "admin:droplets:stats", payload: { stats: {} } });
       }
       break;
@@ -3258,17 +3278,17 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const doToken = await settingsService.getGlobalDoToken();
       const configs = await settingsService.getAllBaseImageConfigs();
       const templates = await settingsService.getAllBaseImageTemplates();
-      const verifiedTemplates: Record<string, any> = {};
+      const verifiedTemplates: Record<string, unknown> = {};
       if (doToken) {
         try {
           const doClient = createDoClient(doToken);
           const snapshots = await doClient.listAccountSnapshots();
-          const snapIds = new Set(snapshots.map((s: any) => String(s.id)));
+          const snapIds = new Set(snapshots.map((s) => String(s.id)));
           for (const [name, tmpl] of Object.entries(templates)) {
             const verified = tmpl.snapshotId ? snapIds.has(String(tmpl.snapshotId)) : false;
             let snapshotName = tmpl.snapshotName;
             if (tmpl.snapshotId) {
-              const snap = snapshots.find((s: any) => String(s.id) === String(tmpl.snapshotId));
+              const snap = snapshots.find((s) => String(s.id) === String(tmpl.snapshotId));
               if (snap) snapshotName = snap.name;
             }
             verifiedTemplates[name] = { ...tmpl, verified, snapshotName };
@@ -3308,8 +3328,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const updatedTemplates = await settingsService.getAllBaseImageTemplates();
         const deletedTemplates = await settingsService.getDeletedBaseImageTemplates();
         send(ws, { type: "admin:baseimage:configs:list", payload: { configs: updatedConfigs, templates: updatedTemplates, deletedTemplates, buildingName: baseImageBuildingName } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3322,8 +3342,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const updatedTemplates = await settingsService.getAllBaseImageTemplates();
         const deletedTemplates = await settingsService.getDeletedBaseImageTemplates();
         send(ws, { type: "admin:baseimage:configs:list", payload: { configs: updatedConfigs, templates: updatedTemplates, deletedTemplates, buildingName: baseImageBuildingName } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3351,8 +3371,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const updatedTemplates = await settingsService.getAllBaseImageTemplates();
         const deletedTemplates = await settingsService.getDeletedBaseImageTemplates();
         send(ws, { type: "admin:baseimage:configs:list", payload: { configs: updatedConfigs, templates: updatedTemplates, deletedTemplates, buildingName: baseImageBuildingName } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3365,8 +3385,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const updatedTemplates = await settingsService.getAllBaseImageTemplates();
         const deletedTemplates = await settingsService.getDeletedBaseImageTemplates();
         send(ws, { type: "admin:baseimage:configs:list", payload: { configs: updatedConfigs, templates: updatedTemplates, deletedTemplates, buildingName: baseImageBuildingName } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3379,8 +3399,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const updatedTemplates = await settingsService.getAllBaseImageTemplates();
         const deletedTemplates = await settingsService.getDeletedBaseImageTemplates();
         send(ws, { type: "admin:baseimage:configs:list", payload: { configs: updatedConfigs, templates: updatedTemplates, deletedTemplates, buildingName: baseImageBuildingName } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3393,8 +3413,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const updatedTemplates = await settingsService.getAllBaseImageTemplates();
         const deletedTemplates = await settingsService.getDeletedBaseImageTemplates();
         send(ws, { type: "admin:baseimage:configs:list", payload: { configs: updatedConfigs, templates: updatedTemplates, deletedTemplates, buildingName: baseImageBuildingName } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3406,8 +3426,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           ? await settingsService.getTemplateHistory(name)
           : await settingsService.getAllTemplateHistory();
         send(ws, { type: "admin:baseimage:template:history", payload: { history } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3462,7 +3482,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           const pollStart = Date.now();
           while (Date.now() - pollStart < 120_000) {
             const current = await client.getDroplet(dropletId);
-            const pub = current.networks?.v4?.find((n: any) => n.type === "public");
+            const pub = current.networks?.v4?.find((n) => n.type === "public");
             if (current.status === "active" && pub?.ip_address) {
               ipAddress = pub.ip_address;
               break;
@@ -3483,13 +3503,13 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             failedDropletId: dropletId,
             failedDropletIp: ipAddress,
           } });
-        } catch (err: any) {
+        } catch (err: unknown) {
           baseImageBuildingName = null;
           broadcast({ type: "admin:baseimage:error", payload: {
             configName: templateName,
-            message: err.message,
-            failedDropletId: err.failedDropletId || null,
-            failedDropletIp: err.failedDropletIp || null,
+            message: (err instanceof Error ? err.message : String(err)),
+            failedDropletId: ((err as Error & { failedDropletId?: number }).failedDropletId) || null,
+            failedDropletIp: ((err as Error & { failedDropletIp?: string }).failedDropletIp) || null,
           } });
         }
       })();
@@ -3504,8 +3524,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const doClient = createDoClient(doToken);
         await doClient.deleteDroplet(dropletId);
         broadcast({ type: "admin:baseimage:progress", payload: { configName: "", message: `Failed build droplet ${dropletId} destroyed` } });
-      } catch (err: any) {
-        send(ws, { type: "admin:baseimage:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:baseimage:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3567,14 +3587,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } catch {}
 
         broadcast({ type: "admin:baseimage:done", payload: { configName: templateName, snapshotId: result.snapshotId, snapshotName: result.snapshotName } });
-      }).catch((err: any) => {
+      }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
         baseImageAbortController = null;
         baseImageBuildingName = null;
         broadcast({ type: "admin:baseimage:error", payload: {
           configName: templateName,
-          message: err.message,
-          failedDropletId: err.failedDropletId || null,
-          failedDropletIp: err.failedDropletIp || null,
+          message: (err instanceof Error ? err.message : String(err)),
+          failedDropletId: ((err as Error & { failedDropletId?: number }).failedDropletId) || null,
+          failedDropletIp: ((err as Error & { failedDropletIp?: string }).failedDropletIp) || null,
         } });
       });
       break;
@@ -3590,8 +3611,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } else {
           send(ws, { type: "admin:sshkey:result", payload: { exists: false, publicKey: null, fingerprint: null } });
         }
-      } catch (err: any) {
-        send(ws, { type: "admin:sshkey:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:sshkey:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3618,8 +3639,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } finally {
           try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
         }
-      } catch (err: any) {
-        send(ws, { type: "admin:sshkey:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:sshkey:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3646,8 +3667,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           .orderBy(desc(aiUsage.createdAt))
           .limit(500);
         send(ws, { type: "admin:ai:costs", payload: { rows } });
-      } catch (err: any) {
-        send(ws, { type: "admin:ai:costs", payload: { rows: [], error: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:ai:costs", payload: { rows: [], error: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3657,8 +3678,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const defaultModel = await settingsService.getGlobalSetting<string>("aiDefaultModel") ?? "claude-sonnet";
         const maxToolRounds = await settingsService.getGlobalSetting<number>("aiMaxToolRounds") ?? 10;
         send(ws, { type: "admin:ai:settings", payload: { defaultModel, maxToolRounds } });
-      } catch (err: any) {
-        send(ws, { type: "admin:ai:settings", payload: { defaultModel: "claude-sonnet", maxToolRounds: 10, error: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:ai:settings", payload: { defaultModel: "claude-sonnet", maxToolRounds: 10, error: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3669,8 +3690,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (defaultModel != null) await settingsService.setGlobalSetting("aiDefaultModel", defaultModel);
         if (maxToolRounds != null) await settingsService.setGlobalSetting("aiMaxToolRounds", maxToolRounds);
         send(ws, { type: "admin:ai:settings", payload: { defaultModel, maxToolRounds } });
-      } catch (err: any) {
-        send(ws, { type: "admin:ai:settings:error", payload: { message: err.message } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:ai:settings:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3693,8 +3714,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { reqId: _, ...fields } = msg.payload;
         await settingsService.saveRoutedSettings(userId, fields);
         send(ws, { type: "settings:result", payload: { ok: true, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "settings:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "settings:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3723,8 +3744,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }),
         );
         send(ws, { type: "fs:result", payload: { ok: true, entries: entries.filter(Boolean), reqId } });
-      } catch (err: any) {
-        send(ws, { type: "fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3741,8 +3762,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const buf = await fsp.readFile(filePath);
         const isBinary = buf.includes(0);
         send(ws, { type: "fs:result", payload: { ok: true, content: isBinary ? null : buf.toString("utf-8"), binary: isBinary, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3752,8 +3773,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         await fsp.mkdir(msg.payload.path as string, { recursive: true });
         send(ws, { type: "fs:result", payload: { ok: true, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3763,8 +3784,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         await fsp.rename(msg.payload.oldPath as string, msg.payload.newPath as string);
         send(ws, { type: "fs:result", payload: { ok: true, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3774,8 +3795,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         await fsp.rm(msg.payload.path as string, { recursive: true, force: true });
         send(ws, { type: "fs:result", payload: { ok: true, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3785,8 +3806,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         await execFileAsync("open", ["-R", msg.payload.path as string]);
         send(ws, { type: "fs:result", payload: { ok: true, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3802,8 +3823,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         })();
         await execFileAsync("open", ["-a", editor, msg.payload.path as string]);
         send(ws, { type: "fs:result", payload: { ok: true, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3833,8 +3854,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
           send(ws, { type: "vps:docker:logs:result", payload: { ok: true, containers: logs, reqId } });
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:docker:logs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:docker:logs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3857,8 +3878,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           });
           send(ws, { type: "vps:fs:result", payload: { ok: true, entries, reqId } });
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3881,8 +3902,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             send(ws, { type: "vps:fs:result", payload: { ok: true, content: isBinary ? null : content, binary: isBinary, reqId } });
           }
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3899,8 +3920,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           await session.exec(`echo '${b64}' | base64 -d > '${escaped}'`);
           send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3916,8 +3937,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           await session.exec(`mv '${escapedOld}' '${escapedNew}'`);
           send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3932,8 +3953,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           await session.exec(`rm -rf '${escaped}'`);
           send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:fs:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3966,8 +3987,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             }
           }
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:db:detect:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:detect:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -3996,8 +4017,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             send(ws, { type: "vps:db:tables:result", payload: { ok: true, tables, reqId } });
           }
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:db:tables:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:tables:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -4028,8 +4049,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             send(ws, { type: "vps:db:query:result", payload: { ok: !result.error, result, reqId } });
           }
         } finally { session.close(); }
-      } catch (err: any) {
-        send(ws, { type: "vps:db:query:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:query:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -4056,8 +4077,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           .where(eq(savedQueries.projectId, projectId))
           .orderBy(savedQueries.name);
         send(ws, { type: "db:saved-queries:result", payload: { ok: true, queries: rows, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "db:saved-queries:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "db:saved-queries:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -4092,8 +4113,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           .where(eq(savedQueries.projectId, projectId))
           .orderBy(savedQueries.name);
         send(ws, { type: "db:saved-queries:result", payload: { ok: true, queries: rows, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "db:saved-queries:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "db:saved-queries:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -4120,8 +4141,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           .where(eq(savedQueries.projectId, projectId))
           .orderBy(savedQueries.name);
         send(ws, { type: "db:saved-queries:result", payload: { ok: true, queries: rows, reqId } });
-      } catch (err: any) {
-        send(ws, { type: "db:saved-queries:result", payload: { ok: false, error: err.message, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "db:saved-queries:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -4132,8 +4153,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const conn = await getVpsConnection(projectId, instanceId);
         const sshCmd = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${conn.privateKeyPath} ${conn.username}@${conn.host} -p ${conn.port || 22} -t "cd /opt/project || true; exec \\$SHELL -l"`;
         void spawnPty(id, cols || 80, rows || 24, sshCmd, undefined, userId);
-      } catch (err: any) {
-        send(ws, { type: "error", payload: { message: `SSH terminal failed: ${err.message}` } });
+      } catch (err: unknown) {
+        send(ws, { type: "error", payload: { message: `SSH terminal failed: ${(err instanceof Error ? err.message : String(err))}` } });
       }
       break;
     }
@@ -4189,9 +4210,9 @@ async function handleConversationChat(
       undefined, // domSnapshot
       abortSignal,
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     activeConversationAbortControllers.delete(conversationId);
-    send(ws, { type: "chat:error", payload: { message: err.message || "Chat failed" } });
+    send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) || "Chat failed" } });
   }
 }
 
@@ -4205,8 +4226,8 @@ export async function createServer(): Promise<WebSocketServer> {
   // Restore Genie SSH key from DB to filesystem (survives ephemeral container restarts)
   try {
     await ensureGenieKeyOnDisk();
-  } catch (err: any) {
-    console.warn("Could not restore Genie SSH key from DB:", err.message);
+  } catch (err: unknown) {
+    console.warn("Could not restore Genie SSH key from DB:", (err instanceof Error ? err.message : String(err)));
   }
 
   const httpServer = http.createServer(async (req, res) => {
@@ -4230,9 +4251,9 @@ export async function createServer(): Promise<WebSocketServer> {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(doc));
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
+        res.end(JSON.stringify({ error: (err instanceof Error ? err.message : String(err)) }));
       }
       return;
     }
@@ -4267,7 +4288,7 @@ export async function createServer(): Promise<WebSocketServer> {
 
   // Forward PTY events — filtered to authorized users
   setPtyEventCallback((event) => {
-    const sessionId = event.payload?.id;
+    const sessionId = (event.payload as Record<string, unknown> | undefined)?.id as string | undefined;
     if (sessionId) {
       const access = getSessionAccess(sessionId);
       if (access) {

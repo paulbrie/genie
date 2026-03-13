@@ -8,8 +8,9 @@ import { users } from "./db/schema.js";
 
 const JWT_SECRET = process.env.GENIE_JWT_SECRET || process.env.ANTHROPIC_API_KEY || "genie-secret-fallback";
 const JWT_EXPIRY = "30d";
-const MANAGER_PORT = 9876;
-const REDIRECT_URI = `http://127.0.0.1:${MANAGER_PORT}/auth/callback`;
+const MANAGER_PORT = Number(process.env.PORT) || 9876;
+const MANAGER_BASE_URL = process.env.MANAGER_URL || `http://127.0.0.1:${MANAGER_PORT}`;
+const REDIRECT_URI = `${MANAGER_BASE_URL}/auth/callback`;
 
 interface GoogleUserInfo {
   sub: string;
@@ -114,7 +115,7 @@ export async function handleOAuthCallback(
   clearTimeout(timeout);
 
   try {
-    const url = new URL(req.url, `http://127.0.0.1:${MANAGER_PORT}`);
+    const url = new URL(req.url, MANAGER_BASE_URL);
     const code = url.searchParams.get("code");
     const error = url.searchParams.get("error");
 
@@ -175,11 +176,12 @@ export async function handleOAuthCallback(
     res.end(`<html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4"><div style="text-align:center"><h2>Signed in as ${user.name}</h2><p>You can close this tab and return to Genie.</p></div></body></html>`);
 
     onSuccess(user, token);
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
     console.error("[auth] OAuth callback error:", err);
     res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(`<html><body><h2>Authentication error</h2><p>${err.message || "Unknown error"}</p><p>You can close this tab.</p></body></html>`);
-    onError(err.message || "OAuth exchange failed");
+    res.end(`<html><body><h2>Authentication error</h2><p>${message || "Unknown error"}</p><p>You can close this tab.</p></body></html>`);
+    onError(message || "OAuth exchange failed");
   }
 
   return true;
