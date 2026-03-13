@@ -77,6 +77,7 @@ export function initiateOAuth(
     pendingOAuth = null;
   }
 
+  console.log(`[auth] OAuth redirect URI: ${REDIRECT_URI}`);
   const oauth2Client = new OAuth2Client(clientId, clientSecret, REDIRECT_URI);
 
   const authUrl = oauth2Client.generateAuthUrl({
