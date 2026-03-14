@@ -1889,15 +1889,27 @@ export function AdminPanel() {
 
 /* ===== AUDIT PANEL ===== */
 
+const AUDIT_PAGE_SIZE = 50;
+
 function AuditPanel({ audit }: { audit: AdminState["audit"] }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [filterAction, setFilterAction] = useState("");
+  const [filter, setFilter] = useState("");
+  const [page, setPage] = useState(0);
 
-  const uniqueActions = [...new Set(audit.logs.map((l: AuditLogEntry) => l.action))].sort();
-
-  const filteredLogs = filterAction
-    ? audit.logs.filter((l: AuditLogEntry) => l.action === filterAction)
+  const lowerFilter = filter.toLowerCase();
+  const filteredLogs = lowerFilter
+    ? audit.logs.filter((l: AuditLogEntry) =>
+        l.action.toLowerCase().includes(lowerFilter) ||
+        (l.userName?.toLowerCase().includes(lowerFilter)) ||
+        (l.userId?.toLowerCase().includes(lowerFilter))
+      )
     : audit.logs;
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / AUDIT_PAGE_SIZE));
+  const safeePage = Math.min(page, totalPages - 1);
+  const pagedLogs = filteredLogs.slice(safeePage * AUDIT_PAGE_SIZE, (safeePage + 1) * AUDIT_PAGE_SIZE);
+
+  useEffect(() => { setPage(0); }, [filter]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -1906,17 +1918,23 @@ function AuditPanel({ audit }: { audit: AdminState["audit"] }) {
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
           Refresh
         </Button>
-        <select
-          className="bg-surface0 text-text border border-surface1 rounded px-2 py-1 text-md"
-          value={filterAction}
-          onChange={(e) => setFilterAction(e.target.value)}
-        >
-          <option value="">All actions</option>
-          {uniqueActions.map((a) => (
-            <option key={a} value={a}>{a}</option>
-          ))}
-        </select>
+        <input
+          type="text"
+          placeholder="Filter by action or user..."
+          className="bg-surface0 text-text border border-surface1 rounded px-2 py-1 text-md w-64"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
         <span className="text-md text-overlay0">{filteredLogs.length} entries</span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" disabled={safeePage === 0} onClick={() => setPage(safeePage - 1)}>
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </Button>
+          <span className="text-md text-overlay1">{safeePage + 1} / {totalPages}</span>
+          <Button size="sm" disabled={safeePage >= totalPages - 1} onClick={() => setPage(safeePage + 1)}>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -1932,10 +1950,10 @@ function AuditPanel({ audit }: { audit: AdminState["audit"] }) {
           <tbody>
             {audit.loading ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-overlay0">Loading...</td></tr>
-            ) : filteredLogs.length === 0 ? (
+            ) : pagedLogs.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-overlay0">No audit logs found</td></tr>
             ) : (
-              filteredLogs.map((log: AuditLogEntry) => (
+              pagedLogs.map((log: AuditLogEntry) => (
                 <tr
                   key={log.id}
                   className="border-t border-surface0 hover:bg-surface0/50 cursor-pointer"
