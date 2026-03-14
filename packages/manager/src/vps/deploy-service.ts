@@ -1,8 +1,4 @@
 import { connectSsh, type SshConnectionConfig, type SshSession } from "./ssh-client.js";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
 
 export function remoteDir(_projectName: string): string {
   return "/opt/project";
@@ -27,26 +23,20 @@ export async function vpsDeploy(
   }
 
   // 2. Wait for system ssh to be ready (cloud-init may restart sshd)
-  const sshArgs = [
-    "-p", String(config.port),
-    "-i", config.privateKeyPath,
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "ConnectTimeout=5",
-    "-o", "IdentitiesOnly=yes",
-    `${config.username}@${config.host}`,
-    "true",
-  ];
-
   onProgress("Waiting for system SSH to stabilize...");
   for (let i = 1; i <= 12; i++) {
+    let checkSession: SshSession | null = null;
     try {
-      await execFileAsync("ssh", sshArgs, { timeout: 10_000 });
+      checkSession = await connectSsh(config);
+      await checkSession.exec("true");
       onProgress("System SSH ready");
       break;
     } catch {
       if (i === 12) throw new Error("System SSH did not become available after 60s");
       onProgress(`System SSH not ready (attempt ${i}/12), waiting 5s...`);
       await new Promise((r) => setTimeout(r, 5_000));
+    } finally {
+      checkSession?.close();
     }
   }
 
