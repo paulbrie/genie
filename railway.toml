@@ -2,6 +2,5 @@
 builder = "nixpacks"
 
 [build.nixpacks]
-pkgs = ["nodejs_22", "python3"]
+pkgs = ["nodejs_22", "python3", "gcc", "gnumake"]
 installCmd = "npm install"
-buildCmd = "npm run build"
