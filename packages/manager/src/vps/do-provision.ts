@@ -287,8 +287,8 @@ ufw reload
           break;
         }
         onProgress(`[${attempt}] ${elapsed}s — SSH connected but Docker not found: ${String(sshResult).trim().slice(0, 100)}`);
-      } catch (err: any) {
-        const msg = err?.message || String(err);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
         onProgress(`[${attempt}] ${elapsed}s — ${msg.slice(0, 120)}`);
       }
       await sleep(POLL_INTERVAL);
@@ -325,8 +325,9 @@ ufw reload
             break;
           }
           onProgress(`Cloud-init: ${result.trim().slice(0, 60)}...`);
-        } catch (err: any) {
-          onProgress(`Waiting for cloud-init (${ci}/24): ${err.message?.slice(0, 60)}`);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          onProgress(`Waiting for cloud-init (${ci}/24): ${message.slice(0, 60)}`);
         }
         await sleep(5_000);
       }
@@ -358,8 +359,9 @@ SSHEOF
 chmod 600 ~/.ssh/config`);
         s.close();
         onProgress("GitLab deploy key installed");
-      } catch (err: any) {
-        onProgress(`Warning: Failed to install GitLab deploy key: ${err.message}`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        onProgress(`Warning: Failed to install GitLab deploy key: ${message}`);
       }
     }
 
@@ -386,15 +388,16 @@ chmod 600 ~/.ssh/config`);
     await vpsDeploy(projectName, connConfig, onProgress, envVars, setupFiles);
 
     return { dropletId, ipAddress, region, size };
-  } catch (err: any) {
-    if (err.message === "Deployment cancelled") {
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    if (errObj.message === "Deployment cancelled") {
       await cleanupDroplet();
     } else if (dropletIdForCleanup) {
       // Attach droplet info so the caller can offer keep/destroy
-      err.dropletId = dropletIdForCleanup;
-      err.dropletIp = ipAddressForCleanup;
+      (errObj as Error & { dropletId?: number; dropletIp?: string }).dropletId = dropletIdForCleanup;
+      (errObj as Error & { dropletId?: number; dropletIp?: string }).dropletIp = ipAddressForCleanup;
     }
-    throw err;
+    throw errObj;
   }
 }
 

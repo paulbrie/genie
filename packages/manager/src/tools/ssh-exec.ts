@@ -43,8 +43,9 @@ export async function executeSshExec(
   let session;
   try {
     session = await connectSsh(instance.connection, { timeoutMs: 30_000 });
-  } catch (err: any) {
-    return `Error: Failed to connect to "${instance.label}" (${instance.connection.host}): ${err.message}`;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Error: Failed to connect to "${instance.label}" (${instance.connection.host}): ${message}`;
   }
 
   let output = "";
@@ -64,9 +65,9 @@ export async function executeSshExec(
     }
 
     return truncateOutput(result as string) || "(no output)";
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Non-zero exit code — still return the output
-    const errMsg = err.message || String(err);
+    const errMsg = err instanceof Error ? err.message : String(err);
     if (output) {
       return truncateOutput(output) + `\n\n[Command failed: ${errMsg}]`;
     }

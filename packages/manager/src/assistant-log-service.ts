@@ -85,16 +85,16 @@ export async function listUserSessions(userId: string | null, limit = 50): Promi
     ORDER BY max(acl.created_at) DESC
     LIMIT ${limit}
   `);
-  return (rows as any[]).map((r: any) => ({
-    sessionId: r.session_id,
-    projectId: r.project_id,
-    modelId: r.model_id,
-    userName: r.user_name || null,
-    name: r.session_name || null,
-    firstMessage: r.first_message || "",
-    messageCount: r.message_count,
-    createdAt: new Date(r.created_at),
-    updatedAt: new Date(r.updated_at),
+  return (rows as Record<string, unknown>[]).map((r: Record<string, unknown>) => ({
+    sessionId: r.session_id as string,
+    projectId: r.project_id as string | null,
+    modelId: r.model_id as string | null,
+    userName: (r.user_name as string) || null,
+    name: (r.session_name as string) || null,
+    firstMessage: (r.first_message as string) || "",
+    messageCount: r.message_count as number,
+    createdAt: new Date(r.created_at as string),
+    updatedAt: new Date(r.updated_at as string),
   }));
 }
 

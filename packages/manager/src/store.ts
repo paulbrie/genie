@@ -16,8 +16,8 @@ export function load(): AppDef[] {
   try {
     const raw = fs.readFileSync(APPS_FILE, "utf-8");
     return JSON.parse(raw);
-  } catch (err: any) {
-    if (err.code === "ENOENT") return [];
+  } catch (err: unknown) {
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
 }

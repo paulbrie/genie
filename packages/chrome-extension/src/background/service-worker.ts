@@ -8,7 +8,8 @@ import type {
 } from "../shared/types";
 import { matchProject } from "./project-matcher";
 
-const WS_URL = "ws://localhost:9876";
+const WS_URLS = ["wss://api.genie.teleporthq.ai", "ws://localhost:9876"];
+let WS_URL = WS_URLS[0];
 const RECONNECT_DELAY = 3000;
 const KEEPALIVE_INTERVAL = 20000;
 const AUTH_TOKEN_KEY = "genie-auth-token";
@@ -32,13 +33,17 @@ const pendingDomActions = new Map<
 
 // --- WebSocket connection ---
 
+let wsUrlIndex = 0;
+
 function connect(): void {
   if (ws && ws.readyState <= WebSocket.OPEN) return;
 
+  WS_URL = WS_URLS[wsUrlIndex];
+  console.log(`[Genie] Connecting to ${WS_URL}...`);
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
-    console.log("[Genie] Connected to manager");
+    console.log(`[Genie] Connected to manager at ${WS_URL}`);
     startKeepalive();
     // Try to authenticate with stored token
     chrome.storage.local.get(AUTH_TOKEN_KEY, (data) => {
@@ -64,6 +69,8 @@ function connect(): void {
     authenticated = false;
     stopKeepalive();
     broadcastToPorts({ type: "ws:status", connected: false, authenticated: false });
+    // Try next URL on failure before scheduling reconnect
+    wsUrlIndex = (wsUrlIndex + 1) % WS_URLS.length;
     scheduleReconnect();
   };
 

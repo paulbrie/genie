@@ -11,16 +11,16 @@ export function startLogCapture(onData: (data: string) => void): void {
   origStdoutWrite = process.stdout.write.bind(process.stdout);
   origStderrWrite = process.stderr.write.bind(process.stderr);
 
-  process.stdout.write = function (chunk: any, ...args: any[]): boolean {
+  process.stdout.write = function (chunk: string | Uint8Array, ...args: unknown[]): boolean {
     const str = typeof chunk === "string" ? chunk : chunk.toString();
     appendBuffer(str);
-    return origStdoutWrite!(chunk, ...args);
+    return (origStdoutWrite as Function).call(process.stdout, chunk, ...args);
   } as typeof process.stdout.write;
 
-  process.stderr.write = function (chunk: any, ...args: any[]): boolean {
+  process.stderr.write = function (chunk: string | Uint8Array, ...args: unknown[]): boolean {
     const str = typeof chunk === "string" ? chunk : chunk.toString();
     appendBuffer(str);
-    return origStderrWrite!(chunk, ...args);
+    return (origStderrWrite as Function).call(process.stderr, chunk, ...args);
   } as typeof process.stderr.write;
 }
 

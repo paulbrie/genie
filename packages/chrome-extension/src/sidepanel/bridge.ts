@@ -1,6 +1,8 @@
 import type { BackgroundMessage, PanelMessage } from "../shared/types";
 
-const RENDERER_URL = "http://localhost:3000/extension";
+const RENDERER_URLS = ["https://genie.teleporthq.ai/extension", "http://localhost:3000/extension"];
+let rendererUrlIndex = 0;
+let RENDERER_URL = RENDERER_URLS[0];
 const IFRAME_ID = "genie-iframe";
 const FALLBACK_ID = "genie-fallback";
 
@@ -70,14 +72,32 @@ function connectPort(): void {
 
 // --- iframe load handling ---
 
+function tryNextRenderer(): void {
+  if (rendererUrlIndex < RENDERER_URLS.length - 1) {
+    rendererUrlIndex++;
+    RENDERER_URL = RENDERER_URLS[rendererUrlIndex];
+    console.log(`[Genie] Trying renderer at ${RENDERER_URL}`);
+    if (iframe) iframe.src = RENDERER_URL;
+  } else {
+    showFallback();
+  }
+}
+
 function initIframe(): void {
   iframe = getIframe();
   if (!iframe) return;
 
+  // Set src dynamically instead of hardcoding in HTML
+  iframe.src = RENDERER_URL;
+
+  let loadTimer: ReturnType<typeof setTimeout> | null = null;
+
   iframe.addEventListener("load", () => {
-    // Check if iframe loaded successfully by trying to access contentWindow
+    if (loadTimer) clearTimeout(loadTimer);
+
+    // Check if iframe loaded successfully
     if (!iframe?.contentWindow) {
-      showFallback();
+      tryNextRenderer();
       return;
     }
 
@@ -90,7 +110,6 @@ function initIframe(): void {
     }
 
     // Send init after a brief delay to let snapshot arrive
-    // If no snapshot arrives, send init with empty snapshot
     setTimeout(() => {
       if (iframe?.contentWindow) {
         iframe.contentWindow.postMessage(
@@ -107,7 +126,7 @@ function initIframe(): void {
   });
 
   iframe.addEventListener("error", () => {
-    showFallback();
+    tryNextRenderer();
   });
 }
 

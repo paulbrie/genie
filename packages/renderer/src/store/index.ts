@@ -2,7 +2,7 @@ import { Subject } from "subjecto/core";
 import { DeepSubject, batch } from "subjecto";
 import { stripAnsi } from "@/lib/utils";
 import { genie, type AppSettings, type DirEntry } from "@/lib/genie-api";
-import { wsSend, getStoredToken, setStoredToken, sendAuthToken } from "@/lib/ws";
+import { wsSend, getStoredToken, setStoredToken, sendAuthToken, disconnectWs } from "@/lib/ws";
 
 // --- Types ---
 
@@ -2259,8 +2259,9 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
     }
 
     case "auth:error": {
-      console.error("Auth error:", msg.payload.message);
-      $auth.nextAssign({ status: "unauthenticated" });
+      console.warn("[auth]", msg.payload.message);
+      $auth.next({ status: "unauthenticated", user: null, token: null });
+      setStoredToken(null);
       break;
     }
 
@@ -2270,8 +2271,9 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
     }
 
     case "auth:revoked": {
-      $auth.next({ status: "unauthenticated", user: null, token: null });
       setStoredToken(null);
+      $auth.next({ status: "unauthenticated", user: null, token: null });
+      disconnectWs();
       if (typeof window !== "undefined") {
         alert(msg.payload.message || "Your access has been revoked.");
       }

@@ -16,7 +16,7 @@
     "http://localhost:3000/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; frame-src http://localhost:3000; object-src 'self'"
+    "extension_pages": "script-src 'self'; frame-src http://localhost:3000 https://genie.teleporthq.ai; object-src 'self'"
   },
   "background": {
     "service_worker": "background.js",
@@ -25,7 +25,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js", "floating-widget.js"],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],

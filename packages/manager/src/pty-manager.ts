@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 const MAX_SCROLLBACK = 100_000; // chars
 
 interface PtySession {
-  proc: any;
+  proc: import("node-pty").IPty;
   id: string;
   ownerId: string;
   collaboratorIds: Set<string>;
@@ -19,17 +19,18 @@ async function loadPty(): Promise<typeof import("node-pty") | null> {
   try {
     ptyModule = await import("node-pty");
     return ptyModule;
-  } catch (err: any) {
-    ptyLoadError = err.message;
-    console.error("Failed to load node-pty:", err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    ptyLoadError = message;
+    console.error("Failed to load node-pty:", message);
     return null;
   }
 }
 
 const sessions = new Map<string, PtySession>();
-let eventCallback: ((event: { type: string; payload: any }) => void) | null = null;
+let eventCallback: ((event: { type: string; payload: unknown }) => void) | null = null;
 
-export function setPtyEventCallback(cb: (event: { type: string; payload: any }) => void): void {
+export function setPtyEventCallback(cb: (event: { type: string; payload: unknown }) => void): void {
   eventCallback = cb;
 }
 
@@ -92,7 +93,7 @@ export async function spawnPty(
   const env = buildCleanEnv();
   const args = command ? ["-c", command] : [];
 
-  let proc: any;
+  let proc: import("node-pty").IPty;
   try {
     proc = pty.spawn(shell, args, {
       name: "xterm-256color",
@@ -101,11 +102,12 @@ export async function spawnPty(
       cwd,
       env,
     });
-  } catch (err: any) {
-    console.error(`Failed to spawn PTY (shell=${shell}, cwd=${cwd}):`, err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to spawn PTY (shell=${shell}, cwd=${cwd}):`, message);
     eventCallback?.({
       type: "terminal:error",
-      payload: { id, message: `Failed to spawn shell: ${err.message}` },
+      payload: { id, message: `Failed to spawn shell: ${message}` },
     });
     return;
   }

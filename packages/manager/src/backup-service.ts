@@ -38,7 +38,7 @@ export async function createBackup(): Promise<string> {
       WHERE table_schema = 'public' AND table_name = ${tablename}
       ORDER BY ordinal_position
     `;
-    const colNames = cols.map((c: any) => c.column_name);
+    const colNames = cols.map((c: Record<string, unknown>) => c.column_name as string);
 
     // Get all rows
     const rows = await sql.unsafe(`SELECT * FROM "${tablename}"`);
@@ -135,8 +135,9 @@ function scheduleNextMidnight(): void {
   backupTimer = setTimeout(async () => {
     try {
       await sendBackupEmail();
-    } catch (err: any) {
-      console.error("Daily backup failed:", err.message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("Daily backup failed:", message);
     }
     scheduleNextMidnight();
   }, ms);

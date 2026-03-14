@@ -11,6 +11,7 @@ export function useNavigate() {
 
   const navigateToNav = useCallback(
     (nav: NavKey) => {
+      if (nav === "projects") deselectProject();
       switchNav(nav);
       router.push(buildNavPath(nav));
     },

@@ -83,16 +83,16 @@ const BASE_PROJECT_TABS: { key: ProjectTab; label: string }[] = [
 
 const badgeCls = "ml-1 text-md bg-surface0 text-overlay1 px-1 py-0.5 rounded-full tabular-nums";
 
-function buildProjectTabs(project: ProjectDef, vpsDeploy: VpsDeployState, allProjects: ProjectDef[]): { key: ProjectTab; label: ReactNode }[] {
-  const totalInstanceCount = allProjects.reduce((sum, p) => sum + p.vpsInstances.length, 0);
+function buildProjectTabs(project: ProjectDef, vpsDeploy: VpsDeployState): { key: ProjectTab; label: ReactNode }[] {
+  const instanceCount = project.vpsInstances.length;
   const deployCount = vpsDeploy.deployLogs.length;
 
   return BASE_PROJECT_TABS.map((tab) => {
     if (tab.key === "commands" && project.commands.length > 0) {
       return { ...tab, label: <>{tab.label}<span className={badgeCls}>{project.commands.length}</span></> };
     }
-    if (tab.key === "cloud" && totalInstanceCount > 0) {
-      return { ...tab, label: <>{tab.label}<span className={badgeCls}>{totalInstanceCount}</span></> };
+    if (tab.key === "cloud" && instanceCount > 0) {
+      return { ...tab, label: <>{tab.label}<span className={badgeCls}>{instanceCount}</span></> };
     }
     if (tab.key === "deploy-history" && deployCount > 0) {
       return { ...tab, label: <>{tab.label}<span className={badgeCls}>{deployCount}</span></> };
@@ -138,7 +138,7 @@ export function ProjectDetail({ activeTab = "files" }: { activeTab?: ProjectTab 
       />
 
       <ViewTabs
-        tabs={buildProjectTabs(project, vpsDeploy, projects)}
+        tabs={buildProjectTabs(project, vpsDeploy)}
         activeTab={activeTab}
         onTabChange={navigateToProjectTab}
       />
@@ -231,30 +231,11 @@ function CloudSection({
   project: ProjectDef;
   vpsDeploy: VpsDeployState;
 }) {
-  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
-  const [projects] = useSubject($projects);
-
-  if (expandedProjectId) {
-    const expandedProject = projects.find((p) => p.id === expandedProjectId);
-    if (!expandedProject) {
-      setExpandedProjectId(null);
-      return null;
-    }
-    return (
-      <ProjectCloudDetail
-        project={expandedProject}
-        vpsDeploy={vpsDeploy}
-        onBack={() => setExpandedProjectId(null)}
-      />
-    );
-  }
-
+  // Show only the current project's cloud details
   return (
-    <CloudDashboardGrid
-      projects={projects}
-      currentProjectId={project.id}
+    <ProjectCloudDetail
+      project={project}
       vpsDeploy={vpsDeploy}
-      onSelectProject={setExpandedProjectId}
     />
   );
 }
@@ -498,20 +479,21 @@ function ProjectCloudDetail({
 }: {
   project: ProjectDef;
   vpsDeploy: VpsDeployState;
-  onBack: () => void;
+  onBack?: () => void;
 }) {
   const [deployLabel, setDeployLabel] = useState("");
 
   return (
     <div className="py-4 flex flex-col gap-2">
-      {/* Back button */}
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1.5 text-md text-overlay0 hover:text-text transition-colors mb-1 self-start"
-      >
-        <ArrowLeft size={14} />
-        All Deployments
-      </button>
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-md text-overlay0 hover:text-text transition-colors mb-1 self-start"
+        >
+          <ArrowLeft size={14} />
+          All Deployments
+        </button>
+      )}
 
       <span className="text-base font-semibold text-text mb-1">{project.name}</span>
 

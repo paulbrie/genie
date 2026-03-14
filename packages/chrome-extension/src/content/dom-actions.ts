@@ -80,18 +80,60 @@ function highlight(el: Element, type: "action" | "snapshot" = "action"): void {
   setTimeout(() => el.classList.remove(cls), duration);
 }
 
+// Parse Playwright-style :has-text("...") into { cssSelector, textMatch }
+function parseTextSelector(selector: string): { css: string; text: string } | null {
+  const match = selector.match(/^(.+?):has-text\(["'](.+?)["']\)$/);
+  if (!match) return null;
+  return { css: match[1].trim(), text: match[2] };
+}
+
 function queryEl(selector: string): Element | null {
-  // Search light DOM first
-  const found = document.querySelector(selector);
-  if (found) return found;
+  // Handle :has-text() pseudo-selector (Playwright-style, not valid CSS)
+  const textSel = parseTextSelector(selector);
+  if (textSel) {
+    const candidates = document.querySelectorAll(textSel.css);
+    for (const el of candidates) {
+      const content = el.textContent?.trim() || "";
+      if (content === textSel.text || content.includes(textSel.text)) return el;
+    }
+    // Search shadow DOMs too
+    function searchShadowText(root: ParentNode): Element | null {
+      const els = root.querySelectorAll("*");
+      for (const el of els) {
+        if (el.shadowRoot) {
+          const matches = el.shadowRoot.querySelectorAll(textSel!.css);
+          for (const m of matches) {
+            const content = m.textContent?.trim() || "";
+            if (content === textSel!.text || content.includes(textSel!.text)) return m;
+          }
+          const deep = searchShadowText(el.shadowRoot);
+          if (deep) return deep;
+        }
+      }
+      return null;
+    }
+    return searchShadowText(document);
+  }
+
+  // Standard CSS selector — search light DOM first
+  try {
+    const found = document.querySelector(selector);
+    if (found) return found;
+  } catch {
+    // Invalid selector — try text-based fallback
+    // e.g. if Claude sends something non-standard, search by text content
+    return null;
+  }
 
   // Search inside shadow DOMs
   function searchShadow(root: ParentNode): Element | null {
     const els = root.querySelectorAll("*");
     for (const el of els) {
       if (el.shadowRoot) {
-        const match = el.shadowRoot.querySelector(selector);
-        if (match) return match;
+        try {
+          const match = el.shadowRoot.querySelector(selector);
+          if (match) return match;
+        } catch { /* invalid selector */ }
         const deep = searchShadow(el.shadowRoot);
         if (deep) return deep;
       }

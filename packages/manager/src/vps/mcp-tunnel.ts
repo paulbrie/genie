@@ -36,8 +36,9 @@ export async function setupMcpTunnel(
       try { sshChannel.close(); } catch {}
     });
 
-    sshChannel.on("error", (err: any) => {
-      console.error(`[mcp-tunnel] SSH channel error: ${err.message}`);
+    sshChannel.on("error", (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[mcp-tunnel] SSH channel error: ${message}`);
       localConn.destroy();
     });
   });

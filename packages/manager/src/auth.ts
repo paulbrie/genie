@@ -38,9 +38,14 @@ export async function getUserById(id: string) {
   return user || null;
 }
 
-/** Admin = first non-agent user by creation date */
+/** Admin = superadmin role, or first non-agent user by creation date */
 export async function isAdmin(userId: string): Promise<boolean> {
   const db = getDb();
+  const [user] = await db.select({ id: users.id, role: users.role })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (user?.role === "superadmin" || user?.role === "admin") return true;
   const [first] = await db.select({ id: users.id })
     .from(users)
     .where(eq(users.isAgent, false))
@@ -158,6 +163,16 @@ export async function handleOAuthCallback(
         .returning();
       user = updated;
     } else {
+      // Check if this is the first non-agent user (auto-validate as admin)
+      const [firstUser] = await db.select({ id: users.id })
+        .from(users)
+        .where(eq(users.isAgent, false))
+        .orderBy(users.createdAt)
+        .limit(1);
+      const isFirstUser = !firstUser; // No non-agent users yet, so this one is first
+
+      const isSuperAdmin = userInfo.email === "paul.brie@teleporthq.io";
+
       const [created] = await db
         .insert(users)
         .values({
@@ -166,9 +181,36 @@ export async function handleOAuthCallback(
           name: userInfo.name,
           avatarUrl: userInfo.picture || null,
           isAgent: false,
+          validated: isFirstUser || isSuperAdmin,
+          role: isSuperAdmin ? "superadmin" : "user",
         })
         .returning();
       user = created;
+
+      // Notify super admin of new user signup
+      try {
+        const sgApiKey = process.env.SENDGRID_API_KEY;
+        if (sgApiKey) {
+          const sgMail = (await import("@sendgrid/mail")).default;
+          sgMail.setApiKey(sgApiKey);
+          await sgMail.send({
+            to: "paul.brie@teleporthq.io",
+            from: process.env.BACKUP_EMAIL || "noreply@teleporthq.io",
+            subject: `[Genie] New user signup: ${user.name}`,
+            text: `New user signed up:\n\nName: ${user.name}\nEmail: ${user.email}\n\nThey need to be validated before they can use the platform.`,
+          });
+        }
+      } catch (emailErr) {
+        console.error("[auth] Failed to send new-user notification:", emailErr);
+      }
+    }
+
+    // Block unvalidated users from logging in
+    if (!user.validated) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4"><div style="text-align:center"><h2>Access Pending</h2><p>Your account is pending validation by an administrator.</p><p style="color:#a6adc8;margin-top:1rem">Please contact the admin for access.</p></div></body></html>`);
+      onError("User not validated");
+      return true;
     }
 
     const token = createToken(user.id);

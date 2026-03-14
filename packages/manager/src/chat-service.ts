@@ -411,20 +411,21 @@ export async function toggleReaction(messageId: string, userId: string, emoji: s
   const [msg] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
   if (!msg) return null;
 
-  let parsed: any = {};
+  let parsed: { reactions?: Record<string, string[]>; [key: string]: unknown } = {};
   if (msg.metadata) {
     try { parsed = JSON.parse(msg.metadata); } catch {}
   }
   if (!parsed.reactions) parsed.reactions = {};
 
-  const arr: string[] = parsed.reactions[emoji] || [];
+  const reactions = parsed.reactions;
+  const arr: string[] = reactions[emoji] || [];
   const idx = arr.indexOf(userId);
   if (idx >= 0) {
     arr.splice(idx, 1);
-    if (arr.length === 0) delete parsed.reactions[emoji];
-    else parsed.reactions[emoji] = arr;
+    if (arr.length === 0) delete reactions[emoji];
+    else reactions[emoji] = arr;
   } else {
-    parsed.reactions[emoji] = [...arr, userId];
+    reactions[emoji] = [...arr, userId];
   }
 
   await db.update(messages).set({ metadata: JSON.stringify(parsed) }).where(eq(messages.id, messageId));

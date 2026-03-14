@@ -1,11 +1,11 @@
-import { streamText, stepCountIs, tool } from "ai";
+import { streamText, stepCountIs, tool, type LanguageModel, type Tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createFireworks } from "@ai-sdk/fireworks";
 import { z } from "zod";
 import * as store from "./store.js";
 import { getCachedProcesses, getCachedDockerInfo } from "./monitor.js";
 import { tools } from "./tools/index.js";
-import type { DomActionExecutor } from "./types.js";
+import type { DomAction, DomActionExecutor } from "./types.js";
 
 export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "kimi-k2";
 
@@ -34,7 +34,7 @@ export interface ChatUsage {
   cost: number; // USD
 }
 
-const modelCache = new Map<string, any>();
+const modelCache = new Map<string, LanguageModel>();
 
 function getModel(modelId?: ChatModelId) {
   const id = modelId ?? "claude-sonnet";
@@ -43,9 +43,10 @@ function getModel(modelId?: ChatModelId) {
   if (!spec) throw new Error(`Unknown model: ${id}`);
 
   const cacheKey = `${spec.provider}:${spec.modelId}`;
-  if (modelCache.has(cacheKey)) return modelCache.get(cacheKey);
+  const cached = modelCache.get(cacheKey);
+  if (cached) return cached;
 
-  let model: any;
+  let model: LanguageModel;
   if (spec.provider === "anthropic") {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
@@ -134,7 +135,7 @@ export interface ChatOptions {
   onToken: (token: string) => void;
   onDone: (fullContent: string, usage?: ChatUsage) => void | Promise<void>;
   onError: (message: string) => void;
-  onTool?: (name: string, input: Record<string, string>, result: string) => void;
+  onTool?: (name: string, input: Record<string, unknown>, result: string) => void;
   context?: string;
   domSnapshot?: string;
   abortSignal?: AbortSignal;
@@ -148,7 +149,7 @@ export async function handleChat(
   onToken: (token: string) => void,
   onDone: (fullContent: string, usage?: ChatUsage) => void | Promise<void>,
   onError: (message: string) => void,
-  onTool?: (name: string, input: Record<string, string>, result: string) => void,
+  onTool?: (name: string, input: Record<string, unknown>, result: string) => void,
   context?: string,
   domSnapshot?: string,
   abortSignal?: AbortSignal,
@@ -163,7 +164,7 @@ export async function handleChat(
       : buildSystemContext();
 
     // Merge static tools with the dynamic view_page tool
-    const allTools: Record<string, any> = {
+    const allTools: Record<string, Tool> = {
       ...tools,
       view_page: tool({
         description: "See the exact UI content currently visible to the user. Returns the text content of the page. Use this when you need to understand what the user is looking at on screen.",
@@ -201,7 +202,7 @@ export async function handleChat(
           timeout: z.number().optional().describe("Timeout in ms for wait_for (default 5000)"),
         }),
         execute: async ({ action, selector, value, url, attribute, direction, amount, timeout }) => {
-          const result = await domActionExecutor(action as any, {
+          const result = await domActionExecutor(action as DomAction, {
             selector, value, url, attribute, direction, amount, timeout,
           });
           return result.success
@@ -241,13 +242,13 @@ export async function handleChat(
           case "tool-result":
             onTool?.(
               chunk.toolName,
-              chunk.input as Record<string, string>,
+              chunk.input as Record<string, unknown>,
               typeof chunk.output === "string" ? chunk.output : JSON.stringify(chunk.output),
             );
             break;
         }
       }
-    } catch (streamErr: any) {
+    } catch (streamErr: unknown) {
       // If aborted, that's expected — fall through to onDone with partial content
       if (!abortSignal?.aborted) throw streamErr;
     }
@@ -268,10 +269,11 @@ export async function handleChat(
     } catch { /* usage not available */ }
 
     await onDone(fullContent, usage);
-  } catch (err: any) {
+  } catch (err: unknown) {
     const spec = CHAT_MODELS[modelId ?? "claude-sonnet"];
     const label = spec?.label ?? modelId ?? "unknown";
-    console.error(`Chat error (${label}):`, err.message || err);
-    onError(`[${label}] ${err.message || "Failed to start chat"}`);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Chat error (${label}):`, message);
+    onError(`[${label}] ${message || "Failed to start chat"}`);
   }
 }

@@ -154,7 +154,7 @@ export function createMcpBrowserServer(
       for await (const chunk of req) chunks.push(chunk as Buffer);
       const body = Buffer.concat(chunks).toString();
 
-      let parsed: any;
+      let parsed: Record<string, unknown>;
       try {
         parsed = JSON.parse(body);
       } catch {
@@ -163,7 +163,7 @@ export function createMcpBrowserServer(
         return;
       }
 
-      const { id, method, params } = parsed;
+      const { id, method, params } = parsed as { id?: unknown; method?: string; params?: Record<string, unknown> };
 
       // Notifications (no id) — acknowledge with 202
       if (id === undefined || id === null) {
@@ -183,12 +183,12 @@ export function createMcpBrowserServer(
         } else if (method === "tools/list") {
           result = jsonRpcResponse(id, { tools: TOOLS });
         } else if (method === "tools/call") {
-          const toolName: string = params?.name;
+          const toolName: string = params?.name as string;
           const action = TOOL_TO_ACTION[toolName];
           if (!action) {
             result = jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
           } else {
-            const toolArgs: DomActionParams = params?.arguments ?? {};
+            const toolArgs: DomActionParams = (params?.arguments ?? {}) as DomActionParams;
             const domResult = await domExecutor(action, toolArgs);
             result = jsonRpcResponse(id, {
               content: [{ type: "text", text: domResult.result }],
@@ -207,8 +207,9 @@ export function createMcpBrowserServer(
           res.writeHead(200, { "Content-Type": "application/json" })
             .end(JSON.stringify(result));
         }
-      } catch (err: any) {
-        const errResp = jsonRpcError(id, -32000, err.message || "Internal error");
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        const errResp = jsonRpcError(id, -32000, message || "Internal error");
         res.writeHead(200, { "Content-Type": "application/json" })
           .end(JSON.stringify(errResp));
       }

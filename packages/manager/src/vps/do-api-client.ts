@@ -5,7 +5,7 @@ interface DoRequestInit {
   body?: unknown;
 }
 
-async function doFetch(token: string, path: string, init?: DoRequestInit): Promise<any> {
+async function doFetch(token: string, path: string, init?: DoRequestInit): Promise<Record<string, unknown> | null> {
   const res = await fetch(`${DO_API}${path}`, {
     method: init?.method ?? "GET",
     headers: {
@@ -17,10 +17,10 @@ async function doFetch(token: string, path: string, init?: DoRequestInit): Promi
 
   if (res.status === 204) return null;
 
-  const json = await res.json();
+  const json = await res.json() as Record<string, unknown>;
 
   if (!res.ok) {
-    const msg = json?.message || json?.id || `HTTP ${res.status}`;
+    const msg = (json as Record<string, unknown>)?.message || (json as Record<string, unknown>)?.id || `HTTP ${res.status}`;
     throw new Error(`DigitalOcean API error: ${msg}`);
   }
 
@@ -90,13 +90,13 @@ export interface DoApiClient {
 export function createDoClient(token: string): DoApiClient {
   return {
     async getAccount() {
-      const data = await doFetch(token, "/account");
-      return data.account as DoAccount;
+      const data = await doFetch(token, "/account")!;
+      return data!.account as DoAccount;
     },
 
     async listSshKeys() {
       const data = await doFetch(token, "/account/keys?per_page=200");
-      return (data.ssh_keys || []) as DoSshKey[];
+      return (data!.ssh_keys || []) as DoSshKey[];
     },
 
     async createSshKey(name: string, publicKey: string) {
@@ -104,7 +104,7 @@ export function createDoClient(token: string): DoApiClient {
         method: "POST",
         body: { name, public_key: publicKey },
       });
-      return data.ssh_key as DoSshKey;
+      return data!.ssh_key as DoSshKey;
     },
 
     async createDroplet(opts) {
@@ -121,12 +121,12 @@ export function createDoClient(token: string): DoApiClient {
         method: "POST",
         body,
       });
-      return data.droplet as DoDroplet;
+      return data!.droplet as DoDroplet;
     },
 
     async getDroplet(id: number) {
       const data = await doFetch(token, `/droplets/${id}`);
-      return data.droplet as DoDroplet;
+      return data!.droplet as DoDroplet;
     },
 
     async deleteDroplet(id: number) {
@@ -136,7 +136,7 @@ export function createDoClient(token: string): DoApiClient {
     async listDroplets(tag?: string) {
       const query = tag ? `?tag_name=${tag}&per_page=200` : "?per_page=200";
       const data = await doFetch(token, `/droplets${query}`);
-      return (data.droplets || []) as DoDroplet[];
+      return (data!.droplets || []) as DoDroplet[];
     },
 
     async snapshotDroplet(id: number, name: string) {
@@ -144,17 +144,17 @@ export function createDoClient(token: string): DoApiClient {
         method: "POST",
         body: { type: "snapshot", name },
       });
-      return data.action as DoAction;
+      return data!.action as DoAction;
     },
 
     async getAction(actionId: number) {
       const data = await doFetch(token, `/actions/${actionId}`);
-      return data.action as DoAction;
+      return data!.action as DoAction;
     },
 
     async listDropletSnapshots(dropletId: number) {
       const data = await doFetch(token, `/droplets/${dropletId}/snapshots?per_page=200`);
-      return (data.snapshots || []) as DoSnapshot[];
+      return (data!.snapshots || []) as DoSnapshot[];
     },
 
     async deleteSnapshot(snapshotId: number) {
@@ -163,7 +163,7 @@ export function createDoClient(token: string): DoApiClient {
 
     async listAccountSnapshots() {
       const data = await doFetch(token, "/snapshots?resource_type=droplet&per_page=200");
-      return (data.snapshots || []) as DoSnapshot[];
+      return (data!.snapshots || []) as DoSnapshot[];
     },
 
     async dropletAction(dropletId: number, type: string) {
@@ -171,7 +171,7 @@ export function createDoClient(token: string): DoApiClient {
         method: "POST",
         body: { type },
       });
-      return data.action as DoAction;
+      return data!.action as DoAction;
     },
   };
 }

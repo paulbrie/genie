@@ -22,10 +22,11 @@ export async function executeBrowseUrl(url: string): Promise<string> {
       return snapshot.slice(0, MAX_OUTPUT) + "\n\n[Output truncated]";
     }
     return snapshot || "(No content retrieved)";
-  } catch (err: any) {
-    if (err.code === "ENOENT") {
+  } catch (err: unknown) {
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
       return "Error: agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
     }
-    return `Browse error: ${err.message || "Unknown error"}`;
+    const message = err instanceof Error ? err.message : String(err);
+    return `Browse error: ${message || "Unknown error"}`;
   }
 }

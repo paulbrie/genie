@@ -76,7 +76,7 @@ export interface AppDef {
 
 export interface WsMessage {
   type: string;
-  payload: any;
+  payload: unknown;
 }
 
 export interface AppStats {

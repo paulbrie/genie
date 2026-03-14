@@ -2,12 +2,12 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Send, Square, Globe, Wrench, ChevronDown, ChevronRight, MessageSquare, FolderOpen, Terminal, Container, File, Folder, ArrowLeft, Save, RefreshCw, Loader2, Play, TerminalSquare, Plus, X, Users, Bot, Share2, Minus, Maximize2, Minimize2, Database, Table2, SearchCode, GitBranch, GitCommit, ArrowUp, ArrowDown, Check, Circle, FilePlus, FileEdit, FileX, FileQuestion, Copy, ExternalLink, LogOut, Trash2 } from "lucide-react";
+import { Send, Square, Globe, Wrench, ChevronDown, ChevronRight, MessageSquare, FolderOpen, Terminal, Container, File, Folder, ArrowLeft, Save, RefreshCw, Loader2, Play, TerminalSquare, Plus, X, Users, Bot, Share2, Minus, Maximize2, Minimize2, Database, Table2, SearchCode, GitBranch, GitCommit, ArrowUp, ArrowDown, Check, Circle, FilePlus, FileEdit, FileX, FileQuestion, Copy, ExternalLink, LogOut, Trash2, Lightbulb } from "lucide-react";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { $auth, $chat, $projects, $commandRunOutputs, $conversationChat, $terminal, $vpsDeploy, CHAT_MODELS, setChatModel, runProjectCommand, stopProjectCommand, loadConversations, loadChatUsers, selectConversation, sendConversationMessage, createGenieDm, createRoom, shareTerminal, acceptTerminalShare, declineTerminalShare, leaveSharedTerminal, fetchVpsStats, loadChatSessions, loadChatSession, newChat, renameChatSession, deleteChatSession, type ChatModelId, type ChatMessage, type ToolUse, type StreamingStep, type AuthState, type ConversationSummary, type ConversationMessage as ConvMessage, type ChatUser, type TerminalShareInvite, type VpsDeployState, type ProjectDef, type ChatSessionSummary } from "@/store";
+import { $auth, $chat, $projects, $commandRunOutputs, $conversationChat, $terminal, $vpsDeploy, CHAT_MODELS, setChatModel, runProjectCommand, stopProjectCommand, loadConversations, loadChatUsers, selectConversation, sendConversationMessage, createGenieDm, createRoom, shareTerminal, acceptTerminalShare, declineTerminalShare, leaveSharedTerminal, fetchVpsStats, loadChatSessions, loadChatSession, newChat, renameChatSession, deleteChatSession, createTrackerIssue, type ChatModelId, type ChatMessage, type ToolUse, type StreamingStep, type AuthState, type ConversationSummary, type ConversationMessage as ConvMessage, type ChatUser, type TerminalShareInvite, type VpsDeployState, type ProjectDef, type ChatSessionSummary } from "@/store";
 import dynamic from "next/dynamic";
 import type { BeforeMount } from "@monaco-editor/react";
 import { connectWs, setManagerRunning, wsSend, wsRequest, triggerGoogleLogin, logout } from "@/lib/ws";
@@ -2705,6 +2705,96 @@ function ShareInviteBanner({ invite, onAccept, onDecline }: { invite: TerminalSh
   );
 }
 
+// --- Feedback button ---
+
+function FeedbackButton({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const handleSubmit = () => {
+    if (!title.trim()) return;
+    createTrackerIssue({
+      projectId,
+      title: title.trim(),
+      description: description.trim() || undefined,
+      status: "backlog",
+      priority: "medium",
+    });
+    setTitle("");
+    setDescription("");
+    setSubmitted(true);
+    setTimeout(() => { setSubmitted(false); setOpen(false); }, 1500);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => { setOpen(!open); setSubmitted(false); }}
+        className="p-1.5 text-overlay0 hover:text-peach transition-colors rounded-lg hover:bg-surface0"
+        title="Send feedback"
+      >
+        <Lightbulb size={14} />
+      </button>
+      {open && (
+        <div className="absolute bottom-full right-0 mb-1 w-64 bg-mantle border border-surface1 rounded-lg shadow-lg p-3 z-50">
+          {submitted ? (
+            <div className="flex items-center gap-2 text-green py-2" style={{ fontSize: 13 }}>
+              <Check size={14} />
+              Feedback sent!
+            </div>
+          ) : (
+            <>
+              <p className="text-subtext0 font-medium mb-2" style={{ fontSize: 13 }}>Improvement request</p>
+              <input
+                autoFocus
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
+                placeholder="Title"
+                className="w-full bg-base text-text px-2 py-1.5 rounded border border-surface1 outline-none focus:border-mauve/50 mb-2"
+                style={{ fontSize: 13 }}
+                spellCheck={false}
+              />
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Description (optional)"
+                className="w-full bg-base text-text px-2 py-1.5 rounded border border-surface1 outline-none focus:border-mauve/50 mb-2 resize-none"
+                style={{ fontSize: 13 }}
+                rows={3}
+                spellCheck={false}
+              />
+              <div className="flex justify-end">
+                <button
+                  onClick={handleSubmit}
+                  disabled={!title.trim()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-mauve/20 text-mauve hover:bg-mauve/30 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ fontSize: 13 }}
+                >
+                  <Send size={12} />
+                  Send
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- Droplet picker (when no project is matched by URL) ---
 
 function DropletPicker({
@@ -3251,6 +3341,7 @@ export default function ExtensionPage() {
                 Droplets
               </button>
             )}
+            {project && <FeedbackButton projectId={project.id} />}
             {auth.user && (
               <div className="flex items-center gap-1.5">
                 <div className="w-5 h-5 rounded-full overflow-hidden bg-surface1 shrink-0">

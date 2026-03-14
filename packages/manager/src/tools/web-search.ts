@@ -10,7 +10,7 @@ export async function executeWebSearch(query: string): Promise<string> {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: "gemini-2.0-flash",
-      tools: [{ googleSearch: {} } as any],
+      tools: [{ googleSearch: {} } as unknown as import("@google/generative-ai").Tool],
     });
 
     const result = await model.generateContent(query);
@@ -19,8 +19,8 @@ export async function executeWebSearch(query: string): Promise<string> {
 
     // Extract grounding metadata for source URLs
     const candidate = response.candidates?.[0];
-    const groundingMeta = candidate?.groundingMetadata as any;
-    const chunks = groundingMeta?.groundingChunks as any[] | undefined;
+    const groundingMeta = candidate?.groundingMetadata as Record<string, unknown> | undefined;
+    const chunks = groundingMeta?.groundingChunks as { web?: { uri?: string; title?: string } }[] | undefined;
 
     const lines: string[] = [text];
 
@@ -37,7 +37,8 @@ export async function executeWebSearch(query: string): Promise<string> {
     }
 
     return lines.join("\n");
-  } catch (err: any) {
-    return `Web search error: ${err.message || "Unknown error"}`;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Web search error: ${message || "Unknown error"}`;
   }
 }

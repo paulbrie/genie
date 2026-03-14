@@ -12,7 +12,7 @@ async function getValidTables(): Promise<Set<string>> {
     SELECT tablename FROM pg_tables
     WHERE schemaname = 'public'
   `;
-  validTables = new Set(rows.map((r: any) => r.tablename));
+  validTables = new Set(rows.map((r: Record<string, unknown>) => r.tablename as string));
   return validTables;
 }
 
@@ -23,7 +23,7 @@ async function getValidColumns(tableName: string): Promise<Set<string>> {
     SELECT column_name FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = ${tableName}
   `;
-  const cols = new Set(rows.map((r: any) => r.column_name));
+  const cols = new Set(rows.map((r: Record<string, unknown>) => r.column_name as string));
   validColumnsCache.set(tableName, cols);
   return cols;
 }
@@ -74,7 +74,7 @@ export interface ColumnInfo {
 }
 
 export interface PaginatedRows {
-  rows: Record<string, any>[];
+  rows: Record<string, unknown>[];
   totalCount: number;
   page: number;
   pageSize: number;
@@ -111,12 +111,12 @@ export async function getTableColumns(tableName: string): Promise<ColumnInfo[]> 
     WHERE table_schema = 'public' AND table_name = ${tableName}
     ORDER BY ordinal_position
   `;
-  return rows.map((r: any) => ({
-    name: r.column_name,
-    dataType: r.data_type,
+  return rows.map((r: Record<string, unknown>) => ({
+    name: r.column_name as string,
+    dataType: r.data_type as string,
     isNullable: r.is_nullable === "YES",
-    columnDefault: r.column_default,
-    ordinalPosition: r.ordinal_position,
+    columnDefault: r.column_default as string | null,
+    ordinalPosition: r.ordinal_position as number,
   }));
 }
 
@@ -167,7 +167,7 @@ export async function getRow(
   tableName: string,
   pkCol: string,
   pkVal: string
-): Promise<Record<string, any> | null> {
+): Promise<Record<string, unknown> | null> {
   await assertTableExists(tableName);
   await assertColumnsExist(tableName, [pkCol]);
   const sql = getRawClient();
@@ -180,8 +180,8 @@ export async function getRow(
 
 export async function insertRow(
   tableName: string,
-  data: Record<string, any>
-): Promise<Record<string, any>> {
+  data: Record<string, unknown>
+): Promise<Record<string, unknown>> {
   await assertTableExists(tableName);
   const columns = Object.keys(data);
   if (columns.length === 0) throw new Error("No data to insert");
@@ -190,7 +190,7 @@ export async function insertRow(
   const sql = getRawClient();
   const colList = columns.map((c) => `"${c}"`).join(", ");
   const placeholders = columns.map((_, i) => `$${i + 1}`).join(", ");
-  const values = columns.map((c) => data[c]);
+  const values = columns.map((c) => data[c]) as (string | number | boolean | null)[];
 
   const rows = await sql.unsafe(
     `INSERT INTO "${tableName}" (${colList}) VALUES (${placeholders}) RETURNING *`,
@@ -203,8 +203,8 @@ export async function updateRow(
   tableName: string,
   pkCol: string,
   pkVal: string,
-  data: Record<string, any>
-): Promise<Record<string, any>> {
+  data: Record<string, unknown>
+): Promise<Record<string, unknown>> {
   await assertTableExists(tableName);
   const columns = Object.keys(data);
   if (columns.length === 0) throw new Error("No data to update");
@@ -212,7 +212,7 @@ export async function updateRow(
 
   const sql = getRawClient();
   const setClauses = columns.map((c, i) => `"${c}" = $${i + 1}`).join(", ");
-  const values = [...columns.map((c) => data[c]), pkVal];
+  const values = [...columns.map((c) => data[c]), pkVal] as (string | number | boolean | null)[];
 
   const rows = await sql.unsafe(
     `UPDATE "${tableName}" SET ${setClauses} WHERE "${pkCol}" = $${columns.length + 1} RETURNING *`,
@@ -226,7 +226,7 @@ export async function deleteRow(
   tableName: string,
   pkCol: string,
   pkVal: string
-): Promise<Record<string, any>> {
+): Promise<Record<string, unknown>> {
   await assertTableExists(tableName);
   await assertColumnsExist(tableName, [pkCol]);
 
@@ -241,7 +241,7 @@ export async function deleteRow(
 
 export async function executeRawSql(
   query: string
-): Promise<{ rows: Record<string, any>[]; columns: string[]; rowCount: number }> {
+): Promise<{ rows: Record<string, unknown>[]; columns: string[]; rowCount: number }> {
   invalidateCaches();
   const sql = getRawClient();
   try {
@@ -249,7 +249,7 @@ export async function executeRawSql(
     const rows = Array.from(result);
     const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
     return { rows, columns, rowCount: result.count ?? rows.length };
-  } catch (err: any) {
-    throw new Error(err.message);
+  } catch (err: unknown) {
+    throw new Error(err instanceof Error ? err.message : String(err));
   }
 }

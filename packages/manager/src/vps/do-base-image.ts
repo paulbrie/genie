@@ -122,15 +122,16 @@ ufw reload
           connectSsh({ host: ipAddress, port: 22, username: "root", privateKeyPath, privateKey: keyPair.privateKey }),
           sleep(15_000).then(() => { throw new Error("attempt timeout (15s)"); }),
         ]);
-        const result = await (session as any).exec("docker --version");
-        (session as any).close();
+        const result = await session.exec("docker --version");
+        session.close();
         if (typeof result === "string" && result.includes("Docker")) {
           sshReady = true;
           onProgress("SSH ready, Docker available");
           break;
         }
-      } catch (err: any) {
-        onProgress(`[${attempt}] ${Math.round((Date.now() - sshStart) / 1000)}s — ${(err?.message || String(err)).slice(0, 120)}`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        onProgress(`[${attempt}] ${Math.round((Date.now() - sshStart) / 1000)}s — ${message.slice(0, 120)}`);
       }
       await sleep(POLL_INTERVAL);
     }
@@ -150,8 +151,9 @@ ufw reload
           break;
         }
         onProgress(`Cloud-init: ${result.trim().slice(0, 60)}...`);
-      } catch (err: any) {
-        onProgress(`Waiting for cloud-init (${ci}/24): ${err.message?.slice(0, 60)}`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        onProgress(`Waiting for cloud-init (${ci}/24): ${message.slice(0, 60)}`);
       }
       await sleep(5_000);
     }
@@ -222,17 +224,18 @@ ufw reload
 
     onProgress(`Base image ready: ${snapshotName} (id: ${snapshotId})`);
     return { snapshotId, snapshotName };
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const errMessage = err instanceof Error ? err.message : String(err);
     // Don't destroy the droplet on failure — let the user debug via SSH
     if (dropletId) {
       let failedIp = "";
       try {
         const current = await client.getDroplet(dropletId);
-        const pub = current.networks?.v4?.find((n: any) => n.type === "public");
+        const pub = current.networks?.v4?.find((n) => n.type === "public");
         failedIp = pub?.ip_address || "";
       } catch {}
       onProgress(`Build failed — droplet ${dropletId} (${failedIp || "no IP"}) kept alive for debugging`);
-      const enriched: any = new Error(err.message || String(err));
+      const enriched: Error & { failedDropletId?: number; failedDropletIp?: string } = new Error(errMessage);
       enriched.failedDropletId = dropletId;
       enriched.failedDropletIp = failedIp;
       throw enriched;
