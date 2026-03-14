@@ -51,7 +51,7 @@ function makeSession(conn: Client): SshSession {
           fn();
         }
 
-        function resetIdleTimer(stream: any) {
+        function resetIdleTimer(stream: ClientChannel) {
           if (!opts?.idleTimeoutMs) return;
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
@@ -106,7 +106,7 @@ function makeSession(conn: Client): SshSession {
 
     execStreaming(command: string, opts?: { pty?: boolean }): Promise<StreamingChannel> {
       return new Promise((resolve, reject) => {
-        const run = (err: Error | undefined, stream: any) => {
+        const run = (err: Error | undefined, stream: ClientChannel) => {
           if (err) return reject(err);
 
           // Wrap ssh2 channel stdin as a Node Writable
@@ -179,7 +179,7 @@ function makeSession(conn: Client): SshSession {
     },
 
     onTcpConnection(handler: (info: { destPort: number }, accept: () => ClientChannel) => void): void {
-      conn.on("tcp connection", (details: any, accept: () => ClientChannel) => {
+      conn.on("tcp connection", (details: { destPort: number }, accept: () => ClientChannel) => {
         handler({ destPort: details.destPort }, accept);
       });
     },
@@ -200,8 +200,11 @@ export function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: num
         : Buffer.from(config.privateKey);
     } else {
       try {
-        privateKey = fs.readFileSync(resolveHome(config.privateKeyPath));
-      } catch {
+        const keyPath = resolveHome(config.privateKeyPath);
+        privateKey = fs.readFileSync(keyPath);
+        console.log(`[ssh] Loaded key from ${keyPath} (${privateKey.length} bytes)`);
+      } catch (err) {
+        console.error(`[ssh] Failed to read key from ${config.privateKeyPath}:`, (err as Error).message);
         // Key file not readable — will try agent auth
       }
     }
@@ -211,6 +214,7 @@ export function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: num
         resolve(makeSession(conn));
       })
       .on("error", (err) => {
+        console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));
       })
       .connect({
