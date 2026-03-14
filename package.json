@@ -19,7 +19,7 @@
     "build:renderer": "cd packages/renderer && next build",
     "build:manager": "tsc -p packages/manager/tsconfig.json",
     "start": "concurrently \"npm run start:manager\" \"npm run start:renderer\"",
-    "start:manager": "node packages/manager/dist/index.js",
+    "start:manager": "node --disable-warning=DEP0040 packages/manager/dist/index.js",
     "start:renderer": "cd packages/renderer && next start",
     "manager": "npx tsx packages/manager/src/index.ts"
   },
