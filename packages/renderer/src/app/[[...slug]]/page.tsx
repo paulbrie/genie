@@ -22,6 +22,7 @@ import {
   loadSshKey,
   loadAiCosts,
   loadBackups,
+  loadAuditLogs,
   showAddForm as openAddAppForm,
   showAddProjectForm as openAddProjectForm,
   type NavKey,
@@ -125,6 +126,9 @@ function useRouteSync(): { activeTab?: ProjectTab } {
         if (parsed.adminTab === "ai") {
           loadAiCosts();
           if (parsed.aiSubTab) setAiSubTab(parsed.aiSubTab);
+        }
+        if (parsed.adminTab === "audit") {
+          loadAuditLogs();
         }
       }
       syncedRef.current = urlKey;

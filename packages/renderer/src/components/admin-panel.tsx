@@ -9,7 +9,7 @@ import {
   ChevronUp, ChevronDown, Pencil, Trash2, Plus, Play, Database,
   ChevronLeft, ChevronRight, ChevronsUpDown, Terminal,
   RefreshCw, ExternalLink, Settings, X, Copy, Check, Key, AlertTriangle,
-  RotateCcw, History, Clock, Download,
+  RotateCcw, History, Clock, Download, Users, UserPlus, Shield, Crown,
 } from "lucide-react";
 import {
   $admin,
@@ -55,6 +55,20 @@ import {
   type AiSubTab,
   type AiUsageRow,
   type AdminColumnInfo,
+  loadAdminUsers,
+  validateUser,
+  deleteUser,
+  saveUser,
+  loadAdminTeams,
+  createTeam,
+  updateTeam,
+  deleteTeam,
+  addTeamMember,
+  removeTeamMember,
+  setTeamMemberRole,
+  type AdminUser,
+  type AdminTeam,
+  type AdminTeamMember,
   loadSshKey,
   regenerateSshKey,
   runDrizzlePush,
@@ -62,6 +76,8 @@ import {
   loadBackups,
   createBackup,
   deleteBackup,
+  loadAuditLogs,
+  type AuditLogEntry,
   type AdminDroplet,
   type VpsStats,
 } from "@/store";
@@ -400,12 +416,299 @@ function DrizzlePushWindow({ output, running, onClose }: { output: string; runni
   );
 }
 
+const TEAM_ROLES: ("member" | "owner" | "superadmin")[] = ["member", "owner", "superadmin"];
+const USER_ROLES: ("user" | "admin" | "superadmin")[] = ["user", "admin", "superadmin"];
+
+function UserDrawer({ user, teams, teamMembers, onClose }: { user: AdminUser; teams: AdminTeam[]; teamMembers: AdminTeamMember[]; onClose: () => void }) {
+  const [name, setName] = useState(user.name);
+  const [validated, setValidated] = useState(user.validated);
+  const [role, setRole] = useState<"user" | "admin" | "superadmin">(user.role || "user");
+  const [addingTeam, setAddingTeam] = useState(false);
+  const [addTeamRole, setAddTeamRole] = useState<"member" | "owner" | "superadmin">("member");
+
+  useEffect(() => { setName(user.name); setValidated(user.validated); setRole(user.role || "user"); }, [user]);
+
+  const userTeams = teamMembers.filter((m: AdminTeamMember) => m.userId === user.id);
+  const availableTeams = teams.filter((t: AdminTeam) => !userTeams.some((m: AdminTeamMember) => m.teamId === t.id));
+
+  const handleSave = () => {
+    saveUser(user.id, { name, validated, role } as Partial<AdminUser>);
+    onClose();
+  };
+
+  return (
+    <div className="fixed right-0 top-0 h-screen w-[420px] z-50 bg-mantle border-l border-surface0 flex flex-col shadow-lg">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-surface0">
+        <h2 className="text-base font-semibold text-text">Edit User</h2>
+        <Button size="sm" variant="ghost" onClick={onClose}><X size={16} /></Button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {user.avatarUrl && (
+          <div className="flex justify-center">
+            <img src={user.avatarUrl} alt="" className="w-16 h-16 rounded-full" />
+          </div>
+        )}
+        <div>
+          <label className="text-subtext1 text-md block mb-1">Name</label>
+          <input className="w-full bg-surface0 border border-surface1 rounded px-3 py-2 text-md text-text font-mono" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-subtext1 text-md block mb-1">Email</label>
+          <p className="text-subtext0 text-md font-mono">{user.email}</p>
+        </div>
+        <div>
+          <label className="text-subtext1 text-md block mb-1">Validated</label>
+          <button
+            className={cn("px-3 py-1.5 rounded text-md font-mono", validated ? "bg-green/20 text-green" : "bg-yellow/20 text-yellow")}
+            onClick={() => setValidated(!validated)}
+          >
+            {validated ? "Validated" : "Pending"}
+          </button>
+        </div>
+        <div>
+          <label className="text-subtext1 text-md block mb-1">Role</label>
+          <select
+            className="bg-surface0 border border-surface1 rounded px-3 py-2 text-md text-text font-mono"
+            value={role}
+            onChange={(e) => setRole(e.target.value as typeof role)}
+          >
+            {USER_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-subtext1 text-md block mb-1">Google ID</label>
+          <p className="text-subtext0 text-md font-mono">{user.googleId}</p>
+        </div>
+        <div>
+          <label className="text-subtext1 text-md block mb-1">Joined</label>
+          <p className="text-subtext0 text-md font-mono">{new Date(user.createdAt).toLocaleString()}</p>
+        </div>
+
+        {/* Teams management */}
+        <div>
+          <label className="text-subtext1 text-md block mb-2">Teams</label>
+          <div className="space-y-2">
+            {userTeams.map((m: AdminTeamMember) => {
+              const team = teams.find((t: AdminTeam) => t.id === m.teamId);
+              return (
+                <div key={m.id} className="flex items-center justify-between py-2 px-3 bg-surface0/30 rounded">
+                  <span className="text-md">{team?.name || m.teamId}</span>
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="bg-surface0 border border-surface1 rounded px-2 py-1 text-md text-text"
+                      value={m.role}
+                      onChange={(e) => setTeamMemberRole(m.id, e.target.value)}
+                    >
+                      {TEAM_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <Button size="sm" variant="ghost" className="text-red hover:text-red" onClick={() => removeTeamMember(m.id)}>
+                      <X size={14} />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Add to team */}
+            {addingTeam ? (
+              <div className="flex items-center gap-2">
+                <select
+                  className="bg-surface0 border border-surface1 rounded px-2 py-1.5 text-md text-text flex-1"
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      addTeamMember(e.target.value, user.id, addTeamRole);
+                      setAddingTeam(false);
+                      setAddTeamRole("member");
+                    }
+                  }}
+                >
+                  <option value="" disabled>Select team...</option>
+                  {availableTeams.map((t: AdminTeam) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <select
+                  className="bg-surface0 border border-surface1 rounded px-2 py-1.5 text-md text-text"
+                  value={addTeamRole}
+                  onChange={(e) => setAddTeamRole(e.target.value as typeof addTeamRole)}
+                >
+                  {TEAM_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <Button size="sm" variant="ghost" onClick={() => setAddingTeam(false)}>
+                  <X size={14} />
+                </Button>
+              </div>
+            ) : availableTeams.length > 0 ? (
+              <Button size="sm" variant="ghost" onClick={() => setAddingTeam(true)}>
+                <Plus size={14} className="mr-1" /> Add to Team
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+      <div className="px-4 py-3 border-t border-surface0 flex items-center gap-2">
+        <Button onClick={handleSave} className="flex-1">Save</Button>
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
+function TeamsPanel({ teams, users }: { teams: AdminState["teams"]; users: AdminUser[] }) {
+  const [newTeamName, setNewTeamName] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
+  const [addMemberTeamId, setAddMemberTeamId] = useState<string | null>(null);
+
+  const nonAgentUsers = users.filter((u: AdminUser) => !u.isAgent);
+
+  const handleCreateTeam = () => {
+    if (!newTeamName.trim()) return;
+    createTeam(newTeamName.trim());
+    setNewTeamName("");
+  };
+
+  return (
+    <div className="flex-1 overflow-auto p-4 space-y-4">
+      {/* Create team form */}
+      <div className="flex items-center gap-2">
+        <input
+          className="bg-surface0 border border-surface1 rounded px-3 py-1.5 text-md text-text flex-1 max-w-xs"
+          placeholder="New team name..."
+          value={newTeamName}
+          onChange={(e) => setNewTeamName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleCreateTeam()}
+        />
+        <Button size="sm" onClick={handleCreateTeam} disabled={!newTeamName.trim()}>
+          <Plus size={14} className="mr-1" /> Create Team
+        </Button>
+      </div>
+
+      {teams.loading ? (
+        <p className="text-subtext0">Loading teams...</p>
+      ) : teams.list.length === 0 ? (
+        <p className="text-subtext0">No teams yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {teams.list.map((team: AdminTeam) => {
+            const teamMembers = teams.members.filter((m: AdminTeamMember) => m.teamId === team.id);
+            const isExpanded = expandedTeamId === team.id;
+            const isEditing = editingId === team.id;
+
+            return (
+              <div key={team.id} className="border border-surface0 rounded-lg overflow-hidden">
+                {/* Team header */}
+                <div className="flex items-center justify-between px-4 py-3 bg-surface0/30 cursor-pointer" onClick={() => setExpandedTeamId(isExpanded ? null : team.id)}>
+                  <div className="flex items-center gap-2">
+                    {isEditing ? (
+                      <input
+                        className="bg-surface0 border border-surface1 rounded px-2 py-1 text-md text-text"
+                        value={editingName}
+                        onChange={(e) => setEditingName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { updateTeam(team.id, editingName); setEditingId(null); }
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        autoFocus
+                      />
+                    ) : (
+                      <span className="font-medium">{team.name}</span>
+                    )}
+                    <span className="text-subtext0 text-md">({teamMembers.length} members)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setEditingId(team.id); setEditingName(team.name); }}>
+                      <Pencil size={14} />
+                    </Button>
+                    <Button size="sm" variant="ghost" className="text-red hover:text-red" onClick={(e) => { e.stopPropagation(); if (confirm(`Delete team "${team.name}"?`)) deleteTeam(team.id); }}>
+                      <Trash2 size={14} />
+                    </Button>
+                    {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </div>
+                </div>
+
+                {/* Expanded: members list */}
+                {isExpanded && (
+                  <div className="px-4 py-3 space-y-2">
+                    {teamMembers.length === 0 ? (
+                      <p className="text-subtext0 text-md">No members yet.</p>
+                    ) : (
+                      teamMembers.map((m: AdminTeamMember) => {
+                        const user = nonAgentUsers.find((u: AdminUser) => u.id === m.userId);
+                        return (
+                          <div key={m.id} className="flex items-center justify-between py-1.5 border-b border-surface0/50 last:border-0">
+                            <div className="flex items-center gap-2">
+                              {user?.avatarUrl && <img src={user.avatarUrl} alt="" className="w-5 h-5 rounded-full" />}
+                              <span>{user?.name || m.userId}</span>
+                              <span className="text-subtext0 text-md">{user?.email}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant={m.role === "owner" ? "default" : "ghost"}
+                                onClick={() => setTeamMemberRole(m.id, m.role === "owner" ? "member" : "owner")}
+                                title={m.role === "owner" ? "Demote to member" : "Promote to owner"}
+                              >
+                                <Crown size={14} className={m.role === "owner" ? "text-yellow" : ""} />
+                              </Button>
+                              <Button size="sm" variant="ghost" className="text-red hover:text-red" onClick={() => removeTeamMember(m.id)}>
+                                <X size={14} />
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+
+                    {/* Add member */}
+                    {addMemberTeamId === team.id ? (
+                      <div className="flex items-center gap-2 pt-2">
+                        <select
+                          className="bg-surface0 border border-surface1 rounded px-2 py-1.5 text-md text-text flex-1"
+                          defaultValue=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              addTeamMember(team.id, e.target.value);
+                              setAddMemberTeamId(null);
+                            }
+                          }}
+                        >
+                          <option value="" disabled>Select user...</option>
+                          {nonAgentUsers
+                            .filter((u: AdminUser) => !teamMembers.some((m: AdminTeamMember) => m.userId === u.id))
+                            .map((u: AdminUser) => (
+                              <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+                            ))}
+                        </select>
+                        <Button size="sm" variant="ghost" onClick={() => setAddMemberTeamId(null)}>
+                          <X size={14} />
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="ghost" onClick={() => setAddMemberTeamId(team.id)} className="mt-1">
+                        <Plus size={14} className="mr-1" /> Add Member
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AdminPanel() {
   const router = useRouter();
   const admin = useDeepSubjectAll($admin);
-  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, sqlResult, sqlError, sqlLoading, sqlOpen, droplets, dropletsLoading, dropletsError, dropletStats, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush } = admin;
+  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, sqlResult, sqlError, sqlLoading, sqlOpen, droplets, dropletsLoading, dropletsError, dropletStats, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush, users: usersState, teams: teamsState } = admin;
 
 
+  const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; user: AdminUser } | null>(null);
   const [sqlInput, setSqlInput] = useState("");
   // Configs sub-tab state
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
@@ -435,6 +738,13 @@ export function AdminPanel() {
     }
     if (activeTab === "ai") {
       loadAiCosts();
+    }
+    if (activeTab === "users") {
+      loadAdminUsers();
+    }
+    if (activeTab === "teams") {
+      loadAdminTeams();
+      loadAdminUsers();
     }
   }, []);
 
@@ -528,6 +838,9 @@ export function AdminPanel() {
             { key: "backup" as const, label: "Backup" },
             { key: "droplets" as const, label: "Droplets" },
             { key: "ai" as const, label: "AI" },
+            { key: "users" as const, label: "Users" },
+            { key: "teams" as const, label: "Teams" },
+            { key: "audit" as const, label: "Audit" },
           ]}
           activeTab={activeTab}
           onTabChange={(tab) => {
@@ -535,6 +848,9 @@ export function AdminPanel() {
             else if (tab === "backup") { setAdminTab("backup"); loadBackups(); router.push(buildAdminPath("backup")); }
             else if (tab === "droplets") { setAdminTab("droplets"); loadAdminDroplets(); loadBaseImageConfigs(); router.push(buildAdminPath("droplets", dropletsSubTab)); }
             else if (tab === "ai") { setAdminTab("ai"); loadAiCosts(); router.push(buildAdminPath("ai", aiState.subTab)); }
+            else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); router.push(buildAdminPath("users")); }
+            else if (tab === "teams") { setAdminTab("teams"); loadAdminTeams(); loadAdminUsers(); router.push(buildAdminPath("teams")); }
+            else if (tab === "audit") { setAdminTab("audit"); loadAuditLogs(); router.push(buildAdminPath("audit")); }
           }}
         />
       </div>
@@ -1449,7 +1765,109 @@ export function AdminPanel() {
       ) : activeTab === "ai" ? (
         /* ===== AI TAB ===== */
         <AiCostsPanel aiState={aiState} />
+      ) : activeTab === "users" ? (
+        /* ===== USERS TAB ===== */
+        <div className="flex-1 overflow-auto p-4">
+          <div className="space-y-2">
+            {usersState.loading ? (
+              <p className="text-subtext0">Loading users...</p>
+            ) : usersState.list.length === 0 ? (
+              <p className="text-subtext0">No users yet.</p>
+            ) : (
+              <table className="w-full text-md" onClick={() => setContextMenu(null)}>
+                <thead>
+                  <tr className="border-b border-surface0 text-subtext1 text-left">
+                    <th className="py-2 px-3">Name</th>
+                    <th className="py-2 px-3">Email</th>
+                    <th className="py-2 px-3">Role</th>
+                    <th className="py-2 px-3">Teams</th>
+                    <th className="py-2 px-3">Status</th>
+                    <th className="py-2 px-3">Joined</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usersState.list.filter((u: AdminUser) => !u.isAgent).map((u: AdminUser) => (
+                    <tr key={u.id} className="border-b border-surface0/50 hover:bg-surface0/30 cursor-pointer" onClick={() => setEditingUser(u)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, user: u }); }}>
+                      <td className="py-2 px-3 flex items-center gap-2">
+                        {u.avatarUrl && <img src={u.avatarUrl} alt="" className="w-6 h-6 rounded-full" />}
+                        <span>{u.name}</span>
+                      </td>
+                      <td className="py-2 px-3 text-subtext0">{u.email}</td>
+                      <td className="py-2 px-3">
+                        {u.role === "superadmin" ? (
+                          <span className="text-mauve inline-flex items-center gap-1"><Shield size={14} /> Super Admin</span>
+                        ) : u.role === "admin" ? (
+                          <span className="text-blue inline-flex items-center gap-1"><Shield size={14} /> Admin</span>
+                        ) : (
+                          <span className="text-subtext0">User</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="flex flex-wrap gap-1">
+                          {teamsState.members
+                            .filter((m: AdminTeamMember) => m.userId === u.id)
+                            .map((m: AdminTeamMember) => {
+                              const team = teamsState.list.find((t: AdminTeam) => t.id === m.teamId);
+                              const roleColor = m.role === "superadmin" ? "bg-mauve/20 text-mauve" : m.role === "owner" ? "bg-yellow/20 text-yellow" : "bg-surface1 text-subtext0";
+                              return (
+                                <span key={m.id} className={cn("px-2 py-0.5 rounded-full text-md", roleColor)}>
+                                  {team?.name || "?"}{m.role !== "member" ? ` · ${m.role}` : ""}
+                                </span>
+                              );
+                            })}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3">
+                        {u.validated ? (
+                          <span className="text-green inline-flex items-center gap-1"><Check size={14} /> Validated</span>
+                        ) : (
+                          <span className="text-yellow inline-flex items-center gap-1"><AlertTriangle size={14} /> Pending</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-subtext0">{new Date(u.createdAt).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {contextMenu && (
+              <>
+                <div className="fixed inset-0 z-50" onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />
+                <div className="fixed z-50 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[160px]" style={{ left: contextMenu.x, top: contextMenu.y }}>
+                  <button
+                    className="w-full text-left px-4 py-2 text-md hover:bg-surface0 text-text"
+                    onClick={() => { validateUser(contextMenu.user.id, !contextMenu.user.validated); setContextMenu(null); }}
+                  >
+                    {contextMenu.user.validated ? "Revoke validation" : "Validate"}
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-2 text-md hover:bg-surface0 text-red"
+                    onClick={() => { if (confirm(`Delete user ${contextMenu.user.name}?`)) deleteUser(contextMenu.user.id); setContextMenu(null); }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      ) : activeTab === "teams" ? (
+        /* ===== TEAMS TAB ===== */
+        <TeamsPanel teams={teamsState} users={usersState.list} />
+      ) : activeTab === "audit" ? (
+        /* ===== AUDIT TAB ===== */
+        <AuditPanel audit={admin.audit} />
       ) : null}
+
+      {/* User edit drawer */}
+      {editingUser && (
+        <UserDrawer
+          user={editingUser}
+          teams={teamsState.list}
+          teamMembers={teamsState.members}
+          onClose={() => setEditingUser(null)}
+        />
+      )}
 
       {/* Row drawer (database tab only) */}
       <AdminRowDrawer
@@ -1465,6 +1883,92 @@ export function AdminPanel() {
       {/* Drizzle Push floating window */}
       {drizzlePush.open && <DrizzlePushWindow output={drizzlePush.output} running={drizzlePush.running} onClose={closeDrizzlePush} />}
 
+    </div>
+  );
+}
+
+/* ===== AUDIT PANEL ===== */
+
+function AuditPanel({ audit }: { audit: AdminState["audit"] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [filterAction, setFilterAction] = useState("");
+
+  const uniqueActions = [...new Set(audit.logs.map((l: AuditLogEntry) => l.action))].sort();
+
+  const filteredLogs = filterAction
+    ? audit.logs.filter((l: AuditLogEntry) => l.action === filterAction)
+    : audit.logs;
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="px-4 py-3 border-b border-surface0 flex items-center gap-3">
+        <Button size="sm" onClick={() => loadAuditLogs()}>
+          <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+          Refresh
+        </Button>
+        <select
+          className="bg-surface0 text-text border border-surface1 rounded px-2 py-1 text-md"
+          value={filterAction}
+          onChange={(e) => setFilterAction(e.target.value)}
+        >
+          <option value="">All actions</option>
+          {uniqueActions.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <span className="text-md text-overlay0">{filteredLogs.length} entries</span>
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        <table className="w-full text-md">
+          <thead className="sticky top-0 bg-mantle z-10">
+            <tr className="text-left text-overlay0">
+              <th className="px-4 py-2 font-medium w-44">Time</th>
+              <th className="px-4 py-2 font-medium w-40">User</th>
+              <th className="px-4 py-2 font-medium w-56">Action</th>
+              <th className="px-4 py-2 font-medium">Payload</th>
+            </tr>
+          </thead>
+          <tbody>
+            {audit.loading ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-overlay0">Loading...</td></tr>
+            ) : filteredLogs.length === 0 ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-overlay0">No audit logs found</td></tr>
+            ) : (
+              filteredLogs.map((log: AuditLogEntry) => (
+                <tr
+                  key={log.id}
+                  className="border-t border-surface0 hover:bg-surface0/50 cursor-pointer"
+                  onClick={() => setExpandedId(expandedId === log.id ? null : log.id)}
+                >
+                  <td className="px-4 py-2 text-overlay1 whitespace-nowrap">
+                    {new Date(log.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2 text-text truncate">
+                    {log.userName || log.userId?.slice(0, 8) || "-"}
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className="px-1.5 py-0.5 bg-surface1 rounded text-text font-mono">
+                      {log.action}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-overlay0 truncate max-w-md">
+                    {expandedId === log.id ? (
+                      <pre className="whitespace-pre-wrap text-md text-overlay1 max-h-60 overflow-auto">
+                        {JSON.stringify(log.payload, null, 2)}
+                      </pre>
+                    ) : (
+                      <span className="truncate block">
+                        {log.payload ? JSON.stringify(log.payload).slice(0, 100) : "-"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

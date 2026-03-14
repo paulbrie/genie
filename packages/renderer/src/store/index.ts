@@ -539,8 +539,34 @@ export interface AdminAiState {
   settingsLoading: boolean;
 }
 
+export interface AdminUser {
+  id: string;
+  googleId: string;
+  email: string;
+  name: string;
+  avatarUrl: string | null;
+  isAgent: boolean;
+  validated: boolean;
+  role: "user" | "admin" | "superadmin";
+  createdAt: string;
+}
+
+export interface AdminTeam {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface AdminTeamMember {
+  id: string;
+  teamId: string;
+  userId: string;
+  role: "member" | "owner" | "superadmin";
+  joinedAt: string;
+}
+
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];
@@ -584,6 +610,31 @@ export interface AdminState {
     loading: boolean;
     creating: boolean;
   };
+  users: {
+    list: AdminUser[];
+    loading: boolean;
+  };
+  teams: {
+    list: AdminTeam[];
+    members: AdminTeamMember[];
+    loading: boolean;
+  };
+  audit: {
+    logs: AuditLogEntry[];
+    loading: boolean;
+    filterUserId: string | null;
+    filterAction: string | null;
+  };
+}
+
+export interface AuditLogEntry {
+  id: string;
+  userId: string | null;
+  userName: string | null;
+  action: string;
+  payload: Record<string, unknown> | null;
+  ip: string | null;
+  createdAt: string;
 }
 
 interface UiState {
@@ -726,6 +777,9 @@ export const $admin = new DeepSubject<AdminState>({
   sshKey: { exists: false, publicKey: null, fingerprint: null, loading: false, regenerating: false },
   drizzlePush: { running: false, output: "", open: false },
   backups: { files: [], loading: false, creating: false },
+  users: { list: [], loading: false },
+  teams: { list: [], members: [], loading: false },
+  audit: { logs: [], loading: false, filterUserId: null, filterAction: null },
   ai: { subTab: "costs", costs: [], loading: false, error: null, settings: { defaultModel: "claude-sonnet", maxToolRounds: 10 }, settingsLoading: false },
 });
 export const $windowManager = new Subject<WindowManagerState>({ windows: {}, nextZIndex: 10000 });
@@ -1317,7 +1371,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit"): void {
   $admin.getValue().activeTab = tab;
 }
 
@@ -1466,6 +1520,68 @@ export function loadAiSettings(): void {
 
 export function saveAiSettings(settings: Partial<AiSettings>): void {
   wsSend("admin:ai:settings:save", settings);
+}
+
+// --- Users Admin actions ---
+
+export function loadAdminUsers(): void {
+  $admin.getValue().users.loading = true;
+  wsSend("admin:users:list", {});
+}
+
+export function validateUser(userId: string, validated: boolean): void {
+  wsSend("admin:users:validate", { userId, validated });
+}
+
+export function deleteUser(userId: string): void {
+  wsSend("admin:users:delete", { userId });
+}
+
+export function saveUser(userId: string, data: Partial<AdminUser>): void {
+  wsSend("admin:users:update", { userId, data });
+}
+
+// --- Teams Admin actions ---
+
+export function loadAdminTeams(): void {
+  $admin.getValue().teams.loading = true;
+  wsSend("admin:teams:list", {});
+}
+
+export function createTeam(name: string): void {
+  wsSend("admin:teams:create", { name });
+}
+
+export function updateTeam(teamId: string, name: string): void {
+  wsSend("admin:teams:update", { teamId, name });
+}
+
+export function deleteTeam(teamId: string): void {
+  wsSend("admin:teams:delete", { teamId });
+}
+
+export function addTeamMember(teamId: string, userId: string, role?: string): void {
+  wsSend("admin:teams:add-member", { teamId, userId, role: role || "member" });
+}
+
+export function removeTeamMember(memberId: string): void {
+  wsSend("admin:teams:remove-member", { memberId });
+}
+
+export function setTeamMemberRole(memberId: string, role: string): void {
+  wsSend("admin:teams:set-role", { memberId, role });
+}
+
+export function loadAuditLogs(opts?: { userId?: string; action?: string }): void {
+  const v = $admin.getValue();
+  v.audit.loading = true;
+  if (opts?.userId !== undefined) v.audit.filterUserId = opts.userId || null;
+  if (opts?.action !== undefined) v.audit.filterAction = opts.action || null;
+  wsSend("admin:audit:list", {
+    userId: v.audit.filterUserId || undefined,
+    action: v.audit.filterAction || undefined,
+    limit: 200,
+  });
 }
 
 // --- Settings actions ---
@@ -2150,6 +2266,15 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
 
     case "auth:logged-out": {
       $auth.next({ status: "unauthenticated", user: null, token: null });
+      break;
+    }
+
+    case "auth:revoked": {
+      $auth.next({ status: "unauthenticated", user: null, token: null });
+      setStoredToken(null);
+      if (typeof window !== "undefined") {
+        alert(msg.payload.message || "Your access has been revoked.");
+      }
       break;
     }
 
@@ -3121,6 +3246,84 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
           ai.settings.maxToolRounds = msg.payload.maxToolRounds;
         }
         ai.settingsLoading = false;
+      });
+      break;
+    }
+
+    case "admin:users:list": {
+      batch(() => {
+        const u = $admin.getValue().users;
+        u.list = msg.payload.users;
+        u.loading = false;
+      });
+      break;
+    }
+
+    case "admin:users:updated": {
+      const list = $admin.getValue().users.list;
+      const idx = list.findIndex((u: AdminUser) => u.id === msg.payload.user.id);
+      if (idx >= 0) list[idx] = msg.payload.user;
+      break;
+    }
+
+    case "admin:users:deleted": {
+      const u = $admin.getValue().users;
+      u.list = u.list.filter((x: AdminUser) => x.id !== msg.payload.userId);
+      break;
+    }
+
+    case "admin:teams:list": {
+      batch(() => {
+        const t = $admin.getValue().teams;
+        t.list = msg.payload.teams;
+        t.members = msg.payload.members;
+        t.loading = false;
+      });
+      break;
+    }
+
+    case "admin:teams:created": {
+      $admin.getValue().teams.list.push(msg.payload.team);
+      break;
+    }
+
+    case "admin:teams:updated": {
+      const list = $admin.getValue().teams.list;
+      const idx = list.findIndex((t: AdminTeam) => t.id === msg.payload.team.id);
+      if (idx >= 0) list[idx] = msg.payload.team;
+      break;
+    }
+
+    case "admin:teams:deleted": {
+      const t = $admin.getValue().teams;
+      t.list = t.list.filter((x: AdminTeam) => x.id !== msg.payload.teamId);
+      t.members = t.members.filter((m: AdminTeamMember) => m.teamId !== msg.payload.teamId);
+      break;
+    }
+
+    case "admin:teams:member-added": {
+      $admin.getValue().teams.members.push(msg.payload.member);
+      break;
+    }
+
+    case "admin:teams:member-removed": {
+      const t = $admin.getValue().teams;
+      t.members = t.members.filter((m: AdminTeamMember) => m.id !== msg.payload.memberId);
+      break;
+    }
+
+    case "admin:teams:role-updated": {
+      const members = $admin.getValue().teams.members;
+      const idx = members.findIndex((m: AdminTeamMember) => m.id === msg.payload.member.id);
+      if (idx >= 0) members[idx] = msg.payload.member;
+      break;
+    }
+
+    case "admin:audit:list": {
+      batch(() => {
+        const a = $admin.getValue().audit;
+        a.logs = msg.payload.logs;
+        a.loading = false;
       });
       break;
     }

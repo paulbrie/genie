@@ -747,17 +747,22 @@ interface ClientState {
 const clients = new Map<WebSocket, ClientState>();
 
 /** Force-disconnect all WebSocket connections for a given user */
-function disconnectUser(userId: string): void {
+function disconnectUser(targetUserId: string): void {
+  let found = 0;
   for (const [clientWs, state] of clients) {
-    if (state.userId === userId) {
-      send(clientWs, { type: "auth:revoked", payload: { message: "Your access has been revoked by an administrator." } });
+    if (state.userId === targetUserId) {
+      found++;
+      console.log(`[auth] Disconnecting user ${targetUserId} (ws readyState=${clientWs.readyState})`);
+      const msg = JSON.stringify({ type: "auth:revoked", payload: { message: "Your access has been revoked by an administrator." } });
+      clientWs.send(msg);
       // Clear auth so no further messages are processed
       state.userId = null;
       state.user = null;
       // Delay close to let the message flush
-      setTimeout(() => clientWs.close(), 500);
+      setTimeout(() => clientWs.close(), 1000);
     }
   }
+  console.log(`[auth] disconnectUser(${targetUserId}): found ${found} connection(s)`);
 }
 
 /** Pending DOM action requests from extension (requestId → resolve/reject) */
