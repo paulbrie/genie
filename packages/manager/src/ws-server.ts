@@ -24,9 +24,10 @@ import * as docsService from "./docs-service.js";
 import * as trackerService from "./tracker-service.js";
 import * as adminService from "./admin-service.js";
 import * as backupService from "./backup-service.js";
+import * as auditService from "./audit-service.js";
 import { getClaudeUserId } from "./db/seed.js";
 import { getDb } from "./db/index.js";
-import { deployLogs, aiUsage, users, savedQueries } from "./db/schema.js";
+import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers } from "./db/schema.js";
 import { eq, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { connectSsh, type SshSession } from "./vps/ssh-client.js";
@@ -745,6 +746,20 @@ interface ClientState {
 
 const clients = new Map<WebSocket, ClientState>();
 
+/** Force-disconnect all WebSocket connections for a given user */
+function disconnectUser(userId: string): void {
+  for (const [clientWs, state] of clients) {
+    if (state.userId === userId) {
+      send(clientWs, { type: "auth:revoked", payload: { message: "Your access has been revoked by an administrator." } });
+      // Clear auth so no further messages are processed
+      state.userId = null;
+      state.user = null;
+      // Delay close to let the message flush
+      setTimeout(() => clientWs.close(), 500);
+    }
+  }
+}
+
 /** Pending DOM action requests from extension (requestId → resolve/reject) */
 const pendingDomActions = new Map<string, {
   resolve: (result: { success: boolean; result: string }) => void;
@@ -982,6 +997,10 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
       if (decoded) {
         const user = await getUserById(decoded.userId);
         if (user) {
+          if (!user.validated) {
+            send(ws, { type: "auth:failed", payload: { message: "Your account is pending validation. Please contact the administrator." } });
+            return true;
+          }
           const state = clients.get(ws);
           if (state) {
             state.userId = user.id;
@@ -2842,12 +2861,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "No VPS deployment for this project/instance" } });
         break;
       }
-      // Fast-fail if we know the droplet is gone
+      // Trigger a background sync if the droplet isn't in our known-alive set,
+      // but still attempt SSH — the DO API list may be stale or incomplete.
       const dropletId = vpsInst.digitalocean?.dropletId;
       if (dropletId && lastDropletSync > 0 && !knownAliveDropletIds.has(dropletId)) {
         void syncDropletStatuses();
-        send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "Droplet no longer exists" } });
-        break;
       }
       try {
         const stats = await vpsStats(vpsInst.connection);
@@ -3032,6 +3050,24 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     // --- Admin ---
+
+    case "admin:audit:list": {
+      try {
+        const { userId, action, from, to, limit, offset } = msg.payload;
+        const logs = await auditService.getAuditLogs({
+          userId,
+          action,
+          from: from ? new Date(from) : undefined,
+          to: to ? new Date(to) : undefined,
+          limit,
+          offset,
+        });
+        send(ws, { type: "admin:audit:list", payload: { logs } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
 
     case "admin:tables": {
       try {
@@ -3696,6 +3732,146 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // ── Users & Teams ─────────────────────────────────────
+    case "admin:users:list": {
+      try {
+        const db = getDb();
+        const allUsers = await db.select().from(users).orderBy(users.createdAt);
+        send(ws, { type: "admin:users:list", payload: { users: allUsers } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:users:validate": {
+      try {
+        const db = getDb();
+        const { userId, validated } = msg.payload;
+        const [updated] = await db.update(users).set({ validated }).where(eq(users.id, userId)).returning();
+        send(ws, { type: "admin:users:updated", payload: { user: updated } });
+        if (!validated) disconnectUser(userId);
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:users:update": {
+      try {
+        const db = getDb();
+        const { userId, data } = msg.payload;
+        const allowedFields: Record<string, any> = {};
+        if (data.name !== undefined) allowedFields.name = data.name;
+        if (data.validated !== undefined) allowedFields.validated = data.validated;
+        if (data.defaultEditor !== undefined) allowedFields.defaultEditor = data.defaultEditor;
+        if (data.role !== undefined) allowedFields.role = data.role;
+        const [updated] = await db.update(users).set(allowedFields).where(eq(users.id, userId)).returning();
+        send(ws, { type: "admin:users:updated", payload: { user: updated } });
+        if (data.validated === false) disconnectUser(userId);
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:users:delete": {
+      try {
+        const db = getDb();
+        const { userId } = msg.payload;
+        await db.delete(users).where(eq(users.id, userId));
+        send(ws, { type: "admin:users:deleted", payload: { userId } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:teams:list": {
+      try {
+        const db = getDb();
+        const allTeams = await db.select().from(teams).orderBy(teams.createdAt);
+        const allMembers = await db.select().from(teamMembers);
+        send(ws, { type: "admin:teams:list", payload: { teams: allTeams, members: allMembers } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:teams:create": {
+      try {
+        const db = getDb();
+        const { name } = msg.payload;
+        const [team] = await db.insert(teams).values({ name }).returning();
+        send(ws, { type: "admin:teams:created", payload: { team } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:teams:update": {
+      try {
+        const db = getDb();
+        const { teamId, name } = msg.payload;
+        const [team] = await db.update(teams).set({ name }).where(eq(teams.id, teamId)).returning();
+        send(ws, { type: "admin:teams:updated", payload: { team } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:teams:delete": {
+      try {
+        const db = getDb();
+        const { teamId } = msg.payload;
+        await db.delete(teamMembers).where(eq(teamMembers.teamId, teamId));
+        await db.delete(teams).where(eq(teams.id, teamId));
+        send(ws, { type: "admin:teams:deleted", payload: { teamId } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:teams:add-member": {
+      try {
+        const db = getDb();
+        const { teamId, userId, role } = msg.payload;
+        const [member] = await db.insert(teamMembers).values({ teamId, userId, role: role || "member" }).returning();
+        send(ws, { type: "admin:teams:member-added", payload: { member } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:teams:remove-member": {
+      try {
+        const db = getDb();
+        const { memberId } = msg.payload;
+        await db.delete(teamMembers).where(eq(teamMembers.id, memberId));
+        send(ws, { type: "admin:teams:member-removed", payload: { memberId } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:teams:set-role": {
+      try {
+        const db = getDb();
+        const { memberId, role } = msg.payload;
+        const [updated] = await db.update(teamMembers).set({ role }).where(eq(teamMembers.id, memberId)).returning();
+        send(ws, { type: "admin:teams:role-updated", payload: { member: updated } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
     // ── Settings ──────────────────────────────────────────
     case "settings:get": {
       const reqId = msg.payload?.reqId;
@@ -4316,6 +4492,13 @@ export async function createServer(): Promise<WebSocketServer> {
     ws.on("message", (raw) => {
       try {
         const msg: WsMessage = JSON.parse(raw.toString());
+        const clientState = clients.get(ws);
+        auditService.logAction(
+          clientState?.userId ?? null,
+          clientState?.user?.name ?? null,
+          msg.type,
+          msg.payload,
+        );
         handleMessage(ws, msg).catch((err) => {
           console.error("Unhandled error in handleMessage:", err);
           send(ws, {

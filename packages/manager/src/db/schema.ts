@@ -7,6 +7,8 @@ export const users = pgTable("users", {
   name: text("name").notNull(),
   avatarUrl: text("avatar_url"),
   isAgent: boolean("is_agent").default(false).notNull(),
+  validated: boolean("validated").default(false).notNull(),
+  role: text("role", { enum: ["user", "admin", "superadmin"] }).default("user").notNull(),
   gitToken: text("git_token"),
   defaultEditor: text("default_editor"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -246,8 +248,43 @@ export const chatSessionMeta = pgTable("chat_session_meta", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+export const auditLog = pgTable("audit_log", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id"),
+  userName: text("user_name"),
+  action: text("action").notNull(),
+  payload: jsonb("payload"),
+  ip: text("ip"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [
+  index("idx_audit_log_user").on(t.userId),
+  index("idx_audit_log_action").on(t.action),
+  index("idx_audit_log_created").on(t.createdAt),
+]);
+
 export const globalSettings = pgTable("global_settings", {
   key: text("key").primaryKey(),
   value: jsonb("value").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+export const teams = pgTable("teams", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const teamMembers = pgTable(
+  "team_members",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    teamId: uuid("team_id").references(() => teams.id).notNull(),
+    userId: uuid("user_id").references(() => users.id).notNull(),
+    role: text("role", { enum: ["member", "owner", "superadmin"] }).default("member").notNull(),
+    joinedAt: timestamp("joined_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_team_members_team").on(table.teamId),
+    index("idx_team_members_user").on(table.userId),
+  ]
+);
