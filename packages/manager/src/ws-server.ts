@@ -746,6 +746,11 @@ interface ClientState {
 
 const clients = new Map<WebSocket, ClientState>();
 
+async function buildAuthPayload(user: { id: string; name: string; email: string; avatarUrl: string | null; role: string }, token: string) {
+  const admin = await isAdmin(user.id);
+  return { token, user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl, isAdmin: admin, role: user.role } };
+}
+
 /** Force-disconnect all WebSocket connections for a given user */
 function disconnectUser(targetUserId: string): void {
   let found = 0;
@@ -973,14 +978,8 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
               state.userId = user.id;
               state.user = { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl };
             }
-            const admin = await isAdmin(user.id);
-            send(ws, {
-              type: "auth:success",
-              payload: {
-                token,
-                user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl, isAdmin: admin },
-              },
-            });
+            const authPayload = await buildAuthPayload(user, token);
+            send(ws, { type: "auth:success", payload: authPayload });
             await sendInitialData(ws, user.id);
             broadcastPresence();
           },
@@ -1011,14 +1010,8 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
             state.userId = user.id;
             state.user = { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl };
           }
-          const admin = await isAdmin(user.id);
-          send(ws, {
-            type: "auth:success",
-            payload: {
-              token,
-              user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl, isAdmin: admin },
-            },
-          });
+          const authPayload = await buildAuthPayload(user, token);
+          send(ws, { type: "auth:success", payload: authPayload });
           sendInitialData(ws, user.id);
           broadcastPresence();
           return true;
@@ -2929,9 +2922,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       try {
-        await vpsTeardown(project!.name, vpsInst.connection, (step) => {
-          send(ws, { type: "vps:teardown:progress", payload: { projectId, instanceId, message: step } });
-        });
+        // Try SSH cleanup, but don't fail the whole teardown if unreachable
+        try {
+          await vpsTeardown(project!.name, vpsInst.connection, (step) => {
+            send(ws, { type: "vps:teardown:progress", payload: { projectId, instanceId, message: step } });
+          });
+        } catch (sshErr: unknown) {
+          send(ws, { type: "vps:teardown:progress", payload: { projectId, instanceId, message: `SSH cleanup skipped: ${sshErr instanceof Error ? sshErr.message : String(sshErr)}` } });
+        }
         if (vpsInst.digitalocean) {
           const doToken = await settingsService.getGlobalDoToken();
           if (doToken) {
