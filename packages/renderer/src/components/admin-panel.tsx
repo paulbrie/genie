@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import {
   $admin,
-  addTerminalTab,
+  addSshTerminalTab,
   loadAdminTables,
   selectAdminTable,
   loadAdminRows,
@@ -77,7 +77,11 @@ import {
   createBackup,
   deleteBackup,
   loadAuditLogs,
+  loadProdDeployments,
+  loadProdLogs,
   type AuditLogEntry,
+  type RailwayDeployment,
+  type RailwayLogEntry,
   type AdminDroplet,
   type VpsStats,
 } from "@/store";
@@ -841,6 +845,7 @@ export function AdminPanel() {
             { key: "users" as const, label: "Users" },
             { key: "teams" as const, label: "Teams" },
             { key: "audit" as const, label: "Audit" },
+            { key: "prodlogs" as const, label: "Prod Logs" },
           ]}
           activeTab={activeTab}
           onTabChange={(tab) => {
@@ -851,6 +856,7 @@ export function AdminPanel() {
             else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); router.push(buildAdminPath("users")); }
             else if (tab === "teams") { setAdminTab("teams"); loadAdminTeams(); loadAdminUsers(); router.push(buildAdminPath("teams")); }
             else if (tab === "audit") { setAdminTab("audit"); loadAuditLogs(); router.push(buildAdminPath("audit")); }
+            else if (tab === "prodlogs") { setAdminTab("prodlogs"); loadProdDeployments(); router.push(buildAdminPath("prodlogs")); }
           }}
         />
       </div>
@@ -1118,7 +1124,7 @@ export function AdminPanel() {
                           statsLoading={isActive && !stats}
                           onRefresh={() => { loadAdminDroplets(); loadAdminDropletStats(); }}
                           onSshTerminal={isActive && d.ip ? () => {
-                            addTerminalTab(undefined, `SSH ${d.ip}`, `ssh -o StrictHostKeyChecking=no -i ~/.genie/ssh/genie_ed25519 root@${d.ip} -t 'cd /opt/project || true; exec bash'`);
+                            addSshTerminalTab({ host: d.ip! });
                           } : undefined}
                           onDelete={() => {
                             if (confirm(`Delete droplet "${d.name}"? This cannot be undone.`)) {
@@ -1857,6 +1863,9 @@ export function AdminPanel() {
       ) : activeTab === "audit" ? (
         /* ===== AUDIT TAB ===== */
         <AuditPanel audit={admin.audit} />
+      ) : activeTab === "prodlogs" ? (
+        /* ===== PROD LOGS TAB ===== */
+        <ProdLogsPanel prodlogs={admin.prodlogs} />
       ) : null}
 
       {/* User edit drawer */}
@@ -1986,6 +1995,118 @@ function AuditPanel({ audit }: { audit: AdminState["audit"] }) {
             )}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/* ===== PROD LOGS PANEL ===== */
+
+function ProdLogsPanel({ prodlogs }: { prodlogs: AdminState["prodlogs"] }) {
+  const { deployments, logs, selectedDeploymentId, logType, loading, logsLoading } = prodlogs;
+
+  return (
+    <div className="flex-1 flex overflow-hidden">
+      {/* Deployments sidebar */}
+      <div className="w-72 shrink-0 border-r border-surface0 flex flex-col overflow-hidden">
+        <div className="px-3 py-2 border-b border-surface0 flex items-center gap-2">
+          <span className="text-base font-medium text-text">Deployments</span>
+          <Button size="sm" onClick={() => loadProdDeployments()}>
+            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          </Button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {loading && deployments.length === 0 ? (
+            <div className="px-3 py-4 text-overlay0 text-base">Loading...</div>
+          ) : deployments.length === 0 ? (
+            <div className="px-3 py-4 text-overlay0 text-base">No deployments found</div>
+          ) : (
+            deployments.map((d: RailwayDeployment) => (
+              <button
+                key={d.id}
+                onClick={() => loadProdLogs(d.id, logType)}
+                className={cn(
+                  "w-full text-left px-3 py-2 border-none cursor-pointer transition-colors text-base",
+                  d.id === selectedDeploymentId
+                    ? "bg-surface0 text-text"
+                    : "bg-transparent text-subtext0 hover:bg-surface0/50"
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "w-2 h-2 rounded-full shrink-0",
+                    d.status === "SUCCESS" ? "bg-green" :
+                    d.status === "FAILED" ? "bg-red" :
+                    d.status === "DEPLOYING" || d.status === "BUILDING" ? "bg-yellow" :
+                    "bg-overlay0"
+                  )} />
+                  <span className="truncate font-medium">{d.serviceName}</span>
+                </div>
+                <div className="text-overlay0 mt-0.5 flex items-center gap-2">
+                  <span>{d.status}</span>
+                  <span className="text-overlay0">&middot;</span>
+                  <span>{new Date(d.createdAt).toLocaleString()}</span>
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Log viewer */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {selectedDeploymentId ? (
+          <>
+            <div className="px-4 py-2 border-b border-surface0 flex items-center gap-3">
+              <button
+                onClick={() => loadProdLogs(selectedDeploymentId, "deploy")}
+                className={cn(
+                  "px-3 py-1 rounded text-base border-none cursor-pointer transition-colors",
+                  logType === "deploy" ? "bg-surface0 text-text" : "bg-transparent text-overlay0 hover:text-text"
+                )}
+              >
+                Deploy Logs
+              </button>
+              <button
+                onClick={() => loadProdLogs(selectedDeploymentId, "build")}
+                className={cn(
+                  "px-3 py-1 rounded text-base border-none cursor-pointer transition-colors",
+                  logType === "build" ? "bg-surface0 text-text" : "bg-transparent text-overlay0 hover:text-text"
+                )}
+              >
+                Build Logs
+              </button>
+              <Button size="sm" onClick={() => loadProdLogs(selectedDeploymentId, logType)}>
+                <RefreshCw className={cn("w-3.5 h-3.5", logsLoading && "animate-spin")} />
+              </Button>
+            </div>
+            <div className="flex-1 overflow-auto bg-mantle font-mono text-base p-3">
+              {logsLoading ? (
+                <div className="text-overlay0">Loading logs...</div>
+              ) : logs.length === 0 ? (
+                <div className="text-overlay0">No logs available</div>
+              ) : (
+                logs.map((entry: RailwayLogEntry, i: number) => (
+                  <div key={i} className="flex gap-3 leading-relaxed">
+                    <span className="text-overlay0 shrink-0 select-none">
+                      {new Date(entry.timestamp).toLocaleTimeString()}
+                    </span>
+                    <span className={cn(
+                      entry.severity === "error" ? "text-red" :
+                      entry.severity === "warn" ? "text-yellow" : "text-text"
+                    )}>
+                      {entry.message}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-overlay0 text-base">
+            Select a deployment to view logs
+          </div>
+        )}
       </div>
     </div>
   );

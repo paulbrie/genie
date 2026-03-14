@@ -16,7 +16,7 @@ import * as projectManager from "./project-manager.js";
 import { startMonitoring, stopMonitoring, setMonitoringInterval, getDockerBin } from "./monitor.js";
 import { handleChat, type ChatModelId } from "./chat.js";
 import { startLogCapture, getLogBuffer, clearLogBuffer } from "./log-capture.js";
-import { setPtyEventCallback, spawnPty, writePty, resizePty, closePty, closeAllPtys, getSessionAccess, getScrollback, addCollaborator, removeCollaborator, isAuthorized, removeCollaboratorFromAll, getUserSessionDetails } from "./pty-manager.js";
+import { setPtyEventCallback, spawnPty, spawnSshPty, writePty, resizePty, closePty, closeAllPtys, getSessionAccess, getScrollback, addCollaborator, removeCollaborator, isAuthorized, removeCollaboratorFromAll, getUserSessionDetails } from "./pty-manager.js";
 import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth.js";
 import * as assistantLogService from "./assistant-log-service.js";
 import * as chatService from "./chat-service.js";
@@ -25,9 +25,10 @@ import * as trackerService from "./tracker-service.js";
 import * as adminService from "./admin-service.js";
 import * as backupService from "./backup-service.js";
 import * as auditService from "./audit-service.js";
+import * as railwayService from "./railway-service.js";
 import { getClaudeUserId } from "./db/seed.js";
 import { getDb } from "./db/index.js";
-import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers } from "./db/schema.js";
+import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers, fileTemplates } from "./db/schema.js";
 import { eq, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { connectSsh, type SshSession } from "./vps/ssh-client.js";
@@ -2509,6 +2510,95 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // --- File template handlers ---
+
+    case "file-template:list": {
+      const db = getDb();
+      const rows = await db.select().from(fileTemplates).orderBy(fileTemplates.name);
+      const templates = rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        description: r.description,
+        files: r.files as Record<string, string>,
+        createdBy: r.createdBy,
+        createdAt: r.createdAt.toISOString(),
+      }));
+      send(ws, { type: "file-template:list", payload: { templates } });
+      break;
+    }
+
+    case "file-template:create": {
+      const { name, description, files } = msg.payload;
+      const db = getDb();
+      const [row] = await db.insert(fileTemplates).values({
+        name,
+        description: description || "",
+        files: files || {},
+        createdBy: userId!,
+      }).returning();
+      send(ws, { type: "file-template:created", payload: { ok: true, template: { id: row.id, name: row.name, description: row.description, files: row.files, createdBy: row.createdBy, createdAt: row.createdAt.toISOString() } } });
+      break;
+    }
+
+    case "file-template:update": {
+      const { id, name, description, files } = msg.payload;
+      const db = getDb();
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (name !== undefined) patch.name = name;
+      if (description !== undefined) patch.description = description;
+      if (files !== undefined) patch.files = files;
+      await db.update(fileTemplates).set(patch).where(eq(fileTemplates.id, id));
+      send(ws, { type: "file-template:updated", payload: { ok: true, id } });
+      break;
+    }
+
+    case "file-template:delete": {
+      const { id } = msg.payload;
+      const db = getDb();
+      await db.delete(fileTemplates).where(eq(fileTemplates.id, id));
+      send(ws, { type: "file-template:deleted", payload: { ok: true, id } });
+      break;
+    }
+
+    case "file-template:inject": {
+      const { projectId, templateId, mode } = msg.payload; // mode: "merge" | "replace"
+      const db = getDb();
+      const [tpl] = await db.select().from(fileTemplates).where(eq(fileTemplates.id, templateId));
+      if (!tpl) {
+        send(ws, { type: "file-template:injected", payload: { ok: false, error: "Template not found" } });
+        break;
+      }
+      const project = await projectService.getById(projectId);
+      if (!project) {
+        send(ws, { type: "file-template:injected", payload: { ok: false, error: "Project not found" } });
+        break;
+      }
+      const tplFiles = (tpl.files || {}) as Record<string, string>;
+      const existing = (project.setupFiles || {}) as Record<string, string>;
+      const merged = mode === "replace" ? { ...tplFiles } : { ...existing, ...tplFiles };
+      await projectService.patchProject(projectId, { setupFiles: merged });
+      send(ws, { type: "file-template:injected", payload: { ok: true, projectId } });
+      break;
+    }
+
+    case "file-template:save-from-project": {
+      const { projectId, name, description } = msg.payload;
+      const project = await projectService.getById(projectId);
+      if (!project) {
+        send(ws, { type: "file-template:created", payload: { ok: false, error: "Project not found" } });
+        break;
+      }
+      const db = getDb();
+      const [row] = await db.insert(fileTemplates).values({
+        name,
+        description: description || "",
+        files: project.setupFiles || {},
+        createdBy: userId!,
+      }).returning();
+      send(ws, { type: "file-template:created", payload: { ok: true, template: { id: row.id, name: row.name, description: row.description, files: row.files, createdBy: row.createdBy, createdAt: row.createdAt.toISOString() } } });
+      break;
+    }
+
     // --- DigitalOcean handlers ---
 
     case "do:validate-token": {
@@ -3053,6 +3143,39 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     // --- Admin ---
+
+    case "admin:railway:test": {
+      try {
+        const result = await railwayService.testConnection();
+        send(ws, { type: "admin:railway:test", payload: result });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:railway:test", payload: { ok: false, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:prodlogs:deployments": {
+      try {
+        const deployments = await railwayService.getDeployments(msg.payload.limit ?? 20);
+        send(ws, { type: "admin:prodlogs:deployments", payload: { deployments } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:prodlogs:logs": {
+      try {
+        const { deploymentId, logType, limit } = msg.payload;
+        const logs = logType === "build"
+          ? await railwayService.getBuildLogs(deploymentId, limit ?? 500)
+          : await railwayService.getDeploymentLogs(deploymentId, limit ?? 500);
+        send(ws, { type: "admin:prodlogs:logs", payload: { deploymentId, logType, logs } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
 
     case "admin:audit:list": {
       try {
@@ -4330,11 +4453,26 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const { id, projectId, instanceId, cols, rows } = msg.payload;
       try {
         const conn = await getVpsConnection(projectId, instanceId);
-        const sshCmd = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${conn.privateKeyPath} ${conn.username}@${conn.host} -p ${conn.port || 22} -t "cd /opt/project || true; exec \\$SHELL -l"`;
-        void spawnPty(id, cols || 80, rows || 24, sshCmd, undefined, userId);
+        spawnSshPty(id, cols || 80, rows || 24, {
+          host: conn.host,
+          port: conn.port || 22,
+          username: conn.username,
+          privateKeyPath: conn.privateKeyPath,
+        }, userId);
       } catch (err: unknown) {
         send(ws, { type: "error", payload: { message: `SSH terminal failed: ${(err instanceof Error ? err.message : String(err))}` } });
       }
+      break;
+    }
+
+    case "terminal:ssh:spawn": {
+      const { id, host, port, username, privateKeyPath, cols, rows } = msg.payload;
+      spawnSshPty(id, cols || 80, rows || 24, {
+        host,
+        port: port || 22,
+        username: username || "root",
+        privateKeyPath: privateKeyPath || "~/.genie/ssh/genie_ed25519",
+      }, userId);
       break;
     }
 

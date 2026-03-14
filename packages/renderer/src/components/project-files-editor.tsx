@@ -7,6 +7,7 @@ import type { OnMount, BeforeMount } from "@monaco-editor/react";
 import {
   $fileEditor,
   $projects,
+  $fileTemplates,
   loadProjectFiles,
   selectFile,
   saveFile,
@@ -15,9 +16,17 @@ import {
   deleteProjectFile,
   addProjectFile,
   renameProjectFile,
+  loadFileTemplates,
+  createFileTemplate,
+  saveTemplateFromProject,
+  updateFileTemplate,
+  deleteFileTemplate,
+  injectFileTemplate,
+  injectSingleFileFromTemplate,
+  type FileTemplate,
 } from "@/store";
 import { wsRequest } from "@/lib/ws";
-import { Loader2, Save, Check, FileCode, FileText, Plus, X, Upload } from "lucide-react";
+import { Loader2, Save, Check, FileCode, FileText, Plus, X, Upload, Trash2, Download, Pencil, Package, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuItem } from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
@@ -86,6 +95,255 @@ function getFileIcon(fileName: string) {
   return <FileCode size={13} className="text-blue" />;
 }
 
+// --- Templates panel ---
+
+interface TemplateFileEdit {
+  templateId: string;
+  templateName: string;
+  fileName: string;
+  content: string;
+  savedContent: string;
+}
+
+function TemplatesPanel({ projectId, onEditFile }: { projectId: string; onEditFile: (edit: TemplateFileEdit) => void }) {
+  const [tplState] = useSubject($fileTemplates);
+  const { templates, loading } = tplState;
+  const [showCreate, setShowCreate] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createDesc, setCreateDesc] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadFileTemplates();
+  }, []);
+
+  function handleCreate() {
+    if (!createName.trim()) return;
+    saveTemplateFromProject(projectId, createName.trim(), createDesc.trim());
+    setCreateName("");
+    setCreateDesc("");
+    setShowCreate(false);
+  }
+
+  function startEdit(tpl: FileTemplate) {
+    setEditingId(tpl.id);
+    setEditName(tpl.name);
+    setEditDesc(tpl.description);
+  }
+
+  function commitEdit() {
+    if (!editingId || !editName.trim()) return;
+    updateFileTemplate(editingId, { name: editName.trim(), description: editDesc.trim() });
+    setEditingId(null);
+  }
+
+  function handleInjectAll(tpl: FileTemplate) {
+    const fileCount = Object.keys(tpl.files).length;
+    if (confirm(`Inject all ${fileCount} file(s) from "${tpl.name}"?\n\nExisting files with the same name will be overwritten.`)) {
+      injectFileTemplate(projectId, tpl.id, "merge");
+    }
+  }
+
+  function handleInjectFile(fileName: string, content: string) {
+    injectSingleFileFromTemplate(projectId, fileName, content);
+    // Reload to reflect the new/updated file
+    setTimeout(() => loadProjectFiles(projectId), 300);
+  }
+
+  function handleDelete(tpl: FileTemplate) {
+    if (confirm(`Delete template "${tpl.name}"?`)) {
+      deleteFileTemplate(tpl.id);
+    }
+  }
+
+  function handleOverwrite(tpl: FileTemplate) {
+    const projects = $projects.getValue();
+    const project = projects.find((p) => p.id === projectId);
+    const setupFiles = project?.setupFiles || {};
+    if (confirm(`Update template "${tpl.name}" with the current project files?\n\nThis will replace the template's files.`)) {
+      updateFileTemplate(tpl.id, { files: setupFiles as Record<string, string> });
+    }
+  }
+
+  return (
+    <div className="py-4 flex flex-col gap-2 border-t border-surface0">
+      <div className="flex items-center justify-between">
+        <h2 className="text-md font-semibold uppercase tracking-wide text-subtext0 flex items-center gap-1.5">
+          <Package size={12} />
+          File Templates
+        </h2>
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-2 text-overlay0 text-md py-2">
+          <Loader2 size={12} className="animate-spin" /> Loading templates...
+        </div>
+      )}
+
+      {!loading && templates.length === 0 && !showCreate && (
+        <p className="text-md text-overlay0 py-2">
+          No templates yet. Save your current project files as a template to reuse them across projects.
+        </p>
+      )}
+
+      {!loading && templates.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {templates.map((tpl) => {
+            const fileEntries = Object.entries(tpl.files).sort(([a], [b]) => a.localeCompare(b));
+            const isExpanded = expandedId === tpl.id;
+
+            return (
+              <div key={tpl.id} className="bg-mantle rounded-lg overflow-hidden">
+                {editingId === tpl.id ? (
+                  <div className="flex flex-col gap-1.5 px-3 py-2">
+                    <input
+                      autoFocus
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditingId(null); }}
+                      className="bg-base border border-surface1 rounded px-2 py-1 text-md text-text outline-none focus:border-mauve/50"
+                      placeholder="Template name"
+                    />
+                    <input
+                      value={editDesc}
+                      onChange={(e) => setEditDesc(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditingId(null); }}
+                      className="bg-base border border-surface1 rounded px-2 py-1 text-md text-overlay1 outline-none focus:border-mauve/50"
+                      placeholder="Description (optional)"
+                    />
+                    <div className="flex gap-1.5">
+                      <Button size="sm" onClick={commitEdit}>Save</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {/* Template header */}
+                    <div className="flex items-center gap-2 px-3 py-2 group">
+                      <button
+                        onClick={() => setExpandedId(isExpanded ? null : tpl.id)}
+                        className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                      >
+                        <ChevronRight
+                          size={13}
+                          className={cn("text-overlay0 transition-transform shrink-0", isExpanded && "rotate-90")}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-md font-medium text-text truncate">{tpl.name}</div>
+                          {tpl.description && (
+                            <div className="text-md text-overlay0 truncate">{tpl.description}</div>
+                          )}
+                          <div className="text-md text-overlay0">
+                            {fileEntries.length} file(s)
+                          </div>
+                        </div>
+                      </button>
+                      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleInjectAll(tpl)}
+                          className="p-1.5 text-green hover:bg-green/15 rounded transition-colors"
+                          title="Inject all files into project"
+                        >
+                          <Download size={13} />
+                        </button>
+                        <button
+                          onClick={() => handleOverwrite(tpl)}
+                          className="p-1.5 text-blue hover:bg-blue/15 rounded transition-colors"
+                          title="Update template from current files"
+                        >
+                          <Upload size={13} />
+                        </button>
+                        <button
+                          onClick={() => startEdit(tpl)}
+                          className="p-1.5 text-overlay0 hover:text-text hover:bg-surface0 rounded transition-colors"
+                          title="Edit name/description"
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(tpl)}
+                          className="p-1.5 text-overlay0 hover:text-red hover:bg-red/15 rounded transition-colors"
+                          title="Delete template"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Expanded file list */}
+                    {isExpanded && (
+                      <div className="border-t border-surface0">
+                        {fileEntries.map(([fileName, fileContent]) => (
+                          <div
+                            key={fileName}
+                            className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface0/50 group/file"
+                          >
+                            <button
+                              onClick={() => onEditFile({ templateId: tpl.id, templateName: tpl.name, fileName, content: fileContent, savedContent: fileContent })}
+                              className="pl-5 flex items-center gap-2 flex-1 min-w-0 text-left"
+                              title={`Edit ${fileName}`}
+                            >
+                              {getFileIcon(fileName)}
+                              <span className="text-md text-overlay1 truncate font-mono hover:text-text transition-colors">{fileName}</span>
+                            </button>
+                            <button
+                              onClick={() => handleInjectFile(fileName, fileContent)}
+                              className="p-1 text-green opacity-0 group-hover/file:opacity-100 hover:bg-green/15 rounded transition-all"
+                              title={`Inject ${fileName} into project`}
+                            >
+                              <Download size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {showCreate ? (
+        <div className="flex flex-col gap-1.5 px-3 py-2 bg-mantle rounded-lg">
+          <input
+            autoFocus
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") setShowCreate(false); }}
+            className="bg-base border border-surface1 rounded px-2 py-1 text-md text-text outline-none focus:border-mauve/50"
+            placeholder="Template name"
+          />
+          <input
+            value={createDesc}
+            onChange={(e) => setCreateDesc(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") setShowCreate(false); }}
+            className="bg-base border border-surface1 rounded px-2 py-1 text-md text-overlay1 outline-none focus:border-mauve/50"
+            placeholder="Description (optional)"
+          />
+          <div className="flex gap-1.5">
+            <Button size="sm" onClick={handleCreate} disabled={!createName.trim()}>
+              Save current files as template
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setShowCreate(true)}
+          className="flex items-center gap-1.5 text-md text-overlay1 hover:text-text transition-colors py-1"
+        >
+          <Plus size={12} /> Save current files as template
+        </button>
+      )}
+    </div>
+  );
+}
+
 // --- Main component ---
 
 export function ProjectFilesEditor({ projectId }: { projectId: string }) {
@@ -101,6 +359,11 @@ export function ProjectFilesEditor({ projectId }: { projectId: string }) {
   const [allProjects] = useSubject($projects);
   const project = allProjects.find((p) => p.id === projectId);
   const vpsInstances = project?.vpsInstances ?? [];
+
+  // Template file editing
+  const [tplEdit, setTplEdit] = useState<TemplateFileEdit | null>(null);
+  const [tplSaving, setTplSaving] = useState(false);
+  const [tplJustSaved, setTplJustSaved] = useState(false);
 
   const pushFileToInstance = useCallback(async (fileName: string, instanceId: string, instanceLabel: string) => {
     setPushStatus({ file: fileName, status: "pushing", instance: instanceLabel });
@@ -199,11 +462,39 @@ export function ProjectFilesEditor({ projectId }: { projectId: string }) {
     editorRef.current = editor;
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       const val = editor.getValue();
-      saveFile(val);
+      // Check if we're in template editing mode by reading tplEdit from a ref
+      if (tplEditRef.current) {
+        saveTplFile(val);
+      } else {
+        saveFile(val);
+      }
     });
   };
 
+  // Keep a ref to tplEdit so the Monaco keybinding closure can access it
+  const tplEditRef = useRef(tplEdit);
+  tplEditRef.current = tplEdit;
+
+  function saveTplFile(val: string) {
+    if (!tplEdit) return;
+    setTplSaving(true);
+    // Get the current template from store to update just the one file
+    const tplState = $fileTemplates.getValue();
+    const tpl = tplState.templates.find((t) => t.id === tplEdit.templateId);
+    if (!tpl) return;
+    const updatedFiles = { ...tpl.files, [tplEdit.fileName]: val };
+    updateFileTemplate(tplEdit.templateId, { files: updatedFiles });
+    setTplEdit((prev) => prev ? { ...prev, savedContent: val } : null);
+    setTplSaving(false);
+    setTplJustSaved(true);
+    setTimeout(() => setTplJustSaved(false), 2000);
+  }
+
   function handleSave() {
+    if (tplEdit) {
+      saveTplFile(tplEdit.content);
+      return;
+    }
     if (content !== null) {
       saveFile(content);
     }
@@ -258,7 +549,7 @@ export function ProjectFilesEditor({ projectId }: { projectId: string }) {
                   ) : (
                     <>
                       <button
-                        onClick={() => selectFile(f)}
+                        onClick={() => { setTplEdit(null); selectFile(f); }}
                         className="flex items-center gap-2 px-3 py-2 text-md text-left transition-colors truncate flex-1 min-w-0"
                       >
                         {getFileIcon(f)}
@@ -350,8 +641,47 @@ export function ProjectFilesEditor({ projectId }: { projectId: string }) {
 
         {/* Editor area */}
         <div className="flex-1 flex flex-col min-w-0 relative">
-          {/* Toolbar */}
-          {isActive && selectedFile && (
+          {/* Template file toolbar */}
+          {tplEdit && (
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface0 bg-mantle relative">
+              <div className="flex items-center gap-2 text-md">
+                <span className="text-md bg-mauve/15 text-mauve px-1.5 py-0.5 rounded font-medium">Template: {tplEdit.templateName}</span>
+                <span className="text-overlay1 font-mono text-md">{tplEdit.fileName}</span>
+                {tplEdit.content !== tplEdit.savedContent && (
+                  <span className="text-md bg-yellow/15 text-yellow px-1.5 py-0.5 rounded">modified</span>
+                )}
+                {tplJustSaved && (
+                  <span className="text-md text-green flex items-center gap-1">
+                    <Check size={10} /> Saved
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="sm"
+                  onClick={() => saveTplFile(tplEdit.content)}
+                  disabled={tplSaving || tplEdit.content === tplEdit.savedContent}
+                >
+                  {tplSaving ? (
+                    <Loader2 size={12} className="animate-spin mr-1" />
+                  ) : (
+                    <Save size={12} className="mr-1" />
+                  )}
+                  {tplSaving ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setTplEdit(null)}
+                >
+                  <X size={12} className="mr-1" /> Close
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Project file toolbar */}
+          {!tplEdit && isActive && selectedFile && (
             <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface0 bg-mantle relative">
               <div className="flex items-center gap-2 text-md">
                 <span className="text-overlay1 font-mono text-md">{selectedFile}</span>
@@ -385,25 +715,49 @@ export function ProjectFilesEditor({ projectId }: { projectId: string }) {
                   {feSaving ? "Saving..." : "Save"}
                 </Button>
               </div>
-
             </div>
           )}
 
-          {/* Monaco editor */}
-          {isActive && feLoading && (
+          {/* Monaco editor — template file mode */}
+          {tplEdit && (
+            <MonacoEditor
+              height="100%"
+              language={getLanguage(tplEdit.fileName)}
+              theme="catppuccin-mocha"
+              value={tplEdit.content}
+              onChange={(val) => setTplEdit((prev) => prev ? { ...prev, content: val ?? "" } : null)}
+              beforeMount={handleBeforeMount}
+              onMount={handleMount}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 12,
+                wordWrap: "on",
+                tabSize: 2,
+                scrollBeyondLastLine: false,
+                renderLineHighlight: "line",
+                padding: { top: 8 },
+                lineNumbers: "on",
+                folding: true,
+                automaticLayout: true,
+              }}
+            />
+          )}
+
+          {/* Monaco editor — project file mode */}
+          {!tplEdit && isActive && feLoading && (
             <div className="flex-1 flex items-center justify-center text-overlay0 text-md">
               <Loader2 size={14} className="animate-spin mr-2" />
               Loading...
             </div>
           )}
 
-          {isActive && feError && (
+          {!tplEdit && isActive && feError && (
             <div className="flex-1 flex items-center justify-center text-red text-md px-4">
               {feError}
             </div>
           )}
 
-          {isActive && !feLoading && !feError && selectedFile && (
+          {!tplEdit && isActive && !feLoading && !feError && selectedFile && (
             <MonacoEditor
               height="100%"
               language={getLanguage(selectedFile)}
@@ -427,13 +781,16 @@ export function ProjectFilesEditor({ projectId }: { projectId: string }) {
             />
           )}
 
-          {isActive && !feLoading && !selectedFile && (
+          {!tplEdit && isActive && !feLoading && !selectedFile && (
             <div className="flex-1 flex items-center justify-center text-overlay0 text-md">
               Select a file to edit
             </div>
           )}
         </div>
       </div>
+
+      {/* Templates */}
+      <TemplatesPanel projectId={projectId} onEditFile={(edit) => setTplEdit(edit)} />
 
       {/* Deploy mechanism docs */}
       <div className="mt-4 px-1 text-overlay0 space-y-2" style={{ fontSize: 13, lineHeight: 1.7 }}>

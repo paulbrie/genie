@@ -1,9 +1,20 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { Client } from "ssh2";
 
 const MAX_SCROLLBACK = 100_000; // chars
 
+interface PtyHandle {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+  onData(cb: (data: string) => void): void;
+  onExit(cb: (info: { exitCode: number }) => void): void;
+}
+
 interface PtySession {
-  proc: import("node-pty").IPty;
+  proc: PtyHandle;
   id: string;
   ownerId: string;
   collaboratorIds: Set<string>;
@@ -93,9 +104,9 @@ export async function spawnPty(
   const env = buildCleanEnv();
   const args = command ? ["-c", command] : [];
 
-  let proc: import("node-pty").IPty;
+  let rawProc: import("node-pty").IPty;
   try {
-    proc = pty.spawn(shell, args, {
+    rawProc = pty.spawn(shell, args, {
       name: "xterm-256color",
       cols,
       rows,
@@ -112,6 +123,18 @@ export async function spawnPty(
     return;
   }
 
+  const proc: PtyHandle = {
+    write: (data) => rawProc.write(data),
+    resize: (c, r) => rawProc.resize(c, r),
+    kill: () => rawProc.kill(),
+    onData: (cb) => rawProc.onData(cb),
+    onExit: (cb) => rawProc.onExit(cb),
+  };
+
+  registerSession(id, proc, ownerId);
+}
+
+function registerSession(id: string, proc: PtyHandle, ownerId?: string): void {
   const session: PtySession = { proc, id, ownerId: ownerId || "", collaboratorIds: new Set(), scrollback: "" };
   sessions.set(id, session);
 
@@ -127,6 +150,102 @@ export async function spawnPty(
     sessions.delete(id);
     eventCallback?.({ type: "terminal:exit", payload: { id, code: exitCode } });
   });
+}
+
+export interface SshPtyConfig {
+  host: string;
+  port: number;
+  username: string;
+  privateKeyPath: string;
+  initialCommand?: string;
+}
+
+function resolveHome(p: string): string {
+  if (p.startsWith("~/") || p === "~") {
+    return p.replace("~", os.homedir());
+  }
+  const genieIdx = p.indexOf(".genie/ssh/");
+  if (genieIdx > 0) {
+    return path.join(os.homedir(), p.slice(genieIdx));
+  }
+  return p;
+}
+
+export function spawnSshPty(
+  id: string,
+  cols: number,
+  rows: number,
+  config: SshPtyConfig,
+  ownerId?: string,
+): void {
+  if (sessions.has(id)) return;
+
+  const conn = new Client();
+  let dataCallback: ((data: string) => void) | null = null;
+  let exitCallback: ((info: { exitCode: number }) => void) | null = null;
+  let channel: import("ssh2").ClientChannel | null = null;
+  let currentCols = cols;
+  let currentRows = rows;
+
+  const proc: PtyHandle = {
+    write: (data) => channel?.write(data),
+    resize: (c, r) => {
+      currentCols = c;
+      currentRows = r;
+      channel?.setWindow(r, c, r * 16, c * 8);
+    },
+    kill: () => {
+      channel?.close();
+      conn.end();
+    },
+    onData: (cb) => { dataCallback = cb; },
+    onExit: (cb) => { exitCallback = cb; },
+  };
+
+  registerSession(id, proc, ownerId);
+
+  let privateKey: Buffer | undefined;
+  try {
+    const keyPath = resolveHome(config.privateKeyPath);
+    privateKey = readFileSync(keyPath);
+  } catch {
+    // fall through — will try agent auth
+  }
+
+  conn
+    .on("ready", () => {
+      const shellCmd = config.initialCommand || 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
+      conn.exec(shellCmd, { pty: { cols: currentCols, rows: currentRows, term: "xterm-256color" } }, (err, stream) => {
+        if (err) {
+          eventCallback?.({ type: "terminal:error", payload: { id, message: `SSH shell failed: ${err.message}` } });
+          sessions.delete(id);
+          conn.end();
+          return;
+        }
+        channel = stream;
+        stream.on("data", (data: Buffer) => dataCallback?.(data.toString()));
+        stream.stderr.on("data", (data: Buffer) => dataCallback?.(data.toString()));
+        stream.on("close", (code: number) => {
+          exitCallback?.({ exitCode: code ?? 0 });
+          conn.end();
+        });
+      });
+    })
+    .on("error", (err) => {
+      eventCallback?.({ type: "terminal:error", payload: { id, message: `SSH connection failed: ${err.message}` } });
+      sessions.delete(id);
+    })
+    .connect({
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      ...(privateKey
+        ? { privateKey }
+        : process.env.SSH_AUTH_SOCK
+          ? { agent: process.env.SSH_AUTH_SOCK }
+          : {}),
+      readyTimeout: 30_000,
+    });
 }
 
 export function writePty(id: string, data: string): void {

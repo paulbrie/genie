@@ -1,7 +1,7 @@
 import type { NavKey, DropletsSubTab, AiSubTab } from "@/store";
 
 export type ProjectTab = "files" | "commands" | "cloud" | "deploy-history" | "settings";
-export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit";
+export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs";
 
 // Bidirectional NavKey ↔ URL segment maps (all lowercase)
 const NAV_TO_PATH: Record<NavKey, string> = {
@@ -32,7 +32,7 @@ const VALID_PROJECT_TABS = new Set<ProjectTab>([
   "settings",
 ]);
 
-const VALID_ADMIN_TABS = new Set<AdminTab>(["database", "droplets", "ai", "backup", "users", "teams", "audit"]);
+const VALID_ADMIN_TABS = new Set<AdminTab>(["database", "droplets", "ai", "backup", "users", "teams", "audit", "prodlogs"]);
 
 const VALID_DROPLETS_SUBTABS = new Set<DropletsSubTab>([
   "instances",

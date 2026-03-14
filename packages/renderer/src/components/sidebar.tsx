@@ -70,7 +70,12 @@ function UserBadge() {
           </div>
         )}
       </div>
-      <span className="text-md text-subtext0 truncate flex-1">{user.name}</span>
+      <div className="flex flex-col flex-1 min-w-0">
+        <span className="text-md text-subtext0 truncate">{user.name}</span>
+        {user.role && user.role !== "user" && (
+          <span className={cn("text-xs", user.role === "superadmin" ? "text-mauve" : "text-blue")}>{user.role}</span>
+        )}
+      </div>
       <button
         onClick={logout}
         className="p-0.5 rounded bg-transparent border-none cursor-pointer text-overlay0 hover:text-red transition-colors"

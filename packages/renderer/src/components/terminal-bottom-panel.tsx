@@ -143,13 +143,25 @@ export function TerminalBottomPanel() {
       // Only spawn for fresh (non-shared, non-restored) tabs
       const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
       if (!tab.shared && !isRestored) {
-        wsSend("terminal:spawn", {
-          id: tab.id,
-          cols: term.cols,
-          rows: term.rows,
-          command: tab.command,
-          cwd: tab.cwd,
-        });
+        if (tab.ssh) {
+          wsSend("terminal:ssh:spawn", {
+            id: tab.id,
+            cols: term.cols,
+            rows: term.rows,
+            host: tab.ssh.host,
+            port: tab.ssh.port,
+            username: tab.ssh.username,
+            privateKeyPath: tab.ssh.privateKeyPath,
+          });
+        } else {
+          wsSend("terminal:spawn", {
+            id: tab.id,
+            cols: term.cols,
+            rows: term.rows,
+            command: tab.command,
+            cwd: tab.cwd,
+          });
+        }
       }
     }
   }, [tabs, bottomPanelOpen, hidden]);

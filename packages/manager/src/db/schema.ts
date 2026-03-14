@@ -262,6 +262,18 @@ export const auditLog = pgTable("audit_log", {
   index("idx_audit_log_created").on(t.createdAt),
 ]);
 
+export const fileTemplates = pgTable("file_templates", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  description: text("description").default("").notNull(),
+  files: jsonb("files").default({}).notNull(),  // Record<string, string>
+  createdBy: uuid("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => [
+  index("idx_file_templates_created_by").on(t.createdBy),
+]);
+
 export const globalSettings = pgTable("global_settings", {
   key: text("key").primaryKey(),
   value: jsonb("value").notNull(),

@@ -280,6 +280,7 @@ export interface AuthUser {
   email: string;
   avatarUrl: string | null;
   isAdmin?: boolean;
+  role: "user" | "admin" | "superadmin";
 }
 
 export interface AuthState {
@@ -566,7 +567,7 @@ export interface AdminTeamMember {
 }
 
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];
@@ -625,6 +626,14 @@ export interface AdminState {
     filterUserId: string | null;
     filterAction: string | null;
   };
+  prodlogs: {
+    deployments: RailwayDeployment[];
+    logs: RailwayLogEntry[];
+    selectedDeploymentId: string | null;
+    logType: "deploy" | "build";
+    loading: boolean;
+    logsLoading: boolean;
+  };
 }
 
 export interface AuditLogEntry {
@@ -635,6 +644,20 @@ export interface AuditLogEntry {
   payload: Record<string, unknown> | null;
   ip: string | null;
   createdAt: string;
+}
+
+export interface RailwayDeployment {
+  id: string;
+  status: string;
+  createdAt: string;
+  serviceId: string;
+  serviceName: string;
+}
+
+export interface RailwayLogEntry {
+  timestamp: string;
+  message: string;
+  severity: string;
 }
 
 interface UiState {
@@ -651,6 +674,13 @@ export interface LogsState {
   buffers: Record<string, string>;
 }
 
+export interface SshConfig {
+  host: string;
+  port?: number;
+  username?: string;
+  privateKeyPath?: string;
+}
+
 export interface TerminalTab {
   id: string;
   title: string;
@@ -662,6 +692,7 @@ export interface TerminalTab {
   ownerId?: string;
   ownerName?: string;
   viewerIds?: string[];
+  ssh?: SshConfig;
 }
 
 export interface TerminalShareInvite {
@@ -688,6 +719,20 @@ export interface FileEditorState {
   loading: boolean;
   saving: boolean;
   error: string | null;
+}
+
+export interface FileTemplate {
+  id: string;
+  name: string;
+  description: string;
+  files: Record<string, string>;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface FileTemplatesState {
+  templates: FileTemplate[];
+  loading: boolean;
 }
 
 export interface WindowManagerState {
@@ -747,13 +792,14 @@ export const $logs = new Subject<LogsState>({ activeSource: "manager", sources: 
 export const $terminal = new Subject<TerminalState>({
   tabs: [], activeTabId: null, bottomPanelOpen: false, bottomPanelHeight: 200, shareInvites: [],
 });
-export const $settings = new Subject<AppSettings>({ defaultEditor: "", digitaloceanApiToken: "", gitlabDeployKey: "", gitToken: "" });
+export const $settings = new Subject<AppSettings>({ defaultEditor: "", digitaloceanApiToken: "", gitlabDeployKey: "", gitToken: "", railwayToken: "", railwayProjectId: "" });
 export const $projects = new Subject<ProjectDef[]>([]);
 export const $selectedProjectId = new Subject<string | null>(null);
 export const $showAddProjectForm = new Subject<boolean>(false);
 export const $projectLogBuffers = new Subject<Record<string, string>>({});
 export const $commandRunOutputs = new Subject<Record<string, { output: string; running: boolean; exitCode: number | null }>>({});
 export const $doTokenValid = new Subject<{ valid: boolean; email?: string } | null>(null);
+export const $railwayTestResult = new Subject<{ ok: boolean; message: string } | null>(null);
 export const $doSnapshots = new Subject<DoSnapshot[]>([]);
 export const $doSnapshotsLoading = new Subject<boolean>(false);
 export const $vpsDeploy = new DeepSubject<VpsDeployState>({ instances: {}, activeDeploys: {}, testResult: null, deployLogs: [] });
@@ -761,6 +807,7 @@ export const $fileEditor = new Subject<FileEditorState>({
   projectId: null, files: [], selectedFile: null, content: null,
   savedContent: null, loading: false, saving: false, error: null,
 });
+export const $fileTemplates = new Subject<FileTemplatesState>({ templates: [], loading: false });
 export const $tracker = new Subject<TrackerState>({
   issues: [], labels: [], loading: false, viewMode: "board", groupBy: "status",
   filters: { status: [], priority: [], assigneeId: [], labelId: [] },
@@ -780,6 +827,7 @@ export const $admin = new DeepSubject<AdminState>({
   users: { list: [], loading: false },
   teams: { list: [], members: [], loading: false },
   audit: { logs: [], loading: false, filterUserId: null, filterAction: null },
+  prodlogs: { deployments: [], logs: [], selectedDeploymentId: null, logType: "deploy", loading: false, logsLoading: false },
   ai: { subTab: "costs", costs: [], loading: false, error: null, settings: { defaultModel: "claude-sonnet", maxToolRounds: 10 }, settingsLoading: false },
 });
 export const $windowManager = new Subject<WindowManagerState>({ windows: {}, nextZIndex: 10000 });
@@ -899,6 +947,15 @@ export function addTerminalTab(cwd?: string, title?: string, command?: string): 
   tabCounter++;
   const id = `tab-${Date.now()}-${tabCounter}`;
   const tab: TerminalTab = { id, title: title ?? `Terminal ${tabCounter}`, cwd, command };
+  const t = $terminal.getValue();
+  $terminal.next({ ...t, tabs: [...t.tabs, tab], activeTabId: id, bottomPanelOpen: true });
+  return id;
+}
+
+export function addSshTerminalTab(ssh: SshConfig, title?: string): string {
+  tabCounter++;
+  const id = `tab-${Date.now()}-${tabCounter}`;
+  const tab: TerminalTab = { id, title: title ?? `SSH ${ssh.host}`, ssh };
   const t = $terminal.getValue();
   $terminal.next({ ...t, tabs: [...t.tabs, tab], activeTabId: id, bottomPanelOpen: true });
   return id;
@@ -1371,7 +1428,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs"): void {
   $admin.getValue().activeTab = tab;
 }
 
@@ -1584,6 +1641,25 @@ export function loadAuditLogs(opts?: { userId?: string; action?: string }): void
   });
 }
 
+// --- Prod Logs actions ---
+
+export function loadProdDeployments(limit = 20): void {
+  const v = $admin.getValue();
+  v.prodlogs.loading = true;
+  wsSend("admin:prodlogs:deployments", { limit });
+}
+
+export function loadProdLogs(deploymentId: string, logType: "deploy" | "build" = "deploy"): void {
+  const v = $admin.getValue();
+  batch(() => {
+    v.prodlogs.selectedDeploymentId = deploymentId;
+    v.prodlogs.logType = logType;
+    v.prodlogs.logsLoading = true;
+    v.prodlogs.logs = [];
+  });
+  wsSend("admin:prodlogs:logs", { deploymentId, logType, limit: 500 });
+}
+
 // --- Settings actions ---
 
 export async function loadSettings(): Promise<void> {
@@ -1593,6 +1669,8 @@ export async function loadSettings(): Promise<void> {
     digitaloceanApiToken: result.digitaloceanApiToken || "",
     gitlabDeployKey: result.gitlabDeployKey || "",
     gitToken: result.gitToken || "",
+    railwayToken: result.railwayToken || "",
+    railwayProjectId: result.railwayProjectId || "",
   });
 }
 
@@ -1713,6 +1791,11 @@ export function validateDoToken(): void {
   wsSend("do:validate-token", {});
 }
 
+export function testRailwayToken(): void {
+  $railwayTestResult.next(null);
+  wsSend("admin:railway:test", {});
+}
+
 export function deployToDo(projectId: string, label?: string, instanceId?: string): void {
   const id = instanceId || crypto.randomUUID();
   $vpsDeploy.getValue().activeDeploys[id] = {
@@ -1784,6 +1867,37 @@ export function importProjectFilesFromDisk(): void {
   const fe = $fileEditor.getValue();
   if (!fe.projectId) return;
   wsSend("project-file:import-from-disk", { projectId: fe.projectId });
+}
+
+// --- File Template actions ---
+
+export function loadFileTemplates(): void {
+  $fileTemplates.nextAssign({ loading: true });
+  wsSend("file-template:list", {});
+}
+
+export function createFileTemplate(name: string, description: string, files: Record<string, string>): void {
+  wsSend("file-template:create", { name, description, files });
+}
+
+export function saveTemplateFromProject(projectId: string, name: string, description: string): void {
+  wsSend("file-template:save-from-project", { projectId, name, description });
+}
+
+export function updateFileTemplate(id: string, patch: { name?: string; description?: string; files?: Record<string, string> }): void {
+  wsSend("file-template:update", { id, ...patch });
+}
+
+export function deleteFileTemplate(id: string): void {
+  wsSend("file-template:delete", { id });
+}
+
+export function injectFileTemplate(projectId: string, templateId: string, mode: "merge" | "replace"): void {
+  wsSend("file-template:inject", { projectId, templateId, mode });
+}
+
+export function injectSingleFileFromTemplate(projectId: string, fileName: string, content: string): void {
+  wsSend("project-file:save", { projectId, fileName, content });
 }
 
 // --- File Explorer actions ---
@@ -2780,6 +2894,34 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
       break;
     }
 
+    case "file-template:list": {
+      $fileTemplates.next({ templates: msg.payload.templates, loading: false });
+      break;
+    }
+
+    case "file-template:created":
+    case "file-template:updated":
+    case "file-template:deleted": {
+      // Reload full list after any mutation
+      loadFileTemplates();
+      break;
+    }
+
+    case "file-template:injected": {
+      if (msg.payload.ok && msg.payload.projectId) {
+        const fe = $fileEditor.getValue();
+        if (fe.projectId === msg.payload.projectId) {
+          loadProjectFiles(msg.payload.projectId);
+        }
+      }
+      break;
+    }
+
+    case "admin:railway:test": {
+      $railwayTestResult.next(msg.payload);
+      break;
+    }
+
     case "do:token-valid": {
       $doTokenValid.next(msg.payload);
       break;
@@ -3326,6 +3468,24 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
         const a = $admin.getValue().audit;
         a.logs = msg.payload.logs;
         a.loading = false;
+      });
+      break;
+    }
+
+    case "admin:prodlogs:deployments": {
+      batch(() => {
+        const p = $admin.getValue().prodlogs;
+        p.deployments = msg.payload.deployments;
+        p.loading = false;
+      });
+      break;
+    }
+
+    case "admin:prodlogs:logs": {
+      batch(() => {
+        const p = $admin.getValue().prodlogs;
+        p.logs = msg.payload.logs;
+        p.logsLoading = false;
       });
       break;
     }

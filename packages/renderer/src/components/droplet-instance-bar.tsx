@@ -2,6 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import { CopyableIp } from "@/components/ui/copyable-ip";
+import { CircularGauge } from "@/components/ui/circular-gauge";
 import { ExternalLink, RefreshCw, Terminal, Trash2 } from "lucide-react";
 import type { VpsStats } from "@/store";
 
@@ -54,46 +55,6 @@ function LinearGauge({ label, percent, detail }: { label: string; percent: numbe
   );
 }
 
-function CircularGauge({ label, percent, subtitle }: { label: string; percent: number; subtitle?: string }) {
-  const size = 34;
-  const stroke = 3;
-  const radius = (size - stroke) / 2;
-  const arcDeg = 240;
-  const arcLen = (arcDeg / 360) * 2 * Math.PI * radius;
-  const offset = arcLen - (Math.min(percent, 100) / 100) * arcLen;
-  const gapDeg = 360 - arcDeg;
-  const startAngle = 90 + gapDeg / 2; // gap centered at bottom
-  const strokeColor =
-    percent >= 90 ? "var(--color-red)" : percent >= 70 ? "var(--color-peach)" : "var(--color-green)";
-
-  return (
-    <div className="flex flex-col items-center gap-0.5" title={`${label}: ${percent}%${subtitle ? ` (${subtitle})` : ""}`}>
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg width={size} height={size} style={{ transform: `rotate(${startAngle}deg)` }}>
-          <circle
-            cx={size / 2} cy={size / 2} r={radius}
-            fill="none" stroke="var(--color-surface1)" strokeWidth={stroke}
-            strokeDasharray={`${arcLen} ${2 * Math.PI * radius}`}
-            strokeLinecap="round"
-          />
-          <circle
-            cx={size / 2} cy={size / 2} r={radius}
-            fill="none" stroke={strokeColor} strokeWidth={stroke}
-            strokeDasharray={`${arcLen} ${2 * Math.PI * radius}`}
-            strokeDashoffset={offset}
-            strokeLinecap="round"
-            className="transition-all duration-500"
-          />
-        </svg>
-        <span className="absolute inset-0 flex items-center justify-center text-subtext0 font-mono" style={{ fontSize: 9 }}>
-          {percent}
-        </span>
-      </div>
-      <span className="text-xs text-overlay0 font-medium leading-none">{label}</span>
-      {subtitle && <span className="text-xs text-overlay0 font-mono leading-none">{subtitle}</span>}
-    </div>
-  );
-}
 
 function formatBytesShort(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);

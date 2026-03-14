@@ -31,6 +31,8 @@ export interface AppSettings {
   digitaloceanApiToken: string;
   gitlabDeployKey: string;
   gitToken: string;
+  railwayToken: string;
+  railwayProjectId: string;
 }
 
 export const genie = {
@@ -57,6 +59,8 @@ export const genie = {
       digitaloceanApiToken: "",
       gitlabDeployKey: "",
       gitToken: "",
+      railwayToken: "",
+      railwayProjectId: "",
       ...rest,
     })),
   saveSettings: (settings: AppSettings): Promise<FsResult> =>

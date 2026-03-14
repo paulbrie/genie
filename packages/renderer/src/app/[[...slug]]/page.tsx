@@ -23,6 +23,7 @@ import {
   loadAiCosts,
   loadBackups,
   loadAuditLogs,
+  loadProdDeployments,
   showAddForm as openAddAppForm,
   showAddProjectForm as openAddProjectForm,
   type NavKey,
@@ -129,6 +130,9 @@ function useRouteSync(): { activeTab?: ProjectTab } {
         }
         if (parsed.adminTab === "audit") {
           loadAuditLogs();
+        }
+        if (parsed.adminTab === "prodlogs") {
+          loadProdDeployments();
         }
       }
       syncedRef.current = urlKey;

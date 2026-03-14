@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { $settings, $doTokenValid, loadSettings, saveSettingsField, validateDoToken } from "@/store";
+import { $settings, $doTokenValid, $railwayTestResult, loadSettings, saveSettingsField, validateDoToken, testRailwayToken } from "@/store";
 import { type AppSettings } from "@/lib/genie-api";
 import { Eye, EyeOff } from "lucide-react";
 import { ViewHeader } from "@/components/view-header";
@@ -20,6 +20,8 @@ const editorOptions = [
 export function SettingsPanel() {
   const [settings] = useSubject($settings);
   const [doTokenValid] = useSubject($doTokenValid);
+  const [railwayTestResult] = useSubject($railwayTestResult);
+  const [railwayTesting, setRailwayTesting] = useState(false);
   const [showDoToken, setShowDoToken] = useState(false);
   const [doTokenInput, setDoTokenInput] = useState("");
   const [doTokenDirty, setDoTokenDirty] = useState(false);
@@ -29,6 +31,11 @@ export function SettingsPanel() {
   const [showGitToken, setShowGitToken] = useState(false);
   const [gitTokenInput, setGitTokenInput] = useState("");
   const [gitTokenDirty, setGitTokenDirty] = useState(false);
+  const [showRailwayToken, setShowRailwayToken] = useState(false);
+  const [railwayTokenInput, setRailwayTokenInput] = useState("");
+  const [railwayTokenDirty, setRailwayTokenDirty] = useState(false);
+  const [railwayProjectIdInput, setRailwayProjectIdInput] = useState("");
+  const [railwayProjectIdDirty, setRailwayProjectIdDirty] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -49,6 +56,25 @@ export function SettingsPanel() {
     setGitTokenDirty(false);
   }, [settings.gitToken]);
 
+  useEffect(() => {
+    setRailwayTokenInput(settings.railwayToken || "");
+    setRailwayTokenDirty(false);
+  }, [settings.railwayToken]);
+
+  useEffect(() => {
+    setRailwayProjectIdInput(settings.railwayProjectId || "");
+    setRailwayProjectIdDirty(false);
+  }, [settings.railwayProjectId]);
+
+  useEffect(() => {
+    if (railwayTestResult) setRailwayTesting(false);
+  }, [railwayTestResult]);
+
+  function handleTestRailway() {
+    setRailwayTesting(true);
+    testRailwayToken();
+  }
+
   function handleSaveDoToken() {
     saveSettingsField("digitaloceanApiToken", doTokenInput);
     setDoTokenDirty(false);
@@ -63,6 +89,16 @@ export function SettingsPanel() {
   function handleSaveGitToken() {
     saveSettingsField("gitToken", gitTokenInput);
     setGitTokenDirty(false);
+  }
+
+  function handleSaveRailwayToken() {
+    saveSettingsField("railwayToken", railwayTokenInput);
+    setRailwayTokenDirty(false);
+  }
+
+  function handleSaveRailwayProjectId() {
+    saveSettingsField("railwayProjectId", railwayProjectIdInput);
+    setRailwayProjectIdDirty(false);
   }
 
   return (
@@ -242,6 +278,107 @@ export function SettingsPanel() {
           Used by Dockerfiles to clone private repos during build.
         </p>
       </div>
+
+      <div className="bg-mantle rounded-lg p-4 mt-4">
+        <label className="block text-md font-medium text-subtext0 mb-2">
+          Railway API Token
+          <span className="ml-2 text-md text-overlay0 font-normal">Global</span>
+        </label>
+        <div className="flex items-center gap-2 max-w-md">
+          <div className="relative flex-1">
+            <input
+              type={showRailwayToken ? "text" : "password"}
+              value={railwayTokenInput}
+              onChange={(e) => {
+                setRailwayTokenInput(e.target.value);
+                setRailwayTokenDirty(true);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && railwayTokenDirty) handleSaveRailwayToken();
+              }}
+              placeholder="Enter Railway API token"
+              className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => setShowRailwayToken(!showRailwayToken)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+            >
+              {showRailwayToken ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {railwayTokenDirty && (
+            <button
+              onClick={handleSaveRailwayToken}
+              className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+            >
+              Save
+            </button>
+          )}
+        </div>
+        {!railwayTokenDirty && railwayTokenInput && (
+          <p className="text-md text-green mt-2">Saved</p>
+        )}
+        <p className="text-md text-overlay0 mt-2">
+          Used to fetch deployments and logs from Railway. Get it from Railway dashboard &rarr; Account Settings &rarr; Tokens.
+        </p>
+      </div>
+
+      <div className="bg-mantle rounded-lg p-4 mt-4">
+        <label className="block text-md font-medium text-subtext0 mb-2">
+          Railway Project ID
+          <span className="ml-2 text-md text-overlay0 font-normal">Global</span>
+        </label>
+        <div className="flex items-center gap-2 max-w-md">
+          <input
+            type="text"
+            value={railwayProjectIdInput}
+            onChange={(e) => {
+              setRailwayProjectIdInput(e.target.value);
+              setRailwayProjectIdDirty(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && railwayProjectIdDirty) handleSaveRailwayProjectId();
+            }}
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            className="flex-1 bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+          />
+          {railwayProjectIdDirty && (
+            <button
+              onClick={handleSaveRailwayProjectId}
+              className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+            >
+              Save
+            </button>
+          )}
+        </div>
+        {!railwayProjectIdDirty && railwayProjectIdInput && (
+          <p className="text-md text-green mt-2">Saved</p>
+        )}
+        <p className="text-md text-overlay0 mt-2">
+          The Railway project to monitor. Find it in the Railway dashboard URL or project settings.
+        </p>
+      </div>
+
+      {/* Railway connection test */}
+      {railwayTokenInput && railwayProjectIdInput && !railwayTokenDirty && !railwayProjectIdDirty && (
+        <div className="bg-mantle rounded-lg p-4 mt-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleTestRailway}
+              disabled={railwayTesting}
+              className="px-3 py-2 bg-surface0 text-text text-md rounded-md hover:bg-surface1 transition-colors disabled:opacity-50"
+            >
+              {railwayTesting ? "Testing..." : "Test Railway Connection"}
+            </button>
+            {railwayTestResult && (
+              <span className={`text-md ${railwayTestResult.ok ? "text-green" : "text-red"}`}>
+                {railwayTestResult.message}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
     </div>
   );

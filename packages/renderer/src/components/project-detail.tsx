@@ -9,7 +9,7 @@ import {
   $vpsDeploy,
   $admin,
   $commandRunOutputs,
-  addTerminalTab,
+  addSshTerminalTab,
   deployToDo,
   checkVpsStatus,
   teardownVps,
@@ -67,6 +67,7 @@ import {
 } from "lucide-react";
 import { ProjectFilesEditor } from "@/components/project-files-editor";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
+import { CircularGauge } from "@/components/ui/circular-gauge";
 import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
 import type { ProcessInfo } from "@/store";
 import { useNavigate } from "@/lib/navigation";
@@ -381,9 +382,9 @@ function DropletCard({
       {/* Circular gauges */}
       {stats && (
         <div className="flex items-center justify-around pt-1">
-          <CircularGauge label="CPU" percent={stats.cpuPercent} />
-          <CircularGauge label="MEM" percent={stats.memPercent} />
-          <CircularGauge label="DISK" percent={stats.diskPercent} />
+          <CircularGauge label="CPU" percent={stats.cpuPercent} size={52} strokeWidth={4} showPercentSign valueFontSize={13} valueClassName="text-text font-semibold" labelClassName="text-md text-overlay0" />
+          <CircularGauge label="MEM" percent={stats.memPercent} size={52} strokeWidth={4} showPercentSign valueFontSize={13} valueClassName="text-text font-semibold" labelClassName="text-md text-overlay0" />
+          <CircularGauge label="DISK" percent={stats.diskPercent} size={52} strokeWidth={4} showPercentSign valueFontSize={13} valueClassName="text-text font-semibold" labelClassName="text-md text-overlay0" />
         </div>
       )}
 
@@ -528,40 +529,6 @@ function ProjectCloudDetail({
 }
 
 /* ---- VPS sub-components ---- */
-
-function CircularGauge({ label, percent, size = 52 }: { label: string; percent: number; size?: number }) {
-  const strokeWidth = 4;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (Math.min(percent, 100) / 100) * circumference;
-  const strokeColor =
-    percent >= 90 ? "var(--color-red)" : percent >= 70 ? "var(--color-peach)" : "var(--color-green)";
-
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg width={size} height={size} className="transform -rotate-90">
-          <circle
-            cx={size / 2} cy={size / 2} r={radius}
-            stroke="currentColor" strokeWidth={strokeWidth} fill="none"
-            className="text-surface1"
-          />
-          <circle
-            cx={size / 2} cy={size / 2} r={radius}
-            stroke={strokeColor} strokeWidth={strokeWidth} fill="none"
-            strokeDasharray={circumference} strokeDashoffset={offset}
-            strokeLinecap="round"
-            className="transition-all duration-500"
-          />
-        </svg>
-        <span className="absolute inset-0 flex items-center justify-center text-md font-semibold text-text">
-          {percent}%
-        </span>
-      </div>
-      <span className="text-md text-overlay0">{label}</span>
-    </div>
-  );
-}
 
 function parseVcpus(sizeSlug: string): string {
   const match = sizeSlug.match(/(\d+)vcpu/);
@@ -838,8 +805,7 @@ function VpsInstanceCard({
             <button
               onClick={() => {
                 const { username, host, port, privateKeyPath } = instance.connection;
-                const sshCmd = `ssh -o StrictHostKeyChecking=no -i ${privateKeyPath} -p ${port} ${username}@${host} -t 'cd /opt/project || true; exec bash'`;
-                addTerminalTab(undefined, `SSH ${host}`, sshCmd);
+                addSshTerminalTab({ host, port, username, privateKeyPath }, `SSH ${host}`);
               }}
               className="text-md text-green hover:underline flex items-center gap-1"
             >

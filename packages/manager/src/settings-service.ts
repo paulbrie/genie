@@ -123,6 +123,14 @@ export async function getGlobalDefaultEditor(): Promise<string> {
   return (await getGlobalSetting<string>("defaultEditor")) || "";
 }
 
+export async function getGlobalRailwayToken(): Promise<string> {
+  return (await getGlobalSetting<string>("railwayToken")) || process.env.RAILWAY_TOKEN || "";
+}
+
+export async function getGlobalRailwayProjectId(): Promise<string> {
+  return (await getGlobalSetting<string>("railwayProjectId")) || process.env.RAILWAY_PROJECT_ID || "";
+}
+
 // --- Base image configs ---
 
 export async function getAllBaseImageConfigs(): Promise<Record<string, BaseImageConfig>> {
@@ -300,19 +308,23 @@ export async function getComposedSettings(userId: string): Promise<Record<string
   const globalGitlabDeployKey = await getGlobalGitlabDeployKey();
   const globalGitToken = await getGlobalGitToken();
   const globalDefaultEditor = await getGlobalDefaultEditor();
+  const railwayToken = await getGlobalRailwayToken();
+  const railwayProjectId = await getGlobalRailwayProjectId();
 
   return {
     defaultEditor: user?.defaultEditor || globalDefaultEditor || "",
     digitaloceanApiToken: globalDoToken || "",
     gitlabDeployKey: globalGitlabDeployKey || "",
     gitToken: user?.gitToken || globalGitToken || "",
+    railwayToken: railwayToken || "",
+    railwayProjectId: railwayProjectId || "",
   };
 }
 
 // --- Routed save (for settings:save handler) ---
 
 const USER_FIELDS = new Set(["gitToken", "defaultEditor"]);
-const GLOBAL_FIELDS = new Set(["digitaloceanApiToken", "gitlabDeployKey"]);
+const GLOBAL_FIELDS = new Set(["digitaloceanApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId"]);
 
 export async function saveRoutedSettings(userId: string, fields: Record<string, unknown>): Promise<void> {
   const db = getDb();
