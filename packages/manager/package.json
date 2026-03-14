@@ -10,11 +10,15 @@
     "postinstall": "node -e \"const p=require('path'),fs=require('fs');const d=p.join(p.dirname(require.resolve('node-pty')),'..','prebuilds');if(fs.existsSync(d)){const r=fs.readdirSync(d);r.forEach(a=>{const h=p.join(d,a,'spawn-helper');if(fs.existsSync(h))fs.chmodSync(h,0o755)})}\""
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/fireworks": "^2.0.40",
     "@google/generative-ai": "^0.24.1",
     "@sendgrid/mail": "^8.1.6",
+    "ai": "^6.0.0",
     "archiver": "^7.0.1",
+    "dotenv": "^16.4.0",
     "drizzle-orm": "^0.44.0",
-    "google-auth-library": "^9.15.1",
+    "google-auth-library": "^10.6.1",
     "js-yaml": "^4.1.1",
     "jsonwebtoken": "^9.0.2",
     "node-pty": "^1.1.0",
@@ -22,11 +26,7 @@
     "postgres": "^3.4.5",
     "ssh2": "^1.17.0",
     "uuid": "^11.1.0",
-    "dotenv": "^16.4.0",
     "ws": "^8.18.0",
-    "ai": "^6.0.0",
-    "@ai-sdk/anthropic": "^3.0.0",
-    "@ai-sdk/fireworks": "^2.0.40",
     "zod": "^3.24.0"
   },
   "devDependencies": {
