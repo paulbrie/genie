@@ -33,6 +33,12 @@ function resolveHome(p: string): string {
   if (p.startsWith("~/") || p === "~") {
     return p.replace("~", os.homedir());
   }
+  // Normalize absolute paths containing .genie/ssh/ to use current home dir
+  // (handles paths stored from a different machine, e.g. /Users/x/.genie/ssh/... → /root/.genie/ssh/...)
+  const genieIdx = p.indexOf(".genie/ssh/");
+  if (genieIdx > 0) {
+    return path.join(os.homedir(), p.slice(genieIdx));
+  }
   return p;
 }
 
