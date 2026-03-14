@@ -1,5 +1,9 @@
+# python3, gcc, gnumake are required for node-pty native compilation (used by the terminal feature)
 [phases.setup]
-nixPkgs = ["nodejs_22"]
+nixPkgs = ["nodejs_22", "python3", "gcc", "gnumake"]
 
 [phases.install]
-cmds = ["npm install --ignore-scripts"]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
