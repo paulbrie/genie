@@ -24,6 +24,8 @@ import {
   loadBackups,
   loadAuditLogs,
   loadProdDeployments,
+  openDoc,
+  loadDocsList,
   showAddForm as openAddAppForm,
   showAddProjectForm as openAddProjectForm,
   type NavKey,
@@ -135,6 +137,15 @@ function useRouteSync(): { activeTab?: ProjectTab } {
           loadProdDeployments();
         }
       }
+      syncedRef.current = urlKey;
+      return;
+    }
+
+    // Docs deep-link: /docs/.../docId
+    if (parsed.nav === "docs" && parsed.docId) {
+      switchNav("docs");
+      loadDocsList();
+      openDoc(parsed.docId);
       syncedRef.current = urlKey;
       return;
     }

@@ -59,6 +59,12 @@ export function buildProjectPath(slug: string, tab?: ProjectTab): string {
   return `/projects/${slug}/${t}`;
 }
 
+export function buildDocPath(folderPath: string[], fileName: string, fileId: string): string {
+  const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const segments = [...folderPath.map(slugify), slugify(fileName), fileId];
+  return `/docs/${segments.join("/")}`;
+}
+
 export function buildAdminPath(adminTab: AdminTab, subTab?: DropletsSubTab | AiSubTab): string {
   if (adminTab === "droplets") {
     const sub = subTab ? `/${subTab}` : "/instances";
@@ -80,6 +86,7 @@ export interface ParsedRoute {
   adminTab?: AdminTab;
   dropletsSubTab?: DropletsSubTab;
   aiSubTab?: AiSubTab;
+  docId?: string;
 }
 
 export function parseRoute(slugSegments: string[]): ParsedRoute | null {
@@ -135,6 +142,12 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
         ? (slugSegments[2] as ProjectTab)
         : "files";
     return { nav, entitySlug, tab };
+  }
+
+  // Docs sub-routes: /docs/[...folders]/filename/docId — last segment is the doc ID
+  if (nav === "docs" && slugSegments.length >= 2) {
+    const docId = slugSegments[slugSegments.length - 1];
+    return { nav, docId };
   }
 
   // Other navs don't have sub-routes

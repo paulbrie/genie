@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useSubject } from "subjecto/react";
-import { FileText, Plus, Save, Trash2, X, FolderPlus, ChevronRight, ChevronDown, Folder, Download, Share2, Users, Globe, Lock, Copy } from "lucide-react";
+import { FileText, Plus, Save, Trash2, X, FolderPlus, ChevronRight, ChevronDown, Folder, Download, Share2, Users, Globe, Lock, Copy, Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -18,6 +18,7 @@ import {
   renameFolder,
   deleteFolder,
   moveDoc,
+  renameDoc,
   shareDoc,
   unshareDoc,
   openShareModal,
@@ -38,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";
 import { Select } from "@/components/ui/select";
+import { buildDocPath } from "@/lib/routes";
 
 // --- Share Modal ---
 
@@ -143,6 +145,57 @@ function ShareModal({
   );
 }
 
+// --- Context Menu ---
+
+interface ContextMenuItem {
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+}
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  items: ContextMenuItem[];
+}
+
+function ContextMenu({ x, y, items, onClose }: ContextMenuState & { onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handle = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [onClose]);
+
+  // Adjust position if menu would overflow viewport
+  const style: React.CSSProperties = { position: "fixed", zIndex: 100, left: x, top: y };
+
+  return (
+    <div ref={ref} style={style} className="bg-crust border border-surface0 rounded-lg shadow-xl py-1 min-w-[140px]">
+      {items.map((item, i) => (
+        <button
+          key={i}
+          onClick={() => { item.onClick(); onClose(); }}
+          className={cn(
+            "flex items-center gap-2 w-full px-3 py-1.5 text-left text-md",
+            "border-none cursor-pointer transition-colors duration-100",
+            item.danger
+              ? "text-red hover:bg-red/10 bg-transparent"
+              : "text-text hover:bg-surface0 bg-transparent"
+          )}
+        >
+          {item.icon}
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // --- Section Header ---
 
 function SectionHeader({
@@ -152,6 +205,11 @@ function SectionHeader({
   onNewDoc,
   onNewFolder,
   icon,
+  onDragOver,
+  onDragEnter,
+  onDragLeave,
+  onDrop,
+  isDropTarget,
 }: {
   label: string;
   isExpanded: boolean;
@@ -159,9 +217,23 @@ function SectionHeader({
   onNewDoc?: () => void;
   onNewFolder?: () => void;
   icon?: React.ReactNode;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDragEnter?: (e: React.DragEvent) => void;
+  onDragLeave?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
+  isDropTarget?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-1.5 px-1 py-1.5 mt-1 first:mt-0 group">
+    <div
+      className={cn(
+        "flex items-center gap-1.5 px-1 py-1.5 mt-1 first:mt-0 group rounded-md transition-colors",
+        isDropTarget && "bg-blue/20 ring-1 ring-blue/40"
+      )}
+      onDragOver={onDragOver}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <button
         onClick={onToggle}
         className="flex items-center gap-1 flex-1 text-left border-none bg-transparent cursor-pointer text-md font-semibold uppercase tracking-wide text-overlay0 hover:text-subtext0 p-0"
@@ -221,6 +293,13 @@ export function DocsPanel() {
   const [renamingFolderName, setRenamingFolderName] = useState("");
   const renamingFolderRef = useRef<HTMLInputElement>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [draggingDocId, setDraggingDocId] = useState<string | null>(null);
+  const [dragOverTargetId, setDragOverTargetId] = useState<string | null>(null); // folder id or "__root__"
+  const [renamingDocId, setRenamingDocId] = useState<string | null>(null);
+  const [renamingDocName, setRenamingDocName] = useState("");
+  const renamingDocRef = useRef<HTMLInputElement>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   const canEdit = isOwner || permission === "write";
 
@@ -251,9 +330,26 @@ export function DocsPanel() {
     loadDocsList();
   }, []);
 
-  const handleSelectFile = useCallback((file: DocItem) => {
-    openDoc(file.id);
+  // Build the folder path (array of folder names) for a given folderId
+  const buildFolderPath = useCallback((folderId: string | null | undefined, allFolders: FolderItem[]): string[] => {
+    const path: string[] = [];
+    let currentId = folderId;
+    const folderMap = new Map(allFolders.map((f) => [f.id, f]));
+    while (currentId) {
+      const folder = folderMap.get(currentId);
+      if (!folder) break;
+      path.unshift(folder.name);
+      currentId = folder.parentId;
+    }
+    return path;
   }, []);
+
+  const handleSelectFile = useCallback((file: DocItem, allFolders: FolderItem[]) => {
+    openDoc(file.id);
+    const folderPath = buildFolderPath(file.folderId, allFolders);
+    const url = buildDocPath(folderPath, file.title, file.id);
+    window.history.pushState({}, "", url);
+  }, [buildFolderPath]);
 
   const handleSave = useCallback(() => {
     if (selectedDocId && canEdit) {
@@ -434,6 +530,99 @@ export function DocsPanel() {
     [selectedDocId, editContent, dirty, canEdit]
   );
 
+  // Doc renaming
+  const startRenameDoc = useCallback((docId: string, currentTitle: string) => {
+    setRenamingDocId(docId);
+    setRenamingDocName(currentTitle);
+    setTimeout(() => renamingDocRef.current?.focus(), 0);
+  }, []);
+
+  const handleRenameDocSubmit = useCallback(() => {
+    if (renamingDocId && renamingDocName.trim()) {
+      renameDoc(renamingDocId, renamingDocName.trim());
+    }
+    setRenamingDocId(null);
+    setRenamingDocName("");
+  }, [renamingDocId, renamingDocName]);
+
+  // Drag and drop handlers
+  const handleDragStart = useCallback((e: React.DragEvent, docId: string) => {
+    setDraggingDocId(docId);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", docId);
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    rootDragCounter.current = 0;
+    setDraggingDocId(null);
+    setDragOverTargetId(null);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const handleDragEnterFolder = useCallback((e: React.DragEvent, folderId: string) => {
+    e.preventDefault();
+    setDragOverTargetId(folderId);
+  }, []);
+
+  const rootDragCounter = useRef(0);
+
+  const handleDragEnterRoot = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    rootDragCounter.current++;
+    setDragOverTargetId("__root__");
+  }, []);
+
+  const handleDragLeaveFolder = useCallback((e: React.DragEvent) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const { clientX, clientY } = e;
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+      // Left the folder — fall back to root since we're still in the sidebar
+      setDragOverTargetId("__root__");
+    }
+  }, []);
+
+  const handleDragLeaveRoot = useCallback((e: React.DragEvent) => {
+    rootDragCounter.current--;
+    if (rootDragCounter.current <= 0) {
+      rootDragCounter.current = 0;
+      // Only clear if currently showing root target (not a folder)
+      setDragOverTargetId((prev) => prev === "__root__" ? null : prev);
+    }
+  }, []);
+
+  const handleDropOnFolder = useCallback((e: React.DragEvent, folderId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const docId = e.dataTransfer.getData("text/plain");
+    if (docId) {
+      moveDoc(docId, folderId);
+      // Auto-expand the target folder
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        next.add(folderId);
+        return next;
+      });
+    }
+    setDraggingDocId(null);
+    setDragOverTargetId(null);
+  }, []);
+
+  const handleDropOnRoot = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    rootDragCounter.current = 0;
+    const docId = e.dataTransfer.getData("text/plain");
+    if (docId) {
+      moveDoc(docId, null);
+    }
+    setDraggingDocId(null);
+    setDragOverTargetId(null);
+  }, []);
+
   // Recursive folder tree renderer for a specific project scope
   const renderTree = useCallback(
     (parentId: string | null, depth: number, scopeFolders: FolderItem[], scopeFiles: DocItem[]) => {
@@ -467,18 +656,28 @@ export function DocsPanel() {
                     onDoubleClick={() => !folder.ownerId && startRenameFolder(folder.id, folder.name)}
                     onContextMenu={(e) => {
                       e.preventDefault();
-                      if (folder.ownerId) return; // read-only public folder
-                      const action = window.prompt(`Folder: ${folder.name}\nType "rename", "delete", "new-doc", "new-folder", or "toggle-public":`);
-                      if (action === "rename") startRenameFolder(folder.id, folder.name);
-                      else if (action === "delete") deleteFolder(folder.id);
-                      else if (action === "new-doc") handleNew(folder.id, folder.projectId);
-                      else if (action === "new-folder") handleNewFolder(folder.id, folder.projectId);
-                      else if (action === "toggle-public") toggleFolderPublic(folder.id);
+                      if (folder.ownerId) return;
+                      setContextMenu({
+                        x: e.clientX, y: e.clientY,
+                        items: [
+                          { label: "Rename", icon: <Pencil size={13} />, onClick: () => startRenameFolder(folder.id, folder.name) },
+                          { label: "New Doc", icon: <Plus size={13} />, onClick: () => handleNew(folder.id, folder.projectId) },
+                          { label: "New Folder", icon: <FolderPlus size={13} />, onClick: () => handleNewFolder(folder.id, folder.projectId) },
+                          { label: folder.isPublic ? "Make Private" : "Make Public", icon: <Globe size={13} />, onClick: () => toggleFolderPublic(folder.id) },
+                          { label: "Delete", icon: <Trash2 size={13} />, onClick: () => deleteFolder(folder.id), danger: true },
+                        ],
+                      });
                     }}
+                    onDragOver={handleDragOver}
+                    onDragEnter={(e) => handleDragEnterFolder(e, folder.id)}
+                    onDragLeave={handleDragLeaveFolder}
+                    onDrop={(e) => handleDropOnFolder(e, folder.id)}
                     className={cn(
                       "flex items-center gap-1.5 py-1 rounded-md text-left w-full",
                       "border-none cursor-pointer text-md transition-colors duration-150",
-                      "bg-transparent text-overlay0 hover:bg-mantle hover:text-subtext0"
+                      dragOverTargetId === folder.id
+                        ? "bg-blue/20 text-blue ring-1 ring-blue/40"
+                        : "bg-transparent text-overlay0 hover:bg-mantle hover:text-subtext0"
                     )}
                     style={{ paddingLeft: indent + 4 }}
                   >
@@ -493,30 +692,61 @@ export function DocsPanel() {
             );
           })}
           {childDocs.map((file) => (
-            <button
-              key={file.id}
-              onClick={() => handleSelectFile(file)}
-              className={cn(
-                "flex items-center gap-2 py-1.5 rounded-md text-left w-full",
-                "border-none cursor-pointer text-md transition-colors duration-150",
-                file.id === selectedDocId
-                  ? "bg-surface0 text-text"
-                  : "bg-transparent text-overlay0 hover:bg-mantle hover:text-subtext0"
-              )}
-              style={{ paddingLeft: indent + 20 }}
-            >
-              <FileText size={14} className="shrink-0" />
-              <span className="truncate flex-1">{file.title}</span>
-              {file.isPublic && <Globe size={10} className="shrink-0 text-green" />}
-              {file.permission === "read" && file.ownerId && (
-                <span className="text-[10px] text-overlay0 bg-surface0 px-1 py-0.5 rounded shrink-0">r</span>
-              )}
-            </button>
+            renamingDocId === file.id ? (
+              <div key={file.id} className="flex items-center gap-1 py-0.5" style={{ paddingLeft: indent + 20 }}>
+                <input
+                  ref={renamingDocRef}
+                  value={renamingDocName}
+                  onChange={(e) => setRenamingDocName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); handleRenameDocSubmit(); }
+                    else if (e.key === "Escape") { setRenamingDocId(null); }
+                  }}
+                  onBlur={handleRenameDocSubmit}
+                  className="flex-1 min-w-0 px-1.5 py-0.5 rounded text-md bg-mantle text-text border border-surface1 outline-none focus:border-blue"
+                />
+              </div>
+            ) : (
+              <button
+                key={file.id}
+                onClick={() => handleSelectFile(file, scopeFolders)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (file.ownerId) return;
+                  setContextMenu({
+                    x: e.clientX, y: e.clientY,
+                    items: [
+                      { label: "Rename", icon: <Pencil size={13} />, onClick: () => startRenameDoc(file.id, file.title) },
+                      { label: "Delete", icon: <Trash2 size={13} />, onClick: () => deleteDoc(file.id), danger: true },
+                    ],
+                  });
+                }}
+                draggable={!file.ownerId || undefined}
+                onDragStart={!file.ownerId ? (e) => handleDragStart(e, file.id) : undefined}
+                onDragEnd={!file.ownerId ? handleDragEnd : undefined}
+                className={cn(
+                  "flex items-center gap-2 py-1.5 rounded-md text-left w-full",
+                  "border-none cursor-pointer text-md transition-colors duration-150",
+                  file.id === selectedDocId
+                    ? "bg-surface0 text-text"
+                    : "bg-transparent text-overlay0 hover:bg-mantle hover:text-subtext0",
+                  draggingDocId === file.id && "opacity-40"
+                )}
+                style={{ paddingLeft: indent + 20 }}
+              >
+                <FileText size={14} className="shrink-0" />
+                <span className="truncate flex-1">{file.title}</span>
+                {file.isPublic && <Globe size={10} className="shrink-0 text-green" />}
+                {file.permission === "read" && file.ownerId && (
+                  <span className="text-[10px] text-overlay0 bg-surface0 px-1 py-0.5 rounded shrink-0">r</span>
+                )}
+              </button>
+            )
           ))}
         </>
       );
     },
-    [expandedFolders, selectedDocId, renamingFolderId, renamingFolderName, handleSelectFile, toggleFolder, startRenameFolder, handleRenameFolderSubmit, handleNew, handleNewFolder]
+    [expandedFolders, selectedDocId, renamingFolderId, renamingFolderName, handleSelectFile, toggleFolder, startRenameFolder, handleRenameFolderSubmit, handleNew, handleNewFolder, draggingDocId, dragOverTargetId, handleDragStart, handleDragEnd, handleDragOver, handleDragEnterFolder, handleDragLeaveFolder, handleDropOnFolder, renamingDocId, renamingDocName, handleRenameDocSubmit, startRenameDoc]
   );
 
   // Filter own files/folders for "My Docs" (projectId is null)
@@ -551,7 +781,16 @@ export function DocsPanel() {
       {/* Body: file list + editor */}
       <div className="flex-1 flex gap-3 overflow-hidden">
         {/* Left: file tree */}
-        <div className="w-48 shrink-0 flex flex-col overflow-y-auto scrollbar-thin">
+        <div
+          className={cn(
+            "w-48 shrink-0 flex flex-col overflow-y-auto scrollbar-thin rounded-md transition-colors",
+            draggingDocId && dragOverTargetId === "__root__" && "bg-blue/10 ring-1 ring-blue/30"
+          )}
+          onDragOver={handleDragOver}
+          onDragEnter={handleDragEnterRoot}
+          onDragLeave={handleDragLeaveRoot}
+          onDrop={handleDropOnRoot}
+        >
           {/* New folder input */}
           {showNewFolderInput && (
             <div className="flex items-center gap-1 px-1.5 py-1">
@@ -697,7 +936,7 @@ export function DocsPanel() {
               {sharedFiles.map((file) => (
                 <button
                   key={file.id}
-                  onClick={() => handleSelectFile(file)}
+                  onClick={() => handleSelectFile(file, [])}
                   className={cn(
                     "flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left w-full",
                     "border-none cursor-pointer text-md transition-colors duration-150",
@@ -868,6 +1107,11 @@ export function DocsPanel() {
           users={chatUsers}
           onClose={closeShareModal}
         />
+      )}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu {...contextMenu} onClose={closeContextMenu} />
       )}
     </div>
   );

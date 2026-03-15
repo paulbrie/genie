@@ -54,6 +54,22 @@ export async function vpsDeploy(
     }
   }
 
+  // 3b. Write .mcp.json with genie-browser MCP entry so the VPS agent can use browser tools
+  {
+    onProgress("Writing .mcp.json with genie-browser MCP...");
+    const mcpSession = await connectSsh(config);
+    try {
+      const mcpConfig = JSON.stringify({
+        mcpServers: {
+          "genie-browser": { type: "http", url: "http://127.0.0.1:9877/mcp" },
+        },
+      }, null, 2);
+      await mcpSession.exec(`cat > ${dest}/.mcp.json << 'GENIEEOF'\n${mcpConfig}\nGENIEEOF`);
+    } finally {
+      mcpSession.close();
+    }
+  }
+
   // 4. Run setup.sh — this is the single entry point for all deployment logic
   //    (env vars, docker compose build/up, etc. should all be in setup.sh)
   if (setupFiles && setupFiles["setup.sh"]) {

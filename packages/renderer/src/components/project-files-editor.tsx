@@ -80,13 +80,22 @@ const catppuccinMocha = {
 function getLanguage(fileName: string): string {
   if (fileName === ".env") return "ini";
   if (fileName.startsWith("Dockerfile")) return "dockerfile";
-  if (fileName.endsWith(".sh") || fileName.endsWith(".bash")) return "shell";
-  if (fileName.endsWith(".json")) return "json";
-  if (fileName.endsWith(".toml")) return "ini";
-  if (fileName.endsWith(".conf") || fileName.endsWith(".cfg") || fileName.endsWith(".ini")) return "ini";
-  if (fileName.endsWith(".yml") || fileName.endsWith(".yaml")) return "yaml";
-  if (fileName.endsWith(".md")) return "markdown";
-  return "yaml";
+  const ext = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
+  const map: Record<string, string> = {
+    ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript",
+    ".json": "json", ".css": "css", ".scss": "scss", ".less": "less",
+    ".html": "html", ".htm": "html", ".xml": "xml", ".svg": "xml",
+    ".md": "markdown", ".mdx": "markdown",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell",
+    ".yml": "yaml", ".yaml": "yaml",
+    ".py": "python", ".rb": "ruby", ".go": "go", ".rs": "rust",
+    ".java": "java", ".kt": "kotlin", ".swift": "swift",
+    ".c": "c", ".cpp": "cpp", ".h": "c", ".hpp": "cpp",
+    ".sql": "sql", ".graphql": "graphql", ".gql": "graphql",
+    ".toml": "ini", ".conf": "ini", ".cfg": "ini", ".ini": "ini",
+    ".php": "php", ".lua": "lua", ".r": "r",
+  };
+  return map[ext] || "plaintext";
 }
 
 function getFileIcon(fileName: string) {
@@ -456,6 +465,32 @@ export function ProjectFilesEditor({ projectId }: { projectId: string }) {
 
   const handleBeforeMount: BeforeMount = (monaco) => {
     monaco.editor.defineTheme("catppuccin-mocha", catppuccinMocha);
+
+    // Disable TypeScript/JavaScript diagnostics — files are on a remote VPS
+    // so we can't resolve node_modules. Syntax highlighting still works.
+    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      noSyntaxValidation: false,
+    });
+    monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      noSyntaxValidation: false,
+    });
+    // Enable JSX support
+    monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+      jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+      target: monaco.languages.typescript.ScriptTarget.ESNext,
+      module: monaco.languages.typescript.ModuleKind.ESNext,
+      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+      allowJs: true,
+      esModuleInterop: true,
+    });
+    monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+      jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+      target: monaco.languages.typescript.ScriptTarget.ESNext,
+      module: monaco.languages.typescript.ModuleKind.ESNext,
+      allowJs: true,
+    });
   };
 
   const handleMount: OnMount = (editor, monaco) => {

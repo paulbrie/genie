@@ -812,71 +812,93 @@ function createDomActionExecutor(extensionWs: WebSocket): DomActionExecutor {
   };
 }
 
-/* ---- Persistent MCP browser tunnel ---- */
+/* ---- Persistent MCP browser tunnels ---- */
 
 const MCP_BROWSER_REMOTE_PORT = 9877;
 
 interface PersistentMcpTunnel {
   sshSession: SshSession;
   mcpTunnel: McpTunnel;
-  extensionWs: WebSocket;
+  projectName: string;
+  instanceHost: string;
 }
 
-/** One persistent tunnel per userId (keyed by userId) */
+/** Multiple tunnels per userId, keyed by `userId:instanceHost` */
 const persistentMcpTunnels = new Map<string, PersistentMcpTunnel>();
 
-async function setupPersistentMcpTunnel(extensionWs: WebSocket, userId: string): Promise<void> {
-  // Tear down any existing tunnel for this user
-  await teardownPersistentMcpTunnel(userId);
+function tunnelKey(userId: string, host: string): string {
+  return `${userId}:${host}`;
+}
 
-  // Find a project with a VPS for this user
+async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string): Promise<void> {
+  // Tear down all existing tunnels for this user
+  await teardownPersistentMcpTunnels(userId);
+
+  // Find ALL projects with VPS instances
   const projects = await projectService.getAll();
-  const project = projects.find(p => p.vpsInstances.length > 0);
-  if (!project) {
-    console.log(`[mcp-persistent] No project with VPS found, skipping persistent tunnel`);
-    return;
+  const domExecutor = createDomActionExecutor(extensionWs);
+
+  let tunnelCount = 0;
+  for (const project of projects) {
+    for (const instance of project.vpsInstances) {
+      if (instance.deployFailed) continue;
+      const key = tunnelKey(userId, instance.connection.host);
+      const dest = remoteDir(project.name);
+
+      try {
+        const sshSession = await connectSsh(instance.connection, { timeoutMs: 30_000 });
+        const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
+
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, projectName: project.name, instanceHost: instance.connection.host });
+
+        // Merge genie-browser into .mcp.json on the VPS
+        const mergeScript = [
+          `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
+          `echo "$existing" | node -e "`,
+          `  const fs = require('fs');`,
+          `  let input = '';`,
+          `  process.stdin.on('data', d => input += d);`,
+          `  process.stdin.on('end', () => {`,
+          `    const cfg = JSON.parse(input);`,
+          `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
+          `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
+          `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
+          `  });`,
+          `"`,
+        ].join("\n");
+        await sshSession.exec(mergeScript);
+
+        tunnelCount++;
+        console.log(`[mcp-persistent] Tunnel ready for user ${userId} → ${instance.connection.host}:${MCP_BROWSER_REMOTE_PORT} (${project.name})`);
+      } catch (err: unknown) {
+        console.error(`[mcp-persistent] Failed tunnel to ${instance.connection.host} (${project.name}): ${(err instanceof Error ? err.message : String(err))}`);
+      }
+    }
   }
 
-  const instance = project.vpsInstances[0];
-  const dest = remoteDir(project.name);
-
-  try {
-    const sshSession = await connectSsh(instance.connection, { timeoutMs: 30_000 });
-    const domExecutor = createDomActionExecutor(extensionWs);
-    const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
-
-    persistentMcpTunnels.set(userId, { sshSession, mcpTunnel, extensionWs });
-
-    // Merge genie-browser into .mcp.json on the VPS
-    const mergeScript = [
-      `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
-      `echo "$existing" | node -e "`,
-      `  const fs = require('fs');`,
-      `  let input = '';`,
-      `  process.stdin.on('data', d => input += d);`,
-      `  process.stdin.on('end', () => {`,
-      `    const cfg = JSON.parse(input);`,
-      `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
-      `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
-      `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
-      `  });`,
-      `"`,
-    ].join("\n");
-    await sshSession.exec(mergeScript);
-
-    console.log(`[mcp-persistent] Tunnel ready for user ${userId} → VPS ${instance.connection.host}:${MCP_BROWSER_REMOTE_PORT}`);
-  } catch (err: unknown) {
-    console.error(`[mcp-persistent] Failed to set up persistent tunnel: ${(err instanceof Error ? err.message : String(err))}`);
+  if (tunnelCount === 0) {
+    console.log(`[mcp-persistent] No VPS instances found for user ${userId}`);
+  } else {
+    console.log(`[mcp-persistent] ${tunnelCount} tunnel(s) established for user ${userId}`);
   }
 }
 
-async function teardownPersistentMcpTunnel(userId: string): Promise<void> {
-  const existing = persistentMcpTunnels.get(userId);
-  if (!existing) return;
-  persistentMcpTunnels.delete(userId);
-  try { existing.mcpTunnel.close(); } catch {}
-  try { existing.sshSession.close(); } catch {}
-  console.log(`[mcp-persistent] Tunnel torn down for user ${userId}`);
+async function teardownPersistentMcpTunnels(userId: string): Promise<void> {
+  const prefix = `${userId}:`;
+  const toRemove: string[] = [];
+  for (const [key, tunnel] of persistentMcpTunnels) {
+    if (key.startsWith(prefix)) {
+      toRemove.push(key);
+      try { tunnel.mcpTunnel.close(); } catch {}
+      try { tunnel.sshSession.close(); } catch {}
+    }
+  }
+  for (const key of toRemove) {
+    persistentMcpTunnels.delete(key);
+  }
+  if (toRemove.length > 0) {
+    console.log(`[mcp-persistent] ${toRemove.length} tunnel(s) torn down for user ${userId}`);
+  }
 }
 
 function broadcast(message: WsMessage): void {
@@ -1097,7 +1119,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     state.clientType = "chrome-extension";
     send(ws, { type: "extension:identified", payload: {} });
     // Set up persistent MCP browser tunnel in background
-    setupPersistentMcpTunnel(ws, userId).catch(err =>
+    setupPersistentMcpTunnels(ws, userId).catch(err =>
       console.error(`[mcp-persistent] Setup error: ${(err instanceof Error ? err.message : String(err))}`)
     );
     return;
@@ -1925,6 +1947,28 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         return;
       }
       broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      break;
+    }
+
+    case "project:setup-snippet:add": {
+      const { projectId, recipeId, snippet } = msg.payload as { projectId: string; recipeId: string; snippet: string };
+      const project = await projectService.getById(projectId);
+      if (!project) {
+        send(ws, { type: "error", payload: { message: "Project not found" } });
+        break;
+      }
+      const files = (project.setupFiles || {}) as Record<string, string>;
+      const setupSh = files["setup.sh"] || "#!/bin/bash\nset -e\n";
+      const marker = `# [recipe:${recipeId}]`;
+      if (setupSh.includes(marker)) {
+        send(ws, { type: "project:setup-snippet:result", payload: { projectId, recipeId, added: false, reason: "already in setup.sh" } });
+        break;
+      }
+      const updatedSetup = setupSh.trimEnd() + `\n\n${marker}\n${snippet}\n`;
+      const setupFiles = { ...files, "setup.sh": updatedSetup };
+      await projectService.patchProject(projectId, { setupFiles });
+      broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      send(ws, { type: "project:setup-snippet:result", payload: { projectId, recipeId, added: true } });
       break;
     }
 
@@ -2982,6 +3026,162 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "vps:process:kill:result", payload: { projectId, instanceId, pid, ok: true } });
       } catch (err: unknown) {
         send(ws, { type: "vps:process:kill:result", payload: { projectId, instanceId, pid, ok: false, error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "mcp:tunnel:start": {
+      const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst || !project) {
+        send(ws, { type: "mcp:tunnel:result", payload: { projectId, instanceId, ok: false, error: "No VPS deployment" } });
+        break;
+      }
+      const host = vpsInst.connection.host;
+      const key = tunnelKey(userId, host);
+      // Already has a tunnel?
+      if (persistentMcpTunnels.has(key)) {
+        send(ws, { type: "mcp:tunnel:result", payload: { projectId, instanceId, ok: true } });
+        break;
+      }
+      try {
+        // Try to find existing extension WS for DOM actions, else use a stub
+        const extensionWs = getExtensionClient(userId);
+        const domExecutor: DomActionExecutor = extensionWs
+          ? createDomActionExecutor(extensionWs)
+          : async () => ({ success: false, result: "No browser extension connected. Install the Genie Chrome extension for browser automation." });
+
+        const sshSession = await connectSsh(vpsInst.connection, { timeoutMs: 30_000 });
+        const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, projectName: project.name, instanceHost: host });
+
+        // Merge genie-browser into .mcp.json on the VPS
+        const dest = remoteDir(project.name);
+        const mergeScript = [
+          `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
+          `echo "$existing" | node -e "`,
+          `  const fs = require('fs');`,
+          `  let input = '';`,
+          `  process.stdin.on('data', d => input += d);`,
+          `  process.stdin.on('end', () => {`,
+          `    const cfg = JSON.parse(input);`,
+          `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
+          `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
+          `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
+          `  });`,
+          `"`,
+        ].join("\n");
+        await sshSession.exec(mergeScript);
+
+        console.log(`[mcp-tunnel] Web UI tunnel ready for user ${userId} → ${host}:${MCP_BROWSER_REMOTE_PORT} (${project.name})`);
+        send(ws, { type: "mcp:tunnel:result", payload: { projectId, instanceId, ok: true } });
+      } catch (err: unknown) {
+        console.error(`[mcp-tunnel] Web UI tunnel failed for ${host}: ${(err instanceof Error ? err.message : String(err))}`);
+        send(ws, { type: "mcp:tunnel:result", payload: { projectId, instanceId, ok: false, error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "vps:recipe:check": {
+      const { projectId, instanceId, recipeId, script } = msg.payload as {
+        projectId: string; instanceId: string; recipeId: string; script: string;
+      };
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:recipe:check:result", payload: { projectId, instanceId, recipeId, installed: false } });
+        break;
+      }
+      try {
+        const session = await connectSsh(vpsInst.connection);
+        try {
+          const output = await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, undefined, { timeoutMs: 15_000 });
+          const installed = output.trim().includes("INSTALLED");
+          send(ws, { type: "vps:recipe:check:result", payload: { projectId, instanceId, recipeId, installed } });
+        } finally {
+          session.close();
+        }
+      } catch {
+        send(ws, { type: "vps:recipe:check:result", payload: { projectId, instanceId, recipeId, installed: false } });
+      }
+      break;
+    }
+
+    case "vps:exec": {
+      const { projectId, instanceId, command, execId } = msg.payload as {
+        projectId: string; instanceId: string; command: string; execId: string;
+      };
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:exec:result", payload: { execId, output: "No VPS deployment found", error: true } });
+        break;
+      }
+      try {
+        const session = await connectSsh(vpsInst.connection);
+        try {
+          const output = await session.exec(`${command} 2>&1`, undefined, { timeoutMs: 30_000 });
+          send(ws, { type: "vps:exec:result", payload: { execId, output } });
+        } finally {
+          session.close();
+        }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
+      }
+      break;
+    }
+
+    case "vps:recipe:uninstall": {
+      const { projectId, instanceId, recipeId, script } = msg.payload as {
+        projectId: string; instanceId: string; recipeId: string; script: string;
+      };
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "No VPS deployment" } });
+        break;
+      }
+      try {
+        const session = await connectSsh(vpsInst.connection);
+        try {
+          await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, (chunk) => {
+            const line = chunk.trimEnd();
+            if (line) send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message: line } });
+          }, { timeoutMs: 300_000, idleTimeoutMs: 60_000 });
+        } finally {
+          session.close();
+        }
+        send(ws, { type: "vps:recipe:uninstall:done", payload: { projectId, instanceId, recipeId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "vps:recipe:run": {
+      const { projectId, instanceId, recipeId, script } = msg.payload as {
+        projectId: string; instanceId: string; recipeId: string; script: string;
+      };
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "No VPS deployment" } });
+        break;
+      }
+      try {
+        const session = await connectSsh(vpsInst.connection);
+        try {
+          await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, (chunk) => {
+            const line = chunk.trimEnd();
+            if (line) send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message: line } });
+          }, { timeoutMs: 600_000, idleTimeoutMs: 120_000 });
+        } finally {
+          session.close();
+        }
+        send(ws, { type: "vps:recipe:done", payload: { projectId, instanceId, recipeId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -4667,7 +4867,7 @@ export async function createServer(): Promise<WebSocketServer> {
       const wasAuthenticated = closingState?.userId != null;
       // Tear down persistent MCP tunnel if this was the extension
       if (closingState?.clientType === "chrome-extension" && closingState?.userId) {
-        teardownPersistentMcpTunnel(closingState.userId).catch(() => {});
+        teardownPersistentMcpTunnels(closingState.userId).catch(() => {});
       }
       // Clean up terminal collaborations
       if (closingState?.userId) {

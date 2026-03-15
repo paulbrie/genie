@@ -109,6 +109,18 @@ function SingleTerminalWindow({
             username: tab.ssh.username,
             privateKeyPath: tab.ssh.privateKeyPath,
           });
+          if (tab.command) {
+            const cmdToSend = tab.command;
+            const tabId = tab.id;
+            const onData = (e: Event) => {
+              const detail = (e as CustomEvent).detail;
+              if (detail?.id === tabId) {
+                window.removeEventListener("genie:terminal:data", onData);
+                setTimeout(() => wsSend("terminal:data", { id: tabId, data: cmdToSend + "\n" }), 300);
+              }
+            };
+            window.addEventListener("genie:terminal:data", onData);
+          }
         } else {
           wsSend("terminal:spawn", {
             id: tab.id,

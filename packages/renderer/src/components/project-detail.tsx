@@ -23,6 +23,11 @@ import {
   loadBaseImageConfigs,
   runProjectCommand,
   stopProjectCommand,
+  runVpsRecipe,
+  checkVpsRecipe,
+  uninstallVpsRecipe,
+  startMcpTunnel,
+  vpsExec,
   type ProjectDef,
   type ProjectCommand,
   type VpsDeployState,
@@ -33,6 +38,7 @@ import {
   type VpsProcessInfo,
   type VpsServiceInfo,
   type BaseImageTemplate,
+  type RecipeState,
 } from "@/store";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
@@ -64,8 +70,21 @@ import {
   Pencil,
   Trash2,
   AlertTriangle,
+  Package,
+  Globe,
+  Database,
+  MessageSquare,
 } from "lucide-react";
+import { ChatView } from "@/components/chat-view";
 import { ProjectFilesEditor } from "@/components/project-files-editor";
+
+function ClaudeLogo({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 -.01 39.5 39.53" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="m7.75 26.27 7.77-4.36.13-.38-.13-.21h-.38l-1.3-.08-4.44-.12-3.85-.16-3.73-.2-.94-.2-.88-1.16.09-.58.79-.53 1.13.1 2.5.17 3.75.26 2.72.16 4.03.42h.64l.09-.26-.22-.16-.17-.16-3.88-2.63-4.2-2.78-2.2-1.6-1.19-.81-.6-.76-.26-1.66 1.08-1.19 1.45.1.37.1 1.47 1.13 3.14 2.43 4.1 3.02.6.5.24-.17.03-.12-.27-.45-2.23-4.03-2.38-4.1-1.06-1.7-.28-1.02c-.1-.42-.17-.77-.17-1.2l1.23-1.67.68-.22 1.64.22.69.6 1.02 2.33 1.65 3.67 2.56 4.99.75 1.48.4 1.37.15.42h.26v-.24l.21-2.81.39-3.45.38-4.44.13-1.25.62-1.5 1.23-.81.96.46.79 1.13-.11.73-.47 3.05-.92 4.78-.6 3.2h.35l.4-.4 1.62-2.15 2.72-3.4 1.2-1.35 1.4-1.49.9-.71h1.7l1.25 1.86-.56 1.92-1.75 2.22-1.45 1.88-2.08 2.8-1.3 2.24.12.18.31-.03 4.7-1 2.54-.46 3.03-.52 1.37.64.15.65-.54 1.33-3.24.8-3.8.76-5.66 1.34-.07.05.08.1 2.55.24 1.09.06h2.67l4.97.37 1.3.86.78 1.05-.13.8-2 1.02-2.7-.64-6.3-1.5-2.16-.54h-.3v.18l1.8 1.76 3.3 2.98 4.13 3.84.21.95-.53.75-.56-.08-3.63-2.73-1.4-1.23-3.17-2.67h-.21v.28l.73 1.07 3.86 5.8.2 1.78-.28.58-1 .35-1.1-.2-2.26-3.17-2.33-3.57-1.88-3.2-.23.13-1.11 11.95-.52.61-1.2.46-1-.76-.53-1.23.53-2.43.64-3.17.52-2.52.47-3.13.28-1.04-.02-.07-.23.03-2.36 3.24-3.59 4.85-2.84 3.04-.68.27-1.18-.61.11-1.09.66-.97 3.93-5 2.37-3.1 1.53-1.79-.01-.26h-.09l-10.44 6.78-1.86.24-.8-.75.1-1.23.38-.4 3.14-2.16z" fill="currentColor"/>
+    </svg>
+  );
+}
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
@@ -483,9 +502,11 @@ function ProjectCloudDetail({
   onBack?: () => void;
 }) {
   const [deployLabel, setDeployLabel] = useState("");
+  const [showChat, setShowChat] = useState(false);
+  const hasInstances = project.vpsInstances.length > 0;
 
   return (
-    <div className="py-4 flex flex-col gap-2">
+    <div className="py-4 flex flex-col gap-2 flex-1 min-h-0">
       {onBack && (
         <button
           onClick={onBack}
@@ -513,6 +534,18 @@ function ProjectCloudDetail({
           <Server size={16} className="text-blue" />
           <span className="text-md font-medium text-text">Deploy DigitalOcean Droplet</span>
         </button>
+        {hasInstances && (
+          <button
+            onClick={() => setShowChat((v) => !v)}
+            className={cn(
+              "flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-left ml-auto",
+              showChat ? "bg-blue/20 text-blue" : "bg-mantle hover:bg-surface0 text-text"
+            )}
+          >
+            <MessageSquare size={14} />
+            <span className="text-md font-medium">Chat</span>
+          </button>
+        )}
       </div>
 
       {/* Deployed instances */}
@@ -524,6 +557,13 @@ function ProjectCloudDetail({
           instanceState={vpsDeploy.instances[instance.id] || null}
         />
       ))}
+
+      {/* Embedded chat */}
+      {showChat && (
+        <div className="flex-1 min-h-[400px] border border-surface0 rounded-lg overflow-hidden flex flex-col">
+          <ChatView />
+        </div>
+      )}
     </div>
   );
 }
@@ -602,6 +642,456 @@ function TeardownProgress({ progress, error }: { progress: string[]; error: stri
       {error && (
         <div className="mt-2 text-md text-red font-mono">{error}</div>
       )}
+    </div>
+  );
+}
+
+interface RecipeCommand {
+  name: string;
+  command: string;
+}
+
+interface VpsRecipeDef {
+  id: string;
+  label: string;
+  icon: typeof Globe;
+  description: string;
+  port?: number;
+  checkScript: string;
+  installScript: string;
+  uninstallScript: string;
+  setupShSnippet: string;
+  commands: RecipeCommand[];
+}
+
+const VPS_RECIPES: VpsRecipeDef[] = [
+  {
+    id: "chrome",
+    label: "Chrome",
+    icon: Globe,
+    description: "Install headless Chrome browser",
+    port: 9222,
+    checkScript: `if google-chrome-stable --version > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+echo "Installing Chrome dependencies..."
+apt-get update -qq
+apt-get install -y -qq wget curl gnupg2 > /dev/null
+echo "Adding Chrome repository..."
+curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg 2>/dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+echo "Updating package list..."
+apt-get update -qq
+echo "Installing Chrome (this may take a minute)..."
+apt-get install -y google-chrome-stable
+echo "Verifying..."
+google-chrome-stable --version
+echo "Chrome installed successfully."`,
+    uninstallScript: `set -e
+echo "Removing Chrome..."
+apt-get remove -y -qq google-chrome-stable > /dev/null 2>&1 || true
+rm -f /etc/apt/sources.list.d/google-chrome.list
+rm -f /usr/share/keyrings/google-chrome.gpg
+apt-get autoremove -y -qq > /dev/null
+echo "Chrome removed."`,
+    setupShSnippet: `# Install Chrome
+apt-get update -qq && apt-get install -y -qq wget gnupg2 > /dev/null
+wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+apt-get update -qq && apt-get install -y -qq google-chrome-stable > /dev/null`,
+    commands: [
+      { name: "Check version", command: "google-chrome-stable --version" },
+      { name: "Launch headless", command: "google-chrome-stable --headless --no-sandbox --disable-gpu --remote-debugging-port=9222 &" },
+      { name: "Launch with URL", command: "google-chrome-stable --headless --no-sandbox --disable-gpu --remote-debugging-port=9222 http://localhost:3000 &" },
+      { name: "Screenshot a page", command: "google-chrome-stable --headless --no-sandbox --disable-gpu --screenshot=/tmp/screenshot.png --window-size=1280,720 http://localhost:3000" },
+      { name: "Print page to PDF", command: "google-chrome-stable --headless --no-sandbox --disable-gpu --print-to-pdf=/tmp/page.pdf http://localhost:3000" },
+      { name: "Kill all Chrome", command: "pkill -f google-chrome || true" },
+    ],
+  },
+  {
+    id: "postgres",
+    label: "PostgreSQL",
+    icon: Database,
+    description: "Install and start PostgreSQL",
+    port: 5432,
+    checkScript: `command -v psql > /dev/null 2>&1 && echo "INSTALLED" || echo "NOT_INSTALLED"`,
+    installScript: `set -e
+echo "Installing PostgreSQL..."
+apt-get update -qq
+apt-get install -y -qq postgresql postgresql-contrib > /dev/null
+echo "Starting PostgreSQL..."
+service postgresql start
+su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""
+echo "PostgreSQL ready (user: postgres, password: postgres, port: 5432)"`,
+    uninstallScript: `set -e
+echo "Stopping PostgreSQL..."
+service postgresql stop 2>/dev/null || true
+echo "Removing PostgreSQL..."
+apt-get remove -y -qq postgresql postgresql-contrib > /dev/null
+apt-get autoremove -y -qq > /dev/null
+echo "PostgreSQL removed."`,
+    setupShSnippet: `# Install and start PostgreSQL
+apt-get update -qq && apt-get install -y -qq postgresql postgresql-contrib > /dev/null
+service postgresql start
+su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
+    commands: [
+      { name: "Start service", command: "service postgresql start" },
+      { name: "Stop service", command: "service postgresql stop" },
+      { name: "Restart service", command: "service postgresql restart" },
+      { name: "Check status", command: "service postgresql status" },
+      { name: "Connect as postgres", command: "su - postgres -c psql" },
+      { name: "List databases", command: "su - postgres -c 'psql -l'" },
+      { name: "Create database", command: "su - postgres -c 'createdb myapp'" },
+      { name: "Connection string", command: "echo 'postgresql://postgres:postgres@localhost:5432/postgres'" },
+    ],
+  },
+  {
+    id: "genie-browser",
+    label: "Genie Browser",
+    icon: Globe,
+    description: "MCP browser automation via reverse SSH tunnel",
+    port: 9877,
+    checkScript: `curl -sf http://127.0.0.1:9877/mcp > /dev/null 2>&1 && echo "INSTALLED" || echo "NOT_INSTALLED"`,
+    installScript: `set -e
+echo "Configuring genie-browser MCP..."
+if [ ! -f /opt/project/.mcp.json ]; then
+  echo '{"mcpServers":{}}' > /opt/project/.mcp.json
+fi
+node -e "
+  const fs = require('fs');
+  const cfg = JSON.parse(fs.readFileSync('/opt/project/.mcp.json', 'utf8'));
+  if (!cfg.mcpServers) cfg.mcpServers = {};
+  cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:9877/mcp' };
+  fs.writeFileSync('/opt/project/.mcp.json', JSON.stringify(cfg, null, 2));
+"
+echo "genie-browser MCP configured in .mcp.json"
+echo "Note: The browser tunnel is established automatically when the Chrome extension connects."`,
+    uninstallScript: `set -e
+echo "Removing genie-browser from .mcp.json..."
+if [ -f /opt/project/.mcp.json ]; then
+  node -e "
+    const fs = require('fs');
+    const cfg = JSON.parse(fs.readFileSync('/opt/project/.mcp.json', 'utf8'));
+    delete cfg.mcpServers['genie-browser'];
+    fs.writeFileSync('/opt/project/.mcp.json', JSON.stringify(cfg, null, 2));
+  "
+fi
+echo "genie-browser removed."`,
+    setupShSnippet: `# Configure genie-browser MCP
+if [ ! -f /opt/project/.mcp.json ]; then echo '{"mcpServers":{}}' > /opt/project/.mcp.json; fi
+node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('/opt/project/.mcp.json','utf8'));c.mcpServers=c.mcpServers||{};c.mcpServers['genie-browser']={type:'http',url:'http://127.0.0.1:9877/mcp'};fs.writeFileSync('/opt/project/.mcp.json',JSON.stringify(c,null,2));"`,
+    commands: [
+      { name: "Check tunnel status", command: "curl -sf http://127.0.0.1:9877/mcp && echo 'Tunnel active' || echo 'Tunnel not connected'" },
+      { name: "View .mcp.json", command: "cat /opt/project/.mcp.json" },
+      { name: "Test browser snapshot", command: `curl -s -X POST http://127.0.0.1:9877/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"browser_get_snapshot","arguments":{}}}'` },
+    ],
+  },
+];
+
+function JsonSyntax({ text }: { text: string }) {
+  // Colorize JSON tokens
+  const colored = text
+    .replace(/("(?:\\.|[^"\\])*")\s*:/g, '<span class="text-blue">$1</span>:')  // keys
+    .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span class="text-green">$1</span>') // string values
+    .replace(/:\s*(true|false)/g, ': <span class="text-peach">$1</span>')         // booleans
+    .replace(/:\s*(\d+\.?\d*)/g, ': <span class="text-peach">$1</span>')          // numbers
+    .replace(/:\s*(null)/g, ': <span class="text-overlay0">$1</span>');            // null
+  return <pre className="text-md font-mono text-text whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: colored }} />;
+}
+
+function CommandPill({
+  cmd,
+  projectId,
+  instanceId,
+}: {
+  cmd: RecipeCommand;
+  projectId: string;
+  instanceId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [output, setOutput] = useState<string | null>(null);
+  const [isError, setIsError] = useState(false);
+
+  const [projects] = useSubject($projects);
+  const project = projects.find((p) => p.id === projectId);
+  const instance = project?.vpsInstances.find((v) => v.id === instanceId);
+
+  async function handleClick() {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    setExpanded(true);
+    setLoading(true);
+    setOutput(null);
+    const result = await vpsExec(projectId, instanceId, cmd.command);
+    setOutput(result.output);
+    setIsError(!!result.error);
+    setLoading(false);
+  }
+
+  function handleRunInTerminal() {
+    if (!instance) return;
+    const { host, port, username, privateKeyPath } = instance.connection;
+    addSshTerminalTab({ host, port, username, privateKeyPath }, cmd.name, cmd.command);
+  }
+
+  // Try to detect and format JSON
+  const isJson = output && (() => {
+    const trimmed = output.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try { JSON.parse(trimmed); return true; } catch { return false; }
+    }
+    return false;
+  })();
+
+  const formattedJson = isJson ? JSON.stringify(JSON.parse(output!.trim()), null, 2) : null;
+
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-1">
+        <button
+          onClick={handleClick}
+          className={cn(
+            "flex items-center gap-1.5 px-2 py-1 rounded-md text-md transition-colors",
+            expanded ? "bg-surface1 text-text" : "bg-surface0 text-subtext0 hover:bg-surface1 hover:text-text",
+          )}
+          title={cmd.command}
+        >
+          {loading ? <Loader2 size={11} className="animate-spin" /> : <ChevronRight size={11} className={cn("transition-transform", expanded && "rotate-90")} />}
+          {cmd.name}
+        </button>
+        <button
+          onClick={handleRunInTerminal}
+          className="p-1 text-overlay0 hover:text-green transition-colors rounded"
+          title="Run in SSH terminal"
+        >
+          <TerminalSquare size={13} />
+        </button>
+        <button
+          onClick={() => navigator.clipboard.writeText(cmd.command)}
+          className="p-1 text-overlay0 hover:text-text transition-colors rounded"
+          title="Copy command"
+        >
+          <Copy size={13} />
+        </button>
+      </div>
+      {expanded && (
+        <div className="mt-1 ml-2 bg-crust rounded-md p-2 max-h-[200px] overflow-auto scrollbar-thin">
+          {loading && <span className="text-md text-overlay0">Running...</span>}
+          {output !== null && !loading && (
+            <>
+              {formattedJson ? (
+                <JsonSyntax text={formattedJson} />
+              ) : (
+                <pre className={cn("text-md font-mono whitespace-pre-wrap", isError ? "text-red" : "text-text")}>{output}</pre>
+              )}
+              {output && (
+                <button
+                  onClick={() => navigator.clipboard.writeText(formattedJson || output)}
+                  className="mt-1 text-[11px] text-overlay0 hover:text-text transition-colors"
+                >
+                  Copy output
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecipeCommands({
+  commands,
+  projectId,
+  instanceId,
+}: {
+  commands: RecipeCommand[];
+  projectId: string;
+  instanceId: string;
+}) {
+  return (
+    <div className="mb-2">
+      <span className="text-md font-medium text-subtext0 mb-1 block">Commands</span>
+      <div className="flex flex-wrap gap-1">
+        {commands.map((cmd) => (
+          <CommandPill
+            key={cmd.name}
+            cmd={cmd}
+            projectId={projectId}
+            instanceId={instanceId}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VpsRecipes({
+  projectId,
+  instanceId,
+  recipes,
+}: {
+  projectId: string;
+  instanceId: string;
+  recipes: Record<string, RecipeState>;
+}) {
+  const [expandedRecipe, setExpandedRecipe] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ recipeId: string; x: number; y: number } | null>(null);
+  const checkedRef = useRef(false);
+
+  // Check all recipes on mount
+  useEffect(() => {
+    if (checkedRef.current) return;
+    checkedRef.current = true;
+    for (const recipe of VPS_RECIPES) {
+      checkVpsRecipe(projectId, instanceId, recipe.id, recipe.checkScript);
+    }
+  }, [projectId, instanceId]);
+
+  // Close context menu on click anywhere
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handler = () => setContextMenu(null);
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
+  }, [contextMenu]);
+
+  function handleAddToSetup(recipe: VpsRecipeDef) {
+    wsSend("project:setup-snippet:add", { projectId, recipeId: recipe.id, snippet: recipe.setupShSnippet });
+  }
+
+  function handleUninstall(recipe: VpsRecipeDef) {
+    uninstallVpsRecipe(projectId, instanceId, recipe.id, recipe.uninstallScript);
+    setExpandedRecipe(recipe.id);
+    setContextMenu(null);
+  }
+
+  return (
+    <div className="mb-3">
+      <span className="text-md font-medium text-subtext0 mb-2 flex items-center gap-1.5">
+        <Package size={12} />
+        Add Services
+      </span>
+      <div className="flex flex-wrap gap-2 mt-1">
+        {VPS_RECIPES.map((recipe) => {
+          const state = recipes[recipe.id];
+          const checking = state?.checking ?? false;
+          const installed = state?.installed ?? null;
+          const running = state?.running ?? false;
+          const failed = !!state?.error;
+          const expanded = expandedRecipe === recipe.id;
+          const Icon = recipe.icon;
+
+          return (
+            <div key={recipe.id} className="flex flex-col relative">
+              <button
+                disabled={running || checking}
+                onClick={() => {
+                  if (checking) return;
+                  if (installed === null) {
+                    // Re-check if state is unknown
+                    checkVpsRecipe(projectId, instanceId, recipe.id, recipe.checkScript);
+                  } else if (installed) {
+                    setExpandedRecipe(expanded ? null : recipe.id);
+                  } else if (failed) {
+                    setExpandedRecipe(expanded ? null : recipe.id);
+                  } else {
+                    runVpsRecipe(projectId, instanceId, recipe.id, recipe.installScript);
+                    setExpandedRecipe(recipe.id);
+                  }
+                }}
+                onContextMenu={(e) => {
+                  if (installed && !running) {
+                    e.preventDefault();
+                    setContextMenu({ recipeId: recipe.id, x: e.clientX, y: e.clientY });
+                  }
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-md transition-colors",
+                  checking && "bg-surface0 text-overlay0 cursor-wait",
+                  running && "bg-blue/10 text-blue cursor-wait",
+                  installed && !running && "bg-green/10 text-green hover:bg-green/20",
+                  failed && "bg-red/10 text-red hover:bg-red/20",
+                  installed === false && !running && !failed && "bg-surface0 text-text hover:bg-surface1",
+                  installed === null && !checking && "bg-surface0 text-overlay0",
+                )}
+                title={recipe.description}
+              >
+                {(running || checking) ? <Loader2 size={12} className="animate-spin" /> : <Icon size={12} />}
+                {recipe.label}
+                {installed && !running && recipe.port && <span className="text-[11px] font-mono opacity-70">:{recipe.port}</span>}
+                {installed && !running && <Check size={12} />}
+                {failed && <X size={12} />}
+              </button>
+
+              {/* Right-click context menu */}
+              {contextMenu?.recipeId === recipe.id && (
+                <div
+                  className="fixed z-50 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[140px]"
+                  style={{ left: contextMenu.x, top: contextMenu.y }}
+                >
+                  <button
+                    onClick={() => handleAddToSetup(recipe)}
+                    className="w-full text-left px-3 py-1.5 text-md text-text hover:bg-surface0 flex items-center gap-2"
+                  >
+                    <Plus size={12} />
+                    Add to setup.sh
+                  </button>
+                  <button
+                    onClick={() => handleUninstall(recipe)}
+                    className="w-full text-left px-3 py-1.5 text-md text-red hover:bg-red/10 flex items-center gap-2"
+                  >
+                    <Trash2 size={12} />
+                    Uninstall
+                  </button>
+                </div>
+              )}
+
+              {expanded && (
+                <div className="mt-1 bg-background rounded-lg p-2 max-w-[480px]">
+                  {/* Progress log (install/uninstall output) */}
+                  {state && state.progress.length > 0 && (
+                    <div className="max-h-[150px] overflow-y-auto scrollbar-thin mb-2">
+                      {state.progress.map((line, i) => (
+                        <div key={i} className="text-md text-overlay1 font-mono whitespace-pre-wrap">{line}</div>
+                      ))}
+                    </div>
+                  )}
+                  {state?.error && <div className="text-md text-red font-mono mb-2">{state.error}</div>}
+
+                  {/* Commands manual */}
+                  {installed && !running && recipe.commands.length > 0 && (
+                    <RecipeCommands
+                      commands={recipe.commands}
+                      projectId={projectId}
+                      instanceId={instanceId}
+                    />
+                  )}
+
+                  <div className="flex items-center gap-2 pt-1 border-t border-surface0">
+                    {failed && (
+                      <button
+                        onClick={() => { runVpsRecipe(projectId, instanceId, recipe.id, recipe.installScript); }}
+                        className="text-md text-blue hover:underline"
+                      >
+                        Retry
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setExpandedRecipe(null)}
+                      className="text-md text-overlay0 hover:underline ml-auto"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -800,6 +1290,13 @@ function VpsInstanceCard({
             </div>
           </div>
 
+          {/* Recipes / Add Services */}
+          <VpsRecipes
+            projectId={project.id}
+            instanceId={instance.id}
+            recipes={instanceState?.recipes ?? {}}
+          />
+
           {/* Action buttons */}
           <div className="flex items-center gap-3 mb-2">
             <button
@@ -811,6 +1308,17 @@ function VpsInstanceCard({
             >
               <TerminalSquare size={10} />
               SSH Terminal
+            </button>
+            <button
+              onClick={() => {
+                const { username, host, port, privateKeyPath } = instance.connection;
+                startMcpTunnel(project.id, instance.id);
+                addSshTerminalTab({ host, port, username, privateKeyPath }, `Claude @ ${instance.label || host}`, "claude");
+              }}
+              className="text-md text-peach hover:underline flex items-center gap-1"
+            >
+              <ClaudeLogo size={12} />
+              Claude Terminal
             </button>
             <button
               onClick={() => {

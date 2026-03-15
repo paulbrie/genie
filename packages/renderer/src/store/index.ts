@@ -81,6 +81,15 @@ export interface DeployLogEntry {
   endedAt: string | null;
 }
 
+export interface RecipeState {
+  recipeId: string;
+  checking: boolean;
+  installed: boolean | null;
+  running: boolean;
+  progress: string[];
+  error: string | null;
+}
+
 export interface VpsInstanceState {
   deploying: boolean;
   tearingDown: boolean;
@@ -92,6 +101,7 @@ export interface VpsInstanceState {
   stats: VpsStats | null;
   statsError: string | null;
   deployLogs: DeployLogEntry[];
+  recipes: Record<string, RecipeState>;
 }
 
 export interface PendingDeploy {
@@ -952,10 +962,10 @@ export function addTerminalTab(cwd?: string, title?: string, command?: string): 
   return id;
 }
 
-export function addSshTerminalTab(ssh: SshConfig, title?: string): string {
+export function addSshTerminalTab(ssh: SshConfig, title?: string, command?: string): string {
   tabCounter++;
   const id = `tab-${Date.now()}-${tabCounter}`;
-  const tab: TerminalTab = { id, title: title ?? `SSH ${ssh.host}`, ssh };
+  const tab: TerminalTab = { id, title: title ?? `SSH ${ssh.host}`, ssh, command };
   const t = $terminal.getValue();
   $terminal.next({ ...t, tabs: [...t.tabs, tab], activeTabId: id, bottomPanelOpen: true });
   return id;
@@ -1215,6 +1225,10 @@ export function renameFolder(folderId: string, name: string): void {
 
 export function deleteFolder(folderId: string): void {
   wsSend("docs:folder:delete", { folderId });
+}
+
+export function renameDoc(docId: string, title: string): void {
+  wsSend("docs:save", { docId, title });
 }
 
 export function moveDoc(docId: string, folderId: string | null): void {
@@ -1689,6 +1703,7 @@ export async function saveSettingsField<K extends keyof AppSettings>(
 const DEFAULT_INSTANCE_STATE: VpsInstanceState = {
   deploying: false, tearingDown: false, progress: [], error: null, logs: null,
   startedAt: null, endedAt: null, stats: null, statsError: null, deployLogs: [],
+  recipes: {},
 };
 
 function ensureInstanceState(instanceId: string): void {
@@ -1745,6 +1760,49 @@ export function fetchVpsStats(projectId: string, instanceId: string): void {
 
 export function killVpsProcess(projectId: string, instanceId: string, pid: number): void {
   wsSend("vps:process:kill", { projectId, instanceId, pid });
+}
+
+export function checkVpsRecipe(projectId: string, instanceId: string, recipeId: string, checkScript: string): void {
+  ensureInstanceState(instanceId);
+  const inst = $vpsDeploy.getValue().instances[instanceId];
+  inst.recipes[recipeId] = { recipeId, checking: true, installed: null, running: false, progress: [], error: null };
+  wsSend("vps:recipe:check", { projectId, instanceId, recipeId, script: checkScript });
+}
+
+export function uninstallVpsRecipe(projectId: string, instanceId: string, recipeId: string, script: string): void {
+  ensureInstanceState(instanceId);
+  const inst = $vpsDeploy.getValue().instances[instanceId];
+  inst.recipes[recipeId] = { recipeId, checking: false, installed: true, running: true, progress: [], error: null };
+  wsSend("vps:recipe:uninstall", { projectId, instanceId, recipeId, script });
+}
+
+export function startMcpTunnel(projectId: string, instanceId: string): void {
+  wsSend("mcp:tunnel:start", { projectId, instanceId });
+}
+
+export function runVpsRecipe(projectId: string, instanceId: string, recipeId: string, script: string): void {
+  ensureInstanceState(instanceId);
+  const inst = $vpsDeploy.getValue().instances[instanceId];
+  const existing = inst.recipes[recipeId];
+  inst.recipes[recipeId] = { recipeId, checking: false, installed: existing?.installed ?? null, running: true, progress: [], error: null };
+  wsSend("vps:recipe:run", { projectId, instanceId, recipeId, script });
+}
+
+const execCallbacks = new Map<string, (output: string, error?: boolean) => void>();
+
+export function vpsExec(projectId: string, instanceId: string, command: string): Promise<{ output: string; error?: boolean }> {
+  const execId = crypto.randomUUID();
+  return new Promise((resolve) => {
+    execCallbacks.set(execId, (output, error) => resolve({ output, error }));
+    wsSend("vps:exec", { projectId, instanceId, command, execId });
+    // Timeout after 35s
+    setTimeout(() => {
+      if (execCallbacks.has(execId)) {
+        execCallbacks.delete(execId);
+        resolve({ output: "Command timed out", error: true });
+      }
+    }, 35_000);
+  });
 }
 
 export function fetchVpsLogs(projectId: string, instanceId: string, serviceName?: string): void {
@@ -3082,6 +3140,80 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
       if (tdeInstId) {
         ensureInstanceState(tdeInstId);
         updateInstanceState(tdeInstId, { error: msg.payload.message });
+      }
+      break;
+    }
+
+    case "vps:recipe:check:result": {
+      const { instanceId: rcInstId, recipeId: rcId, installed: rcInstalled } = msg.payload;
+      if (rcInstId && rcId) {
+        ensureInstanceState(rcInstId);
+        const inst = $vpsDeploy.getValue().instances[rcInstId];
+        if (inst.recipes[rcId]) {
+          inst.recipes[rcId].checking = false;
+          inst.recipes[rcId].installed = rcInstalled;
+        }
+      }
+      break;
+    }
+
+    case "vps:recipe:progress": {
+      const { instanceId: rpInstId, recipeId: rpId, message: rpMsg } = msg.payload;
+      if (rpInstId && rpId) {
+        ensureInstanceState(rpInstId);
+        const inst = $vpsDeploy.getValue().instances[rpInstId];
+        if (inst.recipes[rpId]) {
+          inst.recipes[rpId].progress = [...inst.recipes[rpId].progress, rpMsg];
+        }
+      }
+      break;
+    }
+
+    case "vps:recipe:done": {
+      const { instanceId: rdInstId, recipeId: rdId } = msg.payload;
+      if (rdInstId && rdId) {
+        ensureInstanceState(rdInstId);
+        const inst = $vpsDeploy.getValue().instances[rdInstId];
+        if (inst.recipes[rdId]) {
+          inst.recipes[rdId].running = false;
+          inst.recipes[rdId].installed = true;
+        }
+      }
+      break;
+    }
+
+    case "vps:recipe:uninstall:done": {
+      const { instanceId: ruInstId, recipeId: ruId } = msg.payload;
+      if (ruInstId && ruId) {
+        ensureInstanceState(ruInstId);
+        const inst = $vpsDeploy.getValue().instances[ruInstId];
+        if (inst.recipes[ruId]) {
+          inst.recipes[ruId].running = false;
+          inst.recipes[ruId].installed = false;
+        }
+      }
+      break;
+    }
+
+    case "vps:recipe:error": {
+      const { instanceId: reInstId, recipeId: reId, message: reMsg } = msg.payload;
+      if (reInstId && reId) {
+        ensureInstanceState(reInstId);
+        const inst = $vpsDeploy.getValue().instances[reInstId];
+        if (inst.recipes[reId]) {
+          inst.recipes[reId].running = false;
+          inst.recipes[reId].error = reMsg;
+        }
+      }
+      break;
+    }
+
+    case "vps:exec:result": {
+      const { execId, output, error } = msg.payload;
+      const cb = execCallbacks.get(execId);
+      if (cb) {
+        execCallbacks.delete(execId);
+        cb(output, error);
       }
       break;
     }
