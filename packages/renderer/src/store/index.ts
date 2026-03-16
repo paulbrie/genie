@@ -459,7 +459,21 @@ export interface FloatingWindowState {
   busy?: boolean;
 }
 
-export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "tracker" | "settings" | "admin" | "architecture";
+export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "tracker" | "settings" | "admin" | "architecture" | "users";
+
+export interface PresenceSession {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl: string | null;
+  clientType: string;
+  currentNav: string | null;
+  recentActions: { type: string; ts: number }[];
+  ip: string | null;
+  userAgent: string | null;
+}
+
+export const $presenceSessions = new Subject<PresenceSession[]>([]);
 
 export interface AdminColumnInfo {
   name: string;
@@ -864,6 +878,7 @@ export function switchNav(nav: NavKey): void {
   $activeNav.next(nav);
   if (nav !== "apps") $showAddForm.next(false);
   if (nav !== "projects") $showAddProjectForm.next(false);
+  sendPresenceNav(nav);
   saveUiState();
 }
 
@@ -1286,6 +1301,14 @@ export function setFolderProject(folderId: string, projectId: string | null): vo
 export function loadTrackerIssues(): void {
   $tracker.nextAssign({ loading: true });
   wsSend("tracker:list", {});
+}
+
+export function sendPresenceNav(nav: string): void {
+  wsSend("presence:nav", { nav });
+}
+
+export function requestPresenceDetail(): void {
+  wsSend("presence:detail", {});
 }
 
 export function submitFeedback(title: string, description: string): void {
@@ -2482,6 +2505,11 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
     case "chat:presence": {
       // Re-fetch full user list so online status is accurate
       wsSend("chat:users:list", {});
+      break;
+    }
+
+    case "presence:detail": {
+      $presenceSessions.next(msg.payload.sessions || []);
       break;
     }
 

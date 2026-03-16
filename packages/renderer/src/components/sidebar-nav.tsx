@@ -1,8 +1,8 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network } from "lucide-react";
-import { $activeNav, $docker, type DockerInfo, type NavKey } from "@/store";
+import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users } from "lucide-react";
+import { $activeNav, $docker, $presenceSessions, type DockerInfo, type NavKey } from "@/store";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@/lib/navigation";
 
@@ -19,12 +19,15 @@ const navItems = [
   { key: "settings" as const, label: "Settings", icon: Settings },
   { key: "admin" as const, label: "Admin", icon: Database },
   { key: "architecture" as const, label: "Architecture", icon: Network },
+  { key: "users" as const, label: "Connected Users", icon: Users },
 ];
 
 export function SidebarNav() {
   const [activeNav] = useSubject($activeNav);
   const [docker] = useSubject($docker);
+  const [sessions] = useSubject($presenceSessions);
   const { navigateToNav } = useNavigate();
+  const uniqueUserCount = new Set(sessions.map(s => s.id)).size;
 
   return (
     <nav className="flex flex-col gap-0.5">
@@ -50,6 +53,9 @@ export function SidebarNav() {
           {label}
           {key === "docker" && docker.daemonRunning && (
             <span className="w-2 h-2 rounded-full bg-green shrink-0" />
+          )}
+          {key === "users" && uniqueUserCount > 0 && (
+            <span className="ml-auto text-[11px] text-overlay0 bg-surface0 px-1.5 py-0.5 rounded-full tabular-nums">{uniqueUserCount}</span>
           )}
         </button>
       ))}

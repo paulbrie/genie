@@ -44,6 +44,7 @@ import { ChatView } from "@/components/chat-view";
 import { TrackerPanel } from "@/components/tracker-panel";
 import { AdminPanel } from "@/components/admin-panel";
 import { ArchitecturePanel } from "@/components/architecture-panel";
+import { ConnectedUsersPanel } from "@/components/connected-users-panel";
 import { ProjectsGrid } from "@/components/projects-grid";
 import { parseRoute, type ProjectTab } from "@/lib/routes";
 import { findBySlug } from "@/lib/utils";
@@ -202,6 +203,10 @@ function MainPanel({ activeTab }: { activeTab?: ProjectTab }) {
 
   if (activeNav === "architecture") {
     return <ArchitecturePanel />;
+  }
+
+  if (activeNav === "users") {
+    return <ConnectedUsersPanel />;
   }
 
   if (activeNav === "projects") {

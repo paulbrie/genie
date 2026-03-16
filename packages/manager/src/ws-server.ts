@@ -738,11 +738,20 @@ const execFileAsync = promisify(execFile);
 
 const PORT = Number(process.env.PORT) || 9876;
 
+interface ClientAction {
+  type: string;
+  ts: number;
+}
+
 interface ClientState {
   userId: string | null;
   user: { id: string; name: string; email: string; avatarUrl: string | null } | null;
   clientType: ClientType;
   assistantSessionId: string | null;
+  currentNav: string | null;
+  recentActions: ClientAction[];
+  ip: string | null;
+  userAgent: string | null;
 }
 
 const clients = new Map<WebSocket, ClientState>();
@@ -938,9 +947,50 @@ function getConnectedUserIds(): string[] {
   return [...ids];
 }
 
+const PRESENCE_SKIP_TYPES = new Set([
+  "ping", "pong", "stats", "pty:data", "pty:resize", "presence:nav", "presence:detail",
+]);
+
 function broadcastPresence(): void {
   const connectedUserIds = getConnectedUserIds();
   broadcast({ type: "chat:presence", payload: { connectedUserIds } });
+  broadcastPresenceDetail();
+}
+
+interface PresenceSession {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl: string | null;
+  clientType: string;
+  currentNav: string | null;
+  recentActions: ClientAction[];
+  ip: string | null;
+  userAgent: string | null;
+}
+
+function buildPresenceDetail(): PresenceSession[] {
+  const result: PresenceSession[] = [];
+  for (const [ws, state] of clients) {
+    if (!state.userId || !state.user || ws.readyState !== ws.OPEN) continue;
+    result.push({
+      id: state.userId,
+      name: state.user.name,
+      email: state.user.email,
+      avatarUrl: state.user.avatarUrl,
+      clientType: state.clientType,
+      currentNav: state.currentNav,
+      recentActions: state.recentActions.slice(-25),
+      ip: state.ip,
+      userAgent: state.userAgent,
+    });
+  }
+  return result;
+}
+
+function broadcastPresenceDetail(): void {
+  const detail = buildPresenceDetail();
+  broadcast({ type: "presence:detail", payload: { sessions: detail } });
 }
 
 async function sendInitialData(ws: WebSocket, userId?: string): Promise<void> {
@@ -1113,6 +1163,18 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   }
 
   const userId = state.userId;
+
+  // --- Presence handlers ---
+  if (msg.type === "presence:nav") {
+    state.currentNav = (msg.payload?.nav as string) || null;
+    broadcastPresenceDetail();
+    return;
+  }
+
+  if (msg.type === "presence:detail") {
+    send(ws, { type: "presence:detail", payload: { sessions: buildPresenceDetail() } });
+    return;
+  }
 
   // --- Chrome Extension handlers ---
   if (msg.type === "extension:identify") {
@@ -5031,6 +5093,9 @@ export async function createServer(): Promise<WebSocketServer> {
   void syncDropletStatuses();
   setInterval(() => void syncDropletStatuses(), 60_000);
 
+  // Broadcast presence detail every 3s for real-time action updates
+  setInterval(() => broadcastPresenceDetail(), 3_000);
+
   // Forward PTY events — filtered to authorized users
   setPtyEventCallback((event) => {
     const sessionId = (event.payload as Record<string, unknown> | undefined)?.id as string | undefined;
@@ -5044,8 +5109,10 @@ export async function createServer(): Promise<WebSocketServer> {
     broadcast(event as WsMessage);
   });
 
-  wss.on("connection", (ws) => {
-    clients.set(ws, { userId: null, user: null, clientType: "web", assistantSessionId: null });
+  wss.on("connection", (ws, req) => {
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
+    const userAgent = (req.headers["user-agent"] as string) || null;
+    clients.set(ws, { userId: null, user: null, clientType: "web", assistantSessionId: null, currentNav: null, recentActions: [], ip, userAgent });
     console.log(`Client connected (${clients.size} total)`);
 
     // Tell client auth is required
@@ -5061,6 +5128,11 @@ export async function createServer(): Promise<WebSocketServer> {
           msg.type,
           msg.payload,
         );
+        // Track recent actions per client (skip noisy types)
+        if (clientState?.userId && !PRESENCE_SKIP_TYPES.has(msg.type)) {
+          clientState.recentActions.push({ type: msg.type, ts: Date.now() });
+          if (clientState.recentActions.length > 25) clientState.recentActions.shift();
+        }
         handleMessage(ws, msg).catch((err) => {
           console.error("Unhandled error in handleMessage:", err);
           send(ws, {

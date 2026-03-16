@@ -1399,7 +1399,7 @@ export function AdminPanel() {
                   onClick={() => {
                     if (baseImage.history.length > 0) {
                       const a = $admin.getValue();
-                      $admin.next({ ...a, baseImage: { ...a.baseImage, history: [] } });
+                      a.baseImage.history = [];
                     } else {
                       loadTemplateHistory();
                     }

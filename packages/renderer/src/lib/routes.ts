@@ -18,6 +18,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   settings: "settings",
   admin: "admin",
   architecture: "architecture",
+  users: "users",
 };
 
 const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
