@@ -625,3 +625,95 @@ export async function exportDocsAsZip(userId: string): Promise<Buffer> {
     archive.finalize();
   });
 }
+
+export async function exportDocAsZip(userId: string, docId: string): Promise<{ buffer: Buffer; fileName: string }> {
+  const db = getDb();
+  const [doc] = await db
+    .select({ id: docs.id, title: docs.title, content: docs.content })
+    .from(docs)
+    .where(and(eq(docs.id, docId), eq(docs.userId, userId)))
+    .limit(1);
+  if (!doc) throw new Error("Doc not found or not owner");
+
+  const safeName = doc.title.replace(/[/\\?%*:|"<>]/g, "_");
+  return new Promise<{ buffer: Buffer; fileName: string }>((resolve, reject) => {
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+    archive.on("data", (chunk: Buffer) => chunks.push(chunk));
+    archive.on("end", () => resolve({ buffer: Buffer.concat(chunks), fileName: `${safeName}.zip` }));
+    archive.on("error", reject);
+    archive.append(doc.content, { name: `${safeName}.md` });
+    archive.finalize();
+  });
+}
+
+export async function exportFolderAsZip(userId: string, folderId: string): Promise<{ buffer: Buffer; fileName: string }> {
+  const db = getDb();
+
+  // Get the target folder
+  const [targetFolder] = await db
+    .select({ id: docFolders.id, name: docFolders.name })
+    .from(docFolders)
+    .where(and(eq(docFolders.id, folderId), eq(docFolders.userId, userId)))
+    .limit(1);
+  if (!targetFolder) throw new Error("Folder not found or not owner");
+
+  // Get all user folders and docs
+  const { own } = await listFolders(userId);
+  const folderMap = new Map<string, { name: string; parentId: string | null }>();
+  for (const f of own) folderMap.set(f.id, { name: f.name, parentId: f.parentId });
+
+  // Collect all descendant folder IDs (including the target)
+  const descendantIds = new Set<string>([folderId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const f of own) {
+      if (f.parentId && descendantIds.has(f.parentId) && !descendantIds.has(f.id)) {
+        descendantIds.add(f.id);
+        changed = true;
+      }
+    }
+  }
+
+  // Get docs in those folders
+  const allDocs = await db
+    .select({ id: docs.id, title: docs.title, content: docs.content, folderId: docs.folderId })
+    .from(docs)
+    .where(eq(docs.userId, userId));
+  const folderDocs = allDocs.filter((d) => d.folderId && descendantIds.has(d.folderId));
+
+  // Build relative path from target folder
+  function getRelPath(id: string | null): string {
+    if (!id || !descendantIds.has(id)) return "";
+    const parts: string[] = [];
+    let cur = id;
+    const visited = new Set<string>();
+    while (cur && cur !== folderId && !visited.has(cur)) {
+      visited.add(cur);
+      const f = folderMap.get(cur);
+      if (!f) break;
+      parts.unshift(f.name);
+      cur = f.parentId!;
+    }
+    return parts.length > 0 ? parts.join("/") + "/" : "";
+  }
+
+  const safeFolderName = targetFolder.name.replace(/[/\\?%*:|"<>]/g, "_");
+  return new Promise<{ buffer: Buffer; fileName: string }>((resolve, reject) => {
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+    archive.on("data", (chunk: Buffer) => chunks.push(chunk));
+    archive.on("end", () => resolve({ buffer: Buffer.concat(chunks), fileName: `${safeFolderName}.zip` }));
+    archive.on("error", reject);
+    for (const doc of folderDocs) {
+      const relPath = getRelPath(doc.folderId);
+      const safeName = doc.title.replace(/[/\\?%*:|"<>]/g, "_");
+      archive.append(doc.content, { name: `${safeFolderName}/${relPath}${safeName}.md` });
+    }
+    if (folderDocs.length === 0) {
+      archive.append("", { name: `${safeFolderName}/.keep` });
+    }
+    archive.finalize();
+  });
+}

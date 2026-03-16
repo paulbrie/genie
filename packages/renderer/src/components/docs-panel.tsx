@@ -24,6 +24,8 @@ import {
   openShareModal,
   closeShareModal,
   downloadAllDocs,
+  downloadDoc,
+  downloadFolder,
   toggleDocPublic,
   toggleFolderPublic,
   setDocProject,
@@ -664,6 +666,7 @@ export function DocsPanel() {
                           { label: "New Doc", icon: <Plus size={13} />, onClick: () => handleNew(folder.id, folder.projectId) },
                           { label: "New Folder", icon: <FolderPlus size={13} />, onClick: () => handleNewFolder(folder.id, folder.projectId) },
                           { label: folder.isPublic ? "Make Private" : "Make Public", icon: <Globe size={13} />, onClick: () => toggleFolderPublic(folder.id) },
+                          { label: "Download", icon: <Download size={13} />, onClick: () => downloadFolder(folder.id) },
                           { label: "Delete", icon: <Trash2 size={13} />, onClick: () => deleteFolder(folder.id), danger: true },
                         ],
                       });
@@ -717,6 +720,7 @@ export function DocsPanel() {
                     x: e.clientX, y: e.clientY,
                     items: [
                       { label: "Rename", icon: <Pencil size={13} />, onClick: () => startRenameDoc(file.id, file.title) },
+                      { label: "Download", icon: <Download size={13} />, onClick: () => downloadDoc(file.id) },
                       { label: "Delete", icon: <Trash2 size={13} />, onClick: () => deleteDoc(file.id), danger: true },
                     ],
                   });

@@ -20,6 +20,7 @@ import {
   type FloatingWindowState,
 } from "@/store";
 import { useDraggable, useResizable } from "@/components/use-draggable";
+import { ErrorMessage } from "@/components/ui/error-message";
 
 const WINDOW_ID = "build-log";
 const DEFAULT_W = 480;
@@ -104,7 +105,7 @@ function BuildLogWindowInner({
           <div key={i} className="leading-relaxed text-overlay1">{line}</div>
         ))}
         {baseImage.error && (
-          <div className="text-red leading-relaxed font-semibold">{baseImage.error}</div>
+          <ErrorMessage className="font-semibold">{baseImage.error}</ErrorMessage>
         )}
         <div ref={endRef} />
       </div>

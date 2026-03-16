@@ -94,6 +94,7 @@ import { ViewHeader } from "@/components/view-header";
 import { ViewTabs } from "@/components/view-tabs";
 import { AdminRowDrawer } from "@/components/admin-row-drawer";
 import { Select } from "@/components/ui/select";
+import { ErrorMessage } from "@/components/ui/error-message";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ssr: false,
@@ -1032,9 +1033,9 @@ export function AdminPanel() {
                   rows={3}
                 />
                 {sqlError && (
-                  <div className="px-4 py-2 text-md text-red bg-red/10 border-t border-surface0/50">
+                  <ErrorMessage variant="banner" className="border-t border-surface0/50">
                     {sqlError}
-                  </div>
+                  </ErrorMessage>
                 )}
                 {sqlResult && (
                   <div className="flex-1 overflow-auto border-t border-surface0/50">

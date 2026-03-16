@@ -1257,6 +1257,14 @@ export function downloadAllDocs(): void {
   wsSend("docs:download:zip", {});
 }
 
+export function downloadDoc(docId: string): void {
+  wsSend("docs:download:doc", { docId });
+}
+
+export function downloadFolder(folderId: string): void {
+  wsSend("docs:download:folder", { folderId });
+}
+
 export function toggleDocPublic(docId: string): void {
   wsSend("docs:toggle-public", { docId });
 }
@@ -2877,6 +2885,24 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
         const a = document.createElement("a");
         a.href = url;
         a.download = "docs.zip";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      break;
+    }
+
+    case "docs:download:item": {
+      if (typeof window !== "undefined" && msg.payload.data) {
+        const byteChars = atob(msg.payload.data);
+        const byteArray = new Uint8Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) {
+          byteArray[i] = byteChars.charCodeAt(i);
+        }
+        const blob = new Blob([byteArray], { type: "application/zip" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = msg.payload.fileName || "download.zip";
         a.click();
         URL.revokeObjectURL(url);
       }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import {
@@ -42,6 +42,7 @@ import {
 } from "@/store";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
+import { ErrorMessage } from "@/components/ui/error-message";
 import { wsSend } from "@/lib/ws";
 import { cn, parseDockerPorts } from "@/lib/utils";
 import { ViewHeader } from "@/components/view-header";
@@ -74,8 +75,13 @@ import {
   Globe,
   Database,
   MessageSquare,
+  Shield,
+  RefreshCw,
+  Lock,
 } from "lucide-react";
 import { ChatView } from "@/components/chat-view";
+import { DbExplorer } from "@/components/db-explorer";
+import { FileExplorer } from "@/components/vps-file-explorer";
 import { ProjectFilesEditor } from "@/components/project-files-editor";
 
 function ClaudeLogo({ size = 16 }: { size?: number }) {
@@ -237,7 +243,7 @@ function DeployLog({ progress, error, deploying }: { progress: string[]; error: 
       {error && (
         <div className="flex items-start gap-1.5 py-0.5">
           <X size={12} className="text-red shrink-0 mt-0.5" />
-          <span className="text-red">{error}</span>
+          <ErrorMessage>{error}</ErrorMessage>
         </div>
       )}
     </div>
@@ -278,7 +284,7 @@ function DeployProgressLog({ progress, error, deploying }: { progress: string[];
         {progress.map((msg, i) => (
           <div key={i} className="text-overlay1 leading-relaxed">{msg}</div>
         ))}
-        {error && <div className="text-red leading-relaxed">{error}</div>}
+        {error && <ErrorMessage>{error}</ErrorMessage>}
         <div ref={endRef} />
       </div>
     </div>
@@ -502,8 +508,6 @@ function ProjectCloudDetail({
   onBack?: () => void;
 }) {
   const [deployLabel, setDeployLabel] = useState("");
-  const [showChat, setShowChat] = useState(false);
-  const hasInstances = project.vpsInstances.length > 0;
 
   return (
     <div className="py-4 flex flex-col gap-2 flex-1 min-h-0">
@@ -534,18 +538,6 @@ function ProjectCloudDetail({
           <Server size={16} className="text-blue" />
           <span className="text-md font-medium text-text">Deploy DigitalOcean Droplet</span>
         </button>
-        {hasInstances && (
-          <button
-            onClick={() => setShowChat((v) => !v)}
-            className={cn(
-              "flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-left ml-auto",
-              showChat ? "bg-blue/20 text-blue" : "bg-mantle hover:bg-surface0 text-text"
-            )}
-          >
-            <MessageSquare size={14} />
-            <span className="text-md font-medium">Chat</span>
-          </button>
-        )}
       </div>
 
       {/* Deployed instances */}
@@ -557,13 +549,6 @@ function ProjectCloudDetail({
           instanceState={vpsDeploy.instances[instance.id] || null}
         />
       ))}
-
-      {/* Embedded chat */}
-      {showChat && (
-        <div className="flex-1 min-h-[400px] border border-surface0 rounded-lg overflow-hidden flex flex-col">
-          <ChatView />
-        </div>
-      )}
     </div>
   );
 }
@@ -640,7 +625,7 @@ function TeardownProgress({ progress, error }: { progress: string[]; error: stri
         </div>
       )}
       {error && (
-        <div className="mt-2 text-md text-red font-mono">{error}</div>
+        <ErrorMessage className="mt-2 font-mono">{error}</ErrorMessage>
       )}
     </div>
   );
@@ -1059,7 +1044,7 @@ function VpsRecipes({
                       ))}
                     </div>
                   )}
-                  {state?.error && <div className="text-md text-red font-mono mb-2">{state.error}</div>}
+                  {state?.error && <ErrorMessage className="font-mono mb-2">{state.error}</ErrorMessage>}
 
                   {/* Commands manual */}
                   {installed && !running && recipe.commands.length > 0 && (
@@ -1096,6 +1081,351 @@ function VpsRecipes({
   );
 }
 
+// --- Run Commands Section ---
+
+function VpsRunCommands({ project, instanceId }: { project: ProjectDef; instanceId: string }) {
+  const [commandRunOutputs] = useSubject($commandRunOutputs);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const outputEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [commandRunOutputs, expandedId]);
+
+  if (project.commands.length === 0) return null;
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Play size={12} className="text-green" />
+        <span className="text-md font-medium text-subtext0">Run Commands</span>
+      </div>
+      <div className="flex flex-col gap-1">
+        {project.commands.map((cmd) => {
+          const key = `${project.id}:${cmd.id}`;
+          const runState = commandRunOutputs[key];
+          const isRunning = runState?.running ?? false;
+          const isExpanded = expandedId === cmd.id && runState;
+
+          return (
+            <div key={cmd.id} className="bg-background rounded overflow-hidden">
+              <div className="flex items-center gap-2 px-2 py-1.5">
+                <button
+                  onClick={() => {
+                    if (cmd.mode === "terminal") {
+                      const inst = project.vpsInstances.find((v) => v.id === instanceId);
+                      if (inst) {
+                        const { username, host, port, privateKeyPath } = inst.connection;
+                        // Use setsid for nohup commands so they survive PTY close
+                        let termCmd = cmd.command;
+                        if (termCmd.includes("nohup ")) {
+                          const clean = termCmd.replace(/\s*&\s*$/, "");
+                          termCmd = `setsid ${clean} &`;
+                        }
+                        addSshTerminalTab({ host, port, username, privateKeyPath }, cmd.name, termCmd);
+                      }
+                    } else {
+                      runProjectCommand(project.id, cmd.id, instanceId);
+                      setExpandedId(cmd.id);
+                    }
+                  }}
+                  disabled={isRunning}
+                  className={cn(
+                    "p-0.5 rounded transition-colors",
+                    isRunning ? "text-overlay0" : "text-green hover:bg-green/10"
+                  )}
+                  title={isRunning ? "Running..." : "Run"}
+                >
+                  {isRunning ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                </button>
+                {isRunning && (
+                  <button
+                    onClick={() => stopProjectCommand(project.id, cmd.id)}
+                    className="p-0.5 rounded text-red hover:bg-red/10 transition-colors"
+                    title="Stop"
+                  >
+                    <Square size={12} />
+                  </button>
+                )}
+                <span className="text-md text-text font-medium shrink-0">{cmd.name}</span>
+                <span className="text-[11px] text-overlay0">—</span>
+                <span className="text-md text-overlay0 font-mono truncate">{cmd.command}</span>
+                {cmd.mode === "terminal" && (
+                  <span className="text-[11px] px-1 py-0.5 rounded bg-surface0 text-overlay0">terminal</span>
+                )}
+                {runState && (
+                  <button
+                    onClick={() => setExpandedId(expandedId === cmd.id ? null : cmd.id)}
+                    className="text-overlay0 hover:text-text transition-colors p-0.5"
+                  >
+                    {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </button>
+                )}
+              </div>
+              {isExpanded && (
+                <div className="px-2 pb-2 max-h-[200px] overflow-y-auto scrollbar-thin">
+                  <pre className="text-md font-mono text-overlay1 whitespace-pre-wrap break-words">
+                    {runState.output || (isRunning ? "Running..." : "")}
+                  </pre>
+                  <div ref={outputEndRef} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// --- Firewall Section ---
+
+interface UfwRule {
+  num: number;
+  to: string;
+  action: string;
+  direction: string;
+  from: string;
+}
+
+interface RuleForm {
+  port: string;
+  ip: string;
+  action: "allow" | "deny";
+  direction: "in" | "out";
+}
+
+const EMPTY_RULE_FORM: RuleForm = { port: "", ip: "", action: "allow", direction: "in" };
+
+function buildUfwCmd(form: RuleForm): string {
+  const parts = ["ufw", form.action, form.direction === "out" ? "out" : "in"];
+  if (form.ip.trim()) parts.push(`from ${form.ip.trim()}`);
+  parts.push("to any", `port ${form.port.trim()}`, "proto tcp");
+  return parts.join(" ");
+}
+
+function deleteUfwCmd(rule: UfwRule): string {
+  const parts = ["ufw delete", rule.action.toLowerCase(), rule.direction.toLowerCase() === "out" ? "out" : "in"];
+  const from = rule.from.trim();
+  if (from && from !== "Anywhere" && from !== "Anywhere (v6)") parts.push(`from ${from}`);
+  parts.push(`to any port ${rule.to.replace(/\/.*/, "")}`, "proto tcp");
+  return parts.join(" ");
+}
+
+function isCriticalSshRule(rule: UfwRule): boolean {
+  const port = rule.to.replace(/\/.*/, "").trim();
+  return port === "22" && rule.action === "ALLOW" && rule.direction === "IN" && rule.from !== "Anywhere" && rule.from !== "Anywhere (v6)";
+}
+
+function VpsFirewall({ projectId, instanceId }: { projectId: string; instanceId: string }) {
+  const [rules, setRules] = useState<UfwRule[]>([]);
+  const [active, setActive] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [addForm, setAddForm] = useState<RuleForm>(EMPTY_RULE_FORM);
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<RuleForm>(EMPTY_RULE_FORM);
+
+  const fetchStatus = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await vpsExec(projectId, instanceId, "ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
+      if (res.error || res.output.includes("UFW_NOT_INSTALLED")) {
+        setActive(false);
+        setRules([]);
+        setLoading(false);
+        return;
+      }
+      const lines = res.output.split("\n");
+      const statusLine = lines.find((l) => l.startsWith("Status:"));
+      setActive(statusLine?.includes("active") ?? false);
+
+      const parsed: UfwRule[] = [];
+      for (const line of lines) {
+        const m = line.match(/\[\s*(\d+)\]\s+(.+?)\s+(ALLOW|DENY|REJECT|LIMIT)\s+(IN|OUT)\s+(.+)/);
+        if (m) {
+          parsed.push({ num: parseInt(m[1]), to: m[2].trim(), action: m[3].trim(), direction: m[4].trim(), from: m[5].trim() });
+        }
+      }
+      setRules(parsed);
+    } catch (err: any) {
+      setError(err.message);
+    }
+    setLoading(false);
+  }, [projectId, instanceId]);
+
+  useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  const execAndRefresh = useCallback(async (cmd: string) => {
+    setActionLoading(true);
+    setError(null);
+    const res = await vpsExec(projectId, instanceId, cmd);
+    if (res.error) setError(res.output);
+    await fetchStatus();
+    setActionLoading(false);
+  }, [projectId, instanceId, fetchStatus]);
+
+  const enableFirewall = useCallback(() => {
+    execAndRefresh("ufw default deny incoming && ufw default allow outgoing && ufw --force enable");
+  }, [execAndRefresh]);
+
+  const disableFirewall = useCallback(() => {
+    execAndRefresh("ufw --force disable");
+  }, [execAndRefresh]);
+
+  const addRule = useCallback(() => {
+    if (!addForm.port.trim()) return;
+    execAndRefresh(buildUfwCmd(addForm));
+    setAddForm(EMPTY_RULE_FORM);
+  }, [addForm, execAndRefresh]);
+
+  const deleteRule = useCallback((rule: UfwRule) => {
+    if (isCriticalSshRule(rule)) return;
+    execAndRefresh(deleteUfwCmd(rule));
+  }, [execAndRefresh]);
+
+  const startEdit = useCallback((idx: number) => {
+    const rule = rules[idx];
+    if (isCriticalSshRule(rule)) return;
+    const from = rule.from.trim();
+    setEditingIdx(idx);
+    setEditForm({
+      port: rule.to.replace(/\/.*/, ""),
+      ip: from === "Anywhere" || from === "Anywhere (v6)" ? "" : from,
+      action: rule.action.toLowerCase() as "allow" | "deny",
+      direction: rule.direction.toLowerCase() as "in" | "out",
+    });
+  }, [rules]);
+
+  const saveEdit = useCallback(async () => {
+    if (editingIdx === null || !editForm.port.trim()) return;
+    const oldRule = rules[editingIdx];
+    if (isCriticalSshRule(oldRule)) return;
+    await execAndRefresh(`${deleteUfwCmd(oldRule)} && ${buildUfwCmd(editForm)}`);
+    setEditingIdx(null);
+  }, [editingIdx, editForm, rules, execAndRefresh]);
+
+  const inputCls = "bg-background text-text text-md rounded px-2 py-1 border border-surface0 focus:border-blue focus:outline-none font-mono";
+  const selectCls = "bg-background text-text text-md rounded px-1.5 py-1 border border-surface0 focus:border-blue focus:outline-none";
+
+  const renderRuleForm = (form: RuleForm, setForm: (f: RuleForm) => void, onSubmit: () => void, submitLabel: string, onCancel?: () => void) => (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <select value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value as "allow" | "deny" })} className={selectCls}>
+        <option value="allow">Allow</option>
+        <option value="deny">Deny</option>
+      </select>
+      <select value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value as "in" | "out" })} className={selectCls}>
+        <option value="in">In</option>
+        <option value="out">Out</option>
+      </select>
+      <input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} onKeyDown={(e) => e.key === "Enter" && onSubmit()} placeholder="Port" className={cn(inputCls, "w-20")} />
+      <input value={form.ip} onChange={(e) => setForm({ ...form, ip: e.target.value })} onKeyDown={(e) => e.key === "Enter" && onSubmit()} placeholder="IP (any)" className={cn(inputCls, "w-36")} />
+      <button onClick={onSubmit} disabled={actionLoading || !form.port.trim()} className="text-md text-green hover:bg-green/10 px-2 py-1 rounded transition-colors disabled:opacity-50 flex items-center gap-1">
+        {submitLabel}
+      </button>
+      {onCancel && (
+        <button onClick={onCancel} className="text-md text-overlay0 hover:text-text px-1.5 py-1 rounded transition-colors">Cancel</button>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Shield size={12} className="text-yellow" />
+        <span className="text-md font-medium text-subtext0">Firewall</span>
+        <span className={cn(
+          "text-[11px] px-1.5 py-0.5 rounded font-medium",
+          active ? "bg-green/15 text-green" : "bg-overlay0/15 text-overlay0"
+        )}>
+          {loading ? "..." : active ? "Active" : "Inactive"}
+        </span>
+        <div className="flex-1" />
+        {!loading && (
+          <button
+            onClick={active ? disableFirewall : enableFirewall}
+            disabled={actionLoading}
+            className={cn(
+              "text-md px-2 py-0.5 rounded transition-colors",
+              active ? "text-red hover:bg-red/10" : "text-green hover:bg-green/10"
+            )}
+          >
+            {actionLoading ? "..." : active ? "Disable" : "Enable"}
+          </button>
+        )}
+        <button onClick={fetchStatus} disabled={loading} className="text-overlay0 hover:text-text transition-colors p-0.5">
+          <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+        </button>
+      </div>
+
+      {error && <div className="text-md text-red mb-2">{error}</div>}
+
+      {active && rules.length > 0 && (
+        <div className="flex flex-col gap-1 mb-2">
+          {rules.map((rule, i) => (
+            editingIdx === i ? (
+              <div key={i} className="bg-surface0/50 rounded px-2 py-1.5">
+                {renderRuleForm(editForm, setEditForm, saveEdit, "Save", () => setEditingIdx(null))}
+              </div>
+            ) : (
+              <div key={i} className="flex items-center gap-2 bg-background rounded px-2 py-1 group">
+                <span className={cn(
+                  "text-[11px] px-1 py-0.5 rounded font-medium",
+                  rule.action === "ALLOW" ? "bg-green/15 text-green" : "bg-red/15 text-red"
+                )}>
+                  {rule.action}
+                </span>
+                <span className={cn(
+                  "text-[11px] px-1 py-0.5 rounded font-medium",
+                  rule.direction === "IN" ? "bg-blue/15 text-blue" : "bg-peach/15 text-peach"
+                )}>
+                  {rule.direction}
+                </span>
+                <span className="text-md text-text font-mono">{rule.to}</span>
+                <span className="text-md text-overlay0">from</span>
+                <span className="text-md text-overlay1 font-mono">{rule.from}</span>
+                {isCriticalSshRule(rule) ? (
+                  <span className="ml-auto flex items-center gap-1 text-overlay0" title="Critical SSH rule — cannot be modified">
+                    <Lock size={11} />
+                  </span>
+                ) : (
+                  <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => startEdit(i)} disabled={actionLoading} className="text-overlay0 hover:text-text transition-colors p-0.5" title="Edit rule">
+                      <Pencil size={11} />
+                    </button>
+                    <button onClick={() => deleteRule(rule)} disabled={actionLoading} className="text-overlay0 hover:text-red transition-colors p-0.5" title="Delete rule">
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          ))}
+        </div>
+      )}
+
+      {active && rules.length === 0 && !loading && (
+        <div className="text-md text-overlay0 mb-2">No rules — all incoming connections denied.</div>
+      )}
+
+      {active && editingIdx === null && renderRuleForm(addForm, setAddForm, addRule, "+ Add")}
+    </div>
+  );
+}
+
+type InstanceTab = "main" | "processes" | "files" | "db" | "containers" | "chat";
+
+const INSTANCE_TABS: { key: InstanceTab; label: string; icon: typeof Server }[] = [
+  { key: "main", label: "Main", icon: Server },
+  { key: "processes", label: "Processes", icon: Activity },
+  { key: "files", label: "Files", icon: FileText },
+  { key: "db", label: "DB", icon: Database },
+  { key: "containers", label: "Containers", icon: Server },
+  { key: "chat", label: "Chat", icon: MessageSquare },
+];
+
 function VpsInstanceCard({
   project,
   instance,
@@ -1108,6 +1438,7 @@ function VpsInstanceCard({
   const [confirmTeardown, setConfirmTeardown] = useState(false);
   const [viewingLogs, setViewingLogs] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [activeTab, setActiveTab] = useState<InstanceTab>("main");
 
   const stats = instanceState?.stats ?? null;
   const statsError = instanceState?.statsError ?? null;
@@ -1117,6 +1448,10 @@ function VpsInstanceCard({
   const teardownProgress = instanceState?.progress ?? [];
   const teardownError = instanceState?.error ?? null;
 
+  const vpsIp = instance.digitalocean?.ipAddress ?? instance.connection.host;
+  const isFailed = instance.deployFailed;
+  const isReady = !isFailed && !unreachable && !checking;
+
   // Fetch stats on mount and every 5s for real-time data (skip for failed deploys)
   useEffect(() => {
     if (instance.deployFailed) return;
@@ -1125,14 +1460,10 @@ function VpsInstanceCard({
     return () => clearInterval(interval);
   }, [project.id, instance.id, instance.deployFailed]);
 
-  const vpsIp = instance.digitalocean?.ipAddress ?? instance.connection.host;
-
-  const isFailed = instance.deployFailed;
-
   return (
-    <div className={cn("bg-mantle rounded-lg p-3", isFailed && "border border-peach/30")}>
+    <div className={cn("bg-mantle rounded-lg p-3 flex flex-col", isFailed && "border border-peach/30")}>
       {/* Instance header bar */}
-      <div className="mb-3">
+      <div className="mb-2">
         <DropletInstanceBar
           name={instance.label}
           status={isFailed ? "unreachable" : unreachable ? "unreachable" : checking ? "checking" : "active"}
@@ -1152,24 +1483,11 @@ function VpsInstanceCard({
           <AlertTriangle size={14} className="shrink-0 mt-0.5" />
           <div className="flex-1">
             <span className="font-medium">Deployment failed</span>
-            {instance.deployError && (
-              <p className="text-overlay1 mt-0.5">{instance.deployError}</p>
-            )}
+            {instance.deployError && <p className="text-overlay1 mt-0.5">{instance.deployError}</p>}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              onClick={() => { deployToDo(project.id, instance.label, instance.id); }}
-              className="px-2 py-1 rounded text-md text-blue hover:bg-blue/10 transition-colors font-medium"
-            >
-              Retry
-            </button>
-            <button
-              onClick={() => { teardownVps(project.id, instance.id); }}
-              className="flex items-center gap-1 px-2 py-1 rounded text-md text-red hover:bg-red/10 transition-colors"
-            >
-              <Trash2 size={12} />
-              Destroy
-            </button>
+            <button onClick={() => deployToDo(project.id, instance.label, instance.id)} className="px-2 py-1 rounded text-md text-blue hover:bg-blue/10 transition-colors font-medium">Retry</button>
+            <button onClick={() => teardownVps(project.id, instance.id)} className="flex items-center gap-1 px-2 py-1 rounded text-md text-red hover:bg-red/10 transition-colors"><Trash2 size={12} /> Destroy</button>
           </div>
         </div>
       )}
@@ -1182,120 +1500,41 @@ function VpsInstanceCard({
         </div>
       )}
 
-      {/* --- 3-column layout: Containers | Processes | Process City --- */}
-      {!isFailed && !unreachable && !checking && (
+      {/* Tab bar */}
+      {isReady && (
+        <div className="flex items-center gap-1 mb-3 border-b border-surface0 pb-2">
+          {INSTANCE_TABS.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-md transition-colors border-none cursor-pointer",
+                  activeTab === tab.key
+                    ? "bg-surface0 text-text font-medium"
+                    : "bg-transparent text-overlay0 hover:text-text hover:bg-surface0/50"
+                )}
+              >
+                <Icon size={12} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Tab content */}
+      {isReady && activeTab === "main" && (
         <>
-          <div className="grid grid-cols-3 gap-3 mb-3">
-            {/* Column 1: Docker Containers */}
-            <div className="flex flex-col gap-1">
-              <span className="text-md font-medium text-subtext0 mb-1 flex items-center gap-1.5">
-                <Server size={12} />
-                Containers ({instance.services.length})
-              </span>
-              {instance.services.length > 0 ? (
-                <div className="flex flex-col gap-1 overflow-y-auto max-h-[320px] scrollbar-thin">
-                  {instance.services.map((svc) => {
-                    const ports = parseDockerPorts(svc.ports);
-                    const uptimeMatch = svc.status?.match(/Up\s+(.+)/i);
-                    const uptime = uptimeMatch ? uptimeMatch[1] : null;
-                    return (
-                      <div
-                        key={svc.name}
-                        className="bg-background rounded px-2 py-1.5 flex flex-col gap-0.5"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className={cn(
-                              "w-2 h-2 rounded-full shrink-0",
-                              svc.state === "running" && "bg-green shadow-[0_0_3px_var(--color-green)]",
-                              svc.state === "exited" && "bg-red",
-                              svc.state !== "running" && svc.state !== "exited" && "bg-overlay0",
-                            )}
-                          />
-                          <span className="text-md text-text truncate flex-1 font-medium">
-                            {svc.service || svc.name}
-                          </span>
-                          <span
-                            className={cn(
-                              "text-[11px] px-1 py-0.5 rounded font-medium leading-none",
-                              svc.state === "running" && "bg-green/15 text-green",
-                              svc.state === "exited" && "bg-red/15 text-red",
-                              svc.state !== "running" && svc.state !== "exited" && "bg-overlay0/15 text-overlay0",
-                            )}
-                          >
-                            {svc.state}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {uptime && <span className="text-[11px] text-overlay0">Up {uptime}</span>}
-                          {ports.length > 0 && ports.map((p) => (
-                            <a
-                              key={p.hostPort}
-                              href={`http://${vpsIp}:${p.hostPort}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-[11px] text-blue hover:underline font-mono flex items-center gap-0.5"
-                            >
-                              :{p.hostPort}<ExternalLink size={9} />
-                            </a>
-                          ))}
-                          <button
-                            onClick={() => {
-                              setViewingLogs(true);
-                              fetchVpsLogs(project.id, instance.id, svc.service || undefined);
-                            }}
-                            className="ml-auto p-0.5 text-overlay0 hover:text-text transition-colors"
-                            title="View Logs"
-                          >
-                            <FileText size={12} />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-md text-overlay0">No containers found.</div>
-              )}
-            </div>
-
-            {/* Column 2: Processes */}
-            <div className="flex flex-col gap-1">
-              <span className="text-md font-medium text-subtext0 mb-1 flex items-center gap-1.5">
-                <Activity size={12} />
-                Processes ({stats?.processes.length ?? 0})
-              </span>
-              {stats && stats.processes.length > 0 ? (
-                <VpsProcessTable processes={stats.processes} projectId={project.id} instanceId={instance.id} />
-              ) : (
-                <div className="text-md text-overlay0">No processes.</div>
-              )}
-            </div>
-
-            {/* Column 3: Process City */}
-            <div className="flex flex-col gap-1">
-              <span className="text-md font-medium text-subtext0 mb-1 flex items-center gap-1.5">
-                <Activity size={12} />
-                Process City
-              </span>
-              {stats && stats.processes.length > 0 ? (
-                <div className="bg-background rounded-lg p-2 flex-1 min-h-[120px] flex flex-col">
-                  <VpsProcessCity processes={stats.processes} />
-                </div>
-              ) : (
-                <div className="bg-background rounded-lg p-2 flex items-center justify-center text-md text-overlay0 min-h-[120px]">
-                  No data
-                </div>
-              )}
-            </div>
-          </div>
-
           {/* Recipes / Add Services */}
-          <VpsRecipes
-            projectId={project.id}
-            instanceId={instance.id}
-            recipes={instanceState?.recipes ?? {}}
-          />
+          <VpsRecipes projectId={project.id} instanceId={instance.id} recipes={instanceState?.recipes ?? {}} />
+
+          {/* Firewall */}
+          <VpsFirewall projectId={project.id} instanceId={instance.id} />
+
+          {/* Run Commands */}
+          <VpsRunCommands project={project} instanceId={instance.id} />
 
           {/* Action buttons */}
           <div className="flex items-center gap-3 mb-2">
@@ -1321,21 +1560,14 @@ function VpsInstanceCard({
               Claude Terminal
             </button>
             <button
-              onClick={() => {
-                setViewingLogs(true);
-                fetchVpsLogs(project.id, instance.id);
-              }}
+              onClick={() => { setViewingLogs(true); fetchVpsLogs(project.id, instance.id); }}
               className="text-md text-blue hover:underline flex items-center gap-1"
             >
               <FileText size={10} />
               View all logs
             </button>
             <button
-              onClick={() => {
-                const next = !showHistory;
-                setShowHistory(next);
-                if (next) loadDeployLogs(project.id);
-              }}
+              onClick={() => { const next = !showHistory; setShowHistory(next); if (next) loadDeployLogs(project.id); }}
               className="text-md text-peach hover:underline flex items-center gap-1"
             >
               <History size={10} />
@@ -1343,70 +1575,126 @@ function VpsInstanceCard({
             </button>
           </div>
 
-          {/* Deploy History */}
-          {showHistory && (
-            <DeployHistoryPanel
-              logs={instanceState?.deployLogs ?? []}
-              onClose={() => setShowHistory(false)}
-            />
-          )}
-
-          {/* Logs viewer */}
-          {viewingLogs && (
-            <VpsLogViewer
-              projectId={project.id}
-              instanceId={instance.id}
-              logs={instanceState?.logs ?? null}
-              onClose={() => setViewingLogs(false)}
-            />
-          )}
+          {showHistory && <DeployHistoryPanel logs={instanceState?.deployLogs ?? []} onClose={() => setShowHistory(false)} />}
+          {viewingLogs && <VpsLogViewer projectId={project.id} instanceId={instance.id} logs={instanceState?.logs ?? null} onClose={() => setViewingLogs(false)} />}
 
           {/* Teardown */}
           {tearingDown ? (
             <TeardownProgress progress={teardownProgress} error={teardownError} />
           ) : !confirmTeardown ? (
-            <button
-              onClick={() => setConfirmTeardown(true)}
-              className="flex items-center gap-1.5 text-md text-red/70 hover:text-red transition-colors"
-            >
-              <CloudOff size={12} />
-              Teardown
+            <button onClick={() => setConfirmTeardown(true)} className="flex items-center gap-1.5 text-md text-red/70 hover:text-red transition-colors">
+              <CloudOff size={12} /> Teardown
             </button>
           ) : (
             <div className="flex items-center gap-2">
-              <span className="text-md text-red">
-                {instance.digitalocean ? "Destroy droplet and remove deployment?" : "Remove from VPS?"}
-              </span>
-              <Button size="sm" variant="danger" onClick={() => { teardownVps(project.id, instance.id); setConfirmTeardown(false); }}>
-                Confirm
-              </Button>
-              <Button size="sm" onClick={() => setConfirmTeardown(false)}>
-                Cancel
-              </Button>
+              <span className="text-md text-red">{instance.digitalocean ? "Destroy droplet and remove deployment?" : "Remove from VPS?"}</span>
+              <Button size="sm" variant="danger" onClick={() => { teardownVps(project.id, instance.id); setConfirmTeardown(false); }}>Confirm</Button>
+              <Button size="sm" onClick={() => setConfirmTeardown(false)}>Cancel</Button>
             </div>
           )}
         </>
       )}
 
-      {/* --- When unreachable: offer to remove stale config --- */}
+      {isReady && activeTab === "processes" && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-md font-medium text-subtext0 mb-1 flex items-center gap-1.5">
+              <Activity size={12} /> Processes ({stats?.processes.length ?? 0})
+            </span>
+            {stats && stats.processes.length > 0 ? (
+              <VpsProcessTable processes={stats.processes} projectId={project.id} instanceId={instance.id} />
+            ) : (
+              <div className="text-md text-overlay0">No processes.</div>
+            )}
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-md font-medium text-subtext0 mb-1 flex items-center gap-1.5">
+              <Activity size={12} /> Process City
+            </span>
+            {stats && stats.processes.length > 0 ? (
+              <div className="bg-background rounded-lg p-2 flex-1 min-h-[120px] flex flex-col">
+                <VpsProcessCity processes={stats.processes} />
+              </div>
+            ) : (
+              <div className="bg-background rounded-lg p-2 flex items-center justify-center text-md text-overlay0 min-h-[120px]">No data</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isReady && activeTab === "containers" && (
+        <div className="flex flex-col gap-1">
+          <span className="text-md font-medium text-subtext0 mb-1 flex items-center gap-1.5">
+            <Server size={12} /> Containers ({instance.services.length})
+          </span>
+          {instance.services.length > 0 ? (
+            <div className="flex flex-col gap-1 overflow-y-auto max-h-[400px] scrollbar-thin">
+              {instance.services.map((svc) => {
+                const ports = parseDockerPorts(svc.ports);
+                const uptimeMatch = svc.status?.match(/Up\s+(.+)/i);
+                const uptime = uptimeMatch ? uptimeMatch[1] : null;
+                return (
+                  <div key={svc.name} className="bg-background rounded px-2 py-1.5 flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className={cn("w-2 h-2 rounded-full shrink-0", svc.state === "running" && "bg-green shadow-[0_0_3px_var(--color-green)]", svc.state === "exited" && "bg-red", svc.state !== "running" && svc.state !== "exited" && "bg-overlay0")} />
+                      <span className="text-md text-text truncate flex-1 font-medium">{svc.service || svc.name}</span>
+                      <span className={cn("text-[11px] px-1 py-0.5 rounded font-medium leading-none", svc.state === "running" && "bg-green/15 text-green", svc.state === "exited" && "bg-red/15 text-red", svc.state !== "running" && svc.state !== "exited" && "bg-overlay0/15 text-overlay0")}>{svc.state}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {uptime && <span className="text-[11px] text-overlay0">Up {uptime}</span>}
+                      {ports.length > 0 && ports.map((p) => (
+                        <a key={p.hostPort} href={`http://${vpsIp}:${p.hostPort}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-blue hover:underline font-mono flex items-center gap-0.5">
+                          :{p.hostPort}<ExternalLink size={9} />
+                        </a>
+                      ))}
+                      <button
+                        onClick={() => { setViewingLogs(true); fetchVpsLogs(project.id, instance.id, svc.service || undefined); setActiveTab("main"); }}
+                        className="ml-auto p-0.5 text-overlay0 hover:text-text transition-colors"
+                        title="View Logs"
+                      >
+                        <FileText size={12} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-md text-overlay0">No containers found.</div>
+          )}
+        </div>
+      )}
+
+      {isReady && activeTab === "files" && (
+        <div className="min-h-[400px] border border-surface0 rounded-lg overflow-hidden flex flex-col">
+          <FileExplorer project={project} />
+        </div>
+      )}
+
+      {isReady && activeTab === "db" && (
+        <div className="min-h-[400px] border border-surface0 rounded-lg overflow-hidden flex flex-col">
+          <DbExplorer project={project} />
+        </div>
+      )}
+
+      {isReady && activeTab === "chat" && (
+        <div className="min-h-[400px] border border-surface0 rounded-lg overflow-hidden flex flex-col">
+          <ChatView />
+        </div>
+      )}
+
+      {/* When unreachable: offer to remove stale config */}
       {!isFailed && unreachable && (
         <>
           {!confirmTeardown ? (
             <Button size="sm" variant="danger" onClick={() => setConfirmTeardown(true)}>
-              <CloudOff size={12} />
-              Remove Cloud Config
+              <CloudOff size={12} /> Remove Cloud Config
             </Button>
           ) : (
             <div className="flex items-center gap-2">
-              <span className="text-md text-red">
-                Clear VPS configuration so you can deploy again?
-              </span>
-              <Button size="sm" variant="danger" onClick={() => { disconnectVps(project.id, instance.id); setConfirmTeardown(false); }}>
-                Confirm
-              </Button>
-              <Button size="sm" onClick={() => setConfirmTeardown(false)}>
-                Cancel
-              </Button>
+              <span className="text-md text-red">Clear VPS configuration so you can deploy again?</span>
+              <Button size="sm" variant="danger" onClick={() => { disconnectVps(project.id, instance.id); setConfirmTeardown(false); }}>Confirm</Button>
+              <Button size="sm" onClick={() => setConfirmTeardown(false)}>Cancel</Button>
             </div>
           )}
         </>

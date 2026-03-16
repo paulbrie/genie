@@ -25,6 +25,7 @@ import {
   type FloatingWindowState,
 } from "@/store";
 import { useDraggable, useResizable } from "@/components/use-draggable";
+import { ErrorMessage } from "@/components/ui/error-message";
 
 const WINDOW_PREFIX = "deploy-";
 const DEFAULT_W = 400;
@@ -282,7 +283,7 @@ function FloatingDeployWindow({
           </div>
         ))}
         {deploy.error && (
-          <div className="text-red leading-relaxed font-semibold">{deploy.error}</div>
+          <ErrorMessage className="font-semibold">{deploy.error}</ErrorMessage>
         )}
         <div ref={endRef} />
       </div>

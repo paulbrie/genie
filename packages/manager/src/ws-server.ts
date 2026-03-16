@@ -2035,8 +2035,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       }
 
       if (cmd.mode === "terminal") {
+        // For nohup commands in terminal mode, use setsid to fully detach from the PTY
+        let termCmd = cmd.command;
+        if (termCmd.includes("nohup ")) {
+          const clean = termCmd.replace(/\s*&\s*$/, "");
+          termCmd = `setsid ${clean} &`;
+        }
         // Tell the client to open an SSH terminal tab and run the command in it
-        send(ws, { type: "project:command:terminal", payload: { projectId, commandId, instanceId, commandName: cmd.name, command: cmd.command } });
+        send(ws, { type: "project:command:terminal", payload: { projectId, commandId, instanceId, commandName: cmd.name, command: termCmd } });
       } else {
         // Inline execution with streamed output
         const cmdKey = `${projectId}:${commandId}`;
@@ -2054,7 +2060,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         }
         activeCommandSessions.set(cmdKey, session);
         try {
-          await session.exec(`cd /opt/project 2>/dev/null || true; ${cmd.command}`, (chunk) => {
+          // If command uses nohup, wrap it to fully detach from the SSH session
+          let shellCmd = cmd.command;
+          if (shellCmd.includes("nohup ")) {
+            // Strip trailing & if present, we'll handle backgrounding ourselves
+            const cleanCmd = shellCmd.replace(/\s*&\s*$/, "");
+            shellCmd = `bash -c '${cleanCmd.replace(/'/g, "'\\''")} & disown'`;
+          }
+          await session.exec(`cd /opt/project 2>/dev/null || true; ${shellCmd}`, (chunk) => {
             send(ws, { type: "project:command:output", payload: { projectId, commandId, data: chunk } });
           });
           send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: 0 } });
@@ -2354,6 +2367,28 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const zipBuffer = await docsService.exportDocsAsZip(userId);
         send(ws, { type: "docs:download:zip", payload: { data: zipBuffer.toString("base64") } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "docs:download:doc": {
+      try {
+        const { docId } = msg.payload;
+        const { buffer, fileName } = await docsService.exportDocAsZip(userId, docId);
+        send(ws, { type: "docs:download:item", payload: { data: buffer.toString("base64"), fileName } });
+      } catch (err: unknown) {
+        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "docs:download:folder": {
+      try {
+        const { folderId } = msg.payload;
+        const { buffer, fileName } = await docsService.exportFolderAsZip(userId, folderId);
+        send(ws, { type: "docs:download:item", payload: { data: buffer.toString("base64"), fileName } });
       } catch (err: unknown) {
         send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -4445,6 +4480,25 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "vps:fs:download": {
+      const { projectId, instanceId, path: dlPath, reqId } = msg.payload;
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const session = await connectSsh(conn);
+        try {
+          const escaped = (dlPath as string).replace(/'/g, "'\\''");
+          const name = (dlPath as string).split("/").pop() || "download";
+          const parentDir = (dlPath as string).replace(/\/[^/]+$/, "") || "/";
+          const escapedParent = parentDir.replace(/'/g, "'\\''");
+          const data = await session.exec(`tar -czf - -C '${escapedParent}' '${name}' 2>/dev/null | base64`);
+          send(ws, { type: "vps:fs:result", payload: { ok: true, data: data.replace(/\s/g, ""), fileName: `${name}.tar.gz`, reqId } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
     case "vps:fs:delete": {
       const { projectId, instanceId, path: delPath, reqId } = msg.payload;
       try {
@@ -4491,6 +4545,30 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } finally { session.close(); }
       } catch (err: unknown) {
         send(ws, { type: "vps:db:detect:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
+    case "vps:db:databases": {
+      const { projectId, instanceId, dbUrl, reqId } = msg.payload;
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const session = await connectSsh(conn, { timeoutMs: 15_000 });
+        try {
+          const escapedUrl = (dbUrl as string).replace(/'/g, "'\\''");
+          let out = await session.exec(
+            `psql '${escapedUrl}' -t -A -c "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname" 2>&1`
+          );
+          if (out.includes("command not found")) {
+            out = await session.exec(
+              `docker run --rm --network host postgres:16-alpine psql '${escapedUrl}' -t -A -c "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname" 2>&1`
+            );
+          }
+          const databases = out.trim().split("\n").filter(Boolean).filter(d => !d.includes("FATAL") && !d.includes("ERROR"));
+          send(ws, { type: "vps:db:databases:result", payload: { ok: true, databases, reqId } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:databases:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
@@ -4553,6 +4631,101 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } finally { session.close(); }
       } catch (err: unknown) {
         send(ws, { type: "vps:db:query:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
+    // ── VPS Database Backups ─────────────────────────────
+    case "vps:db:backup:create": {
+      const { projectId, instanceId, dbUrl, reqId } = msg.payload;
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const session = await connectSsh(conn, { timeoutMs: 120_000 });
+        try {
+          const escapedUrl = (dbUrl as string).replace(/'/g, "'\\''");
+          await session.exec("mkdir -p /opt/genie-backups");
+          const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          const fileName = `backup-${ts}.sql.gz`;
+          const filePath = `/opt/genie-backups/${fileName}`;
+          // Try pg_dump directly, fallback to docker
+          const testPgDump = await session.exec("which pg_dump 2>/dev/null || echo 'notfound'");
+          let cmd: string;
+          if (testPgDump.trim() === "notfound") {
+            cmd = `docker run --rm --network host postgres:16-alpine pg_dump '${escapedUrl}' 2>&1 | gzip > '${filePath}'`;
+          } else {
+            cmd = `pg_dump '${escapedUrl}' 2>&1 | gzip > '${filePath}'`;
+          }
+          await session.exec(cmd);
+          // Verify file was created and has content
+          const sizeOut = await session.exec(`stat -c%s '${filePath}' 2>/dev/null || stat -f%z '${filePath}' 2>/dev/null || echo 0`);
+          const size = parseInt(sizeOut.trim()) || 0;
+          if (size < 20) {
+            await session.exec(`rm -f '${filePath}'`);
+            send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: "Backup failed — dump file is empty", reqId } });
+          } else {
+            send(ws, { type: "vps:db:backup:result", payload: { ok: true, fileName, size, reqId } });
+          }
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
+    case "vps:db:backup:list": {
+      const { projectId, instanceId, reqId } = msg.payload;
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const session = await connectSsh(conn, { timeoutMs: 15_000 });
+        try {
+          await session.exec("mkdir -p /opt/genie-backups");
+          const out = await session.exec("ls -lh --time-style=long-iso /opt/genie-backups/*.sql.gz 2>/dev/null || echo ''");
+          const backups = out.trim().split("\n").filter(Boolean).filter(l => !l.startsWith("total")).map((line) => {
+            const parts = line.split(/\s+/);
+            const size = parts[4] || "0";
+            const date = parts[5] || "";
+            const time = parts[6] || "";
+            const fullPath = parts[7] || "";
+            const name = fullPath.split("/").pop() || "";
+            return { name, size, date: `${date} ${time}`, path: fullPath };
+          }).filter(b => b.name);
+          send(ws, { type: "vps:db:backup:result", payload: { ok: true, backups, reqId } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
+    case "vps:db:backup:download": {
+      const { projectId, instanceId, fileName, reqId } = msg.payload;
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const session = await connectSsh(conn, { timeoutMs: 60_000 });
+        try {
+          const safeName = (fileName as string).replace(/[^a-zA-Z0-9._-]/g, "");
+          const filePath = `/opt/genie-backups/${safeName}`;
+          const data = await session.exec(`base64 '${filePath}'`);
+          send(ws, { type: "vps:db:backup:result", payload: { ok: true, data: data.replace(/\s/g, ""), fileName: safeName, reqId } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
+    case "vps:db:backup:delete": {
+      const { projectId, instanceId, fileName, reqId } = msg.payload;
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const session = await connectSsh(conn, { timeoutMs: 15_000 });
+        try {
+          const safeName = (fileName as string).replace(/[^a-zA-Z0-9._-]/g, "");
+          await session.exec(`rm -f '/opt/genie-backups/${safeName}'`);
+          send(ws, { type: "vps:db:backup:result", payload: { ok: true, reqId } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
