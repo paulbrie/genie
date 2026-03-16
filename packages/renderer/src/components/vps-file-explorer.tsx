@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import type { BeforeMount } from "@monaco-editor/react";
-import { File, Folder, ArrowLeft, Save, RefreshCw, Loader2, FileEdit, Trash2, Download } from "lucide-react";
+import { File, Folder, ArrowLeft, Save, RefreshCw, Loader2, FileEdit, Trash2, Download, Upload } from "lucide-react";
 import { wsRequest } from "@/lib/ws";
 import { ErrorMessage } from "@/components/ui/error-message";
 
@@ -209,8 +209,10 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [sidebarWidth, setSidebarWidth] = useState(220);
+  const [uploading, setUploading] = useState(false);
   const dragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const inst = project.vpsInstances[0];
   if (!inst) return <div className="p-4 text-overlay0 text-md">No VPS instance available.</div>;
@@ -327,6 +329,37 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
     }
   }, [project.id, inst.id]);
 
+  const handleUpload = useCallback(async (files: FileList) => {
+    if (!inst || files.length === 0) return;
+    setUploading(true);
+    setError(null);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (let j = 0; j < bytes.length; j++) binary += String.fromCharCode(bytes[j]);
+        const dataBase64 = btoa(binary);
+        const res = await wsRequest("vps:fs:upload", {
+          projectId: project.id,
+          instanceId: inst.id,
+          path: currentPath,
+          fileName: file.name,
+          dataBase64,
+        }, 60000);
+        if (!res.ok) {
+          setError(`Failed to upload ${file.name}: ${res.error}`);
+          break;
+        }
+      }
+      loadDirectory(currentPath);
+    } catch (err: any) {
+      setError(err.message);
+    }
+    setUploading(false);
+  }, [project.id, inst?.id, currentPath, loadDirectory]);
+
   const commitRename = useCallback(async () => {
     if (!renamingPath || !renameValue.trim()) {
       setRenamingPath(null);
@@ -409,9 +442,27 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
             );
           })}
           <div className="flex-1" />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="text-overlay1 hover:text-text transition-colors p-0.5 shrink-0 bg-transparent border-none cursor-pointer disabled:opacity-50"
+            title="Upload files"
+          >
+            {uploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+          </button>
           <button onClick={() => loadDirectory(currentPath)} className="text-overlay1 hover:text-text transition-colors p-0.5 shrink-0 bg-transparent border-none cursor-pointer">
             <RefreshCw size={12} />
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) handleUpload(e.target.files);
+              e.target.value = "";
+            }}
+          />
         </div>
 
         {error && (

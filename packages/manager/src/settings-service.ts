@@ -100,9 +100,49 @@ export async function getGenieKeyPair(): Promise<{ privateKey: string; publicKey
   return { privateKey, publicKey };
 }
 
+export interface SshKeyHistoryEntry {
+  publicKey: string;
+  fingerprint: string;
+  createdAt: string;
+  archivedAt: string;
+}
+
+export async function getGenieKeyHistory(): Promise<SshKeyHistoryEntry[]> {
+  return (await getGlobalSetting<SshKeyHistoryEntry[]>("genieKeyHistory")) || [];
+}
+
+async function archiveCurrentKey(): Promise<void> {
+  const current = await getGenieKeyPair();
+  if (!current) return;
+  const history = await getGenieKeyHistory();
+  // Compute fingerprint inline
+  const crypto = await import("crypto");
+  const keyData = current.publicKey.trim().split(/\s+/)[1] || "";
+  const hash = crypto.createHash("md5").update(Buffer.from(keyData, "base64")).digest("hex");
+  const fingerprint = hash.match(/.{2}/g)?.join(":") || "";
+  history.unshift({
+    publicKey: current.publicKey,
+    fingerprint,
+    createdAt: (await getGlobalSetting<string>("genieKeyCreatedAt")) || new Date().toISOString(),
+    archivedAt: new Date().toISOString(),
+  });
+  // Keep last 20 entries
+  await setGlobalSetting("genieKeyHistory", history.slice(0, 20));
+}
+
 export async function saveGenieKeyPair(privateKey: string, publicKey: string): Promise<void> {
+  await archiveCurrentKey();
   await setGlobalSetting("geniePrivateKey", privateKey);
   await setGlobalSetting("geniePublicKey", publicKey);
+  await setGlobalSetting("genieKeyCreatedAt", new Date().toISOString());
+}
+
+export async function deleteGenieKeyPair(): Promise<void> {
+  await archiveCurrentKey();
+  const db = getDb();
+  await db.delete(globalSettings).where(eq(globalSettings.key, "geniePrivateKey"));
+  await db.delete(globalSettings).where(eq(globalSettings.key, "geniePublicKey"));
+  await db.delete(globalSettings).where(eq(globalSettings.key, "genieKeyCreatedAt"));
 }
 
 // --- Convenience getters for simple global settings ---

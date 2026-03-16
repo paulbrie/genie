@@ -45,17 +45,19 @@ import { TrackerPanel } from "@/components/tracker-panel";
 import { AdminPanel } from "@/components/admin-panel";
 import { ArchitecturePanel } from "@/components/architecture-panel";
 import { ConnectedUsersPanel } from "@/components/connected-users-panel";
+import { SecurityPanel } from "@/components/security-panel";
 import { ProjectsGrid } from "@/components/projects-grid";
-import { parseRoute, type ProjectTab } from "@/lib/routes";
+import { parseRoute, type ProjectTab, type SettingsTab } from "@/lib/routes";
 import { findBySlug } from "@/lib/utils";
 import { buildNavPath } from "@/lib/routes";
 
-function useRouteSync(): { activeTab?: ProjectTab } {
+function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab } {
   const params = useParams();
   const router = useRouter();
   const [apps] = useSubject($apps);
   const [projects] = useSubject($projects);
   const [activeTab, setActiveTab] = useState<ProjectTab | undefined>();
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const syncedRef = useRef<string>("");
 
   const slugSegments = (params?.slug as string[] | undefined) ?? [];
@@ -151,16 +153,24 @@ function useRouteSync(): { activeTab?: ProjectTab } {
       return;
     }
 
+    // Settings sub-routes: /settings/general, /settings/deploy
+    if (parsed.nav === "settings" && parsed.settingsTab) {
+      switchNav("settings");
+      setSettingsTab(parsed.settingsTab);
+      syncedRef.current = urlKey;
+      return;
+    }
+
     // Simple nav route
     switchNav(parsed.nav);
     setActiveTab(undefined);
     syncedRef.current = urlKey;
   }, [urlKey, apps, projects, router, slugSegments]);
 
-  return { activeTab };
+  return { activeTab, settingsTab };
 }
 
-function MainPanel({ activeTab }: { activeTab?: ProjectTab }) {
+function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; settingsTab: SettingsTab }) {
   const [activeNav] = useSubject($activeNav);
   const [selectedAppId] = useSubject($selectedAppId);
   const [showAddForm] = useSubject($showAddForm);
@@ -194,7 +204,7 @@ function MainPanel({ activeTab }: { activeTab?: ProjectTab }) {
   }
 
   if (activeNav === "settings") {
-    return <SettingsPanel />;
+    return <SettingsPanel activeTab={settingsTab} />;
   }
 
   if (activeNav === "admin") {
@@ -207,6 +217,10 @@ function MainPanel({ activeTab }: { activeTab?: ProjectTab }) {
 
   if (activeNav === "users") {
     return <ConnectedUsersPanel />;
+  }
+
+  if (activeNav === "security") {
+    return <SecurityPanel />;
   }
 
   if (activeNav === "projects") {
@@ -239,7 +253,7 @@ function MainPanel({ activeTab }: { activeTab?: ProjectTab }) {
 }
 
 export default function Home() {
-  const { activeTab } = useRouteSync();
+  const { activeTab, settingsTab } = useRouteSync();
 
-  return <MainPanel activeTab={activeTab} />;
+  return <MainPanel activeTab={activeTab} settingsTab={settingsTab} />;
 }

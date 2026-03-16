@@ -62,6 +62,9 @@ const activeConversationAbortControllers = new Map<string, AbortController>();
 /** Track active DO deploy AbortControllers by projectId */
 const activeDoAbortControllers = new Map<string, AbortController>();
 
+/** Track active security scan AbortControllers by scanId */
+const activeSecurityAbortControllers = new Map<string, AbortController>();
+
 /** Active SSH sessions for inline project commands (key: projectId:commandId) */
 const activeCommandSessions = new Map<string, SshSession>();
 
@@ -4112,11 +4115,13 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "admin:sshkey:get": {
       try {
         const stored = await settingsService.getGenieKeyPair();
+        const history = await settingsService.getGenieKeyHistory();
+        const createdAt = await settingsService.getGlobalSetting<string>("genieKeyCreatedAt");
         if (stored) {
           const fingerprint = sshKeyFingerprint(stored.publicKey);
-          send(ws, { type: "admin:sshkey:result", payload: { exists: true, publicKey: stored.publicKey, fingerprint } });
+          send(ws, { type: "admin:sshkey:result", payload: { exists: true, publicKey: stored.publicKey, fingerprint, createdAt, history } });
         } else {
-          send(ws, { type: "admin:sshkey:result", payload: { exists: false, publicKey: null, fingerprint: null } });
+          send(ws, { type: "admin:sshkey:result", payload: { exists: false, publicKey: null, fingerprint: null, createdAt: null, history } });
         }
       } catch (err: unknown) {
         send(ws, { type: "admin:sshkey:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
@@ -4142,10 +4147,29 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           writeKeyToDisk(privateKey, publicKey);
 
           const fingerprint = sshKeyFingerprint(publicKey);
-          send(ws, { type: "admin:sshkey:result", payload: { exists: true, publicKey, fingerprint } });
+          const history = await settingsService.getGenieKeyHistory();
+          const createdAt = await settingsService.getGlobalSetting<string>("genieKeyCreatedAt");
+          send(ws, { type: "admin:sshkey:result", payload: { exists: true, publicKey, fingerprint, createdAt, history } });
         } finally {
           try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
         }
+      } catch (err: unknown) {
+        send(ws, { type: "admin:sshkey:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:sshkey:delete": {
+      try {
+        await settingsService.deleteGenieKeyPair();
+        // Remove disk cache
+        const homeDir = os.homedir();
+        const privPath = path.join(homeDir, ".genie", "ssh", "genie_ed25519");
+        const pubPath = path.join(homeDir, ".genie", "ssh", "genie_ed25519.pub");
+        try { fs.unlinkSync(privPath); } catch {}
+        try { fs.unlinkSync(pubPath); } catch {}
+        const history = await settingsService.getGenieKeyHistory();
+        send(ws, { type: "admin:sshkey:result", payload: { exists: false, publicKey: null, fingerprint: null, createdAt: null, history } });
       } catch (err: unknown) {
         send(ws, { type: "admin:sshkey:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -4573,6 +4597,24 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "vps:fs:upload": {
+      const { projectId, instanceId, path: uploadDir, fileName, dataBase64, reqId } = msg.payload;
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const session = await connectSsh(conn);
+        try {
+          const dir = (uploadDir as string).replace(/'/g, "'\\''");
+          const safeName = (fileName as string).replace(/'/g, "'\\''");
+          const filePath = `${dir.replace(/\/$/, "")}/${safeName}`;
+          await session.exec(`echo '${dataBase64}' | base64 -d > '${filePath}'`);
+          send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
     case "vps:fs:rename": {
       const { projectId, instanceId, oldPath, newPath, reqId } = msg.payload;
       try {
@@ -4959,6 +5001,79 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // --- Security scanning ---
+
+    case "security:scan:start": {
+      const { target } = msg.payload;
+      if (!target) {
+        send(ws, { type: "security:scan:error", payload: { scanId: "", message: "Target is required" } });
+        break;
+      }
+      const abortController = new AbortController();
+      let registeredScanId: string | null = null;
+      const scanResult = await (async () => {
+        const { runSecurityScan } = await import("./security-service.js");
+        return runSecurityScan(target, {
+          signal: abortController.signal,
+          onProgress: (update) => {
+            if (update.id && !registeredScanId) {
+              registeredScanId = update.id;
+              activeSecurityAbortControllers.set(registeredScanId, abortController);
+            }
+            send(ws, { type: "security:scan:progress", payload: update });
+          },
+        });
+      })();
+      const scanId = scanResult.id;
+      activeSecurityAbortControllers.delete(scanId);
+      // Persist to DB
+      try {
+        const { saveScan } = await import("./security-service.js");
+        await saveScan(userId, scanResult);
+      } catch (err) {
+        console.error("Failed to persist security scan:", err);
+      }
+      if (scanResult.status === "completed") {
+        send(ws, { type: "security:scan:complete", payload: { scanId, completedAt: scanResult.completedAt } });
+      } else if (scanResult.status === "error") {
+        send(ws, { type: "security:scan:error", payload: { scanId, message: scanResult.error || "Unknown error" } });
+      }
+      break;
+    }
+
+    case "security:scan:stop": {
+      const { scanId } = msg.payload;
+      const ctrl = activeSecurityAbortControllers.get(scanId);
+      if (ctrl) {
+        ctrl.abort();
+        activeSecurityAbortControllers.delete(scanId);
+        send(ws, { type: "security:scan:complete", payload: { scanId, completedAt: Date.now() } });
+      }
+      break;
+    }
+
+    case "security:scans:list": {
+      try {
+        const { listScans } = await import("./security-service.js");
+        const scans = await listScans(userId);
+        send(ws, { type: "security:scans:list", payload: { scans } });
+      } catch (err: unknown) {
+        send(ws, { type: "security:scan:error", payload: { scanId: "", message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "security:scan:delete": {
+      try {
+        const { deleteScan } = await import("./security-service.js");
+        await deleteScan(msg.payload.scanId);
+        send(ws, { type: "security:scan:deleted", payload: { scanId: msg.payload.scanId } });
+      } catch (err: unknown) {
+        send(ws, { type: "security:scan:error", payload: { scanId: msg.payload.scanId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
     default:
       send(ws, {
         type: "error",
@@ -5154,6 +5269,12 @@ export async function createServer(): Promise<WebSocketServer> {
       if (chatAbort) {
         chatAbort.abort();
         activeChatAbortControllers.delete(ws);
+      }
+
+      // Abort any active security scans for this connection
+      for (const [scanId, ctrl] of activeSecurityAbortControllers) {
+        ctrl.abort();
+        activeSecurityAbortControllers.delete(scanId);
       }
 
       const closingState = clients.get(ws);

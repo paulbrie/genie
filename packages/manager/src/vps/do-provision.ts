@@ -200,20 +200,26 @@ export async function doProvisionAndDeploy(
     const useBaseImage = !!baseImageId;
     const image: string | number = useBaseImage ? baseImageId : "docker-20-04";
     onProgress(`Creating droplet "${dropletName}" (${size} in ${region}, image: ${useBaseImage ? `snapshot ${baseImageId}` : "docker-20-04"})...`);
-    // cloud-init: configure UFW — restrict SSH to manager IP if available, otherwise just allow
+    // cloud-init: configure UFW — default deny, allow SSH from manager IP only + port 3000 public
     const managerIpForInit = process.env.MANAGER_PUBLIC_IP;
     const userData = useBaseImage ? undefined : managerIpForInit
       ? `#!/bin/bash
+ufw default deny incoming
+ufw default allow outgoing
 ufw delete limit 22/tcp 2>/dev/null || true
 ufw delete allow 22/tcp 2>/dev/null || true
 ufw allow from ${managerIpForInit} to any port 22 proto tcp
+ufw allow 3000/tcp
 ufw --force enable
 ufw reload
 `
       : `#!/bin/bash
-ufw delete limit 22/tcp
+ufw default deny incoming
+ufw default allow outgoing
+ufw delete limit 22/tcp 2>/dev/null || true
 ufw allow 22/tcp
-ufw delete limit 22/tcp
+ufw allow 3000/tcp
+ufw --force enable
 ufw reload
 `;
 
@@ -348,26 +354,27 @@ ufw reload
 
     checkAbort();
 
-    // 5b. Lock down SSH to manager IP only
+    // 5b. Lock down firewall: SSH from manager IP only + port 3000 public
     const managerIp = process.env.MANAGER_PUBLIC_IP;
     if (managerIp) {
-      onProgress(`Restricting SSH access to manager IP (${managerIp})...`);
+      onProgress(`Configuring firewall: SSH from ${managerIp}, port 3000 public...`);
       try {
         const fwSession = await connectSsh(connConfig);
         await fwSession.exec([
-          // Remove any existing broad SSH rules
+          "ufw default deny incoming",
+          "ufw default allow outgoing",
           "ufw delete allow 22/tcp 2>/dev/null || true",
           "ufw delete limit 22/tcp 2>/dev/null || true",
-          // Allow SSH only from the manager IP
           `ufw allow from ${managerIp} to any port 22 proto tcp`,
+          "ufw allow 3000/tcp",
           "ufw --force enable",
           "ufw reload",
         ].join(" && "));
         fwSession.close();
-        onProgress("SSH restricted to manager IP");
+        onProgress("Firewall configured: SSH restricted, port 3000 open");
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        onProgress(`Warning: Failed to restrict SSH: ${message}`);
+        onProgress(`Warning: Failed to configure firewall: ${message}`);
       }
     }
 

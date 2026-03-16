@@ -280,6 +280,22 @@ export const globalSettings = pgTable("global_settings", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+export const securityScans = pgTable("security_scans", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").references(() => users.id).notNull(),
+  target: text("target").notNull(),
+  status: text("status", { enum: ["completed", "error", "stopping"] }).notNull(),
+  startedAt: timestamp("started_at").notNull(),
+  completedAt: timestamp("completed_at"),
+  ports: jsonb("ports").default([]).notNull(),        // PortResult[]
+  findings: jsonb("findings").default([]).notNull(),  // WebFinding[]
+  operations: jsonb("operations").default([]).notNull(), // string[]
+  error: text("error"),
+}, (t) => [
+  index("idx_security_scans_user").on(t.userId),
+  index("idx_security_scans_started").on(t.startedAt),
+]);
+
 export const teams = pgTable("teams", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: text("name").notNull(),

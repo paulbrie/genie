@@ -57,7 +57,8 @@ function parseArgs(text: string): { subcommand: string; projectName?: string; re
     // Heuristic: if the rest doesn't look like a command argument, treat it as project name
     const knownFlags = ["--tail", "--service"];
     if (!knownFlags.includes(restParts[0])) {
-      projectName = restParts[0];
+      // Strip Slack auto-link brackets: [Medical] → Medical, <url|Medical> → Medical
+      projectName = restParts[0].replace(/^\[(.+)\]$/, "$1").replace(/^<[^|]*\|(.+)>$/, "$1");
       restParts = restParts.slice(1);
     }
   }

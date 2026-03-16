@@ -459,7 +459,49 @@ export interface FloatingWindowState {
   busy?: boolean;
 }
 
-export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "tracker" | "settings" | "admin" | "architecture" | "users";
+export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "tracker" | "settings" | "admin" | "architecture" | "users" | "security";
+
+// --- Security Types ---
+
+export type ScanStatus = "idle" | "running" | "stopping" | "completed" | "error";
+export type Severity = "critical" | "high" | "medium" | "low" | "info";
+
+export interface PortResult {
+  port: number;
+  state: "open" | "closed" | "filtered";
+  service: string;
+  banner?: string;
+}
+
+export interface WebFinding {
+  id: string;
+  category: "header" | "directory" | "ssl" | "disclosure" | "sqli" | "xss" | "redirect" | "other";
+  severity: Severity;
+  title: string;
+  description: string;
+  url: string;
+  evidence?: string;
+}
+
+export interface SecurityScan {
+  id: string;
+  target: string;
+  status: ScanStatus;
+  startedAt: number;
+  completedAt?: number;
+  progress: number;
+  phase: string;
+  ports: PortResult[];
+  findings: WebFinding[];
+  operations: string[];
+  error?: string;
+}
+
+export interface SecurityState {
+  target: string;
+  activeScanId: string | null;
+  scans: SecurityScan[];
+}
 
 export interface PresenceSession {
   id: string;
@@ -622,6 +664,8 @@ export interface AdminState {
     exists: boolean;
     publicKey: string | null;
     fingerprint: string | null;
+    createdAt: string | null;
+    history: { publicKey: string; fingerprint: string; createdAt: string; archivedAt: string }[];
     loading: boolean;
     regenerating: boolean;
   };
@@ -845,7 +889,7 @@ export const $admin = new DeepSubject<AdminState>({
   sqlQuery: "", sqlResult: null, sqlError: null, sqlLoading: false, sqlOpen: false,
   droplets: [], dropletsLoading: false, dropletsError: null, dropletStats: {},
   baseImage: { configs: {}, templates: {}, deletedTemplates: {}, buildingName: null, progress: [], error: null, failedDropletId: null, failedDropletIp: null, history: [] },
-  sshKey: { exists: false, publicKey: null, fingerprint: null, loading: false, regenerating: false },
+  sshKey: { exists: false, publicKey: null, fingerprint: null, createdAt: null, history: [], loading: false, regenerating: false },
   drizzlePush: { running: false, output: "", open: false },
   backups: { files: [], loading: false, creating: false },
   users: { list: [], loading: false },
@@ -854,6 +898,7 @@ export const $admin = new DeepSubject<AdminState>({
   prodlogs: { deployments: [], logs: [], selectedDeploymentId: null, logType: "deploy", loading: false, logsLoading: false },
   ai: { subTab: "costs", costs: [], loading: false, error: null, settings: { defaultModel: "claude-sonnet", maxToolRounds: 10 }, settingsLoading: false },
 });
+export const $security = new DeepSubject<SecurityState>({ target: "", activeScanId: null, scans: [] });
 export const $windowManager = new Subject<WindowManagerState>({ windows: {}, nextZIndex: 10000 });
 
 // --- Actions ---
@@ -1602,6 +1647,11 @@ export function loadSshKey(): void {
 export function regenerateSshKey(): void {
   $admin.getValue().sshKey.regenerating = true;
   wsSend("admin:sshkey:regenerate", {});
+}
+
+export function deleteSshKey(): void {
+  $admin.getValue().sshKey.loading = true;
+  wsSend("admin:sshkey:delete", {});
 }
 
 // --- AI Admin actions ---
@@ -3545,6 +3595,8 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
         sk.exists = msg.payload.exists;
         sk.publicKey = msg.payload.publicKey;
         sk.fingerprint = msg.payload.fingerprint;
+        sk.createdAt = msg.payload.createdAt || null;
+        sk.history = msg.payload.history || [];
         sk.loading = false;
         sk.regenerating = false;
       });
@@ -3700,6 +3752,77 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
       break;
     }
 
+    // --- Security ---
+
+    case "security:scan:progress": {
+      const { id: scanId, ...update } = msg.payload;
+      if (!scanId) break;
+      batch(() => {
+        const sec = $security.getValue();
+        let existing = sec.scans.find((s: SecurityScan) => s.id === scanId);
+        if (!existing) {
+          existing = { id: scanId, target: sec.target, status: "running", startedAt: Date.now(), progress: 0, phase: "Starting", ports: [], findings: [], operations: [] } as SecurityScan;
+          sec.scans.unshift(existing);
+          sec.activeScanId = scanId;
+        }
+        Object.assign(existing, update);
+        existing.id = scanId; // Prevent id from being overwritten by update
+      });
+      break;
+    }
+
+    case "security:scan:complete": {
+      const sec = $security.getValue();
+      const scanId = msg.payload.scanId || msg.payload.id;
+      const scan = sec.scans.find((s: SecurityScan) => s.id === scanId);
+      if (scan) {
+        batch(() => {
+          scan.status = "completed";
+          scan.completedAt = msg.payload.completedAt;
+          scan.progress = 100;
+          scan.phase = "Complete";
+          if (sec.activeScanId === scanId) sec.activeScanId = null;
+        });
+      }
+      break;
+    }
+
+    case "security:scan:error": {
+      const sec = $security.getValue();
+      const scanId = msg.payload.scanId || msg.payload.id;
+      const scan = sec.scans.find((s: SecurityScan) => s.id === scanId);
+      if (scan) {
+        batch(() => {
+          scan.status = "error";
+          scan.error = msg.payload.message;
+          if (sec.activeScanId === scanId) sec.activeScanId = null;
+        });
+      }
+      break;
+    }
+
+    case "security:scans:list": {
+      const scans = msg.payload.scans as SecurityScan[];
+      batch(() => {
+        const sec = $security.getValue();
+        // Merge: keep any active in-progress scan, replace the rest with DB history
+        const activeScan = sec.activeScanId ? sec.scans.find((s: SecurityScan) => s.id === sec.activeScanId) : null;
+        const merged = activeScan
+          ? [activeScan, ...scans.filter((s: SecurityScan) => s.id !== activeScan.id)]
+          : scans;
+        sec.scans = merged;
+      });
+      break;
+    }
+
+    case "security:scan:deleted": {
+      batch(() => {
+        const sec = $security.getValue();
+        sec.scans = sec.scans.filter((s: SecurityScan) => s.id !== msg.payload.scanId);
+      });
+      break;
+    }
+
     case "error":
       console.error("Manager error:", msg.payload.message);
       break;
@@ -3737,6 +3860,26 @@ export function loadUiState(): void {
   } catch {
     // ignore
   }
+}
+
+// --- Security actions ---
+
+export function loadSecurityScans(): void {
+  wsSend("security:scans:list", {});
+}
+
+export function startSecurityScan(target: string): void {
+  const v = $security.getValue();
+  v.target = target;
+  wsSend("security:scan:start", { target });
+}
+
+export function stopSecurityScan(scanId: string): void {
+  wsSend("security:scan:stop", { scanId });
+}
+
+export function deleteSecurityScan(scanId: string): void {
+  wsSend("security:scan:delete", { scanId });
 }
 
 // --- Window manager actions ---

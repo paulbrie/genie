@@ -1,7 +1,7 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users } from "lucide-react";
+import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield } from "lucide-react";
 import { $activeNav, $docker, $presenceSessions, type DockerInfo, type NavKey } from "@/store";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@/lib/navigation";
@@ -20,6 +20,7 @@ const navItems = [
   { key: "admin" as const, label: "Admin", icon: Database },
   { key: "architecture" as const, label: "Architecture", icon: Network },
   { key: "users" as const, label: "Connected Users", icon: Users },
+  { key: "security" as const, label: "Security", icon: Shield },
 ];
 
 export function SidebarNav() {

@@ -2,6 +2,7 @@ import type { NavKey, DropletsSubTab, AiSubTab } from "@/store";
 
 export type ProjectTab = "files" | "commands" | "cloud" | "deploy-history" | "settings";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs";
+export type SettingsTab = "general" | "deploy";
 
 // Bidirectional NavKey ↔ URL segment maps (all lowercase)
 const NAV_TO_PATH: Record<NavKey, string> = {
@@ -19,6 +20,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   admin: "admin",
   architecture: "architecture",
   users: "users",
+  security: "security",
 };
 
 const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
@@ -43,12 +45,18 @@ const VALID_DROPLETS_SUBTABS = new Set<DropletsSubTab>([
 ]);
 
 const VALID_AI_SUBTABS = new Set<AiSubTab>(["costs", "settings"]);
+const VALID_SETTINGS_TABS = new Set<SettingsTab>(["general", "deploy"]);
 
 // --- URL builders ---
 
 export function buildNavPath(nav: NavKey): string {
   if (nav === "admin") return "/admin/database";
+  if (nav === "settings") return "/settings/general";
   return `/${NAV_TO_PATH[nav]}`;
+}
+
+export function buildSettingsPath(tab: SettingsTab): string {
+  return `/settings/${tab}`;
 }
 
 export function buildAppPath(slug: string): string {
@@ -87,6 +95,7 @@ export interface ParsedRoute {
   adminTab?: AdminTab;
   dropletsSubTab?: DropletsSubTab;
   aiSubTab?: AiSubTab;
+  settingsTab?: SettingsTab;
   docId?: string;
 }
 
@@ -143,6 +152,13 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
         ? (slugSegments[2] as ProjectTab)
         : "files";
     return { nav, entitySlug, tab };
+  }
+
+  // Settings sub-routes: /settings/general, /settings/deploy
+  if (nav === "settings") {
+    const seg1 = slugSegments[1]?.toLowerCase();
+    const settingsTab = seg1 && VALID_SETTINGS_TABS.has(seg1 as SettingsTab) ? (seg1 as SettingsTab) : "general";
+    return { nav, settingsTab };
   }
 
   // Docs sub-routes: /docs/[...folders]/filename/docId — last segment is the doc ID
