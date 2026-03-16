@@ -40,17 +40,25 @@ export async function vpsDeploy(
     }
   }
 
-  // 3. Write DB-stored setup files to remote (via stdin to avoid shell escaping issues)
+  // 3. Write DB-stored setup files to remote (base64 piped through stdin)
   if (setupFiles && Object.keys(setupFiles).length > 0) {
     onProgress("Writing setup files...");
     for (const [name, content] of Object.entries(setupFiles)) {
       const sfSession = await connectSsh(config);
       try {
-        const ch = await sfSession.execStreaming(`cat > ${dest}/${name}`);
+        const b64 = Buffer.from(content).toString("base64");
+        const ch = await sfSession.execStreaming(`base64 -d > ${dest}/${name}`);
         await new Promise<void>((resolve, reject) => {
-          ch.stdout.on("close", resolve);
-          ch.stdout.on("error", reject);
-          ch.stdin.end(content);
+          let done = false;
+          const finish = () => { if (!done) { done = true; resolve(); } };
+          ch.stdin.on("error", (e: Error) => { if (!done) { done = true; reject(e); } });
+          ch.stdin.write(b64 + "\n", () => {
+            ch.stdin.end();
+          });
+          // Resolve when the remote command closes after stdin ends
+          ch.stdout.on("end", finish);
+          ch.stderr.on("end", finish);
+          setTimeout(finish, 5000); // Safety timeout
         });
       } finally {
         sfSession.close();
