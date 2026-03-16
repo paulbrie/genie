@@ -3290,6 +3290,54 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "feedback:submit": {
+      try {
+        const { title, description } = msg.payload as { title: string; description: string };
+        if (!title?.trim()) { send(ws, { type: "feedback:error", payload: { message: "Title is required" } }); break; }
+
+        // Find or use first project for feedback tickets
+        const allProjects = await projectService.getAll();
+        if (allProjects.length === 0) { send(ws, { type: "feedback:error", payload: { message: "No projects available" } }); break; }
+        const feedbackProject = allProjects[0];
+
+        // Create tracker issue
+        const userName = state.user?.name || "Unknown";
+        const userEmail = state.user?.email || "";
+        const issueTitle = `[Feedback] ${title.trim()}`;
+        const issueDesc = `${description?.trim() || ""}\n\n---\nSubmitted by: ${userName} (${userEmail})`;
+        await trackerService.createIssue(userId, {
+          projectId: feedbackProject.id,
+          title: issueTitle,
+          description: issueDesc,
+          status: "todo",
+          priority: "medium",
+        });
+        await broadcastTrackerList();
+
+        // Send email notification
+        try {
+          const sgApiKey = process.env.SENDGRID_API_KEY;
+          if (sgApiKey) {
+            const sgMail = (await import("@sendgrid/mail")).default;
+            sgMail.setApiKey(sgApiKey);
+            await sgMail.send({
+              to: "paul.brie@teleporthq.io",
+              from: process.env.BACKUP_EMAIL || "noreply@teleporthq.io",
+              subject: `[Genie Feedback] ${title.trim()}`,
+              text: `New feedback from ${userName} (${userEmail}):\n\nTitle: ${title.trim()}\n\n${description?.trim() || "(no description)"}`,
+            });
+          }
+        } catch (emailErr) {
+          console.error("Failed to send feedback email:", emailErr);
+        }
+
+        send(ws, { type: "feedback:submitted", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "feedback:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
     case "tracker:issue:create": {
       try {
         const issue = await trackerService.createIssue(userId, msg.payload as { projectId: string; title: string; description?: string; status?: string; priority?: string; assigneeId?: string | null; labelIds?: string[] });

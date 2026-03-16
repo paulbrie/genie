@@ -1288,6 +1288,10 @@ export function loadTrackerIssues(): void {
   wsSend("tracker:list", {});
 }
 
+export function submitFeedback(title: string, description: string): void {
+  wsSend("feedback:submit", { title, description });
+}
+
 export function createTrackerIssue(fields: {
   projectId: string;
   title: string;

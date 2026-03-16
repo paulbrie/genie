@@ -1,12 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { useSubject } from "subjecto/react";
-import { TerminalSquare, LogOut, Radio } from "lucide-react";
+import { TerminalSquare, LogOut, Radio, MessageSquarePlus } from "lucide-react";
 import { $manager, $auth, addTerminalTab, type AuthUser } from "@/store";
 import { logout } from "@/lib/ws";
 import { SystemStats } from "@/components/system-stats";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { FileExplorerToggle } from "@/components/file-explorer-toggle";
+import { FeedbackModal } from "@/components/feedback-modal";
 import { cn } from "@/lib/utils";
 import { useWsLogCount } from "@/components/ws-log-drawer";
 
@@ -19,6 +21,7 @@ export function Sidebar({
 }) {
   const [manager] = useSubject($manager);
   const managerRunning = manager.running;
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   return (
     <aside className="w-60 min-w-60 bg-mantle border-r border-surface0 flex flex-col gap-2.5 px-3 pb-3 pt-3 overflow-hidden">
@@ -40,11 +43,13 @@ export function Sidebar({
       <div className="mt-auto pt-2 border-t border-surface0 flex flex-col gap-0.5">
         <FileExplorerToggle />
         <TerminalToggle />
+        <FeedbackToggle onOpen={() => setFeedbackOpen(true)} />
         {onToggleWsLog && (
           <WsLogToggle open={!!wsLogOpen} onToggle={onToggleWsLog} />
         )}
         <UserBadge />
       </div>
+      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
     </aside>
   );
 }
@@ -99,6 +104,22 @@ function TerminalToggle() {
     >
       <TerminalSquare size={16} />
       <span>Terminal</span>
+    </button>
+  );
+}
+
+function FeedbackToggle({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      onClick={onOpen}
+      className={cn(
+        "flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-base text-subtext0",
+        "hover:bg-surface0 hover:text-text transition-colors",
+      )}
+      title="Send Feedback"
+    >
+      <MessageSquarePlus size={16} />
+      <span>Feedback</span>
     </button>
   );
 }
