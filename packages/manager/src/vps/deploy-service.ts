@@ -40,18 +40,23 @@ export async function vpsDeploy(
     }
   }
 
-  // 3. Write DB-stored setup files to remote
+  // 3. Write DB-stored setup files to remote (via stdin to avoid shell escaping issues)
   if (setupFiles && Object.keys(setupFiles).length > 0) {
     onProgress("Writing setup files...");
-    const sfSession = await connectSsh(config);
-    try {
-      for (const [name, content] of Object.entries(setupFiles)) {
-        await sfSession.exec(`cat > ${dest}/${name} << 'GENIEEOF'\n${content}\nGENIEEOF`);
+    for (const [name, content] of Object.entries(setupFiles)) {
+      const sfSession = await connectSsh(config);
+      try {
+        const ch = await sfSession.execStreaming(`cat > ${dest}/${name}`);
+        await new Promise<void>((resolve, reject) => {
+          ch.stdout.on("close", resolve);
+          ch.stdout.on("error", reject);
+          ch.stdin.end(content);
+        });
+      } finally {
+        sfSession.close();
       }
-      onProgress("Setup files written");
-    } finally {
-      sfSession.close();
     }
+    onProgress("Setup files written");
   }
 
   // 3b. Write .mcp.json with genie-browser MCP entry so the VPS agent can use browser tools
