@@ -2,7 +2,7 @@
 
 import { useSubject } from "subjecto/react";
 import { MessageCircle, Bot, Users } from "lucide-react";
-import { $conversationChat, selectConversation, type ConversationSummary, type MentionNotification } from "@/store";
+import { $conversationChat, $auth, selectConversation, type ConversationSummary, type MentionNotification } from "@/store";
 import { cn } from "@/lib/utils";
 
 export function ConversationList() {
@@ -77,13 +77,17 @@ function ConversationItem({
   unreadCount: number;
   onClick: () => void;
 }) {
+  const [auth] = useSubject($auth);
   const isDm = conversation.type === "dm";
-  const agentMember = conversation.members.find((m) => m.isAgent);
+  const currentUserId = auth.user?.id;
+  const otherMember = isDm
+    ? conversation.members.find((m) => m.userId !== currentUserId) || conversation.members.find((m) => m.isAgent)
+    : null;
   const displayName = isDm
-    ? agentMember?.name || "Genie"
+    ? otherMember?.name || "DM"
     : conversation.name || "Untitled Room";
 
-  const Icon = isDm ? Bot : Users;
+  const Icon = isDm && otherMember?.isAgent ? Bot : isDm ? MessageCircle : Users;
   const hasMention = mentionCount > 0;
   const hasUnread = unreadCount > 0;
 

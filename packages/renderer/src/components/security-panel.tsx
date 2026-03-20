@@ -145,7 +145,7 @@ function ScanResults({ scan }: { scan: SecurityScan }) {
   const [activeTab, setActiveTab] = useState<ResultTab>("operations");
 
   const vulnFindings = useMemo(
-    () => scan.findings.filter((f) => ["sqli", "xss", "redirect", "directory", "disclosure", "other"].includes(f.category)),
+    () => scan.findings.filter((f) => ["sqli", "xss", "redirect", "directory", "disclosure", "cors", "cookie", "method", "host", "ssti", "other"].includes(f.category)),
     [scan.findings],
   );
   const headerFindings = useMemo(

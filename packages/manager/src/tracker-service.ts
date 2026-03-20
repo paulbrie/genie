@@ -1,6 +1,6 @@
-import { eq, desc, max, inArray } from "drizzle-orm";
+import { eq, desc, max, inArray, asc } from "drizzle-orm";
 import { getDb } from "./db/index.js";
-import { trackerIssues, trackerLabels, trackerIssueLabels, users } from "./db/schema.js";
+import { trackerIssues, trackerLabels, trackerIssueLabels, trackerIssueComments, users } from "./db/schema.js";
 
 // --- Labels ---
 
@@ -83,6 +83,35 @@ async function batchFetchLabels(issueIds: string[]) {
   return map;
 }
 
+interface CommentStats {
+  commentCount: number;
+  commenters: { name: string; avatar: string | null }[];
+}
+
+async function batchFetchCommentStats(issueIds: string[]): Promise<Map<string, CommentStats>> {
+  if (issueIds.length === 0) return new Map();
+  const db = getDb();
+  const rows = await db
+    .select({
+      issueId: trackerIssueComments.issueId,
+      authorName: trackerIssueComments.authorName,
+      authorAvatar: trackerIssueComments.authorAvatar,
+    })
+    .from(trackerIssueComments)
+    .where(inArray(trackerIssueComments.issueId, issueIds));
+
+  const map = new Map<string, CommentStats>();
+  for (const r of rows) {
+    if (!map.has(r.issueId)) map.set(r.issueId, { commentCount: 0, commenters: [] });
+    const stats = map.get(r.issueId)!;
+    stats.commentCount++;
+    if (!stats.commenters.some((c) => c.name === r.authorName)) {
+      stats.commenters.push({ name: r.authorName, avatar: r.authorAvatar });
+    }
+  }
+  return map;
+}
+
 function formatIssue(
   row: {
     id: string;
@@ -101,6 +130,7 @@ function formatIssue(
     updatedAt: Date;
   },
   labels: { id: string; name: string; color: string }[],
+  commentStats?: CommentStats,
 ) {
   return {
     id: row.id,
@@ -114,6 +144,8 @@ function formatIssue(
     assigneeName: row.assigneeName,
     assigneeAvatar: row.assigneeAvatar,
     labels,
+    commentCount: commentStats?.commentCount ?? 0,
+    commenters: commentStats?.commenters ?? [],
     createdBy: row.createdBy,
     sortOrder: row.sortOrder,
     createdAt: row.createdAt.toISOString(),
@@ -145,9 +177,12 @@ export async function listIssues() {
     .orderBy(desc(trackerIssues.createdAt));
 
   const issueIds = rows.map((r) => r.id);
-  const labelsMap = await batchFetchLabels(issueIds);
+  const [labelsMap, commentStatsMap] = await Promise.all([
+    batchFetchLabels(issueIds),
+    batchFetchCommentStats(issueIds),
+  ]);
 
-  return rows.map((r) => formatIssue(r, labelsMap.get(r.id) || []));
+  return rows.map((r) => formatIssue(r, labelsMap.get(r.id) || [], commentStatsMap.get(r.id)));
 }
 
 export async function getIssue(issueId: string) {
@@ -176,8 +211,11 @@ export async function getIssue(issueId: string) {
 
   if (!row) return null;
 
-  const labelsMap = await batchFetchLabels([row.id]);
-  return formatIssue(row, labelsMap.get(row.id) || []);
+  const [labelsMap, commentStatsMap] = await Promise.all([
+    batchFetchLabels([row.id]),
+    batchFetchCommentStats([row.id]),
+  ]);
+  return formatIssue(row, labelsMap.get(row.id) || [], commentStatsMap.get(row.id));
 }
 
 export async function createIssue(
@@ -237,6 +275,7 @@ export async function updateIssue(
     assigneeId?: string | null;
     labelIds?: string[];
     sortOrder?: number;
+    projectId?: string;
   },
 ) {
   const db = getDb();
@@ -247,6 +286,7 @@ export async function updateIssue(
   if (fields.priority !== undefined) updates.priority = fields.priority;
   if (fields.assigneeId !== undefined) updates.assigneeId = fields.assigneeId;
   if (fields.sortOrder !== undefined) updates.sortOrder = fields.sortOrder;
+  if (fields.projectId !== undefined) updates.projectId = fields.projectId;
 
   const [updated] = await db
     .update(trackerIssues)
@@ -286,4 +326,55 @@ export async function reorderIssue(issueId: string, newSortOrder: number) {
     .where(eq(trackerIssues.id, issueId))
     .returning();
   return !!updated;
+}
+
+// --- Comments ---
+
+export async function listComments(issueId: string) {
+  const db = getDb();
+  return db
+    .select({
+      id: trackerIssueComments.id,
+      issueId: trackerIssueComments.issueId,
+      userId: trackerIssueComments.userId,
+      authorName: trackerIssueComments.authorName,
+      authorAvatar: trackerIssueComments.authorAvatar,
+      content: trackerIssueComments.content,
+      createdAt: trackerIssueComments.createdAt,
+      updatedAt: trackerIssueComments.updatedAt,
+    })
+    .from(trackerIssueComments)
+    .where(eq(trackerIssueComments.issueId, issueId))
+    .orderBy(asc(trackerIssueComments.createdAt));
+}
+
+export async function createComment(fields: {
+  issueId: string;
+  userId?: string | null;
+  authorName: string;
+  authorAvatar?: string | null;
+  content: string;
+}) {
+  const db = getDb();
+  const [comment] = await db
+    .insert(trackerIssueComments)
+    .values({
+      issueId: fields.issueId,
+      userId: fields.userId || undefined,
+      authorName: fields.authorName,
+      authorAvatar: fields.authorAvatar || undefined,
+      content: fields.content,
+    })
+    .returning();
+
+  // Touch the issue's updatedAt
+  await db.update(trackerIssues).set({ updatedAt: new Date() }).where(eq(trackerIssues.id, fields.issueId));
+
+  return comment;
+}
+
+export async function deleteComment(commentId: string) {
+  const db = getDb();
+  const result = await db.delete(trackerIssueComments).where(eq(trackerIssueComments.id, commentId)).returning();
+  return result.length > 0;
 }

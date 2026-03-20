@@ -19,7 +19,7 @@ export interface PortResult {
 
 export interface WebFinding {
   id: string;
-  category: "header" | "directory" | "ssl" | "disclosure" | "sqli" | "xss" | "redirect" | "other";
+  category: "header" | "directory" | "ssl" | "disclosure" | "sqli" | "xss" | "redirect" | "cors" | "cookie" | "method" | "host" | "ssti" | "other";
   severity: Severity;
   title: string;
   description: string;
@@ -155,6 +155,26 @@ const COMMON_PATHS = [
   "/manager", "/jmx-console", "/web-console", "/.DS_Store",
   "/.well-known/security.txt", "/security.txt", "/package.json",
   "/composer.json", "/Dockerfile", "/docker-compose.yml",
+  // Cloud configuration files
+  "/.aws/credentials", "/.aws/config", "/.docker/config.json",
+  "/.kube/config", "/.npmrc", "/.env.local", "/.env.production",
+  "/.env.bak", "/.env.old", "/.env.development",
+  // Spring Boot actuator
+  "/actuator", "/actuator/env", "/actuator/health", "/actuator/beans",
+  "/actuator/mappings", "/actuator/configprops", "/actuator/trace",
+  // Debug / profiling endpoints
+  "/debug/pprof", "/debug/vars", "/_debug", "/_profiler",
+  "/trace", "/metrics", "/prometheus",
+  // Backup & editor temp files
+  "/web.config", "/web.config.bak", "/.vscode/settings.json",
+  "/config.yml", "/config.yaml", "/.idea/workspace.xml",
+  // API documentation
+  "/api-docs", "/redoc", "/.well-known/openid-configuration",
+  "/wp-json/wp/v2/users",
+  // Version control
+  "/.hg/", "/.bzr/", "/CVS/Entries",
+  // Server config
+  "/.nginx.conf", "/nginx.conf", "/server.xml", "/WEB-INF/web.xml",
 ];
 
 // --- SQL error patterns ---
@@ -186,9 +206,12 @@ const SECURITY_HEADERS = [
   { header: "x-frame-options", title: "Missing X-Frame-Options", severity: "medium" as Severity, description: "The X-Frame-Options header is not set. This may allow clickjacking attacks." },
   { header: "content-security-policy", title: "Missing Content-Security-Policy", severity: "medium" as Severity, description: "No Content-Security-Policy header found. This increases the risk of XSS and data injection attacks." },
   { header: "referrer-policy", title: "Missing Referrer-Policy", severity: "low" as Severity, description: "The Referrer-Policy header is not set. The browser may leak the full URL in the Referer header." },
+  { header: "permissions-policy", title: "Missing Permissions-Policy", severity: "low" as Severity, description: "The Permissions-Policy header is not set. Browser features like camera, microphone, and geolocation are not explicitly restricted." },
+  { header: "cross-origin-opener-policy", title: "Missing Cross-Origin-Opener-Policy", severity: "low" as Severity, description: "No Cross-Origin-Opener-Policy header. The page may be vulnerable to cross-origin attacks via window references." },
+  { header: "cross-origin-resource-policy", title: "Missing Cross-Origin-Resource-Policy", severity: "low" as Severity, description: "No Cross-Origin-Resource-Policy header. Resources may be loaded by cross-origin pages." },
 ];
 
-const DISCLOSURE_HEADERS = ["server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version"];
+const DISCLOSURE_HEADERS = ["server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version", "x-debug", "x-runtime", "x-version", "x-generator"];
 
 // --- Helpers ---
 
@@ -244,7 +267,7 @@ async function tcpConnect(host: string, port: number, timeoutMs: number): Promis
   });
 }
 
-async function httpRequest(url: string, method: string = "GET", timeoutMs: number = 5000, followRedirects: boolean = false): Promise<{ status: number; headers: Record<string, string>; body: string; redirectUrl?: string } | null> {
+async function httpRequest(url: string, method: string = "GET", timeoutMs: number = 5000, followRedirects: boolean = false, extraHeaders?: Record<string, string>): Promise<{ status: number; headers: Record<string, string>; body: string; redirectUrl?: string } | null> {
   try {
     const parsedUrl = new URL(url);
     const isHttps = parsedUrl.protocol === "https:";
@@ -275,13 +298,20 @@ async function httpRequest(url: string, method: string = "GET", timeoutMs: numbe
           headers: {
             "User-Agent": "Genie-Security-Scanner/1.0",
             "Accept": "*/*",
+            ...extraHeaders,
           },
         },
         (res) => {
           const headers: Record<string, string> = {};
           for (const [key, val] of Object.entries(res.headers)) {
-            if (typeof val === "string") headers[key.toLowerCase()] = val;
-            else if (Array.isArray(val)) headers[key.toLowerCase()] = val.join(", ");
+            const lk = key.toLowerCase();
+            if (lk === "set-cookie" && Array.isArray(val)) {
+              headers["set-cookie"] = val.join("\n");
+            } else if (typeof val === "string") {
+              headers[lk] = val;
+            } else if (Array.isArray(val)) {
+              headers[lk] = val.join(", ");
+            }
           }
 
           if (!followRedirects && res.statusCode && res.statusCode >= 300 && res.statusCode < 400) {
@@ -488,7 +518,7 @@ async function scanPorts(host: string, scan: SecurityScan, callbacks: ScanCallba
 }
 
 async function runWebChecks(host: string, httpPorts: PortResult[], scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
-  const totalPhases = 5;
+  const totalPhases = 9;
   let completedPhases = 0;
 
   for (const portResult of httpPorts) {
@@ -553,6 +583,42 @@ async function runWebChecks(host: string, httpPorts: PortResult[], scan: Securit
     callbacks.onProgress({ id: scan.id, phase: scan.phase });
 
     await checkOpenRedirects(baseUrl, scan, callbacks);
+    completedPhases++;
+    if (callbacks.signal.aborted) return;
+
+    // Phase 2g: CORS misconfiguration check
+    scan.phase = `CORS check (${baseUrl})`;
+    logOp(scan, callbacks, `Testing CORS configuration on ${baseUrl}`);
+    callbacks.onProgress({ id: scan.id, phase: scan.phase });
+
+    await checkCorsMisconfiguration(baseUrl, scan, callbacks);
+    completedPhases++;
+    if (callbacks.signal.aborted) return;
+
+    // Phase 2h: Cookie security check
+    scan.phase = `Cookie security check (${baseUrl})`;
+    logOp(scan, callbacks, `Checking cookie security attributes on ${baseUrl}`);
+    callbacks.onProgress({ id: scan.id, phase: scan.phase });
+
+    await checkCookieSecurity(baseUrl, scan, callbacks);
+    completedPhases++;
+    if (callbacks.signal.aborted) return;
+
+    // Phase 2i: HTTP method enumeration
+    scan.phase = `HTTP methods check (${baseUrl})`;
+    logOp(scan, callbacks, `Enumerating HTTP methods on ${baseUrl}`);
+    callbacks.onProgress({ id: scan.id, phase: scan.phase });
+
+    await checkHttpMethods(baseUrl, scan, callbacks);
+    completedPhases++;
+    if (callbacks.signal.aborted) return;
+
+    // Phase 2j: Host header injection
+    scan.phase = `Host header injection check (${baseUrl})`;
+    logOp(scan, callbacks, `Testing host header injection on ${baseUrl}`);
+    callbacks.onProgress({ id: scan.id, phase: scan.phase });
+
+    await checkHostHeaderInjection(baseUrl, scan, callbacks);
     if (callbacks.signal.aborted) return;
   }
 }
@@ -602,7 +668,13 @@ async function checkHeaders(baseUrl: string, scan: SecurityScan, callbacks: Scan
   }
 }
 
-const SENSITIVE_PATHS = new Set(["/.env", "/.git/config", "/.git/HEAD", "/.htaccess", "/.svn/entries", "/.DS_Store"]);
+const SENSITIVE_PATHS = new Set([
+  "/.env", "/.git/config", "/.git/HEAD", "/.htaccess", "/.svn/entries", "/.DS_Store",
+  "/.aws/credentials", "/.aws/config", "/.docker/config.json", "/.kube/config",
+  "/.npmrc", "/.env.local", "/.env.production", "/.env.bak", "/.env.old", "/.env.development",
+  "/.vscode/settings.json", "/.idea/workspace.xml", "/.hg/", "/.bzr/",
+  "/actuator/env", "/actuator/configprops",
+]);
 
 async function enumerateDirectories(baseUrl: string, scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
   const batchSize = 10;
@@ -750,11 +822,13 @@ async function checkSsl(host: string, port: number, scan: SecurityScan, callback
 }
 
 async function checkSqlInjection(baseUrl: string, scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
-  const testPaths = ["/", "/search", "/login", "/api"];
-  const payloads = ["'", "' OR 1=1--", "\" OR 1=1--"];
+  const testPaths = ["/", "/search", "/login", "/api", "/api/v1", "/admin"];
+  const payloads = ["'", "' OR 1=1--", "\" OR 1=1--", "1' UNION SELECT NULL--", "' AND 1=1--", "1; DROP TABLE test--"];
+
+  let foundError = false;
 
   for (const pathStr of testPaths) {
-    if (callbacks.signal.aborted) return;
+    if (callbacks.signal.aborted || foundError) return;
 
     for (const payload of payloads) {
       const url = `${baseUrl}${pathStr}?q=${encodeURIComponent(payload)}&id=${encodeURIComponent(payload)}`;
@@ -774,7 +848,48 @@ async function checkSqlInjection(baseUrl: string, scan: SecurityScan, callbacks:
           });
           logOp(scan, callbacks, `[CRITICAL] SQL injection detected at ${pathStr} — SQL error in response`);
           callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
-          return; // Found one, no need to keep testing this base
+          foundError = true;
+          break;
+        }
+      }
+      if (foundError) break;
+    }
+  }
+
+  // Time-based blind SQL injection detection
+  if (!foundError && !callbacks.signal.aborted) {
+    const blindPaths = ["/", "/search", "/login", "/api"];
+    const sleepPayloads = ["' OR SLEEP(2)--", "1; WAITFOR DELAY '0:0:2'--", "' OR pg_sleep(2)--"];
+
+    for (const pathStr of blindPaths) {
+      if (callbacks.signal.aborted) return;
+
+      for (const payload of sleepPayloads) {
+        const url = `${baseUrl}${pathStr}?q=${encodeURIComponent(payload)}&id=${encodeURIComponent(payload)}`;
+        const start = Date.now();
+        const resp = await httpRequest(url, "GET", 8000);
+        const elapsed = Date.now() - start;
+
+        if (resp && elapsed > 1800) {
+          // Verify with a normal request to rule out slow server
+          const verifyStart = Date.now();
+          await httpRequest(`${baseUrl}${pathStr}?q=test&id=1`, "GET", 5000);
+          const verifyElapsed = Date.now() - verifyStart;
+
+          if (elapsed > verifyElapsed * 3 && elapsed > 1800) {
+            scan.findings.push({
+              id: uuidv4(),
+              category: "sqli",
+              severity: "critical",
+              title: `Time-Based Blind SQL Injection: ${pathStr}`,
+              description: `Response delayed by ~${Math.round(elapsed / 1000)}s with sleep payload (normal: ~${Math.round(verifyElapsed / 1000)}s). Indicates potential blind SQL injection.`,
+              url,
+              evidence: `Sleep payload response: ${elapsed}ms vs normal: ${verifyElapsed}ms`,
+            });
+            logOp(scan, callbacks, `[CRITICAL] Time-based blind SQLi at ${pathStr} — ${elapsed}ms delay`);
+            callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+            return;
+          }
         }
       }
     }
@@ -783,28 +898,71 @@ async function checkSqlInjection(baseUrl: string, scan: SecurityScan, callbacks:
 
 async function checkXssReflection(baseUrl: string, scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
   const testPaths = ["/", "/search", "/api"];
-  const xssPayload = "<script>alert(1)</script>";
-  const xssPayloadEncoded = encodeURIComponent(xssPayload);
+  const xssPayloads: { payload: string; label: string }[] = [
+    { payload: "<script>alert(1)</script>", label: "script tag" },
+    { payload: "\"><img src=x onerror=alert(1)>", label: "attribute breakout (img onerror)" },
+    { payload: "'-alert(1)-'", label: "JavaScript context breakout" },
+  ];
 
   for (const pathStr of testPaths) {
     if (callbacks.signal.aborted) return;
 
-    const url = `${baseUrl}${pathStr}?q=${xssPayloadEncoded}&search=${xssPayloadEncoded}`;
-    const resp = await httpRequest(url, "GET", 3000);
-    if (!resp) continue;
+    for (const { payload, label } of xssPayloads) {
+      const encoded = encodeURIComponent(payload);
+      const url = `${baseUrl}${pathStr}?q=${encoded}&search=${encoded}`;
+      const resp = await httpRequest(url, "GET", 3000);
+      if (!resp) continue;
 
-    if (resp.body.includes(xssPayload)) {
-      scan.findings.push({
-        id: uuidv4(),
-        category: "xss",
-        severity: "high",
-        title: `Reflected XSS: ${pathStr}`,
-        description: `The application reflects user input without encoding. An attacker could inject malicious scripts.`,
-        url,
-        evidence: `Payload "<script>alert(1)</script>" reflected in response body`,
-      });
-      logOp(scan, callbacks, `[HIGH] Reflected XSS at ${pathStr} — payload reflected unescaped`);
-      callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+      if (resp.body.includes(payload)) {
+        scan.findings.push({
+          id: uuidv4(),
+          category: "xss",
+          severity: "high",
+          title: `Reflected XSS: ${pathStr}`,
+          description: `The application reflects user input without encoding (${label}). An attacker could inject malicious scripts.`,
+          url,
+          evidence: `Payload "${payload}" reflected in response body`,
+        });
+        logOp(scan, callbacks, `[HIGH] Reflected XSS at ${pathStr} — ${label} payload reflected`);
+        callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+        break; // One XSS per path is enough
+      }
+    }
+  }
+
+  // Server-Side Template Injection (SSTI) detection
+  if (!callbacks.signal.aborted) {
+    const sstiPayloads: { payload: string; expected: string; engine: string }[] = [
+      { payload: "{{7*7}}", expected: "49", engine: "Jinja2/Twig/Angular" },
+      { payload: "${7*7}", expected: "49", engine: "FreeMarker/Mako" },
+      { payload: "<%=7*7%>", expected: "49", engine: "ERB/JSP" },
+    ];
+
+    for (const pathStr of testPaths) {
+      if (callbacks.signal.aborted) return;
+
+      for (const { payload, expected, engine } of sstiPayloads) {
+        const encoded = encodeURIComponent(payload);
+        const url = `${baseUrl}${pathStr}?q=${encoded}&name=${encoded}`;
+        const resp = await httpRequest(url, "GET", 3000);
+        if (!resp) continue;
+
+        // Check if the template was evaluated (e.g., {{7*7}} → 49) but the raw payload is NOT in the response
+        if (resp.body.includes(expected) && !resp.body.includes(payload)) {
+          scan.findings.push({
+            id: uuidv4(),
+            category: "ssti",
+            severity: "critical",
+            title: `Server-Side Template Injection: ${pathStr}`,
+            description: `Template expression "${payload}" was evaluated to "${expected}" by the server. This indicates ${engine} template injection, which can lead to remote code execution.`,
+            url,
+            evidence: `Input: ${payload} → Output contains: ${expected}`,
+          });
+          logOp(scan, callbacks, `[CRITICAL] SSTI at ${pathStr} — ${engine} template evaluated`);
+          callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+          break;
+        }
+      }
     }
   }
 }
@@ -835,6 +993,239 @@ async function checkOpenRedirects(baseUrl: string, scan: SecurityScan, callbacks
         callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
       }
     }
+  }
+}
+
+async function checkCorsMisconfiguration(baseUrl: string, scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
+  const evilOrigin = "https://evil.example.com";
+
+  // Test 1: Arbitrary origin reflection
+  const resp = await httpRequest(baseUrl, "GET", 5000, false, { "Origin": evilOrigin });
+  if (resp) {
+    const acao = resp.headers["access-control-allow-origin"];
+    const acac = resp.headers["access-control-allow-credentials"];
+
+    if (acao === evilOrigin && acac === "true") {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "cors",
+        severity: "critical",
+        title: "CORS: Origin Reflected with Credentials",
+        description: "The server reflects arbitrary Origin headers in Access-Control-Allow-Origin and allows credentials. An attacker can steal authenticated data from any origin.",
+        url: baseUrl,
+        evidence: `Access-Control-Allow-Origin: ${acao}, Access-Control-Allow-Credentials: true`,
+      });
+      logOp(scan, callbacks, "[CRITICAL] CORS misconfiguration — arbitrary origin reflected with credentials");
+      callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+    } else if (acao === evilOrigin) {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "cors",
+        severity: "high",
+        title: "CORS: Arbitrary Origin Reflected",
+        description: "The server reflects arbitrary Origin headers in Access-Control-Allow-Origin. Cross-origin pages can read responses from this server.",
+        url: baseUrl,
+        evidence: `Access-Control-Allow-Origin: ${acao}`,
+      });
+      logOp(scan, callbacks, "[HIGH] CORS misconfiguration — arbitrary origin reflected");
+      callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+    } else if (acao === "*" && acac === "true") {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "cors",
+        severity: "high",
+        title: "CORS: Wildcard with Credentials",
+        description: "The server sets Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true. While browsers reject this combination, it indicates a misconfigured CORS policy.",
+        url: baseUrl,
+        evidence: `Access-Control-Allow-Origin: *, Access-Control-Allow-Credentials: true`,
+      });
+      logOp(scan, callbacks, "[HIGH] CORS misconfiguration — wildcard with credentials");
+      callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+    }
+  }
+
+  if (callbacks.signal.aborted) return;
+
+  // Test 2: null origin (exploitable via sandboxed iframes)
+  const resp2 = await httpRequest(baseUrl, "GET", 5000, false, { "Origin": "null" });
+  if (resp2) {
+    const acao2 = resp2.headers["access-control-allow-origin"];
+    if (acao2 === "null") {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "cors",
+        severity: "high",
+        title: "CORS: Null Origin Allowed",
+        description: "The server allows the 'null' origin, which can be exploited via sandboxed iframes to bypass CORS restrictions.",
+        url: baseUrl,
+        evidence: `Access-Control-Allow-Origin: null`,
+      });
+      logOp(scan, callbacks, "[HIGH] CORS misconfiguration — null origin allowed");
+      callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+    }
+  }
+}
+
+async function checkCookieSecurity(baseUrl: string, scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
+  const resp = await httpRequest(baseUrl, "GET", 5000);
+  if (!resp) return;
+
+  const setCookieRaw = resp.headers["set-cookie"];
+  if (!setCookieRaw) return;
+
+  // Split on newline (we joined with \n in httpRequest for Set-Cookie)
+  const cookies = setCookieRaw.split("\n").filter(Boolean);
+
+  for (const cookie of cookies) {
+    const cookieName = cookie.split("=")[0].trim();
+    const lower = cookie.toLowerCase();
+
+    // Skip tracking/analytics cookies — focus on session/auth cookies
+    const isLikelySession = /sess|token|auth|jwt|sid|login|user/i.test(cookieName);
+    if (!isLikelySession && cookies.length > 3) continue;
+
+    if (!lower.includes("secure")) {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "cookie",
+        severity: "medium",
+        title: `Cookie Missing Secure Flag: ${cookieName}`,
+        description: `The "${cookieName}" cookie is not marked as Secure. It will be sent over unencrypted HTTP connections, allowing interception.`,
+        url: baseUrl,
+        evidence: cookie.slice(0, 200),
+      });
+      logOp(scan, callbacks, `[MEDIUM] Cookie "${cookieName}" missing Secure flag`);
+    }
+
+    if (!lower.includes("httponly")) {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "cookie",
+        severity: "medium",
+        title: `Cookie Missing HttpOnly Flag: ${cookieName}`,
+        description: `The "${cookieName}" cookie is not marked as HttpOnly. It can be accessed via JavaScript, increasing XSS impact.`,
+        url: baseUrl,
+        evidence: cookie.slice(0, 200),
+      });
+      logOp(scan, callbacks, `[MEDIUM] Cookie "${cookieName}" missing HttpOnly flag`);
+    }
+
+    if (!lower.includes("samesite")) {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "cookie",
+        severity: "low",
+        title: `Cookie Missing SameSite Attribute: ${cookieName}`,
+        description: `The "${cookieName}" cookie has no SameSite attribute. Browsers default to Lax, but explicit setting is recommended for CSRF protection.`,
+        url: baseUrl,
+        evidence: cookie.slice(0, 200),
+      });
+      logOp(scan, callbacks, `[LOW] Cookie "${cookieName}" missing SameSite attribute`);
+    }
+
+    callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+  }
+}
+
+async function checkHttpMethods(baseUrl: string, scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
+  // Send OPTIONS to discover allowed methods
+  const resp = await httpRequest(baseUrl, "OPTIONS", 5000);
+  if (resp) {
+    const allow = resp.headers["allow"] || resp.headers["access-control-allow-methods"];
+    if (allow) {
+      const methods = allow.split(",").map((m) => m.trim().toUpperCase());
+      const dangerousMethods = ["TRACE", "PUT", "DELETE", "CONNECT"];
+      const found = methods.filter((m) => dangerousMethods.includes(m));
+
+      for (const method of found) {
+        scan.findings.push({
+          id: uuidv4(),
+          category: "method",
+          severity: method === "TRACE" ? "medium" : "low",
+          title: `Dangerous HTTP Method Allowed: ${method}`,
+          description: `The server allows the ${method} HTTP method. ${method === "TRACE" ? "TRACE can be used for Cross-Site Tracing (XST) attacks to steal credentials." : `${method} may allow unauthorized modification or deletion of resources.`}`,
+          url: baseUrl,
+          evidence: `Allow: ${allow}`,
+        });
+        logOp(scan, callbacks, `[${method === "TRACE" ? "MEDIUM" : "LOW"}] HTTP method ${method} allowed`);
+      }
+      if (found.length > 0) callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+    }
+  }
+
+  if (callbacks.signal.aborted) return;
+
+  // Verify TRACE directly (Cross-Site Tracing)
+  const traceResp = await httpRequest(baseUrl, "TRACE", 3000);
+  if (traceResp && traceResp.status === 200 && traceResp.body.toUpperCase().includes("TRACE")) {
+    // Only add if not already found via OPTIONS
+    if (!scan.findings.some((f) => f.category === "method" && f.title.includes("TRACE"))) {
+      scan.findings.push({
+        id: uuidv4(),
+        category: "method",
+        severity: "medium",
+        title: "TRACE Method Enabled (Verified)",
+        description: "The TRACE HTTP method is active and echoes request data. This enables Cross-Site Tracing (XST) attacks which can steal cookies and authorization headers.",
+        url: baseUrl,
+        evidence: `TRACE response (HTTP ${traceResp.status}): ${traceResp.body.slice(0, 200)}`,
+      });
+      logOp(scan, callbacks, "[MEDIUM] TRACE method active — Cross-Site Tracing possible");
+      callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+    }
+  }
+}
+
+async function checkHostHeaderInjection(baseUrl: string, scan: SecurityScan, callbacks: ScanCallbacks): Promise<void> {
+  const evilHost = "evil.example.com";
+
+  // Test 1: Replace Host header entirely
+  const resp = await httpRequest(baseUrl, "GET", 5000, false, { "Host": evilHost });
+  if (!resp) return;
+
+  if (resp.body.includes(evilHost)) {
+    scan.findings.push({
+      id: uuidv4(),
+      category: "host",
+      severity: "medium",
+      title: "Host Header Reflected in Response Body",
+      description: "The server reflects the Host header value in the response body. This can enable cache poisoning, password reset poisoning, and phishing via manipulated links.",
+      url: baseUrl,
+      evidence: `Host: ${evilHost} reflected in response body`,
+    });
+    logOp(scan, callbacks, "[MEDIUM] Host header reflected in response body");
+    callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+  }
+
+  if (resp.redirectUrl?.includes(evilHost)) {
+    scan.findings.push({
+      id: uuidv4(),
+      category: "host",
+      severity: "high",
+      title: "Host Header Injection in Redirect",
+      description: "The server uses the Host header to construct redirect URLs. An attacker can redirect users to a malicious domain (password reset poisoning, OAuth hijacking).",
+      url: baseUrl,
+      evidence: `Location: ${resp.redirectUrl}`,
+    });
+    logOp(scan, callbacks, "[HIGH] Host header injection — redirect to attacker domain");
+    callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
+  }
+
+  if (callbacks.signal.aborted) return;
+
+  // Test 2: X-Forwarded-Host header (bypasses some Host header validation)
+  const resp2 = await httpRequest(baseUrl, "GET", 5000, false, { "X-Forwarded-Host": evilHost });
+  if (resp2 && resp2.body.includes(evilHost)) {
+    scan.findings.push({
+      id: uuidv4(),
+      category: "host",
+      severity: "medium",
+      title: "X-Forwarded-Host Header Injection",
+      description: "The server trusts the X-Forwarded-Host header and reflects it in responses. This can enable cache poisoning and link manipulation behind reverse proxies.",
+      url: baseUrl,
+      evidence: `X-Forwarded-Host: ${evilHost} reflected in response body`,
+    });
+    logOp(scan, callbacks, "[MEDIUM] X-Forwarded-Host header reflected in response body");
+    callbacks.onProgress({ id: scan.id, findings: [...scan.findings] });
   }
 }
 

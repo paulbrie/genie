@@ -161,7 +161,7 @@ ufw reload
     checkAbort();
 
     // 6. SSH in and run provision script
-    const script = provisionScript?.trim() || "#!/bin/bash\nset -e\nufw allow 80/tcp && ufw allow 443/tcp && ufw reload\ncurl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs\nnpm install -g @anthropic-ai/claude-code";
+    const script = provisionScript?.trim() || "#!/bin/bash\nset -e\nufw allow 80/tcp && ufw allow 443/tcp && ufw reload\ncurl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs rkhunter\nnpm install -g @anthropic-ai/claude-code\nclaude install\necho 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc";
     onProgress("Running provision script...");
     const s = await connectSsh(connConfig);
     try {
@@ -173,6 +173,34 @@ ufw reload
       onProgress("Provisioning complete");
     } finally {
       s.close();
+    }
+
+    // 6b. Create non-root genie user for Claude Code (--dangerously-skip-permissions requires non-root)
+    onProgress("Creating genie user...");
+    const genieUserSession = await connectSsh(connConfig);
+    try {
+      await genieUserSession.exec([
+        "id genie &>/dev/null || useradd -m -s /bin/bash genie",
+        "echo 'genie ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/genie",
+        "chmod 440 /etc/sudoers.d/genie",
+        "mkdir -p /home/genie/.ssh",
+        "cp /root/.ssh/authorized_keys /home/genie/.ssh/authorized_keys",
+        "chown -R genie:genie /home/genie/.ssh",
+        "chmod 700 /home/genie/.ssh",
+        "chmod 600 /home/genie/.ssh/authorized_keys",
+        "mkdir -p /opt/project",
+        "chown -R genie:genie /opt/project",
+        "usermod -aG docker genie || true",
+        // Install Claude Code for genie user
+        "su - genie -c 'claude install 2>/dev/null || true'",
+        "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> /home/genie/.bashrc",
+      ].join(" && "), (chunk) => {
+        const line = chunk.trimEnd();
+        if (line) onProgress(line);
+      });
+      onProgress("genie user created");
+    } finally {
+      genieUserSession.close();
     }
 
     checkAbort();

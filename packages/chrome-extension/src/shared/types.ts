@@ -28,14 +28,16 @@ export type PanelMessage =
   | { type: "get:project" }
   | { type: "get:snapshot" }
   | { type: "navigate"; url: string }
-  | { type: "open:sidepanel" };
+  | { type: "open:sidepanel" }
+  | { type: "set:ws-url"; url: string };
 
 // Messages from background → side panel / popup
 export type BackgroundMessage =
   | { type: "ws:status"; connected: boolean; authenticated: boolean }
   | { type: "dom:snapshot"; html: string }
   | { type: "project:detected"; project: ProjectDef | null; tabUrl: string }
-  | { type: "project:list"; projects: ProjectDef[] };
+  | { type: "project:list"; projects: ProjectDef[] }
+  | { type: "ws:url"; url: string };
 
 // Messages from background → content script
 export type ContentScriptMessage =

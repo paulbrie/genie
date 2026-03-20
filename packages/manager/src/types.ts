@@ -1,3 +1,5 @@
+export const VPS_SSH_USERNAME = "genie";
+
 export type ProcessStatus = "running" | "stopped" | "crashed";
 
 export type ConversationType = "dm" | "room";

@@ -38,7 +38,11 @@ import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint } from "./vps/do-provision.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
-import type { VpsConnectionConfig, ClientType, DomActionExecutor, AgentOutboundMessage } from "./types.js";
+import { setupMcpTrackerTunnel, type McpTrackerTunnel } from "./vps/mcp-tracker-tunnel.js";
+import { setupMcpSecurityTunnel, type McpSecurityTunnel } from "./vps/mcp-security-tunnel.js";
+import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tunnel.js";
+import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
+import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type AgentOutboundMessage } from "./types.js";
 import * as settingsService from "./settings-service.js";
 import type { BaseImageConfig, BaseImageTemplate } from "./settings-service.js";
 import fs from "node:fs";
@@ -413,16 +417,36 @@ async function routeChatToVpsAgent(
   domSnapshot: string | undefined,
   abortSignal: AbortSignal,
   onComplete?: (fullContent: string, toolUses: { name: string; input: unknown; result: string }[]) => void,
+  projectIdHint?: string | null,
 ): Promise<boolean> {
-  // Extract projectId from context string
-  if (!chatContext) { console.log(`[claude-code] No chatContext, skipping VPS route`); return false; }
-  const projectIdMatch = chatContext.match(/Project ID:\s*([a-f0-9-]+)/i)
-    || chatContext.match(/projectId[=:]\s*["']?([a-f0-9-]+)/i);
-  if (!projectIdMatch) { console.log(`[claude-code] No projectId found in context: ${chatContext.slice(0, 200)}`); return false; }
+  // Extract projectId from context string or use the hint from the caller
+  let projectId: string | null = projectIdHint || null;
 
-  const projectId = projectIdMatch[1];
+  if (!projectId && chatContext) {
+    const projectIdMatch = chatContext.match(/Project ID:\s*([a-f0-9-]+)/i)
+      || chatContext.match(/projectId[=:]\s*["']?([a-f0-9-]+)/i)
+      || chatContext.match(/\(id:\s+([a-f0-9-]+)\)/);
+    projectId = projectIdMatch?.[1] || null;
+  }
+
+  // Fallback: if still no project ID, find any project with VPS instances
+  if (!projectId) {
+    const allProjects = await projectService.getAll();
+    const vpsProject = allProjects.find(p => p.vpsInstances.length > 0);
+    if (vpsProject) {
+      projectId = vpsProject.id;
+      console.log(`[claude-code] No project in context, falling back to project "${vpsProject.name}" (${vpsProject.id})`);
+    } else {
+      console.log(`[claude-code] No project with VPS instances found. Context: ${chatContext?.slice(0, 200) || "(none)"}`);
+      return false;
+    }
+  }
+
   const project = await projectService.getById(projectId);
-  if (!project || project.vpsInstances.length === 0) return false;
+  if (!project || project.vpsInstances.length === 0) {
+    console.log(`[claude-code] Project ${projectId} not found or has no VPS instances`);
+    return false;
+  }
 
   // Use the first VPS instance
   const instance = project.vpsInstances[0];
@@ -444,20 +468,135 @@ async function routeChatToVpsAgent(
 
   const dest = remoteDir(project.name);
 
+  // Ensure MCP tunnels are active for this VPS instance
+  {
+    const tKey = tunnelKey(userId, instance.connection.host);
+    let tunnel = persistentMcpTunnels.get(tKey);
+    const needsAnyTunnel = !tunnel?.trackerTunnel || !tunnel?.securityTunnel || !tunnel?.notifyTunnel || !tunnel?.storageTunnel;
+
+    if (needsAnyTunnel) {
+      try {
+        // Use a dedicated SSH session for MCP tunnels (the chat session will be consumed by Claude Code)
+        const tunnelSsh = tunnel?.sshSession ?? await connectSsh(instance.connection, { timeoutMs: 30_000 });
+
+        if (!tunnel) {
+          tunnel = { sshSession: tunnelSsh, mcpTunnel: null as any, projectName: project.name, instanceHost: instance.connection.host };
+          persistentMcpTunnels.set(tKey, tunnel);
+        }
+
+        if (!tunnel.trackerTunnel) {
+          try {
+            tunnel.trackerTunnel = await setupMcpTrackerTunnel(tunnelSsh, project.id, { remotePort: MCP_TRACKER_REMOTE_PORT, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
+            console.log(`[claude-code] Tracker tunnel established for ${project.name}`);
+          } catch (err: unknown) {
+            console.error(`[claude-code] Tracker tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
+          }
+        }
+
+        if (!tunnel.securityTunnel) {
+          try {
+            tunnel.securityTunnel = await setupMcpSecurityTunnel(tunnelSsh, { remotePort: MCP_SECURITY_REMOTE_PORT });
+            console.log(`[claude-code] Security tunnel established for ${project.name}`);
+          } catch (err: unknown) {
+            console.error(`[claude-code] Security tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
+          }
+        }
+
+        if (!tunnel.notifyTunnel) {
+          try {
+            tunnel.notifyTunnel = await setupMcpNotifyTunnel(tunnelSsh, (memberIds, conversationId, message) => {
+              broadcastToUsers(memberIds, { type: "chat:message:new", payload: { conversationId, message } });
+            }, { remotePort: MCP_NOTIFY_REMOTE_PORT });
+            console.log(`[claude-code] Notify tunnel established for ${project.name}`);
+          } catch (err: unknown) {
+            console.error(`[claude-code] Notify tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
+          }
+        }
+
+        if (!tunnel.storageTunnel) {
+          try {
+            tunnel.storageTunnel = await setupMcpStorageTunnel(tunnelSsh, project.name, { remotePort: MCP_STORAGE_REMOTE_PORT });
+            console.log(`[claude-code] Storage tunnel established for ${project.name}`);
+          } catch (err: unknown) {
+            console.error(`[claude-code] Storage tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
+          }
+        }
+
+        // Merge MCP servers into .mcp.json on the VPS
+        const mergeScript = [
+          `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
+          `echo "$existing" | node -e "`,
+          `  const fs = require('fs');`,
+          `  let input = '';`,
+          `  process.stdin.on('data', d => input += d);`,
+          `  process.stdin.on('end', () => {`,
+          `    const cfg = JSON.parse(input);`,
+          `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
+          ...(tunnel.trackerTunnel ? [
+          `    cfg.mcpServers['genie-tracker'] = { type: 'http', url: 'http://127.0.0.1:${MCP_TRACKER_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(tunnel.securityTunnel ? [
+          `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(tunnel.notifyTunnel ? [
+          `    cfg.mcpServers['genie-notify'] = { type: 'http', url: 'http://127.0.0.1:${MCP_NOTIFY_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(tunnel.storageTunnel ? [
+          `    cfg.mcpServers['genie-storage'] = { type: 'http', url: 'http://127.0.0.1:${MCP_STORAGE_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
+          `  });`,
+          `"`,
+        ].join("\n");
+        await tunnelSsh.exec(mergeScript);
+
+        console.log(`[claude-code] MCP tunnels ready for ${project.name}`);
+      } catch (err: unknown) {
+        console.error(`[claude-code] Failed to set up MCP tunnels: ${(err instanceof Error ? err.message : String(err))}`);
+      }
+    }
+  }
+
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY || "";
 
     // Resolve claude binary path and read AGENT.md in parallel
     send(ws, { type: "chat:status", payload: { status: "Connecting to Claude Code..." } });
 
-    const [claudePath, agentMd] = await Promise.all([
-      sshSession.exec(`bash -lc "which claude" 2>/dev/null || echo ""`, undefined, { timeoutMs: 10_000 }).then(s => s.trim()),
+    // Search common paths and npm global bin; read AGENT.md in parallel
+    const [claudePathRaw, agentMd] = await Promise.all([
+      sshSession.exec(
+        `bash -lc "which claude 2>/dev/null" || command -v claude 2>/dev/null || ` +
+        `for p in /usr/local/bin/claude /usr/bin/claude /root/.npm-global/bin/claude "$(npm bin -g 2>/dev/null)/claude"; do ` +
+        `  [ -x "$p" ] && echo "$p" && exit 0; done; echo ""`,
+        undefined, { timeoutMs: 10_000 },
+      ).then(s => s.trim()),
       sshSession.exec(`cat ${dest}/AGENT.md 2>/dev/null || echo ""`, undefined, { timeoutMs: 5_000 }).then(s => s.trim()),
     ]);
 
+    let claudePath = claudePathRaw;
+
     if (!claudePath) {
-      console.error(`[claude-code] claude binary not found on VPS`);
-      send(ws, { type: "chat:error", payload: { message: "Claude Code CLI not found on VPS. Install it with: npm install -g @anthropic-ai/claude-code" } });
+      // Auto-install Claude Code CLI
+      console.log(`[claude-code] claude binary not found on VPS, installing...`);
+      send(ws, { type: "chat:status", payload: { status: "Installing Claude Code CLI on VPS..." } });
+      try {
+        await sshSession.exec(`npm install -g @anthropic-ai/claude-code`, undefined, { timeoutMs: 120_000 });
+        // Re-check after install
+        claudePath = (await sshSession.exec(
+          `bash -lc "which claude 2>/dev/null" || command -v claude 2>/dev/null || ` +
+          `for p in /usr/local/bin/claude /usr/bin/claude "$(npm bin -g 2>/dev/null)/claude"; do ` +
+          `  [ -x "$p" ] && echo "$p" && exit 0; done; echo ""`,
+          undefined, { timeoutMs: 10_000 },
+        )).trim();
+      } catch (installErr: unknown) {
+        console.error(`[claude-code] Failed to install Claude Code CLI:`, installErr instanceof Error ? installErr.message : String(installErr));
+      }
+    }
+
+    if (!claudePath) {
+      console.error(`[claude-code] claude binary not found on VPS even after install attempt`);
+      send(ws, { type: "chat:error", payload: { message: "Could not find or install Claude Code CLI on VPS. SSH into the VPS and run: npm install -g @anthropic-ai/claude-code" } });
       activeChatAbortControllers.delete(ws);
       return true; // handled (with error)
     }
@@ -465,7 +604,41 @@ async function routeChatToVpsAgent(
 
     // Build system context with AGENT.md
     let systemContext = chatContext || "";
-    systemContext += `\n\nServer public IP: ${instance.connection.host}`;
+    const serverIp = instance.connection.host;
+    const isExtension = (chatContext || "").includes("Client: chrome-extension");
+    systemContext += `\n\nServer public IP: ${serverIp}`;
+    if (isExtension) {
+      systemContext += `\n\n=== Browser & MCP Tools ===`;
+      systemContext += `\nThis server runs in the cloud at ${serverIp}. When using browser tools:`;
+      systemContext += `\n- The app is accessible at http://${serverIp}:3000 (or whichever port it runs on). NEVER use localhost or 127.0.0.1 URLs — those refer to the VPS loopback, not your app.`;
+      systemContext += `\n- genie-browser: Use this for DOM interactions. Always use the public IP (http://${serverIp}:PORT) for navigation. Never pass localhost URLs.`;
+      systemContext += `\n- chrome-devtools: This runs Puppeteer on the VPS. The VPS has no display server — always use headless mode. Navigate to http://${serverIp}:PORT, never localhost.`;
+    } else {
+      systemContext += `\n\n=== Browser Notes ===`;
+      systemContext += `\nYou are running from the Genie web app (not the Chrome extension). The genie-browser MCP server is NOT available — do NOT attempt to use it. If you need to test or interact with the app in a browser, use chrome-devtools (Puppeteer) in headless mode. The app is accessible at http://${serverIp}:3000 (or whichever port it runs on). NEVER use localhost or 127.0.0.1 URLs.`;
+    }
+
+    // Tell Claude about the tracker MCP tools
+    const tKey = tunnelKey(userId, serverIp);
+    if (persistentMcpTunnels.get(tKey)?.trackerTunnel) {
+      systemContext += `\n\n=== Tracker ===\nYou have access to the project's issue tracker via MCP tools (genie-tracker server). Use tracker_list_issues to see all tickets, tracker_get_issue to read a specific ticket by its number, tracker_update_issue to change status/priority, and tracker_comment_on_issue to leave notes.\n\nWorkflow: set status to in_progress when you start working on a ticket. When you finish, leave a concise summary comment (bullet list of changes) using tracker_comment_on_issue, then set status to in_review (NEVER set to done — a human reviews and marks done).`;
+    }
+
+    // Tell Claude about the security MCP tools
+    if (persistentMcpTunnels.get(tKey)?.securityTunnel) {
+      systemContext += `\n\n=== Security Scanner ===\nYou have access to a security scanner via MCP tools (genie-security server). Use security_scan to run a full security scan on a target URL (port scan + web vulnerability checks — takes a few minutes). Use security_list_scans to see previous scan results. Use security_get_scan to retrieve full details of a specific scan by ID.`;
+    }
+
+    // Tell Claude about the notify MCP tools
+    if (persistentMcpTunnels.get(tKey)?.notifyTunnel) {
+      systemContext += `\n\n=== Notifications ===\nYou can contact the admin via MCP tools (genie-notify server). Use notify_send_email to send an email to the admin (for important alerts, completed tasks, errors). Use notify_send_chat_message to send a message in the admin's Genie chat (appears as a DM from Claude — good for progress updates, questions, or results).`;
+    }
+
+    // Tell Claude about the storage MCP tools
+    if (persistentMcpTunnels.get(tKey)?.storageTunnel) {
+      systemContext += `\n\n=== Cloud Storage ===\nYou have access to cloud storage via MCP tools (genie-storage server). Use storage_screenshot to take a screenshot of a URL (runs Puppeteer on the VPS, uploads the PNG to cloud storage, returns a presigned URL). Use storage_upload to upload any file from the VPS to cloud storage. Use storage_list to browse stored files, storage_get_url to get a fresh presigned URL, and storage_delete to remove files. All files are scoped to this project.`;
+    }
+
     if (agentMd) {
       systemContext += `\n\n=== Agent Memory (AGENT.md) ===\n${agentMd}`;
     }
@@ -497,6 +670,24 @@ async function routeChatToVpsAgent(
       }
     } catch {}
 
+    // Ensure Claude Code has full permissions on the VPS
+    const claudeSettingsDir = `${dest}/.claude`;
+    const claudeSettingsPath = `${claudeSettingsDir}/settings.local.json`;
+    try {
+      await sshSession.exec(`mkdir -p ${claudeSettingsDir}`, undefined, { timeoutMs: 5_000 });
+      // Read existing settings, merge with allow-all, write back
+      const existingRaw = await sshSession.exec(`cat ${claudeSettingsPath} 2>/dev/null || echo "{}"`, undefined, { timeoutMs: 5_000 });
+      let settings: Record<string, unknown> = {};
+      try { settings = JSON.parse(existingRaw.trim()); } catch {}
+      const perms = (settings.permissions as Record<string, unknown>) || {};
+      perms.allow = ["*"];
+      settings.permissions = perms;
+      const settingsJson = JSON.stringify(settings, null, 2);
+      await sshSession.exec(`cat > ${claudeSettingsPath} << 'GENIEEOF'\n${settingsJson}\nGENIEEOF`, undefined, { timeoutMs: 5_000 });
+    } catch (err) {
+      console.error(`[claude-code] Failed to write settings.local.json:`, err instanceof Error ? err.message : String(err));
+    }
+
     // Build a wrapper script — source profile for PATH, use resolved claude path
     const resumeFlag = existingSessionId ? ` --resume "${existingSessionId}"` : "";
     const scriptLines = [`#!/bin/bash`];
@@ -508,7 +699,7 @@ async function routeChatToVpsAgent(
       `cd ${dest}`,
       `PROMPT=$(cat /tmp/_genie_prompt)`,
       `CTX=$(cat /tmp/_genie_ctx)`,
-      `exec ${claudePath} -p "$PROMPT" --output-format stream-json --verbose --append-system-prompt "$CTX"${resumeFlag}`,
+      `exec ${claudePath} -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions --append-system-prompt "$CTX"${resumeFlag}`,
     );
     const script = scriptLines.join("\n");
     await sshSession.exec(`cat > /tmp/_genie_run.sh << 'GENIEEOF'\n${script}\nGENIEEOF`);
@@ -827,10 +1018,18 @@ function createDomActionExecutor(extensionWs: WebSocket): DomActionExecutor {
 /* ---- Persistent MCP browser tunnels ---- */
 
 const MCP_BROWSER_REMOTE_PORT = 9877;
+const MCP_TRACKER_REMOTE_PORT = 9878;
+const MCP_SECURITY_REMOTE_PORT = 9879;
+const MCP_NOTIFY_REMOTE_PORT = 9880;
+const MCP_STORAGE_REMOTE_PORT = 9881;
 
 interface PersistentMcpTunnel {
   sshSession: SshSession;
   mcpTunnel: McpTunnel;
+  trackerTunnel?: McpTrackerTunnel;
+  securityTunnel?: McpSecurityTunnel;
+  notifyTunnel?: McpNotifyTunnel;
+  storageTunnel?: McpStorageTunnel;
   projectName: string;
   instanceHost: string;
 }
@@ -861,9 +1060,47 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
         const sshSession = await connectSsh(instance.connection, { timeoutMs: 30_000 });
         const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
 
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, projectName: project.name, instanceHost: instance.connection.host });
+        // Set up tracker tunnel for this project
+        let trackerTunnel: McpTrackerTunnel | undefined;
+        try {
+          trackerTunnel = await setupMcpTrackerTunnel(sshSession, project.id, { remotePort: MCP_TRACKER_REMOTE_PORT, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
+          console.log(`[mcp-persistent] Tracker tunnel ready for ${project.name}`);
+        } catch (trackerErr: unknown) {
+          console.error(`[mcp-persistent] Tracker tunnel failed for ${project.name}: ${(trackerErr instanceof Error ? trackerErr.message : String(trackerErr))}`);
+        }
 
-        // Merge genie-browser into .mcp.json on the VPS
+        // Set up security tunnel
+        let securityTunnel: McpSecurityTunnel | undefined;
+        try {
+          securityTunnel = await setupMcpSecurityTunnel(sshSession, { remotePort: MCP_SECURITY_REMOTE_PORT });
+          console.log(`[mcp-persistent] Security tunnel ready for ${project.name}`);
+        } catch (secErr: unknown) {
+          console.error(`[mcp-persistent] Security tunnel failed for ${project.name}: ${(secErr instanceof Error ? secErr.message : String(secErr))}`);
+        }
+
+        // Set up notify tunnel
+        let notifyTunnel: McpNotifyTunnel | undefined;
+        try {
+          notifyTunnel = await setupMcpNotifyTunnel(sshSession, (memberIds, conversationId, message) => {
+            broadcastToUsers(memberIds, { type: "chat:message:new", payload: { conversationId, message } });
+          }, { remotePort: MCP_NOTIFY_REMOTE_PORT });
+          console.log(`[mcp-persistent] Notify tunnel ready for ${project.name}`);
+        } catch (notifyErr: unknown) {
+          console.error(`[mcp-persistent] Notify tunnel failed for ${project.name}: ${(notifyErr instanceof Error ? notifyErr.message : String(notifyErr))}`);
+        }
+
+        // Set up storage tunnel
+        let storageTunnel: McpStorageTunnel | undefined;
+        try {
+          storageTunnel = await setupMcpStorageTunnel(sshSession, project.name, { remotePort: MCP_STORAGE_REMOTE_PORT });
+          console.log(`[mcp-persistent] Storage tunnel ready for ${project.name}`);
+        } catch (storageErr: unknown) {
+          console.error(`[mcp-persistent] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
+        }
+
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, trackerTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host });
+
+        // Merge MCP servers into .mcp.json on the VPS
         const mergeScript = [
           `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
           `echo "$existing" | node -e "`,
@@ -874,6 +1111,18 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
           `    const cfg = JSON.parse(input);`,
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
           `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
+          ...(trackerTunnel ? [
+          `    cfg.mcpServers['genie-tracker'] = { type: 'http', url: 'http://127.0.0.1:${MCP_TRACKER_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(securityTunnel ? [
+          `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(notifyTunnel ? [
+          `    cfg.mcpServers['genie-notify'] = { type: 'http', url: 'http://127.0.0.1:${MCP_NOTIFY_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(storageTunnel ? [
+          `    cfg.mcpServers['genie-storage'] = { type: 'http', url: 'http://127.0.0.1:${MCP_STORAGE_REMOTE_PORT}/mcp' };`,
+          ] : []),
           `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
           `  });`,
           `"`,
@@ -901,6 +1150,7 @@ async function teardownPersistentMcpTunnels(userId: string): Promise<void> {
   for (const [key, tunnel] of persistentMcpTunnels) {
     if (key.startsWith(prefix)) {
       toRemove.push(key);
+      try { tunnel.trackerTunnel?.close(); } catch {}
       try { tunnel.mcpTunnel.close(); } catch {}
       try { tunnel.sshSession.close(); } catch {}
     }
@@ -1416,6 +1666,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
                   }).catch(err => console.error("Failed to log Claude Code message:", err));
                 }
               },
+              contextProjectId,
             );
             if (routed) return;
             // If routing failed (no VPS instance), fall back to local
@@ -1608,12 +1859,12 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "chat:conversation:create": {
       try {
-        const { name, memberIds, type } = msg.payload;
+        const { name, memberIds, type, targetUserId } = msg.payload;
         let conversation;
         if (type === "dm") {
-          // DM with Claude
-          const claudeId = getClaudeUserId();
-          conversation = await chatService.getOrCreateClaudeDm(userId, claudeId);
+          // DM with a specific user, or Claude by default
+          const otherId = targetUserId || getClaudeUserId();
+          conversation = await chatService.getOrCreateClaudeDm(userId, otherId);
         } else {
           // Resolve "claude" placeholder to actual Claude UUID
           const claudeId = getClaudeUserId();
@@ -2840,7 +3091,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const connection: VpsConnectionConfig = {
           host: result.ipAddress,
           port: 22,
-          username: "root",
+          username: VPS_SSH_USERNAME,
           privateKeyPath: path.join(os.homedir(), ".genie", "ssh", "genie_ed25519"),
         };
         const instance: import("./types.js").VpsInstance = {
@@ -2855,21 +3106,29 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             size: result.size,
           },
         };
-        // Write server public IP into CLAUDE.md
+        // Write server info into CLAUDE.md
         try {
           const sshTmp = await connectSsh(connection, { timeoutMs: 15_000 });
           const claudeMdPath = `${remoteDir(doProject.name)}/CLAUDE.md`;
-          const ipLine = `Server public IP: ${result.ipAddress}`;
+          const serverBlock = [
+            `Server public IP: ${result.ipAddress}`,
+            ``,
+            `## Browser & MCP Tools`,
+            `This server runs in the cloud at ${result.ipAddress}. When using browser tools:`,
+            `- The app is accessible at http://${result.ipAddress}:3000 (or whichever port). NEVER use localhost or 127.0.0.1 URLs.`,
+            `- genie-browser: Always use the public IP (http://${result.ipAddress}:PORT) for navigation. Never pass localhost URLs.`,
+            `- chrome-devtools: Runs Puppeteer on the VPS with no display server — always use headless mode. Navigate to http://${result.ipAddress}:PORT, never localhost.`,
+          ].join('\\n');
           const script = `node -e "
             const fs = require('fs');
             const p = '${claudeMdPath}';
             let c = '';
             try { c = fs.readFileSync(p, 'utf8'); } catch {}
             if (c.includes('Server public IP:')) {
-              c = c.replace(/Server public IP:.*/g, '${ipLine}');
+              c = c.replace(/Server public IP:[\\\\s\\\\S]*?(?=\\n##[^#]|\\n\\n[^#\\\\s]|$)/, '${serverBlock}');
             } else {
               const i = c.indexOf('\\n');
-              c = i >= 0 ? c.slice(0, i + 1) + '\\n${ipLine}\\n' + c.slice(i + 1) : '${ipLine}\\n' + c;
+              c = i >= 0 ? c.slice(0, i + 1) + '\\n${serverBlock}\\n' + c.slice(i + 1) : '${serverBlock}\\n' + c;
             }
             fs.writeFileSync(p, c);
           "`;
@@ -2904,7 +3163,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             connection: {
               host: ((err as Error & { dropletIp?: string }).dropletIp) || "unknown",
               port: 22,
-              username: "root",
+              username: VPS_SSH_USERNAME,
               privateKeyPath: path.join(os.homedir(), ".genie", "ssh", "genie_ed25519"),
             },
             services: [],
@@ -3014,21 +3273,30 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           connection,
           services: [],
         };
-        // Write server public IP into CLAUDE.md
+        // Write server info into CLAUDE.md
         try {
           const sshTmp = await connectSsh(connection, { timeoutMs: 15_000 });
           const claudeMdPath = `${remoteDir(project.name)}/CLAUDE.md`;
-          const ipLine = `Server public IP: ${connection.host}`;
+          const ip = connection.host;
+          const serverBlock = [
+            `Server public IP: ${ip}`,
+            ``,
+            `## Browser & MCP Tools`,
+            `This server runs in the cloud at ${ip}. When using browser tools:`,
+            `- The app is accessible at http://${ip}:3000 (or whichever port). NEVER use localhost or 127.0.0.1 URLs.`,
+            `- genie-browser: Always use the public IP (http://${ip}:PORT) for navigation. Never pass localhost URLs.`,
+            `- chrome-devtools: Runs Puppeteer on the VPS with no display server — always use headless mode. Navigate to http://${ip}:PORT, never localhost.`,
+          ].join('\\n');
           const script = `node -e "
             const fs = require('fs');
             const p = '${claudeMdPath}';
             let c = '';
             try { c = fs.readFileSync(p, 'utf8'); } catch {}
             if (c.includes('Server public IP:')) {
-              c = c.replace(/Server public IP:.*/g, '${ipLine}');
+              c = c.replace(/Server public IP:[\\\\s\\\\S]*?(?=\\n##[^#]|\\n\\n[^#\\\\s]|$)/, '${serverBlock}');
             } else {
               const i = c.indexOf('\\n');
-              c = i >= 0 ? c.slice(0, i + 1) + '\\n${ipLine}\\n' + c.slice(i + 1) : '${ipLine}\\n' + c;
+              c = i >= 0 ? c.slice(0, i + 1) + '\\n${serverBlock}\\n' + c.slice(i + 1) : '${serverBlock}\\n' + c;
             }
             fs.writeFileSync(p, c);
           "`;
@@ -3154,9 +3422,44 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
         const sshSession = await connectSsh(vpsInst.connection, { timeoutMs: 30_000 });
         const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, projectName: project.name, instanceHost: host });
 
-        // Merge genie-browser into .mcp.json on the VPS
+        // Set up tracker tunnel
+        let trackerTunnel: McpTrackerTunnel | undefined;
+        try {
+          trackerTunnel = await setupMcpTrackerTunnel(sshSession, project.id, { remotePort: MCP_TRACKER_REMOTE_PORT, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
+        } catch (trackerErr: unknown) {
+          console.error(`[mcp-tunnel] Tracker tunnel failed for ${project.name}: ${(trackerErr instanceof Error ? trackerErr.message : String(trackerErr))}`);
+        }
+
+        // Set up security tunnel
+        let securityTunnel: McpSecurityTunnel | undefined;
+        try {
+          securityTunnel = await setupMcpSecurityTunnel(sshSession, { remotePort: MCP_SECURITY_REMOTE_PORT });
+        } catch (secErr: unknown) {
+          console.error(`[mcp-tunnel] Security tunnel failed for ${project.name}: ${(secErr instanceof Error ? secErr.message : String(secErr))}`);
+        }
+
+        // Set up notify tunnel
+        let notifyTunnel: McpNotifyTunnel | undefined;
+        try {
+          notifyTunnel = await setupMcpNotifyTunnel(sshSession, (memberIds, conversationId, message) => {
+            broadcastToUsers(memberIds, { type: "chat:message:new", payload: { conversationId, message } });
+          }, { remotePort: MCP_NOTIFY_REMOTE_PORT });
+        } catch (notifyErr: unknown) {
+          console.error(`[mcp-tunnel] Notify tunnel failed for ${project.name}: ${(notifyErr instanceof Error ? notifyErr.message : String(notifyErr))}`);
+        }
+
+        // Set up storage tunnel
+        let storageTunnel: McpStorageTunnel | undefined;
+        try {
+          storageTunnel = await setupMcpStorageTunnel(sshSession, project.name, { remotePort: MCP_STORAGE_REMOTE_PORT });
+        } catch (storageErr: unknown) {
+          console.error(`[mcp-tunnel] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
+        }
+
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, trackerTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: host });
+
+        // Merge MCP servers into .mcp.json on the VPS
         const dest = remoteDir(project.name);
         const mergeScript = [
           `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
@@ -3168,6 +3471,18 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           `    const cfg = JSON.parse(input);`,
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
           `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
+          ...(trackerTunnel ? [
+          `    cfg.mcpServers['genie-tracker'] = { type: 'http', url: 'http://127.0.0.1:${MCP_TRACKER_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(securityTunnel ? [
+          `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(notifyTunnel ? [
+          `    cfg.mcpServers['genie-notify'] = { type: 'http', url: 'http://127.0.0.1:${MCP_NOTIFY_REMOTE_PORT}/mcp' };`,
+          ] : []),
+          ...(storageTunnel ? [
+          `    cfg.mcpServers['genie-storage'] = { type: 'http', url: 'http://127.0.0.1:${MCP_STORAGE_REMOTE_PORT}/mcp' };`,
+          ] : []),
           `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
           `  });`,
           `"`,
@@ -3484,6 +3799,50 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { labelId } = msg.payload;
         await trackerService.deleteLabel(userId, labelId);
         await broadcastTrackerList();
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "tracker:comments:list": {
+      try {
+        const { issueId } = msg.payload;
+        const comments = await trackerService.listComments(issueId);
+        send(ws, { type: "tracker:comments:list", payload: { issueId, comments } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "tracker:comment:create": {
+      try {
+        const { issueId, content } = msg.payload;
+        const userRow = await getDb()
+          .select({ name: users.name, avatarUrl: users.avatarUrl })
+          .from(users)
+          .where(eq(users.id, userId))
+          .then((r) => r[0]);
+        const comment = await trackerService.createComment({
+          issueId,
+          userId,
+          authorName: userRow?.name || "Unknown",
+          authorAvatar: userRow?.avatarUrl || undefined,
+          content,
+        });
+        broadcast({ type: "tracker:comment:created", payload: { issueId, comment } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "tracker:comment:delete": {
+      try {
+        const { commentId, issueId } = msg.payload;
+        await trackerService.deleteComment(commentId);
+        broadcast({ type: "tracker:comment:deleted", payload: { commentId, issueId } });
       } catch (err: unknown) {
         send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -4991,11 +5350,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "terminal:ssh:spawn": {
-      const { id, host, port, username, privateKeyPath, cols, rows } = msg.payload;
+      const { id, host, port, privateKeyPath, cols, rows } = msg.payload;
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: port || 22,
-        username: username || "root",
+        username: VPS_SSH_USERNAME,
         privateKeyPath: privateKeyPath || "~/.genie/ssh/genie_ed25519",
       }, userId);
       break;

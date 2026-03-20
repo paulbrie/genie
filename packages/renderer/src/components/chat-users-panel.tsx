@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useSubject } from "subjecto/react";
-import { Bot, X, Plus, Search } from "lucide-react";
+import { Bot, X, Plus, Search, MessageSquare } from "lucide-react";
 import {
   $conversationChat,
   $auth,
   addMemberToConversation,
   removeMemberFromConversation,
+  openDmWith,
   type ChatUser,
   type ConversationMember,
   type ConversationSummary,
@@ -196,30 +197,68 @@ function UserAvatar({ user, size = "normal" }: { user: { name: string; avatarUrl
 }
 
 function UserRow({ user }: { user: ChatUser }) {
+  const [auth] = useSubject($auth);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const isSelf = auth.user?.id === user.id;
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    if (isSelf) return;
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY });
+  }, [isSelf]);
+
+  // Close on click outside or Escape
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", onKey); };
+  }, [ctxMenu]);
+
   return (
-    <div className="flex items-center gap-2 px-2 py-1 rounded-md">
-      <div className="relative shrink-0">
-        <UserAvatar user={user} />
+    <>
+      <div className="flex items-center gap-2 px-2 py-1 rounded-md" onContextMenu={handleContextMenu}>
+        <div className="relative shrink-0">
+          <UserAvatar user={user} />
+          <span
+            className={cn(
+              "absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-mantle",
+              user.isAgent
+                ? "bg-blue"
+                : user.online
+                  ? "bg-green"
+                  : "bg-overlay0"
+            )}
+          />
+        </div>
         <span
           className={cn(
-            "absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-mantle",
-            user.isAgent
-              ? "bg-blue"
-              : user.online
-                ? "bg-green"
-                : "bg-overlay0"
+            "text-md truncate",
+            user.online || user.isAgent ? "text-text" : "text-overlay0"
           )}
-        />
+        >
+          {user.name}
+        </span>
       </div>
-      <span
-        className={cn(
-          "text-md truncate",
-          user.online || user.isAgent ? "text-text" : "text-overlay0"
-        )}
-      >
-        {user.name}
-      </span>
-    </div>
+      {ctxMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[120px]"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        >
+          <button
+            onClick={() => { openDmWith(user.id); setCtxMenu(null); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-md text-text hover:bg-surface0 transition-colors text-left"
+          >
+            <MessageSquare size={13} className="text-overlay1" />
+            Chat
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 

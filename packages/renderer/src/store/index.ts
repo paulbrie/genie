@@ -420,8 +420,21 @@ export interface TrackerIssue {
   assigneeName: string | null;
   assigneeAvatar: string | null;
   labels: TrackerLabel[];
+  commentCount: number;
+  commenters: { name: string; avatar: string | null }[];
   createdBy: string;
   sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TrackerComment {
+  id: string;
+  issueId: string;
+  userId: string | null;
+  authorName: string;
+  authorAvatar: string | null;
+  content: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -475,7 +488,7 @@ export interface PortResult {
 
 export interface WebFinding {
   id: string;
-  category: "header" | "directory" | "ssl" | "disclosure" | "sqli" | "xss" | "redirect" | "other";
+  category: "header" | "directory" | "ssl" | "disclosure" | "sqli" | "xss" | "redirect" | "cors" | "cookie" | "method" | "host" | "ssti" | "other";
   severity: Severity;
   title: string;
   description: string;
@@ -1173,6 +1186,10 @@ export function createGenieDm(): void {
   wsSend("chat:conversation:create", { type: "dm" });
 }
 
+export function openDmWith(targetUserId: string): void {
+  wsSend("chat:conversation:create", { type: "dm", targetUserId });
+}
+
 export function createRoom(name: string, memberIds: string[]): void {
   wsSend("chat:conversation:create", { type: "room", name, memberIds });
 }
@@ -1380,6 +1397,7 @@ export function updateTrackerIssue(issueId: string, fields: {
   assigneeId?: string | null;
   labelIds?: string[];
   sortOrder?: number;
+  projectId?: string;
 }): void {
   wsSend("tracker:issue:update", { issueId, ...fields });
 }
@@ -1435,6 +1453,20 @@ export function updateTrackerLabel(labelId: string, fields: { name?: string; col
 
 export function deleteTrackerLabel(labelId: string): void {
   wsSend("tracker:label:delete", { labelId });
+}
+
+// --- Tracker comments ---
+
+export function loadTrackerComments(issueId: string): void {
+  wsSend("tracker:comments:list", { issueId });
+}
+
+export function createTrackerComment(issueId: string, content: string): void {
+  wsSend("tracker:comment:create", { issueId, content });
+}
+
+export function deleteTrackerComment(commentId: string, issueId: string): void {
+  wsSend("tracker:comment:delete", { commentId, issueId });
 }
 
 // --- Admin actions ---
@@ -2607,7 +2639,8 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
     case "chat:message:new": {
       const { conversationId, message } = msg.payload;
       const cc = $conversationChat.getValue();
-      if (cc.activeConversationId === conversationId) {
+      const isViewingThisConv = cc.activeConversationId === conversationId && $activeNav.getValue() === "chat";
+      if (isViewingThisConv) {
         $conversationChat.nextAssign({ messages: [...cc.messages, message] });
       } else {
         // Increment unread count for conversations we're not viewing
@@ -2617,6 +2650,26 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
             [conversationId]: (cc.unreadCounts[conversationId] || 0) + 1,
           },
         });
+
+        // Show toast notification if message is from someone else
+        const currentUser = $auth.getValue().user;
+        if (currentUser && message.senderId !== currentUser.id) {
+          const conv = cc.conversations.find((c) => c.id === conversationId);
+          const convName = conv?.name || (conv?.type === "dm" ? "DM" : "Chat");
+          $conversationChat.nextAssign({
+            mentionNotifications: [
+              ...cc.mentionNotifications,
+              {
+                id: message.id || `msg-${Date.now()}`,
+                conversationId,
+                conversationName: convName,
+                senderName: message.senderName,
+                content: message.content.slice(0, 100),
+                createdAt: message.createdAt,
+              },
+            ],
+          });
+        }
       }
       // Update conversation list preview immutably
       const convIdx = cc.conversations.findIndex((c) => c.id === conversationId);
@@ -3368,6 +3421,24 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
         issues: tr.issues.filter((i) => i.id !== issueId),
         selectedIssueId: tr.selectedIssueId === issueId ? null : tr.selectedIssueId,
       });
+      break;
+    }
+
+    case "tracker:comments:list": {
+      const { issueId, comments } = msg.payload;
+      window.dispatchEvent(new CustomEvent("tracker:comments", { detail: { issueId, comments } }));
+      break;
+    }
+
+    case "tracker:comment:created": {
+      const { issueId, comment } = msg.payload;
+      window.dispatchEvent(new CustomEvent("tracker:comment:created", { detail: { issueId, comment } }));
+      break;
+    }
+
+    case "tracker:comment:deleted": {
+      const { commentId, issueId } = msg.payload;
+      window.dispatchEvent(new CustomEvent("tracker:comment:deleted", { detail: { commentId, issueId } }));
       break;
     }
 

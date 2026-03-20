@@ -151,6 +151,20 @@ export const trackerIssueLabels = pgTable("tracker_issue_labels", {
   index("idx_tracker_issue_labels_label").on(t.labelId),
 ]);
 
+export const trackerIssueComments = pgTable("tracker_issue_comments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  issueId: uuid("issue_id").references(() => trackerIssues.id, { onDelete: "cascade" }).notNull(),
+  userId: uuid("user_id").references(() => users.id),
+  authorName: text("author_name").notNull(), // "Genie", "system", or user display name — denormalized for easy display
+  authorAvatar: text("author_avatar"),
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => [
+  index("idx_tracker_comments_issue").on(t.issueId),
+  index("idx_tracker_comments_user").on(t.userId),
+]);
+
 export const messages = pgTable(
   "messages",
   {

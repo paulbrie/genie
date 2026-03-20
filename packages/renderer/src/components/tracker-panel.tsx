@@ -6,13 +6,17 @@ import {
   Circle, CircleDot, CheckCircle2, XCircle,
   AlertTriangle, ChevronUp, Equal, ChevronDown, Minus,
   LayoutGrid, List, Plus, X, Filter, Search, Trash2, Tag,
-  GripVertical,
+  GripVertical, Loader2, Send, MessageSquare,
 } from "lucide-react";
 import {
   $tracker,
   $projects,
   $conversationChat,
   loadTrackerIssues,
+  loadTrackerComments,
+  createTrackerComment,
+  deleteTrackerComment,
+  type TrackerComment,
   createTrackerIssue,
   updateTrackerIssue,
   deleteTrackerIssue,
@@ -38,6 +42,8 @@ import {
   type ChatUser,
   type ProjectDef,
 } from "@/store";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";
@@ -328,7 +334,8 @@ function LabelPicker({ selectedIds, onChange, labels }: { selectedIds: string[];
 
 // --- Issue card (board) ---
 
-function TrackerIssueCard({ issue, onClick }: { issue: TrackerIssue; onClick: () => void }) {
+function TrackerIssueCard({ issue, onClick, projectName }: { issue: TrackerIssue; onClick: () => void; projectName?: string }) {
+  const isInProgress = issue.status === "in_progress";
   return (
     <div
       draggable
@@ -337,20 +344,56 @@ function TrackerIssueCard({ issue, onClick }: { issue: TrackerIssue; onClick: ()
         e.dataTransfer.effectAllowed = "move";
       }}
       onClick={onClick}
-      className="bg-base rounded-md border border-surface0 px-3 py-2 cursor-pointer hover:border-surface1 transition-colors group"
+      className={cn(
+        "bg-base rounded-md border px-3 py-2 cursor-pointer hover:border-surface1 transition-colors group",
+        isInProgress ? "border-yellow/40" : "border-surface0",
+      )}
     >
       <div className="flex items-center gap-1.5 mb-1">
         <span className="text-[10px] text-overlay0 font-mono">GEN-{issue.identifier}</span>
         <PriorityIcon priority={issue.priority} size={12} />
+        <div className="flex-1" />
+        {isInProgress && (
+          <Loader2 size={12} className="text-yellow animate-spin" />
+        )}
       </div>
       <p className="text-md text-text font-medium leading-snug mb-1.5 line-clamp-2">{issue.title}</p>
       <div className="flex items-center gap-1.5 flex-wrap">
+        {projectName && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-mauve/15 text-mauve">
+            {projectName}
+          </span>
+        )}
         {issue.labels.map((l) => (
           <span key={l.id} className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ backgroundColor: l.color + "30", color: l.color }}>
             {l.name}
           </span>
         ))}
         <div className="flex-1" />
+        {issue.commentCount > 0 && (
+          <span className="flex items-center gap-0.5 text-[10px] text-overlay0">
+            <MessageSquare size={10} />
+            {issue.commentCount}
+          </span>
+        )}
+        {issue.commenters.length > 0 && (
+          <div className="flex -space-x-1.5">
+            {issue.commenters.slice(0, 3).map((c, i) => (
+              <div key={i} className="w-[18px] h-[18px] rounded-full border border-base overflow-hidden bg-surface1 flex items-center justify-center shrink-0" title={c.name}>
+                {c.avatar ? (
+                  <img src={c.avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <span className={cn("text-[8px] font-medium", c.name === "Genie" ? "text-mauve" : "text-subtext0")}>{c.name[0]?.toUpperCase()}</span>
+                )}
+              </div>
+            ))}
+            {issue.commenters.length > 3 && (
+              <div className="w-[18px] h-[18px] rounded-full border border-base bg-surface1 flex items-center justify-center shrink-0">
+                <span className="text-[8px] text-overlay0">+{issue.commenters.length - 3}</span>
+              </div>
+            )}
+          </div>
+        )}
         {issue.assigneeId && (
           <UserAvatar name={issue.assigneeName} avatarUrl={issue.assigneeAvatar} size={18} />
         )}
@@ -361,12 +404,13 @@ function TrackerIssueCard({ issue, onClick }: { issue: TrackerIssue; onClick: ()
 
 // --- Board column ---
 
-function TrackerColumn({ groupKey, label, issues, groupBy, onSelectIssue }: {
+function TrackerColumn({ groupKey, label, issues, groupBy, onSelectIssue, projectMap }: {
   groupKey: string;
   label: string;
   issues: TrackerIssue[];
   groupBy: TGroupBy;
   onSelectIssue: (id: string) => void;
+  projectMap: Record<string, string>;
 }) {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -401,7 +445,7 @@ function TrackerColumn({ groupKey, label, issues, groupBy, onSelectIssue }: {
       </div>
       <div className="flex flex-col gap-1.5 p-2 overflow-y-auto flex-1 min-h-[100px]">
         {issues.map((issue) => (
-          <TrackerIssueCard key={issue.id} issue={issue} onClick={() => onSelectIssue(issue.id)} />
+          <TrackerIssueCard key={issue.id} issue={issue} onClick={() => onSelectIssue(issue.id)} projectName={projectMap[issue.projectId]} />
         ))}
       </div>
     </div>
@@ -410,10 +454,11 @@ function TrackerColumn({ groupKey, label, issues, groupBy, onSelectIssue }: {
 
 // --- Board view ---
 
-function TrackerBoardView({ groups, groupBy, onSelectIssue }: {
+function TrackerBoardView({ groups, groupBy, onSelectIssue, projectMap }: {
   groups: { key: string; label: string; issues: TrackerIssue[] }[];
   groupBy: TGroupBy;
   onSelectIssue: (id: string) => void;
+  projectMap: Record<string, string>;
 }) {
   return (
     <div className="flex gap-3 overflow-x-auto flex-1 p-3 pb-0">
@@ -425,6 +470,7 @@ function TrackerBoardView({ groups, groupBy, onSelectIssue }: {
           issues={g.issues}
           groupBy={groupBy}
           onSelectIssue={onSelectIssue}
+          projectMap={projectMap}
         />
       ))}
     </div>
@@ -433,11 +479,12 @@ function TrackerBoardView({ groups, groupBy, onSelectIssue }: {
 
 // --- List view ---
 
-function TrackerListView({ groups, groupBy, onSelectIssue, selectedIssueId }: {
+function TrackerListView({ groups, groupBy, onSelectIssue, selectedIssueId, projectMap }: {
   groups: { key: string; label: string; issues: TrackerIssue[] }[];
   groupBy: TGroupBy;
   onSelectIssue: (id: string) => void;
   selectedIssueId: string | null;
+  projectMap: Record<string, string>;
 }) {
   return (
     <div className="flex-1 overflow-y-auto p-3">
@@ -450,26 +497,30 @@ function TrackerListView({ groups, groupBy, onSelectIssue, selectedIssueId }: {
             <span className="text-[10px] text-overlay0">{g.issues.length}</span>
           </div>
           {/* Header */}
-          <div className="grid grid-cols-[60px_1fr_100px_80px_120px_100px_100px] gap-2 px-2 py-1 text-[10px] text-overlay0 font-medium uppercase tracking-wider border-b border-surface0">
+          <div className="grid grid-cols-[60px_1fr_80px_100px_80px_100px_80px] gap-2 px-2 py-1 text-[10px] text-overlay0 font-medium uppercase tracking-wider border-b border-surface0">
             <span>ID</span>
             <span>Title</span>
+            <span>Project</span>
             <span>Status</span>
             <span>Priority</span>
             <span>Assignee</span>
-            <span>Labels</span>
-            <span>Updated</span>
+            <span>Activity</span>
           </div>
           {g.issues.map((issue) => (
             <div
               key={issue.id}
               onClick={() => onSelectIssue(issue.id)}
               className={cn(
-                "grid grid-cols-[60px_1fr_100px_80px_120px_100px_100px] gap-2 px-2 py-1.5 cursor-pointer transition-colors items-center",
+                "grid grid-cols-[60px_1fr_80px_100px_80px_100px_80px] gap-2 px-2 py-1.5 cursor-pointer transition-colors items-center",
                 issue.id === selectedIssueId ? "bg-surface0" : "hover:bg-mantle"
               )}
             >
-              <span className="text-[11px] text-overlay0 font-mono">GEN-{issue.identifier}</span>
+              <span className="flex items-center gap-1">
+                <span className="text-[11px] text-overlay0 font-mono">GEN-{issue.identifier}</span>
+                {issue.status === "in_progress" && <Loader2 size={10} className="text-yellow animate-spin" />}
+              </span>
               <span className="text-md text-text truncate">{issue.title}</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-mauve/15 text-mauve truncate">{projectMap[issue.projectId] || "—"}</span>
               <div>
                 <InlineSelect
                   value={issue.status}
@@ -506,15 +557,23 @@ function TrackerListView({ groups, groupBy, onSelectIssue, selectedIssueId }: {
                   <span className="text-md text-overlay0">--</span>
                 )}
               </div>
-              <div className="flex gap-0.5 flex-wrap overflow-hidden">
-                {issue.labels.slice(0, 2).map((l) => (
-                  <span key={l.id} className="px-1 py-0.5 rounded text-[9px] font-medium" style={{ backgroundColor: l.color + "30", color: l.color }}>
-                    {l.name}
+              <div className="flex items-center gap-1">
+                {issue.commentCount > 0 && (
+                  <span className="flex items-center gap-0.5 text-[10px] text-overlay0">
+                    <MessageSquare size={9} />
+                    {issue.commentCount}
                   </span>
+                )}
+                {issue.commenters.slice(0, 3).map((c, i) => (
+                  <div key={i} className="w-4 h-4 rounded-full border border-base overflow-hidden bg-surface1 flex items-center justify-center shrink-0" title={c.name}>
+                    {c.avatar ? (
+                      <img src={c.avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <span className={cn("text-[7px] font-medium", c.name === "Genie" ? "text-mauve" : "text-subtext0")}>{c.name[0]?.toUpperCase()}</span>
+                    )}
+                  </div>
                 ))}
-                {issue.labels.length > 2 && <span className="text-[9px] text-overlay0">+{issue.labels.length - 2}</span>}
               </div>
-              <span className="text-[11px] text-overlay0">{new Date(issue.updatedAt).toLocaleDateString()}</span>
             </div>
           ))}
         </div>
@@ -525,7 +584,111 @@ function TrackerListView({ groups, groupBy, onSelectIssue, selectedIssueId }: {
 
 // --- Detail panel ---
 
-function TrackerIssueDetail({ issue, labels, onClose }: { issue: TrackerIssue; labels: TrackerLabel[]; onClose: () => void }) {
+function IssueComments({ issueId }: { issueId: string }) {
+  const [comments, setComments] = useState<TrackerComment[]>([]);
+  const [newComment, setNewComment] = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    loadTrackerComments(issueId);
+
+    function handleList(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail.issueId === issueId) setComments(detail.comments);
+    }
+    function handleCreated(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail.issueId === issueId) {
+        setComments((prev) => [...prev, detail.comment]);
+        setSending(false);
+        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+      }
+    }
+    function handleDeleted(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail.issueId === issueId) {
+        setComments((prev) => prev.filter((c) => c.id !== detail.commentId));
+      }
+    }
+    window.addEventListener("tracker:comments", handleList);
+    window.addEventListener("tracker:comment:created", handleCreated);
+    window.addEventListener("tracker:comment:deleted", handleDeleted);
+    return () => {
+      window.removeEventListener("tracker:comments", handleList);
+      window.removeEventListener("tracker:comment:created", handleCreated);
+      window.removeEventListener("tracker:comment:deleted", handleDeleted);
+    };
+  }, [issueId]);
+
+  const handleSend = () => {
+    const text = newComment.trim();
+    if (!text) return;
+    setSending(true);
+    createTrackerComment(issueId, text);
+    setNewComment("");
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-1.5">
+        <MessageSquare size={13} className="text-overlay0" />
+        <span className="text-md text-overlay0 font-medium">Comments</span>
+        {comments.length > 0 && <span className="text-[10px] text-overlay0">{comments.length}</span>}
+      </div>
+
+      {comments.length > 0 && (
+        <div className="flex flex-col gap-2 max-h-[300px] overflow-y-auto">
+          {comments.map((c) => (
+            <div key={c.id} className="bg-mantle rounded-md px-3 py-2 group">
+              <div className="flex items-center gap-1.5 mb-1">
+                {c.authorAvatar ? (
+                  <img src={c.authorAvatar} alt="" className="w-4 h-4 rounded-full" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="w-4 h-4 rounded-full bg-surface1 flex items-center justify-center text-[8px] font-medium text-subtext0">
+                    {c.authorName[0]?.toUpperCase()}
+                  </div>
+                )}
+                <span className={cn("text-md font-medium", c.authorName === "Genie" ? "text-mauve" : "text-subtext0")}>{c.authorName}</span>
+                <span className="text-[10px] text-overlay0 ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteTrackerComment(c.id, issueId); }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 text-overlay0 hover:text-red transition-all bg-transparent border-none cursor-pointer"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+              <div className="text-md text-text prose prose-sm prose-invert max-w-none [&_p]:my-0.5 [&_ul]:my-0.5 [&_ol]:my-0.5 [&_li]:my-0 [&_code]:text-mauve [&_code]:bg-surface0 [&_code]:px-1 [&_code]:rounded [&_pre]:bg-surface0 [&_pre]:p-2 [&_pre]:rounded-md [&_pre]:overflow-x-auto">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{c.content}</ReactMarkdown>
+              </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+      )}
+
+      <div className="flex gap-1.5">
+        <textarea
+          value={newComment}
+          onChange={(e) => setNewComment(e.target.value)}
+          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") handleSend(); }}
+          className="flex-1 bg-mantle border border-surface0 rounded-md px-2 py-1.5 text-md text-text resize-none outline-none focus:border-blue transition-colors"
+          placeholder="Add a comment..."
+          rows={2}
+        />
+        <button
+          onClick={handleSend}
+          disabled={!newComment.trim() || sending}
+          className="self-end px-2 py-1.5 bg-blue text-crust rounded-md text-md font-medium disabled:opacity-40 hover:bg-blue/80 transition-colors border-none cursor-pointer"
+        >
+          <Send size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TrackerIssueDetail({ issue, labels, projects, onClose }: { issue: TrackerIssue; labels: TrackerLabel[]; projects: ProjectDef[]; onClose: () => void }) {
   const [title, setTitle] = useState(issue.title);
   const [description, setDescription] = useState(issue.description);
   const descRef = useRef<HTMLTextAreaElement>(null);
@@ -615,6 +778,17 @@ function TrackerIssueDetail({ issue, labels, onClose }: { issue: TrackerIssue; l
             onChange={(ids) => updateTrackerIssue(issue.id, { labelIds: ids })}
             labels={labels}
           />
+
+          <span className="text-md text-overlay0">Project</span>
+          <InlineSelect
+            value={issue.projectId}
+            options={projects.map((p) => p.id)}
+            onChange={(pid) => updateTrackerIssue(issue.id, { projectId: pid })}
+            renderOption={(pid) => {
+              const p = projects.find((pr) => pr.id === pid);
+              return <span className="text-text">{p?.name || pid}</span>;
+            }}
+          />
         </div>
 
         {/* Description */}
@@ -630,6 +804,9 @@ function TrackerIssueDetail({ issue, labels, onClose }: { issue: TrackerIssue; l
             placeholder="Add a description..."
           />
         </div>
+
+        {/* Comments */}
+        <IssueComments issueId={issue.id} />
       </div>
 
       {/* Footer */}
@@ -1094,6 +1271,12 @@ export function TrackerPanel() {
 
   const selectedIssue = selectedIssueId ? issues.find((i) => i.id === selectedIssueId) : null;
 
+  const projectMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const p of projects) m[p.id] = p.name;
+    return m;
+  }, [projects]);
+
   // Determine which projectId to use for creating: selected filter or first project
   const createProjectId = selectedProjectId || (projects.length > 0 ? projects[0].id : null);
 
@@ -1124,9 +1307,9 @@ export function TrackerPanel() {
         <div className="flex-1 flex overflow-hidden">
           <div className={cn("flex-1 flex flex-col overflow-hidden", selectedIssue && "mr-[400px]")}>
             {viewMode === "board" ? (
-              <TrackerBoardView groups={groups} groupBy={groupBy} onSelectIssue={handleSelectIssue} />
+              <TrackerBoardView groups={groups} groupBy={groupBy} onSelectIssue={handleSelectIssue} projectMap={projectMap} />
             ) : (
-              <TrackerListView groups={groups} groupBy={groupBy} onSelectIssue={handleSelectIssue} selectedIssueId={selectedIssueId} />
+              <TrackerListView groups={groups} groupBy={groupBy} onSelectIssue={handleSelectIssue} selectedIssueId={selectedIssueId} projectMap={projectMap} />
             )}
           </div>
 
@@ -1134,6 +1317,7 @@ export function TrackerPanel() {
             <TrackerIssueDetail
               issue={selectedIssue}
               labels={labels}
+              projects={projects}
               onClose={() => selectTrackerIssue(null)}
             />
           )}

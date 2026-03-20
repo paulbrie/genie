@@ -67,17 +67,28 @@ export async function vpsDeploy(
     onProgress("Setup files written");
   }
 
-  // 3b. Write .mcp.json with genie-browser MCP entry so the VPS agent can use browser tools
+  // 3b. Update Claude Code to latest
   {
-    onProgress("Writing .mcp.json with genie-browser MCP...");
+    onProgress("Updating Claude Code...");
+    const claudeSession = await connectSsh(config);
+    try {
+      await claudeSession.exec("sudo npm install -g @anthropic-ai/claude-code 2>&1 | tail -1", (chunk) => {
+        const line = chunk.trimEnd();
+        if (line) onProgress(line);
+      });
+    } finally {
+      claudeSession.close();
+    }
+  }
+
+  // 3c. Ensure .mcp.json exists (tunnel-based MCP servers are added dynamically when tunnels connect)
+  {
+    onProgress("Preparing .mcp.json...");
     const mcpSession = await connectSsh(config);
     try {
-      const mcpConfig = JSON.stringify({
-        mcpServers: {
-          "genie-browser": { type: "http", url: "http://127.0.0.1:9877/mcp" },
-        },
-      }, null, 2);
-      await mcpSession.exec(`cat > ${dest}/.mcp.json << 'GENIEEOF'\n${mcpConfig}\nGENIEEOF`);
+      // Only ensure the file exists with a valid structure — actual MCP server entries
+      // are merged when SSH tunnels are established (by ws-server tunnel setup code)
+      await mcpSession.exec(`test -f ${dest}/.mcp.json || echo '{"mcpServers":{}}' > ${dest}/.mcp.json`);
     } finally {
       mcpSession.close();
     }
@@ -109,7 +120,7 @@ export async function vpsDeploy(
       let resolveEarly: (() => void) | null = null;
       const earlyDone = new Promise<void>((r) => { resolveEarly = r; });
 
-      const execPromise = setupSession.exec(`cd ${dest} && chmod +x setup.sh && bash setup.sh 2>&1`, (chunk) => {
+      const execPromise = setupSession.exec(`cd ${dest} && chmod +x setup.sh && sudo bash setup.sh 2>&1`, (chunk) => {
         const line = maskSecrets(chunk.trimEnd());
         if (line) onProgress(line);
 
@@ -131,6 +142,16 @@ export async function vpsDeploy(
 
       await Promise.race([execPromise, earlyDone]);
       if (allStartedTimer) clearTimeout(allStartedTimer);
+
+      // Restore ownership of project files to genie after sudo setup.sh
+      onProgress("Fixing file ownership...");
+      const chownSession = await connectSsh(config);
+      try {
+        await chownSession.exec(`sudo chown -R genie:genie ${dest}`);
+      } finally {
+        chownSession.close();
+      }
+
       onProgress("Deployment complete!");
     } finally {
       setupSession.close();

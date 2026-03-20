@@ -1,6 +1,6 @@
 import type { BackgroundMessage, PanelMessage } from "../shared/types";
 
-const RENDERER_URLS = ["https://genie.teleporthq.ai/extension", "http://localhost:3000/extension"];
+const RENDERER_URLS = ["http://localhost:3000/extension", "https://genie.teleporthq.ai/extension"];
 let rendererUrlIndex = 0;
 let RENDERER_URL = RENDERER_URLS[0];
 const IFRAME_ID = "genie-iframe";
@@ -9,6 +9,7 @@ const FALLBACK_ID = "genie-fallback";
 let port: chrome.runtime.Port | null = null;
 let iframe: HTMLIFrameElement | null = null;
 let iframeReady = false;
+let swWsUrl = "";
 
 // Current extension context (updated by service worker)
 let currentProject: any = null;
@@ -58,6 +59,13 @@ function connectPort(): void {
             { type: "genie:snapshot-result", snapshot: (msg as any).html },
             "*",
           );
+        }
+        break;
+
+      case "ws:url":
+        swWsUrl = msg.url;
+        if (iframe?.contentWindow) {
+          iframe.contentWindow.postMessage({ type: "genie:sw-ws-url", url: msg.url }, "*");
         }
         break;
     }
@@ -149,6 +157,20 @@ window.addEventListener("message", (event) => {
       // iframe wants to navigate the active browser tab to a URL
       if (data.url && port) {
         port.postMessage({ type: "navigate", url: data.url } satisfies PanelMessage);
+      }
+      break;
+
+    case "genie:request-sw-ws-url":
+      // iframe wants to know the service worker's WS URL
+      if (swWsUrl && iframe?.contentWindow) {
+        iframe.contentWindow.postMessage({ type: "genie:sw-ws-url", url: swWsUrl }, "*");
+      }
+      break;
+
+    case "genie:set-sw-ws-url":
+      // iframe wants to switch the service worker's WS URL
+      if (data.url && port) {
+        port.postMessage({ type: "set:ws-url", url: data.url } satisfies PanelMessage);
       }
       break;
   }

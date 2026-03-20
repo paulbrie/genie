@@ -2,15 +2,15 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Send, Square, Globe, Wrench, ChevronDown, ChevronRight, MessageSquare, FolderOpen, Terminal, Container, File, Folder, ArrowLeft, Save, RefreshCw, Loader2, Play, TerminalSquare, Plus, X, Users, Bot, Share2, Minus, Maximize2, Minimize2, Database, Table2, SearchCode, GitBranch, GitCommit, ArrowUp, ArrowDown, Check, Circle, FilePlus, FileEdit, FileX, FileQuestion, Copy, ExternalLink, LogOut, Trash2, Lightbulb } from "lucide-react";
+import { Send, Square, Globe, Wrench, ChevronDown, ChevronRight, MessageSquare, FolderOpen, Terminal, Container, File, Folder, ArrowLeft, Save, RefreshCw, Loader2, Play, TerminalSquare, Plus, X, Users, Bot, Share2, Minus, Maximize2, Minimize2, Database, Table2, SearchCode, GitBranch, GitCommit, ArrowUp, ArrowDown, Check, Circle, FilePlus, FileEdit, FileX, FileQuestion, Copy, ExternalLink, LogOut, Trash2, Lightbulb, ClipboardList, History } from "lucide-react";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { $auth, $chat, $projects, $commandRunOutputs, $conversationChat, $terminal, $vpsDeploy, CHAT_MODELS, setChatModel, runProjectCommand, stopProjectCommand, loadConversations, loadChatUsers, selectConversation, sendConversationMessage, createGenieDm, createRoom, shareTerminal, acceptTerminalShare, declineTerminalShare, leaveSharedTerminal, fetchVpsStats, loadChatSessions, loadChatSession, newChat, renameChatSession, deleteChatSession, createTrackerIssue, type ChatModelId, type ChatMessage, type ToolUse, type StreamingStep, type AuthState, type ConversationSummary, type ConversationMessage as ConvMessage, type ChatUser, type TerminalShareInvite, type VpsDeployState, type ProjectDef, type ChatSessionSummary } from "@/store";
+import { $auth, $chat, $projects, $commandRunOutputs, $conversationChat, $terminal, $vpsDeploy, CHAT_MODELS, setChatModel, runProjectCommand, stopProjectCommand, loadConversations, loadChatUsers, selectConversation, sendConversationMessage, createGenieDm, createRoom, shareTerminal, acceptTerminalShare, declineTerminalShare, leaveSharedTerminal, fetchVpsStats, loadChatSessions, loadChatSession, newChat, renameChatSession, deleteChatSession, createTrackerIssue, setTrackerProject, type ChatModelId, type ChatMessage, type ToolUse, type StreamingStep, type AuthState, type ConversationSummary, type ConversationMessage as ConvMessage, type ChatUser, type TerminalShareInvite, type VpsDeployState, type ProjectDef, type ChatSessionSummary } from "@/store";
 import dynamic from "next/dynamic";
 import type { BeforeMount } from "@monaco-editor/react";
-import { connectWs, setManagerRunning, wsSend, wsRequest, triggerGoogleLogin, logout } from "@/lib/ws";
+import { connectWs, setManagerRunning, wsSend, wsRequest, triggerGoogleLogin, logout, getWsUrl, isWsConnected } from "@/lib/ws";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { useDraggable, useResizable } from "@/components/use-draggable";
 
@@ -28,6 +28,59 @@ function ClaudeLogo({ size = 16 }: { size?: number }) {
     <svg width={size} height={size} viewBox="0 -.01 39.5 39.53" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="m7.75 26.27 7.77-4.36.13-.38-.13-.21h-.38l-1.3-.08-4.44-.12-3.85-.16-3.73-.2-.94-.2-.88-1.16.09-.58.79-.53 1.13.1 2.5.17 3.75.26 2.72.16 4.03.42h.64l.09-.26-.22-.16-.17-.16-3.88-2.63-4.2-2.78-2.2-1.6-1.19-.81-.6-.76-.26-1.66 1.08-1.19 1.45.1.37.1 1.47 1.13 3.14 2.43 4.1 3.02.6.5.24-.17.03-.12-.27-.45-2.23-4.03-2.38-4.1-1.06-1.7-.28-1.02c-.1-.42-.17-.77-.17-1.2l1.23-1.67.68-.22 1.64.22.69.6 1.02 2.33 1.65 3.67 2.56 4.99.75 1.48.4 1.37.15.42h.26v-.24l.21-2.81.39-3.45.38-4.44.13-1.25.62-1.5 1.23-.81.96.46.79 1.13-.11.73-.47 3.05-.92 4.78-.6 3.2h.35l.4-.4 1.62-2.15 2.72-3.4 1.2-1.35 1.4-1.49.9-.71h1.7l1.25 1.86-.56 1.92-1.75 2.22-1.45 1.88-2.08 2.8-1.3 2.24.12.18.31-.03 4.7-1 2.54-.46 3.03-.52 1.37.64.15.65-.54 1.33-3.24.8-3.8.76-5.66 1.34-.07.05.08.1 2.55.24 1.09.06h2.67l4.97.37 1.3.86.78 1.05-.13.8-2 1.02-2.7-.64-6.3-1.5-2.16-.54h-.3v.18l1.8 1.76 3.3 2.98 4.13 3.84.21.95-.53.75-.56-.08-3.63-2.73-1.4-1.23-3.17-2.67h-.21v.28l.73 1.07 3.86 5.8.2 1.78-.28.58-1 .35-1.1-.2-2.26-3.17-2.33-3.57-1.88-3.2-.23.13-1.11 11.95-.52.61-1.2.46-1-.76-.53-1.23.53-2.43.64-3.17.52-2.52.47-3.13.28-1.04-.02-.07-.23.03-2.36 3.24-3.59 4.85-2.84 3.04-.68.27-1.18-.61.11-1.09.66-.97 3.93-5 2.37-3.1 1.53-1.79-.01-.26h-.09l-10.44 6.78-1.86.24-.8-.75.1-1.23.38-.4 3.14-2.16z" fill="currentColor"/>
     </svg>
+  );
+}
+
+function ClaudeTabButton({ icon, openCommandTerminal }: { icon: React.ReactNode; openCommandTerminal: (title: string, cmd: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  return (
+    <div className="relative flex items-center" ref={ref}>
+      <button
+        onClick={() => openCommandTerminal("Claude", "claude --dangerously-skip-permissions")}
+        className="flex items-center gap-1.5 px-3 py-2 transition-colors text-overlay1 hover:text-text"
+        style={{ fontSize: 13 }}
+      >
+        {icon}
+        Claude
+      </button>
+      <button
+        onClick={() => setOpen(!open)}
+        className="text-overlay1 hover:text-text bg-transparent border-none cursor-pointer p-0 pr-1 -ml-2"
+      >
+        <ChevronDown size={10} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-0.5 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[130px] z-50">
+          <button
+            onClick={() => { openCommandTerminal("Claude", "claude --dangerously-skip-permissions"); setOpen(false); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 transition-colors text-left"
+            style={{ fontSize: 12 }}
+          >
+            <Play size={11} className="text-green" />
+            New
+          </button>
+          <button
+            onClick={() => { openCommandTerminal("Claude (resume)", "claude --dangerously-skip-permissions --resume"); setOpen(false); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 transition-colors text-left"
+            style={{ fontSize: 12 }}
+          >
+            <History size={11} className="text-blue" />
+            Resume
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -91,6 +144,7 @@ const handleEditorWillMount: BeforeMount = (monaco) => {
 import { UsageLine } from "@/components/ui/usage-line";
 import { LoginScreen } from "@/components/login-screen";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
+import { TrackerPanel } from "@/components/tracker-panel";
 import { createTerminal, disposeTerminal, writeToTerminal, refitTerminal, focusTerminal } from "@/lib/terminal-bridge";
 
 // --- postMessage protocol types ---
@@ -128,7 +182,7 @@ interface ExtensionProject {
 
 type ParentMessage = GenieInitMessage | GenieContextUpdate | GenieSnapshotResult;
 
-type ExtTab = "chat" | "team" | "commands" | "files" | "terminal" | "docker" | "database" | "git";
+type ExtTab = "chat" | "team" | "commands" | "files" | "terminal" | "docker" | "database" | "git" | "tracker";
 
 // --- File tree types ---
 
@@ -2881,7 +2935,7 @@ function DropletPicker({
             const stats = instanceState?.stats ?? null;
             const statsError = instanceState?.statsError ?? null;
             return (
-              <div key={p.id} className="bg-mantle rounded-lg px-3 py-2">
+              <div key={p.id} className="bg-mantle rounded-lg px-3 py-2 cursor-pointer hover:bg-surface0/50 transition-colors" onClick={() => onSelectProject(p.id)}>
                 <DropletInstanceBar
                   name={p.name}
                   status={statsError ? "unreachable" : stats ? "active" : "checking"}
@@ -3068,6 +3122,7 @@ export default function ExtensionPage() {
     snapshot: string;
   }>({ project: null, tabUrl: "", snapshot: "" });
   const [projectState, setProjectState] = useState<ExtensionProject | null>(null);
+  const [tabUrlState, setTabUrlState] = useState("");
   const [manualProjectId, setManualProjectId] = useState<string | null>(null);
 
   // Pending snapshot request resolver
@@ -3094,12 +3149,14 @@ export default function ExtensionPage() {
             snapshot: data.snapshot,
           };
           setProjectState(data.project);
+          setTabUrlState(data.tabUrl || "");
           break;
 
         case "genie:context-update":
           extensionCtx.current.project = data.project;
           extensionCtx.current.tabUrl = data.tabUrl;
           setProjectState(data.project);
+          setTabUrlState(data.tabUrl || "");
           break;
 
         case "genie:snapshot-result":
@@ -3232,9 +3289,10 @@ export default function ExtensionPage() {
   // Resolve project: bridge > URL-match > fallback
   // (must run before early returns so hooks are always called in the same order)
   const bridgeProject = projectState ?? extensionCtx.current.project;
-  const tabUrl = extensionCtx.current.tabUrl;
-  let hostname = "";
-  try { hostname = new URL(tabUrl).hostname; } catch { /* ignore */ }
+  const tabUrl = tabUrlState || extensionCtx.current.tabUrl;
+  const hostname = useMemo(() => {
+    try { return new URL(tabUrl).hostname; } catch { return ""; }
+  }, [tabUrl]);
 
   // Match current page hostname against project VPS instance IPs
   const urlMatchedProject = useMemo(() => {
@@ -3316,6 +3374,7 @@ export default function ExtensionPage() {
     { id: "files", icon: <FolderOpen size={14} />, label: "Files", requiresVps: true },
     { id: "terminal", icon: <Terminal size={14} />, label: "Terminal", requiresVps: true },
     { id: "claude", icon: <ClaudeLogo size={14} />, label: "Claude", requiresVps: true, action: true },
+    { id: "tracker", icon: <ClipboardList size={14} />, label: "Tracker" },
     { id: "git", icon: <GitBranch size={14} />, label: "Git", requiresVps: true },
     { id: "docker", icon: <Container size={14} />, label: "Docker", requiresVps: true },
     { id: "database", icon: <Database size={14} />, label: "DB", requiresVps: true },
@@ -3370,18 +3429,15 @@ export default function ExtensionPage() {
       <div className="flex border-b border-surface0 bg-mantle shrink-0">
         {TABS.map((tab) => {
           if (tab.requiresVps && !hasVps) return null;
+          if (tab.action && tab.id === "claude") {
+            return <ClaudeTabButton key={tab.id} icon={tab.icon} openCommandTerminal={openCommandTerminal} />;
+          }
           return (
             <button
               key={tab.id}
-              onClick={() => {
-                if (tab.action && tab.id === "claude") {
-                  openCommandTerminal("Claude", "claude");
-                } else {
-                  setActiveTab(tab.id as ExtTab);
-                }
-              }}
+              onClick={() => setActiveTab(tab.id as ExtTab)}
               className={`flex items-center gap-1.5 px-3 py-2 transition-colors ${
-                !tab.action && activeTab === tab.id
+                activeTab === tab.id
                   ? "text-mauve border-b-2 border-mauve"
                   : "text-overlay1 hover:text-text"
               }`}
@@ -3770,6 +3826,12 @@ export default function ExtensionPage() {
         </div>
       )}
 
+      {activeTab === "tracker" && project && (
+        <div className="flex-1 overflow-hidden">
+          <ExtTrackerTab projectId={project.id} />
+        </div>
+      )}
+
       {/* Minimized windows bar */}
       {termTabs.some((t) => t.windowStatus === "minimized") && (
         <div className="shrink-0 bg-mantle border-t border-surface0 px-3 py-1.5 flex items-center gap-2">
@@ -3800,6 +3862,78 @@ export default function ExtensionPage() {
           savedPos={termPosRef.current[tab.id]}
           zIndex={tab.windowZIndex ?? 1000}
         />
+      ))}
+
+      {/* Dev toolbar */}
+      <DevToolbar />
+    </div>
+  );
+}
+
+function ExtTrackerTab({ projectId }: { projectId: string }) {
+  useEffect(() => {
+    setTrackerProject(projectId);
+  }, [projectId]);
+
+  return <TrackerPanel />;
+}
+
+const SW_WS_OPTIONS = ["ws://127.0.0.1:9876", "wss://api.genie.teleporthq.ai"];
+
+function DevToolbar() {
+  const [wsUrl, setWsUrl] = useState("");
+  const [wsConnected, setWsConnected] = useState(false);
+  const [swWsUrl, setSwWsUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const update = () => {
+      setWsUrl(getWsUrl());
+      setWsConnected(isWsConnected());
+    };
+    update();
+    const interval = setInterval(update, 2000);
+
+    function handleMessage(e: MessageEvent) {
+      if (e.data?.type === "genie:sw-ws-url") {
+        setSwWsUrl(e.data.url);
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    window.parent.postMessage({ type: "genie:request-sw-ws-url" }, "*");
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("message", handleMessage);
+    };
+  }, []);
+
+  const isLocal = (url: string) => url.includes("localhost") || url.includes("127.0.0.1");
+
+  const switchSwWsUrl = (url: string) => {
+    window.parent.postMessage({ type: "genie:set-sw-ws-url", url }, "*");
+    setSwWsUrl(url);
+  };
+
+  return (
+    <div className="flex items-center gap-3 px-3 py-1 border-t border-surface0 bg-crust shrink-0" style={{ fontSize: 11 }}>
+      <span className="text-overlay0">WS:</span>
+      <span className={isLocal(wsUrl) ? "text-green" : "text-peach"}>{wsUrl || "—"}</span>
+      <span className={wsConnected ? "text-green" : "text-red"}>{wsConnected ? "ok" : "off"}</span>
+      <span className="text-surface1">|</span>
+      <span className="text-overlay0">SW:</span>
+      {SW_WS_OPTIONS.map((url) => (
+        <button
+          key={url}
+          onClick={() => switchSwWsUrl(url)}
+          className={`px-1.5 py-0.5 rounded transition-colors ${
+            swWsUrl === url
+              ? isLocal(url) ? "bg-green/20 text-green" : "bg-peach/20 text-peach"
+              : "text-overlay0 hover:text-text"
+          }`}
+          style={{ fontSize: 10 }}
+        >
+          {isLocal(url) ? "local" : "prod"}
+        </button>
       ))}
     </div>
   );

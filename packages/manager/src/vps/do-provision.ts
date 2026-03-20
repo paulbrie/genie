@@ -1,3 +1,4 @@
+import { VPS_SSH_USERNAME } from "../types.js";
 import { createDoClient, type DoDroplet } from "./do-api-client.js";
 import { connectSsh } from "./ssh-client.js";
 import { vpsDeploy } from "./deploy-service.js";
@@ -23,6 +24,26 @@ export function sshKeyFingerprint(pubKeyContent: string): string {
   const keyData = Buffer.from(parts[1], "base64");
   const hash = crypto.createHash("md5").update(keyData).digest("hex");
   return hash.match(/.{2}/g)!.join(":");
+}
+
+/** Build UFW rules for firewall lockdown. If no managerIp, allows SSH from anywhere. */
+function buildUfwRules(managerIp?: string, managerIpDev?: string): string[] {
+  const rules = [
+    // Reset all existing rules (wipes anything the base image added)
+    "ufw --force reset",
+    "ufw default deny incoming",
+    "ufw default allow outgoing",
+  ];
+  if (managerIp) {
+    rules.push(`ufw allow from ${managerIp} to any port 22 proto tcp`);
+    if (managerIpDev) {
+      rules.push(`ufw allow from ${managerIpDev} to any port 22 proto tcp`);
+    }
+  } else {
+    rules.push("ufw allow 22/tcp");
+  }
+  rules.push("ufw allow 3000/tcp", "ufw --force enable", "ufw reload");
+  return rules;
 }
 
 function getPublicIp(droplet: DoDroplet): string | null {
@@ -200,28 +221,9 @@ export async function doProvisionAndDeploy(
     const useBaseImage = !!baseImageId;
     const image: string | number = useBaseImage ? baseImageId : "docker-20-04";
     onProgress(`Creating droplet "${dropletName}" (${size} in ${region}, image: ${useBaseImage ? `snapshot ${baseImageId}` : "docker-20-04"})...`);
-    // cloud-init: configure UFW — default deny, allow SSH from manager IP only + port 3000 public
-    const managerIpForInit = process.env.MANAGER_PUBLIC_IP;
-    const userData = useBaseImage ? undefined : managerIpForInit
-      ? `#!/bin/bash
-ufw default deny incoming
-ufw default allow outgoing
-ufw delete limit 22/tcp 2>/dev/null || true
-ufw delete allow 22/tcp 2>/dev/null || true
-ufw allow from ${managerIpForInit} to any port 22 proto tcp
-ufw allow 3000/tcp
-ufw --force enable
-ufw reload
-`
-      : `#!/bin/bash
-ufw default deny incoming
-ufw default allow outgoing
-ufw delete limit 22/tcp 2>/dev/null || true
-ufw allow 22/tcp
-ufw allow 3000/tcp
-ufw --force enable
-ufw reload
-`;
+    // cloud-init: configure UFW — default deny, allow SSH from manager IP(s) only + port 3000 public
+    const userData = useBaseImage ? undefined
+      : `#!/bin/bash\n${buildUfwRules(process.env.MANAGER_PUBLIC_IP, process.env.MANAGER_PUBLIC_IP_DEV).join("\n")}\n`;
 
     const droplet = await client.createDroplet({
       name: dropletName,
@@ -354,24 +356,17 @@ ufw reload
 
     checkAbort();
 
-    // 5b. Lock down firewall: SSH from manager IP only + port 3000 public
+    // 5b. Lock down firewall: SSH from manager IP(s) only + port 3000 public
     const managerIp = process.env.MANAGER_PUBLIC_IP;
     if (managerIp) {
-      onProgress(`Configuring firewall: SSH from ${managerIp}, port 3000 public...`);
+      const managerIpDev = process.env.MANAGER_PUBLIC_IP_DEV;
+      const ipList = [managerIp, ...(managerIpDev ? [managerIpDev] : [])];
+      onProgress(`Configuring firewall: SSH from ${ipList.join(", ")}, port 3000 public...`);
       try {
         const fwSession = await connectSsh(connConfig);
-        await fwSession.exec([
-          "ufw default deny incoming",
-          "ufw default allow outgoing",
-          "ufw delete allow 22/tcp 2>/dev/null || true",
-          "ufw delete limit 22/tcp 2>/dev/null || true",
-          `ufw allow from ${managerIp} to any port 22 proto tcp`,
-          "ufw allow 3000/tcp",
-          "ufw --force enable",
-          "ufw reload",
-        ].join(" && "));
+        await fwSession.exec(buildUfwRules(managerIp, managerIpDev).join(" && "));
         fwSession.close();
-        onProgress("Firewall configured: SSH restricted, port 3000 open");
+        onProgress(`Firewall configured: SSH from ${ipList.join(", ")}, port 3000 open`);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         onProgress(`Warning: Failed to configure firewall: ${message}`);
@@ -380,11 +375,45 @@ ufw reload
 
     checkAbort();
 
-    // 5c. Install GitLab deploy key if provided
+    // 5c. Create non-root genie user for Claude Code (--dangerously-skip-permissions requires non-root)
+    onProgress("Creating genie user...");
+    try {
+      const guSession = await connectSsh(connConfig);
+      await guSession.exec([
+        "id genie &>/dev/null || useradd -m -s /bin/bash genie",
+        "echo 'genie ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/genie",
+        "chmod 440 /etc/sudoers.d/genie",
+        "mkdir -p /home/genie/.ssh",
+        "cp /root/.ssh/authorized_keys /home/genie/.ssh/authorized_keys",
+        "chown -R genie:genie /home/genie/.ssh",
+        "chmod 700 /home/genie/.ssh",
+        "chmod 600 /home/genie/.ssh/authorized_keys",
+        "mkdir -p /opt/project",
+        "chown -R genie:genie /opt/project",
+        "usermod -aG docker genie || true",
+        "su - genie -c 'claude install 2>/dev/null || true'",
+        "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> /home/genie/.bashrc",
+      ].join(" && "));
+      guSession.close();
+      onProgress("genie user created");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      onProgress(`Warning: Failed to create genie user: ${message}`);
+    }
+
+    // From here on, use genie user for all SSH commands
+    const genieConnConfig = {
+      ...connConfig,
+      username: VPS_SSH_USERNAME,
+    };
+
+    checkAbort();
+
+    // 5d. Install GitLab deploy key if provided
     if (gitlabDeployKey) {
       onProgress("Installing GitLab deploy key on droplet...");
       try {
-        const s = await connectSsh(connConfig);
+        const s = await connectSsh(genieConnConfig);
         await s.exec("mkdir -p ~/.ssh && chmod 700 ~/.ssh");
         // Write the deploy key
         const escapedKey = gitlabDeployKey.replace(/'/g, "'\\''");
@@ -411,9 +440,9 @@ chmod 600 ~/.ssh/config`);
     // 6. Ensure vps-agent is installed (idempotent, fast if already present)
     onProgress("Ensuring VPS agent is installed...");
     try {
-      const agentSession = await connectSsh(connConfig);
+      const agentSession = await connectSsh(genieConnConfig);
       await agentSession.exec(
-        "command -v genie-agent >/dev/null 2>&1 || npm install -g @genie/vps-agent 2>/dev/null || true",
+        "command -v genie-agent >/dev/null 2>&1 || sudo npm install -g @genie/vps-agent 2>/dev/null || true",
       );
       agentSession.close();
     } catch {
@@ -422,11 +451,11 @@ chmod 600 ~/.ssh/config`);
 
     checkAbort();
 
-    // 7. Deploy via existing vpsDeploy
+    // 7. Deploy via existing vpsDeploy (as genie user)
     onProgress("Starting deployment...");
     const envVars: Record<string, string> = { ...optsEnvVars };
     if (gitToken) envVars.GIT_TOKEN = gitToken;
-    await vpsDeploy(projectName, connConfig, onProgress, envVars, setupFiles);
+    await vpsDeploy(projectName, genieConnConfig, onProgress, envVars, setupFiles);
 
     return { dropletId, ipAddress, region, size };
   } catch (err: unknown) {

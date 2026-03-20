@@ -41,6 +41,7 @@ import { DocsPanel } from "@/components/docs-panel";
 import { LogsPanel } from "@/components/logs-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { ChatView } from "@/components/chat-view";
+import { ChatNotificationToasts } from "@/components/chat-notification-toasts";
 import { TrackerPanel } from "@/components/tracker-panel";
 import { AdminPanel } from "@/components/admin-panel";
 import { ArchitecturePanel } from "@/components/architecture-panel";
@@ -255,5 +256,10 @@ function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; setting
 export default function Home() {
   const { activeTab, settingsTab } = useRouteSync();
 
-  return <MainPanel activeTab={activeTab} settingsTab={settingsTab} />;
+  return (
+    <>
+      <MainPanel activeTab={activeTab} settingsTab={settingsTab} />
+      <ChatNotificationToasts />
+    </>
+  );
 }

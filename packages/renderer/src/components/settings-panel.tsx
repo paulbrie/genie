@@ -36,7 +36,7 @@ const DEPLOY_STEPS = [
   },
   {
     title: "Wait for SSH & Docker Readiness",
-    description: "Attempts SSH connections to the droplet (up to 180s) and verifies Docker is installed by running docker --version. Each attempt has a 15-second timeout.",
+    description: "Attempts SSH connections to the droplet as root (up to 180s) and verifies Docker is installed by running docker --version. Each attempt has a 15-second timeout.",
   },
   {
     title: "Wait for Cloud-Init",
@@ -48,21 +48,29 @@ const DEPLOY_STEPS = [
     conditional: true,
   },
   {
+    title: "Create genie User",
+    description: "Creates a non-root \"genie\" user with passwordless sudo, SSH key access (copied from root), docker group membership, and ownership of /opt/project. Claude Code's --dangerously-skip-permissions flag requires a non-root user. All subsequent steps run as genie.",
+  },
+  {
     title: "Install GitLab Deploy Key",
-    description: "Writes the GitLab deploy key to ~/.ssh/id_gitlab on the droplet and configures SSH to use it when connecting to gitlab.com.",
+    description: "Writes the GitLab deploy key to ~/.ssh/id_gitlab on the droplet (as genie) and configures SSH to use it when connecting to gitlab.com.",
     conditional: true,
   },
   {
     title: "Install VPS Agent",
-    description: "Checks if the genie-agent command exists on the droplet. If not, installs the @genie/vps-agent npm package globally.",
+    description: "Checks if the genie-agent command exists on the droplet. If not, installs the @genie/vps-agent npm package globally (via sudo).",
   },
   {
     title: "Create Project Directory",
-    description: "Creates the /opt/project directory on the droplet where all project files will be deployed.",
+    description: "Creates the /opt/project directory on the droplet (owned by genie) where all project files will be deployed.",
   },
   {
     title: "Wait for SSH Stabilization",
     description: "Cloud-init may restart sshd during provisioning. Retries SSH connections (up to 60s) to ensure the connection is stable before writing files.",
+  },
+  {
+    title: "Update Claude Code",
+    description: "Installs or updates Claude Code CLI globally via sudo npm install -g @anthropic-ai/claude-code.",
   },
   {
     title: "Write Setup Files",
@@ -70,11 +78,11 @@ const DEPLOY_STEPS = [
   },
   {
     title: "Write MCP Configuration",
-    description: "Writes .mcp.json to /opt/project with the genie-browser MCP server entry (http://127.0.0.1:9877/mcp) so the VPS agent can use browser tools via reverse tunnel.",
+    description: "Writes .mcp.json to /opt/project with genie-browser (http://127.0.0.1:9877/mcp) and genie-tracker (http://127.0.0.1:9878/mcp) MCP server entries so the VPS agent can use browser and tracker tools via reverse SSH tunnels.",
   },
   {
     title: "Run setup.sh",
-    description: "Executes the project's setup.sh as the single entry point for deployment. Typically runs docker compose build and docker compose up. Genie monitors container lifecycle events and considers deployment complete when all containers have started. Timeout: 30 minutes max, 5 minutes idle.",
+    description: "Executes the project's setup.sh via sudo as the single entry point for deployment. Typically runs docker compose build and docker compose up. Genie monitors container lifecycle events and considers deployment complete when all containers have started. Timeout: 30 minutes max, 5 minutes idle.",
   },
 ];
 

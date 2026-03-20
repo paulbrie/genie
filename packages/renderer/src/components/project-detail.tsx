@@ -91,6 +91,68 @@ function ClaudeLogo({ size = 16 }: { size?: number }) {
     </svg>
   );
 }
+
+function ClaudeTerminalButton({ projectId, instance }: { projectId: string; instance: { id: string; label?: string; connection: { username: string; host: string; port: number; privateKeyPath: string } } }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const launch = (resume: boolean) => {
+    setOpen(false);
+    const { username, host, port, privateKeyPath } = instance.connection;
+    startMcpTunnel(projectId, instance.id);
+    const cmd = resume ? "claude --dangerously-skip-permissions --resume" : "claude --dangerously-skip-permissions";
+    const label = resume ? `Claude (resume) @ ${instance.label || host}` : `Claude @ ${instance.label || host}`;
+    addSshTerminalTab({ host, port, username, privateKeyPath }, label, cmd);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <div className="flex items-center">
+        <button
+          onClick={() => launch(false)}
+          className="text-md text-peach hover:underline flex items-center gap-1"
+        >
+          <ClaudeLogo size={12} />
+          Claude Terminal
+        </button>
+        <button
+          onClick={() => setOpen(!open)}
+          className="text-peach hover:text-peach/80 bg-transparent border-none cursor-pointer p-0 ml-0.5"
+        >
+          <ChevronDown size={11} />
+        </button>
+      </div>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[140px] z-50">
+          <button
+            onClick={() => launch(false)}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-md text-text hover:bg-surface0 transition-colors text-left"
+          >
+            <Play size={11} className="text-green" />
+            New
+          </button>
+          <button
+            onClick={() => launch(true)}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-md text-text hover:bg-surface0 transition-colors text-left"
+          >
+            <History size={11} className="text-blue" />
+            Resume
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
@@ -1198,14 +1260,14 @@ interface RuleForm {
 const EMPTY_RULE_FORM: RuleForm = { port: "", ip: "", action: "allow", direction: "in" };
 
 function buildUfwCmd(form: RuleForm): string {
-  const parts = ["ufw", form.action, form.direction === "out" ? "out" : "in"];
+  const parts = ["sudo ufw", form.action, form.direction === "out" ? "out" : "in"];
   if (form.ip.trim()) parts.push(`from ${form.ip.trim()}`);
   parts.push("to any", `port ${form.port.trim()}`, "proto tcp");
   return parts.join(" ");
 }
 
 function deleteUfwCmd(rule: UfwRule): string {
-  const parts = ["ufw delete", rule.action.toLowerCase(), rule.direction.toLowerCase() === "out" ? "out" : "in"];
+  const parts = ["sudo ufw delete", rule.action.toLowerCase(), rule.direction.toLowerCase() === "out" ? "out" : "in"];
   const from = rule.from.trim();
   if (from && from !== "Anywhere" && from !== "Anywhere (v6)") parts.push(`from ${from}`);
   parts.push(`to any port ${rule.to.replace(/\/.*/, "")}`, "proto tcp");
@@ -1231,7 +1293,7 @@ function VpsFirewall({ projectId, instanceId }: { projectId: string; instanceId:
     setLoading(true);
     setError(null);
     try {
-      const res = await vpsExec(projectId, instanceId, "ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
+      const res = await vpsExec(projectId, instanceId, "sudo ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
       if (res.error || res.output.includes("UFW_NOT_INSTALLED")) {
         setActive(false);
         setRules([]);
@@ -1268,11 +1330,11 @@ function VpsFirewall({ projectId, instanceId }: { projectId: string; instanceId:
   }, [projectId, instanceId, fetchStatus]);
 
   const enableFirewall = useCallback(() => {
-    execAndRefresh("ufw default deny incoming && ufw default allow outgoing && ufw --force enable");
+    execAndRefresh("sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw --force enable");
   }, [execAndRefresh]);
 
   const disableFirewall = useCallback(() => {
-    execAndRefresh("ufw --force disable");
+    execAndRefresh("sudo ufw --force disable");
   }, [execAndRefresh]);
 
   const addRule = useCallback(() => {
@@ -1548,17 +1610,7 @@ function VpsInstanceCard({
               <TerminalSquare size={10} />
               SSH Terminal
             </button>
-            <button
-              onClick={() => {
-                const { username, host, port, privateKeyPath } = instance.connection;
-                startMcpTunnel(project.id, instance.id);
-                addSshTerminalTab({ host, port, username, privateKeyPath }, `Claude @ ${instance.label || host}`, "claude");
-              }}
-              className="text-md text-peach hover:underline flex items-center gap-1"
-            >
-              <ClaudeLogo size={12} />
-              Claude Terminal
-            </button>
+            <ClaudeTerminalButton projectId={project.id} instance={instance} />
             <button
               onClick={() => { setViewingLogs(true); fetchVpsLogs(project.id, instance.id); }}
               className="text-md text-blue hover:underline flex items-center gap-1"
@@ -1572,6 +1624,16 @@ function VpsInstanceCard({
             >
               <History size={10} />
               Deploy History
+            </button>
+            <button
+              onClick={() => {
+                const { username, host, port, privateKeyPath } = instance.connection;
+                addSshTerminalTab({ host, port, username, privateKeyPath }, `rkhunter @ ${instance.label || host}`, "sudo rkhunter --check --sk");
+              }}
+              className="text-md text-yellow hover:underline flex items-center gap-1"
+            >
+              <Shield size={10} />
+              Run rkhunter
             </button>
           </div>
 

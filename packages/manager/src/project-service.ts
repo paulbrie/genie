@@ -1,22 +1,30 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { projects } from "./db/schema.js";
-import type { ProjectDef, ProjectCommand, ProcessStatus, VpsInstance, VpsInfo } from "./types.js";
+import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "./types.js";
 import { v4 as uuidv4 } from "uuid";
 
 // --- Helpers ---
 
+function normalizeConnection(conn: VpsInstance["connection"]): VpsInstance["connection"] {
+  return conn.username === "root" ? { ...conn, username: VPS_SSH_USERNAME } : conn;
+}
+
 function migrateVpsInstances(raw: unknown): VpsInstance[] {
   if (!raw) return [];
   // Already an array of VpsInstance[]
-  if (Array.isArray(raw)) return raw as VpsInstance[];
+  if (Array.isArray(raw)) {
+    return (raw as VpsInstance[]).map(inst =>
+      inst.connection ? { ...inst, connection: normalizeConnection(inst.connection) } : inst
+    );
+  }
   // Legacy single VpsInfo object — wrap in array
   const legacy = raw as VpsInfo & { id?: string; label?: string };
   if (legacy.connection) {
     return [{
       id: legacy.id || uuidv4(),
       label: legacy.label || "default",
-      connection: legacy.connection,
+      connection: normalizeConnection(legacy.connection),
       services: legacy.services || [],
       digitalocean: legacy.digitalocean,
     }];

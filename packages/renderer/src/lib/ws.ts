@@ -4,6 +4,11 @@ import { logSent, logReceived } from "@/lib/ws-log";
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let managerRunning = false;
+let currentWsUrl = "";
+
+export function getWsUrl(): string {
+  return currentWsUrl;
+}
 
 const AUTH_TOKEN_KEY = "genie-auth-token";
 
@@ -45,6 +50,7 @@ export function connectWs(): void {
   if (ws && ws.readyState <= 1) return;
 
   const url = process.env.NEXT_PUBLIC_WS_URL || (window.location.hostname !== "localhost" ? "wss://api.genie.teleporthq.ai" : "ws://localhost:9876");
+  currentWsUrl = url;
   ws = new WebSocket(url);
 
   ws.onopen = () => {

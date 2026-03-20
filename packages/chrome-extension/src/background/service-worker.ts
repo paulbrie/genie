@@ -8,11 +8,12 @@ import type {
 } from "../shared/types";
 import { matchProject } from "./project-matcher";
 
-const WS_URLS = ["wss://api.genie.teleporthq.ai", "ws://localhost:9876"];
+const WS_URLS = ["ws://127.0.0.1:9876", "wss://api.genie.teleporthq.ai"];
 let WS_URL = WS_URLS[0];
 const RECONNECT_DELAY = 3000;
 const KEEPALIVE_INTERVAL = 20000;
 const AUTH_TOKEN_KEY = "genie-auth-token";
+const WS_URL_KEY = "genie-ws-url";
 
 let ws: WebSocket | null = null;
 let authenticated = false;
@@ -53,6 +54,7 @@ function connect(): void {
       }
     });
     broadcastToPorts({ type: "ws:status", connected: true, authenticated });
+    broadcastToPorts({ type: "ws:url", url: WS_URL });
   };
 
   ws.onmessage = (event) => {
@@ -69,9 +71,13 @@ function connect(): void {
     authenticated = false;
     stopKeepalive();
     broadcastToPorts({ type: "ws:status", connected: false, authenticated: false });
-    // Try next URL on failure before scheduling reconnect
-    wsUrlIndex = (wsUrlIndex + 1) % WS_URLS.length;
-    scheduleReconnect();
+    // Only rotate URLs if no manual choice was persisted
+    chrome.storage.local.get(WS_URL_KEY, (data) => {
+      if (!data[WS_URL_KEY]) {
+        wsUrlIndex = (wsUrlIndex + 1) % WS_URLS.length;
+      }
+      scheduleReconnect();
+    });
   };
 
   ws.onerror = () => {
@@ -150,9 +156,11 @@ function handleWsMessage(msg: WsMessage): void {
     case "project:list": {
       projects = msg.payload.projects || [];
       broadcastToPorts({ type: "project:list", projects });
-      // Re-run detection with current tab
+      // Re-run detection — query active tab if we don't have a URL yet
       if (currentTabUrl) {
         detectProject(currentTabUrl);
+      } else {
+        detectActiveTab();
       }
       break;
     }
@@ -257,9 +265,20 @@ async function getDomSnapshot(): Promise<string> {
 function detectProject(tabUrl: string): void {
   currentTabUrl = tabUrl;
   const matched = matchProject(tabUrl, projects);
-  if (matched?.id !== currentDetectedProject?.id) {
+  // Always broadcast when we have a URL — the page needs the tabUrl even if project is null
+  if (matched?.id !== currentDetectedProject?.id || tabUrl) {
     currentDetectedProject = matched;
     broadcastToPorts({ type: "project:detected", project: matched, tabUrl });
+  }
+}
+
+/** Query the active tab and run detection — call on startup and when projects arrive */
+async function detectActiveTab(): Promise<void> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tab?.url) detectProject(tab.url);
+  } catch {
+    // Tabs API may not be available
   }
 }
 
@@ -313,6 +332,9 @@ chrome.runtime.onConnect.addListener((port) => {
       project: currentDetectedProject,
       tabUrl: currentTabUrl,
     } satisfies BackgroundMessage);
+  } else {
+    // No tab URL yet — query the active tab now
+    detectActiveTab();
   }
 
   port.onMessage.addListener(async (msg: PanelMessage) => {
@@ -369,6 +391,23 @@ chrome.runtime.onConnect.addListener((port) => {
       case "open:sidepanel":
         chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id! });
         break;
+
+      case "set:ws-url": {
+        const newUrl = msg.url;
+        // Find the index or add it
+        const idx = WS_URLS.indexOf(newUrl);
+        wsUrlIndex = idx >= 0 ? idx : 0;
+        WS_URL = newUrl;
+        // Persist the choice
+        chrome.storage.local.set({ [WS_URL_KEY]: newUrl });
+        // Disconnect and reconnect
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        if (ws) { ws.onclose = null; ws.close(); ws = null; }
+        authenticated = false;
+        stopKeepalive();
+        connect();
+        break;
+      }
     }
   });
 
@@ -378,4 +417,14 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 // --- Startup ---
-connect();
+// Load persisted WS URL preference, then connect
+chrome.storage.local.get(WS_URL_KEY, (data) => {
+  const saved = data[WS_URL_KEY];
+  if (saved) {
+    WS_URL = saved;
+    const idx = WS_URLS.indexOf(saved);
+    wsUrlIndex = idx >= 0 ? idx : 0;
+  }
+  connect();
+});
+detectActiveTab();
