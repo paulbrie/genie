@@ -13,6 +13,8 @@ import {
   deployToDo,
   checkVpsStatus,
   teardownVps,
+  hibernateVps,
+  wakeVps,
   disconnectVps,
   fetchVpsLogs,
   fetchVpsStats,
@@ -78,6 +80,8 @@ import {
   Shield,
   RefreshCw,
   Lock,
+  Moon,
+  Sun,
 } from "lucide-react";
 import { ChatView } from "@/components/chat-view";
 import { DbExplorer } from "@/components/db-explorer";
@@ -832,6 +836,72 @@ node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('/opt/project
       { name: "Test browser snapshot", command: `curl -s -X POST http://127.0.0.1:9877/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"browser_get_snapshot","arguments":{}}}'` },
     ],
   },
+  {
+    id: "navision",
+    label: "Navision (BC)",
+    icon: Package,
+    description: "Microsoft Dynamics 365 Business Central (Navision) sandbox",
+    port: 8080,
+    checkScript: `docker ps --format "{{.Names}}" 2>/dev/null | grep -qx "bc-sandbox" && echo "INSTALLED" || echo "NOT_INSTALLED"`,
+    installScript: `set -e
+echo "Pulling Business Central Docker image (this may take several minutes)..."
+docker pull mcr.microsoft.com/businesscentral:latest
+echo "Creating BC sandbox container..."
+docker run -d --name bc-sandbox \\
+  -e ACCEPT_EULA=Y \\
+  -e USESSL=N \\
+  -e USERNAME=admin \\
+  -e PASSWORD=P@ssw0rd123! \\
+  -p 8080:80 \\
+  -p 7049:7049 \\
+  -p 7048:7048 \\
+  --memory=8g \\
+  mcr.microsoft.com/businesscentral:latest
+echo "Waiting for BC to initialize (this takes 3-5 minutes)..."
+for i in $(seq 1 60); do
+  if docker logs bc-sandbox 2>&1 | grep -q "Ready for connections"; then
+    echo "Business Central is ready!"
+    echo ""
+    echo "Web Client: http://\$(hostname -I | awk '{print \$1}'):8080/BC/"
+    echo "Username: admin"
+    echo "Password: P@ssw0rd123!"
+    echo "OData: http://\$(hostname -I | awk '{print \$1}'):7048/BC/ODataV4"
+    echo "SOAP: http://\$(hostname -I | awk '{print \$1}'):7047/BC/WS"
+    echo "Dev endpoint: http://\$(hostname -I | awk '{print \$1}'):7049/BC"
+    exit 0
+  fi
+  sleep 5
+done
+echo "BC container started but still initializing. Check logs with: docker logs -f bc-sandbox"`,
+    uninstallScript: `set -e
+echo "Stopping Business Central..."
+docker stop bc-sandbox 2>/dev/null || true
+docker rm bc-sandbox 2>/dev/null || true
+echo "Business Central removed."
+echo "Note: Docker image still cached. Run 'docker rmi mcr.microsoft.com/businesscentral:latest' to free disk space."`,
+    setupShSnippet: `# Business Central (Navision) sandbox
+docker pull mcr.microsoft.com/businesscentral:latest
+docker run -d --name bc-sandbox \\
+  -e ACCEPT_EULA=Y -e USESSL=N \\
+  -e USERNAME=admin -e PASSWORD=\${BC_PASSWORD:-P@ssw0rd123!} \\
+  -p 8080:80 -p 7049:7049 -p 7048:7048 \\
+  --memory=8g \\
+  mcr.microsoft.com/businesscentral:latest`,
+    commands: [
+      { name: "Web Client URL", command: `echo "http://$(hostname -I | awk '{print $1}'):8080/BC/"` },
+      { name: "Container status", command: "docker ps --filter name=bc-sandbox --format 'table {{.Status}}\t{{.Ports}}'" },
+      { name: "View logs", command: "docker logs --tail 50 bc-sandbox" },
+      { name: "Follow logs", command: "docker logs -f bc-sandbox" },
+      { name: "Restart BC", command: "docker restart bc-sandbox" },
+      { name: "Stop BC", command: "docker stop bc-sandbox" },
+      { name: "Start BC", command: "docker start bc-sandbox" },
+      { name: "Check readiness", command: `docker logs bc-sandbox 2>&1 | grep -c "Ready for connections" > /dev/null && echo "BC is ready" || echo "BC still initializing..."` },
+      { name: "OData endpoint", command: `echo "http://$(hostname -I | awk '{print $1}'):7048/BC/ODataV4"` },
+      { name: "Dev endpoint", command: `echo "http://$(hostname -I | awk '{print $1}'):7049/BC"` },
+      { name: "PowerShell into BC", command: "docker exec -it bc-sandbox powershell" },
+      { name: "List extensions", command: `docker exec bc-sandbox powershell -Command "Get-NAVAppInfo -ServerInstance BC" 2>/dev/null || echo "BC still starting..."` },
+    ],
+  },
 ];
 
 function JsonSyntax({ text }: { text: string }) {
@@ -1498,29 +1568,34 @@ function VpsInstanceCard({
   instanceState: VpsInstanceState | null;
 }) {
   const [confirmTeardown, setConfirmTeardown] = useState(false);
+  const [confirmHibernate, setConfirmHibernate] = useState(false);
   const [viewingLogs, setViewingLogs] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [activeTab, setActiveTab] = useState<InstanceTab>("main");
 
+  const isHibernated = !!instance.hibernate;
+  const hibernating = instanceState?.hibernating ?? false;
+  const wakingUp = instanceState?.wakingUp ?? false;
+
   const stats = instanceState?.stats ?? null;
   const statsError = instanceState?.statsError ?? null;
-  const checking = !stats && !statsError;
-  const unreachable = !!statsError;
+  const checking = !isHibernated && !stats && !statsError;
+  const unreachable = !isHibernated && !!statsError;
   const tearingDown = instanceState?.tearingDown ?? false;
   const teardownProgress = instanceState?.progress ?? [];
   const teardownError = instanceState?.error ?? null;
 
   const vpsIp = instance.digitalocean?.ipAddress ?? instance.connection.host;
-  const isFailed = instance.deployFailed;
-  const isReady = !isFailed && !unreachable && !checking;
+  const isFailed = !isHibernated && instance.deployFailed;
+  const isReady = !isHibernated && !isFailed && !unreachable && !checking;
 
-  // Fetch stats on mount and every 5s for real-time data (skip for failed deploys)
+  // Fetch stats on mount and every 5s for real-time data (skip for failed/hibernated)
   useEffect(() => {
-    if (instance.deployFailed) return;
+    if (instance.deployFailed || isHibernated) return;
     fetchVpsStats(project.id, instance.id);
     const interval = setInterval(() => fetchVpsStats(project.id, instance.id), 5_000);
     return () => clearInterval(interval);
-  }, [project.id, instance.id, instance.deployFailed]);
+  }, [project.id, instance.id, instance.deployFailed, isHibernated]);
 
   return (
     <div className={cn("bg-mantle rounded-lg p-3 flex flex-col", isFailed && "border border-peach/30")}>
@@ -1528,7 +1603,7 @@ function VpsInstanceCard({
       <div className="mb-2">
         <DropletInstanceBar
           name={instance.label}
-          status={isFailed ? "unreachable" : unreachable ? "unreachable" : checking ? "checking" : "active"}
+          status={isHibernated ? "hibernated" : isFailed ? "unreachable" : unreachable ? "unreachable" : checking ? "checking" : "active"}
           ip={instance.connection.host}
           region={instance.digitalocean?.region}
           sizeSlug={instance.digitalocean?.size}
@@ -1554,8 +1629,64 @@ function VpsInstanceCard({
         </div>
       )}
 
+      {/* Hibernated banner */}
+      {isHibernated && !hibernating && !wakingUp && (
+        <div className="flex items-center gap-2 mb-3 py-2 px-3 bg-blue/10 rounded-lg text-md text-blue">
+          <Moon size={14} className="shrink-0" />
+          <div className="flex-1">
+            <span className="font-medium">Hibernated</span>
+            <p className="text-overlay1 mt-0.5">
+              Snapshot saved on {new Date(instance.hibernate!.hibernatedAt).toLocaleDateString()}
+              {" "}({instance.hibernate!.region}, {instance.hibernate!.size})
+            </p>
+          </div>
+          <button
+            onClick={() => wakeVps(project.id, instance.id)}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-md text-green bg-green/10 hover:bg-green/20 transition-colors font-medium"
+          >
+            <Sun size={12} /> Wake Up
+          </button>
+        </div>
+      )}
+
+      {/* Hibernating progress */}
+      {hibernating && (
+        <div className="mb-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Loader2 size={14} className="text-blue animate-spin" />
+            <span className="text-md font-medium text-blue">Hibernating...</span>
+          </div>
+          {teardownProgress.length > 0 && (
+            <div className="max-h-[150px] overflow-y-auto scrollbar-thin bg-crust rounded-lg p-2">
+              {teardownProgress.map((line, i) => (
+                <div key={i} className="text-md text-overlay1 font-mono whitespace-pre-wrap">{line}</div>
+              ))}
+            </div>
+          )}
+          {teardownError && <div className="text-md text-red mt-1">{teardownError}</div>}
+        </div>
+      )}
+
+      {/* Waking up progress */}
+      {wakingUp && (
+        <div className="mb-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Loader2 size={14} className="text-green animate-spin" />
+            <span className="text-md font-medium text-green">Waking up...</span>
+          </div>
+          {teardownProgress.length > 0 && (
+            <div className="max-h-[150px] overflow-y-auto scrollbar-thin bg-crust rounded-lg p-2">
+              {teardownProgress.map((line, i) => (
+                <div key={i} className="text-md text-overlay1 font-mono whitespace-pre-wrap">{line}</div>
+              ))}
+            </div>
+          )}
+          {teardownError && <div className="text-md text-red mt-1">{teardownError}</div>}
+        </div>
+      )}
+
       {/* Unreachable banner */}
-      {!isFailed && unreachable && (
+      {!isFailed && !isHibernated && unreachable && (
         <div className="flex items-center gap-2 mb-3 py-2 px-3 bg-red/10 rounded-lg text-md text-red">
           <CloudOff size={12} />
           Server is not responding. It may have been destroyed or is temporarily offline.
@@ -1640,20 +1771,43 @@ function VpsInstanceCard({
           {showHistory && <DeployHistoryPanel logs={instanceState?.deployLogs ?? []} onClose={() => setShowHistory(false)} />}
           {viewingLogs && <VpsLogViewer projectId={project.id} instanceId={instance.id} logs={instanceState?.logs ?? null} onClose={() => setViewingLogs(false)} />}
 
-          {/* Teardown */}
-          {tearingDown ? (
-            <TeardownProgress progress={teardownProgress} error={teardownError} />
-          ) : !confirmTeardown ? (
-            <button onClick={() => setConfirmTeardown(true)} className="flex items-center gap-1.5 text-md text-red/70 hover:text-red transition-colors">
-              <CloudOff size={12} /> Teardown
-            </button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="text-md text-red">{instance.digitalocean ? "Destroy droplet and remove deployment?" : "Remove from VPS?"}</span>
-              <Button size="sm" variant="danger" onClick={() => { teardownVps(project.id, instance.id); setConfirmTeardown(false); }}>Confirm</Button>
-              <Button size="sm" onClick={() => setConfirmTeardown(false)}>Cancel</Button>
+          {/* Hibernate */}
+          {instance.digitalocean && !tearingDown && (
+            <div className="border border-blue/20 rounded-lg px-3 py-2">
+              {!confirmHibernate ? (
+                <button onClick={() => setConfirmHibernate(true)} className="flex items-center gap-1.5 text-md text-blue/70 hover:text-blue transition-colors">
+                  <Moon size={12} /> Hibernate
+                  <span className="text-overlay0 font-normal ml-1">— snapshot &amp; stop to save costs</span>
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Moon size={12} className="text-blue shrink-0" />
+                  <span className="text-md text-blue">Snapshot and destroy droplet? You can wake it up later.</span>
+                  <Button size="sm" onClick={() => { hibernateVps(project.id, instance.id); setConfirmHibernate(false); }}>Confirm</Button>
+                  <Button size="sm" onClick={() => setConfirmHibernate(false)}>Cancel</Button>
+                </div>
+              )}
             </div>
           )}
+
+          {/* Teardown */}
+          <div className="border border-red/20 rounded-lg px-3 py-2">
+            {tearingDown ? (
+              <TeardownProgress progress={teardownProgress} error={teardownError} />
+            ) : !confirmTeardown ? (
+              <button onClick={() => setConfirmTeardown(true)} className="flex items-center gap-1.5 text-md text-red/70 hover:text-red transition-colors">
+                <CloudOff size={12} /> Teardown
+                <span className="text-overlay0 font-normal ml-1">— permanently destroy</span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <CloudOff size={12} className="text-red shrink-0" />
+                <span className="text-md text-red">{instance.digitalocean ? "Destroy droplet and remove deployment?" : "Remove from VPS?"}</span>
+                <Button size="sm" variant="danger" onClick={() => { teardownVps(project.id, instance.id); setConfirmTeardown(false); }}>Confirm</Button>
+                <Button size="sm" onClick={() => setConfirmTeardown(false)}>Cancel</Button>
+              </div>
+            )}
+          </div>
         </>
       )}
 

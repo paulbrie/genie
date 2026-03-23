@@ -61,6 +61,14 @@ export interface VpsInfo {
   digitalocean?: DoDropletInfo;
 }
 
+export interface VpsHibernateInfo {
+  snapshotId: number;
+  snapshotName: string;
+  region: string;
+  size: string;
+  hibernatedAt: string;
+}
+
 export interface VpsInstance {
   id: string;
   label: string;
@@ -69,6 +77,7 @@ export interface VpsInstance {
   digitalocean?: DoDropletInfo;
   deployFailed?: boolean;
   deployError?: string;
+  hibernate?: VpsHibernateInfo;
 }
 
 export interface DeployLogEntry {
@@ -93,6 +102,8 @@ export interface RecipeState {
 export interface VpsInstanceState {
   deploying: boolean;
   tearingDown: boolean;
+  hibernating: boolean;
+  wakingUp: boolean;
   progress: string[];
   error: string | null;
   logs: { serviceName: string | null; logs: string } | null;
@@ -151,6 +162,9 @@ export interface DoSnapshot {
   id: number;
   name: string;
   regions: string[];
+  sizeGb?: number;
+  createdAt?: string;
+  minDiskSize?: number;
 }
 
 export interface AppDef {
@@ -589,7 +603,7 @@ export interface AdminBaseImageState {
   history: TemplateHistoryEntry[];
 }
 
-export type DropletsSubTab = "instances" | "templates" | "configs" | "sshkey";
+export type DropletsSubTab = "instances" | "snapshots" | "templates" | "configs" | "sshkey";
 export type AiSubTab = "costs" | "settings";
 
 export interface AiUsageRow {
@@ -1818,7 +1832,7 @@ export async function saveSettingsField<K extends keyof AppSettings>(
 // --- VPS deploy actions ---
 
 const DEFAULT_INSTANCE_STATE: VpsInstanceState = {
-  deploying: false, tearingDown: false, progress: [], error: null, logs: null,
+  deploying: false, tearingDown: false, hibernating: false, wakingUp: false, progress: [], error: null, logs: null,
   startedAt: null, endedAt: null, stats: null, statsError: null, deployLogs: [],
   recipes: {},
 };
@@ -1865,6 +1879,28 @@ export function teardownVps(projectId: string, instanceId: string): void {
     inst.error = null;
   });
   wsSend("vps:teardown", { projectId, instanceId });
+}
+
+export function hibernateVps(projectId: string, instanceId: string): void {
+  ensureInstanceState(instanceId);
+  batch(() => {
+    const inst = $vpsDeploy.getValue().instances[instanceId];
+    inst.hibernating = true;
+    inst.progress = [];
+    inst.error = null;
+  });
+  wsSend("vps:hibernate", { projectId, instanceId });
+}
+
+export function wakeVps(projectId: string, instanceId: string): void {
+  ensureInstanceState(instanceId);
+  batch(() => {
+    const inst = $vpsDeploy.getValue().instances[instanceId];
+    inst.wakingUp = true;
+    inst.progress = [];
+    inst.error = null;
+  });
+  wsSend("vps:wake", { projectId, instanceId });
 }
 
 export function disconnectVps(projectId: string, instanceId: string): void {
@@ -1987,6 +2023,10 @@ export function cancelVpsDeploy(projectId: string): void {
 export function loadDoSnapshots(): void {
   $doSnapshotsLoading.next(true);
   wsSend("do:snapshots:list", {});
+}
+
+export function deleteDoSnapshot(snapshotId: number): void {
+  wsSend("do:snapshot:delete", { snapshotId });
 }
 
 // --- File editor actions ---
@@ -3301,6 +3341,62 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
       if (tdeInstId) {
         ensureInstanceState(tdeInstId);
         updateInstanceState(tdeInstId, { error: msg.payload.message });
+      }
+      break;
+    }
+
+    case "vps:hibernate:progress": {
+      const { instanceId: hpInstId } = msg.payload;
+      if (hpInstId) {
+        ensureInstanceState(hpInstId);
+        const inst = $vpsDeploy.getValue().instances[hpInstId];
+        inst.progress = [...inst.progress, msg.payload.message];
+      }
+      break;
+    }
+
+    case "vps:hibernate:done": {
+      const { instanceId: hdInstId } = msg.payload;
+      if (hdInstId) {
+        ensureInstanceState(hdInstId);
+        updateInstanceState(hdInstId, { hibernating: false, progress: [], error: null });
+      }
+      break;
+    }
+
+    case "vps:hibernate:error": {
+      const { instanceId: heInstId } = msg.payload;
+      if (heInstId) {
+        ensureInstanceState(heInstId);
+        updateInstanceState(heInstId, { hibernating: false, error: msg.payload.message });
+      }
+      break;
+    }
+
+    case "vps:wake:progress": {
+      const { instanceId: wpInstId } = msg.payload;
+      if (wpInstId) {
+        ensureInstanceState(wpInstId);
+        const inst = $vpsDeploy.getValue().instances[wpInstId];
+        inst.progress = [...inst.progress, msg.payload.message];
+      }
+      break;
+    }
+
+    case "vps:wake:done": {
+      const { instanceId: wdInstId } = msg.payload;
+      if (wdInstId) {
+        ensureInstanceState(wdInstId);
+        updateInstanceState(wdInstId, { wakingUp: false, progress: [], error: null });
+      }
+      break;
+    }
+
+    case "vps:wake:error": {
+      const { instanceId: weInstId } = msg.payload;
+      if (weInstId) {
+        ensureInstanceState(weInstId);
+        updateInstanceState(weInstId, { wakingUp: false, error: msg.payload.message });
       }
       break;
     }

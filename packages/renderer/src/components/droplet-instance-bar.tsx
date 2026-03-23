@@ -65,18 +65,20 @@ function formatBytesShort(bytes: number): string {
 
 function statusBadge(status: string) {
   const isActive = status === "active";
+  const isHibernated = status === "hibernated";
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1.5 text-md font-medium px-1.5 py-0.5 rounded",
-        isActive ? "bg-green/15 text-green" : "bg-overlay0/15 text-overlay0",
+        isActive ? "bg-green/15 text-green" : isHibernated ? "bg-blue/15 text-blue" : "bg-overlay0/15 text-overlay0",
       )}
     >
       <span
         className={cn(
           "w-2 h-2 rounded-full shrink-0",
           isActive && "bg-green shadow-[0_0_3px_var(--color-green)]",
-          !isActive && "bg-overlay0",
+          isHibernated && "bg-blue shadow-[0_0_3px_var(--color-blue)]",
+          !isActive && !isHibernated && "bg-overlay0",
         )}
       />
       {status}

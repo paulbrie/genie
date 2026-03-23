@@ -35,7 +35,7 @@ import { connectSsh, type SshSession } from "./vps/ssh-client.js";
 import type { StreamingChannel } from "./vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from "./vps/deploy-service.js";
 import { createDoClient } from "./vps/do-api-client.js";
-import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint } from "./vps/do-provision.js";
+import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules } from "./vps/do-provision.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
 import { setupMcpTrackerTunnel, type McpTrackerTunnel } from "./vps/mcp-tracker-tunnel.js";
@@ -3021,9 +3021,26 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const doClient = createDoClient(doToken);
         const snapshots = await doClient.listAccountSnapshots();
-        send(ws, { type: "do:snapshots:list", payload: { snapshots: snapshots.map(s => ({ id: s.id, name: s.name, regions: s.regions })) } });
+        send(ws, { type: "do:snapshots:list", payload: { snapshots: snapshots.map(s => ({ id: s.id, name: s.name, regions: s.regions, sizeGb: s.size_gigabytes, createdAt: s.created_at, minDiskSize: s.min_disk_size })) } });
       } catch {
         send(ws, { type: "do:snapshots:list", payload: { snapshots: [] } });
+      }
+      break;
+    }
+
+    case "do:snapshot:delete": {
+      const { snapshotId } = msg.payload;
+      const snapDoToken = await settingsService.getGlobalDoToken();
+      if (!snapDoToken) { send(ws, { type: "do:snapshot:delete:result", payload: { ok: false, error: "No DO token" } }); break; }
+      try {
+        const snapClient = createDoClient(snapDoToken);
+        await snapClient.deleteSnapshot(snapshotId);
+        // Refresh list
+        const updatedSnaps = await snapClient.listAccountSnapshots();
+        send(ws, { type: "do:snapshots:list", payload: { snapshots: updatedSnaps.map(s => ({ id: s.id, name: s.name, regions: s.regions, sizeGb: s.size_gigabytes, createdAt: s.created_at, minDiskSize: s.min_disk_size })) } });
+        send(ws, { type: "do:snapshot:delete:result", payload: { ok: true } });
+      } catch (err: unknown) {
+        send(ws, { type: "do:snapshot:delete:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3512,7 +3529,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const session = await connectSsh(vpsInst.connection);
         try {
           const output = await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, undefined, { timeoutMs: 15_000 });
-          const installed = output.trim().includes("INSTALLED");
+          const lastLine = output.trim().split("\n").pop()?.trim();
+          const installed = lastLine === "INSTALLED";
           send(ws, { type: "vps:recipe:check:result", payload: { projectId, instanceId, recipeId, installed } });
         } finally {
           session.close();
@@ -3649,6 +3667,210 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       } catch (err: unknown) {
         send(ws, { type: "vps:teardown:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
       }
+      break;
+    }
+
+    case "vps:hibernate": {
+      const { projectId, instanceId } = msg.payload;
+      const hProject = await projectService.getById(projectId);
+      const hInst = hProject?.vpsInstances.find(v => v.id === instanceId);
+      if (!hInst?.digitalocean) {
+        send(ws, { type: "vps:hibernate:error", payload: { projectId, instanceId, message: "No DigitalOcean droplet to hibernate" } });
+        break;
+      }
+      const hToken = await settingsService.resolveDoToken(projectId);
+      if (!hToken) {
+        send(ws, { type: "vps:hibernate:error", payload: { projectId, instanceId, message: "No DO token configured" } });
+        break;
+      }
+      void (async () => {
+        const progress = (msg: string) => send(ws, { type: "vps:hibernate:progress", payload: { projectId, instanceId, message: msg } });
+        try {
+          const client = createDoClient(hToken);
+          const dropletId = hInst.digitalocean!.dropletId;
+          const snapshotName = `genie-hibernate-${hInst.label}-${Date.now()}`;
+
+          progress("Creating snapshot (this may take several minutes)...");
+          const action = await client.snapshotDroplet(dropletId, snapshotName);
+
+          // Poll until snapshot completes (up to 15 minutes)
+          const maxWait = 15 * 60 * 1000;
+          const pollInterval = 10_000;
+          const start = Date.now();
+          let completed = false;
+          while (Date.now() - start < maxWait) {
+            await new Promise(r => setTimeout(r, pollInterval));
+            const status = await client.getAction(action.id);
+            const elapsed = Math.round((Date.now() - start) / 1000);
+            progress(`Snapshot in progress... (${elapsed}s)`);
+            if (status.status === "completed") { completed = true; break; }
+            if (status.status === "errored") throw new Error("Snapshot failed at DigitalOcean");
+          }
+          if (!completed) throw new Error("Snapshot timed out after 15 minutes");
+
+          // Find the snapshot ID
+          const snapshots = await client.listDropletSnapshots(dropletId);
+          const snap = snapshots.find(s => s.name === snapshotName);
+          if (!snap) throw new Error("Snapshot created but not found in droplet snapshots");
+
+          progress("Snapshot complete. Destroying droplet...");
+          await client.deleteDroplet(dropletId);
+
+          // Update VPS instance with hibernate info
+          await projectService.updateVpsInstance(projectId, instanceId, {
+            digitalocean: undefined,
+            services: [],
+            connection: { ...hInst.connection, host: "" },
+            hibernate: {
+              snapshotId: snap.id,
+              snapshotName,
+              region: hInst.digitalocean!.region,
+              size: hInst.digitalocean!.size,
+              hibernatedAt: new Date().toISOString(),
+            },
+          });
+
+          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          progress("Droplet destroyed. Instance hibernated.");
+          send(ws, { type: "vps:hibernate:done", payload: { projectId, instanceId } });
+        } catch (err: unknown) {
+          send(ws, { type: "vps:hibernate:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
+        }
+      })();
+      break;
+    }
+
+    case "vps:wake": {
+      const { projectId, instanceId } = msg.payload;
+      const wProject = await projectService.getById(projectId);
+      const wInst = wProject?.vpsInstances.find(v => v.id === instanceId);
+      if (!wInst?.hibernate) {
+        send(ws, { type: "vps:wake:error", payload: { projectId, instanceId, message: "Instance is not hibernated" } });
+        break;
+      }
+      const wToken = await settingsService.resolveDoToken(projectId);
+      if (!wToken) {
+        send(ws, { type: "vps:wake:error", payload: { projectId, instanceId, message: "No DO token configured" } });
+        break;
+      }
+      void (async () => {
+        const progress = (msg: string) => send(ws, { type: "vps:wake:progress", payload: { projectId, instanceId, message: msg } });
+        try {
+          const client = createDoClient(wToken);
+          const hib = wInst.hibernate!;
+
+          // Ensure SSH key is registered
+          progress("Preparing SSH keys...");
+          const keyPair = await ensureGenieKeyPair();
+          const fingerprint = sshKeyFingerprint(keyPair.publicKey);
+          const existingKeys = await client.listSshKeys();
+          let sshKeyId = existingKeys.find(k => k.fingerprint === fingerprint)?.id;
+          if (!sshKeyId) {
+            const newKey = await client.createSshKey(`genie-${Date.now()}`, keyPair.publicKey);
+            sshKeyId = newKey.id;
+          }
+
+          // Create droplet from snapshot
+          const dropletName = `genie-${wInst.label}-${Date.now()}`;
+          progress(`Creating droplet from snapshot in ${hib.region} (${hib.size})...`);
+          const droplet = await client.createDroplet({
+            name: dropletName,
+            region: hib.region,
+            size: hib.size,
+            image: hib.snapshotId,
+            sshKeyIds: [sshKeyId],
+            tags: ["genie"],
+          });
+
+          // Wait for active + IP
+          const maxWait = 180_000;
+          const start = Date.now();
+          let ip: string | null = null;
+          while (Date.now() - start < maxWait) {
+            await new Promise(r => setTimeout(r, 5000));
+            const d = await client.getDroplet(droplet.id);
+            const elapsed = Math.round((Date.now() - start) / 1000);
+            if (d.status === "active") {
+              const v4 = d.networks?.v4 || [];
+              const pub = v4.find(n => n.type === "public");
+              if (pub?.ip_address) { ip = pub.ip_address; break; }
+            }
+            progress(`Waiting for droplet... (${elapsed}s)`);
+          }
+          if (!ip) throw new Error("Droplet did not become active within 3 minutes");
+
+          progress(`Droplet active at ${ip}. Waiting for SSH...`);
+
+          // Wait for SSH
+          const connConfig: VpsConnectionConfig = {
+            host: ip,
+            port: 22,
+            username: VPS_SSH_USERNAME,
+            privateKeyPath: path.join(os.homedir(), ".genie", "ssh", "genie_ed25519"),
+          };
+          const sshStart = Date.now();
+          const sshTimeout = 120_000;
+          let sshReady = false;
+          while (Date.now() - sshStart < sshTimeout) {
+            try {
+              const session = await connectSsh(connConfig);
+              await session.exec("echo ok");
+              session.close();
+              sshReady = true;
+              break;
+            } catch {
+              await new Promise(r => setTimeout(r, 5000));
+            }
+          }
+          if (!sshReady) throw new Error("SSH did not become available within 2 minutes");
+
+          // Re-apply firewall
+          progress("Configuring firewall...");
+          try {
+            const fwSession = await connectSsh({ ...connConfig, username: "root" });
+            await fwSession.exec(buildUfwRules(process.env.MANAGER_PUBLIC_IP, process.env.MANAGER_PUBLIC_IP_DEV).join(" && "));
+            fwSession.close();
+          } catch (fwErr: unknown) {
+            progress(`Warning: Firewall config failed: ${fwErr instanceof Error ? fwErr.message : String(fwErr)}`);
+          }
+
+          // Restart docker containers
+          progress("Starting Docker containers...");
+          try {
+            const dkSession = await connectSsh(connConfig);
+            await dkSession.exec(`cd /opt/project && docker compose up -d 2>&1 || true`);
+            dkSession.close();
+          } catch {
+            progress("Warning: Could not restart Docker containers");
+          }
+
+          // Delete snapshot to save storage costs
+          progress("Cleaning up snapshot...");
+          try {
+            await client.deleteSnapshot(hib.snapshotId);
+          } catch {
+            progress("Warning: Could not delete snapshot — clean up manually");
+          }
+
+          // Update instance
+          await projectService.updateVpsInstance(projectId, instanceId, {
+            connection: connConfig,
+            digitalocean: {
+              dropletId: droplet.id,
+              ipAddress: ip,
+              region: hib.region,
+              size: hib.size,
+            },
+            hibernate: undefined,
+          });
+
+          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          progress(`Instance woken up at ${ip}`);
+          send(ws, { type: "vps:wake:done", payload: { projectId, instanceId } });
+        } catch (err: unknown) {
+          send(ws, { type: "vps:wake:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
+        }
+      })();
       break;
     }
 

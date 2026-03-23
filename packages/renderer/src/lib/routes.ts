@@ -39,6 +39,7 @@ const VALID_ADMIN_TABS = new Set<AdminTab>(["database", "droplets", "ai", "backu
 
 const VALID_DROPLETS_SUBTABS = new Set<DropletsSubTab>([
   "instances",
+  "snapshots",
   "templates",
   "configs",
   "sshkey",

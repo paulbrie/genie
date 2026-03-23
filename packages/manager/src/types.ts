@@ -39,6 +39,14 @@ export interface VpsInfo {
   digitalocean?: DoDropletInfo;
 }
 
+export interface VpsHibernateInfo {
+  snapshotId: number;
+  snapshotName: string;
+  region: string;
+  size: string;
+  hibernatedAt: string; // ISO timestamp
+}
+
 export interface VpsInstance {
   id: string;        // UUID
   label: string;     // "production", "staging", etc.
@@ -47,6 +55,7 @@ export interface VpsInstance {
   digitalocean?: DoDropletInfo;
   deployFailed?: boolean;
   deployError?: string;
+  hibernate?: VpsHibernateInfo;
 }
 
 export interface ProjectDef {

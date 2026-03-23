@@ -3,10 +3,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { TerminalSquare, X, Minus, Maximize2, Minimize2 } from "lucide-react";
+import { TerminalSquare, X, Minus, Maximize2, Minimize2, Share2 } from "lucide-react";
 import {
   $terminal,
   $windowManager,
+  $conversationChat,
+  $auth,
   registerWindow,
   openWindow,
   closeWindow,
@@ -15,8 +17,10 @@ import {
   updateWindowPosition,
   removeTerminalTab,
   leaveSharedTerminal,
+  shareTerminal,
   type TerminalTab,
   type FloatingWindowState,
+  type ChatUser,
 } from "@/store";
 import {
   createTerminal,
@@ -44,8 +48,29 @@ function SingleTerminalWindow({
 }) {
   const windowId = WINDOW_PREFIX + tab.id;
   const [maximized, setMaximized] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const shareRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
+
+  const [conversationChat] = useSubject($conversationChat);
+  const chatUsers = conversationChat.users as ChatUser[];
+  const [auth] = useSubject($auth);
+  const authUserId = (auth.user as { id: string } | null)?.id;
+  const onlineUsers = useMemo(
+    () => chatUsers.filter((u) => u.online && u.id !== authUserId && !u.isAgent),
+    [chatUsers, authUserId]
+  );
+
+  // Close share dropdown on outside click / Escape
+  useEffect(() => {
+    if (!shareOpen) return;
+    const close = (e: MouseEvent) => { if (shareRef.current && !shareRef.current.contains(e.target as Node)) setShareOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShareOpen(false); };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
+  }, [shareOpen]);
 
   const [windowManager] = useSubject($windowManager);
   const allWindows = windowManager.windows;
@@ -189,6 +214,45 @@ function SingleTerminalWindow({
           <span className="truncate">{tab.title}</span>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
+          {!tab.shared && (
+            <div className="relative" ref={shareRef}>
+              <button
+                onClick={() => setShareOpen(!shareOpen)}
+                className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"
+                title="Share terminal"
+              >
+                <Share2 size={13} />
+              </button>
+              {shareOpen && (
+                <div className="absolute top-full right-0 mt-1 bg-mantle border border-surface0 rounded-md shadow-lg z-50 min-w-[160px] py-1">
+                  <p className="px-3 py-1 text-md text-overlay0 font-medium">Share with:</p>
+                  {onlineUsers.map((u) => (
+                    <button
+                      key={u.id}
+                      onClick={() => {
+                        shareTerminal(tab.id, u.id);
+                        setShareOpen(false);
+                      }}
+                      className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-md bg-transparent border-none cursor-pointer text-subtext0 hover:bg-surface0 hover:text-text transition-colors"
+                    >
+                      <div className="w-4 h-4 rounded-full bg-surface1 flex items-center justify-center shrink-0 overflow-hidden">
+                        {u.avatarUrl ? (
+                          <img src={u.avatarUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <span className="text-[8px] font-medium text-subtext0">{u.name[0]?.toUpperCase()}</span>
+                        )}
+                      </div>
+                      <span>{u.name}</span>
+                      <span className="ml-auto w-1.5 h-1.5 rounded-full bg-green" />
+                    </button>
+                  ))}
+                  {onlineUsers.length === 0 && (
+                    <p className="px-3 py-1.5 text-md text-overlay0">No users online</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <button
             onClick={() => minimizeWindow(windowId)}
             className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"

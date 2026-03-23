@@ -27,7 +27,7 @@ export function sshKeyFingerprint(pubKeyContent: string): string {
 }
 
 /** Build UFW rules for firewall lockdown. If no managerIp, allows SSH from anywhere. */
-function buildUfwRules(managerIp?: string, managerIpDev?: string): string[] {
+export function buildUfwRules(managerIp?: string, managerIpDev?: string): string[] {
   const rules = [
     // Reset all existing rules (wipes anything the base image added)
     "ufw --force reset",

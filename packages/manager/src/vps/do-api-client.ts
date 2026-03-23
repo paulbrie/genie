@@ -61,6 +61,9 @@ export interface DoSnapshot {
   id: number;
   name: string;
   regions: string[];
+  size_gigabytes?: number;
+  created_at?: string;
+  min_disk_size?: number;
 }
 
 export interface DoApiClient {
