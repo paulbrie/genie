@@ -55,10 +55,19 @@ export interface DoDropletInfo {
   size: string;
 }
 
+export interface TazVmInfo {
+  vmId: string;
+  ipv6: string;
+  image: string;
+  size: string;
+  sshUser: string;
+}
+
 export interface VpsInfo {
   connection: VpsConnectionConfig;
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
+  tazcloud?: TazVmInfo;
 }
 
 export interface VpsHibernateInfo {
@@ -75,6 +84,7 @@ export interface VpsInstance {
   connection: VpsConnectionConfig;
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
+  tazcloud?: TazVmInfo;
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;
@@ -147,8 +157,10 @@ export interface ProjectDef {
   commands: ProjectCommand[];
   commandStatuses: Record<string, ProcessStatus>;
   vpsInstances: VpsInstance[];
+  vpsProvider?: "digitalocean" | "tazcloud";
   vpsRegion?: string;
   vpsSize?: string;
+  vpsImage?: string;
   vpsBaseImageId?: number;
   vpsBaseImageConfigName?: string;
   setupFiles?: Record<string, string>;
@@ -486,7 +498,7 @@ export interface FloatingWindowState {
   busy?: boolean;
 }
 
-export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "tracker" | "settings" | "admin" | "architecture" | "users" | "security";
+export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "tracker" | "settings" | "admin" | "architecture" | "users" | "security" | "tazcloud";
 
 // --- Security Types ---
 
@@ -566,6 +578,23 @@ export interface AdminDroplet {
   createdBy: string | null;
   projectId: string | null;
   projectName: string | null;
+}
+
+export interface AdminTazVm {
+  id: string;
+  name: string;
+  status: string;
+  ipv6: string;
+  image?: string;
+  size?: string;
+  projectId: string | null;
+  projectName: string | null;
+}
+
+export interface AdminTazState {
+  vms: AdminTazVm[];
+  loading: boolean;
+  error: string | null;
 }
 
 export interface BaseImageConfig {
@@ -686,6 +715,7 @@ export interface AdminState {
   dropletsLoading: boolean;
   dropletsError: string | null;
   dropletStats: Record<number, VpsStats>;
+  tazcloud: AdminTazState;
   baseImage: AdminBaseImageState;
   sshKey: {
     exists: boolean;
@@ -915,6 +945,7 @@ export const $admin = new DeepSubject<AdminState>({
   loading: false, drawerOpen: false, drawerMode: "edit", drawerRow: null,
   sqlQuery: "", sqlResult: null, sqlError: null, sqlLoading: false, sqlOpen: false,
   droplets: [], dropletsLoading: false, dropletsError: null, dropletStats: {},
+  tazcloud: { vms: [], loading: false, error: null },
   baseImage: { configs: {}, templates: {}, deletedTemplates: {}, buildingName: null, progress: [], error: null, failedDropletId: null, failedDropletIp: null, history: [] },
   sshKey: { exists: false, publicKey: null, fingerprint: null, createdAt: null, history: [], loading: false, regenerating: false },
   drizzlePush: { running: false, output: "", open: false },
@@ -1606,6 +1637,15 @@ export function loadAdminDroplets(): void {
   wsSend("admin:droplets:list", {});
 }
 
+export function loadAdminTazVms(): void {
+  batch(() => { const v = $admin.getValue(); v.tazcloud.loading = true; v.tazcloud.error = null; });
+  wsSend("admin:tazcloud:list", {});
+}
+
+export function deleteAdminTazVm(vmId: string): void {
+  wsSend("admin:tazcloud:delete", { vmId });
+}
+
 export function loadAdminDropletStats(): void {
   wsSend("admin:droplets:stats", {});
 }
@@ -2008,16 +2048,26 @@ export function testRailwayToken(): void {
 }
 
 export function deployToDo(projectId: string, label?: string, instanceId?: string): void {
+  deployToProvider(projectId, "digitalocean", label, instanceId);
+}
+
+export function deployToProvider(
+  projectId: string,
+  provider: "digitalocean" | "tazcloud",
+  label?: string,
+  instanceId?: string,
+): void {
   const id = instanceId || crypto.randomUUID();
   $vpsDeploy.getValue().activeDeploys[id] = {
     projectId, instanceId: id, deploying: true, progress: [], error: null,
     startedAt: Date.now(), endedAt: null, failedDroplet: null, destroyingDroplet: false,
   };
-  wsSend("do:deploy", { projectId, label, instanceId: id });
+  const wsType = provider === "tazcloud" ? "tazcloud:deploy" : "do:deploy";
+  wsSend(wsType, { projectId, label, instanceId: id });
 }
 
-export function cancelVpsDeploy(projectId: string): void {
-  wsSend("do:cancel", { projectId });
+export function cancelVpsDeploy(projectId: string, provider: "digitalocean" | "tazcloud" = "digitalocean"): void {
+  wsSend(provider === "tazcloud" ? "tazcloud:cancel" : "do:cancel", { projectId });
 }
 
 export function loadDoSnapshots(): void {
@@ -2443,6 +2493,12 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
 
     case "terminal:error": {
       console.error("Terminal error:", msg.payload.message);
+      // Render the error into the terminal pane so the user actually sees it.
+      const id = msg.payload.id;
+      const text = `\r\n\x1b[31m${msg.payload.message}\x1b[0m\r\n`;
+      if (id && typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("genie:terminal:data", { detail: { id, data: text } }));
+      }
       break;
     }
 
@@ -3691,6 +3747,38 @@ export function handleWsMessage(msg: { type: string; payload: any }): void {
         v.droplets = v.droplets.filter((d) => d.id !== deletedId);
         delete v.dropletStats[deletedId];
       });
+      break;
+    }
+
+    case "admin:tazcloud:list": {
+      const v = $admin.getValue();
+      if (msg.payload.error) {
+        batch(() => { v.tazcloud.error = msg.payload.error; v.tazcloud.vms = []; v.tazcloud.loading = false; });
+      } else {
+        const projectMap = msg.payload.projectMap || {};
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const list: AdminTazVm[] = (msg.payload.vms || []).map((vm: any) => {
+          const pm = projectMap[vm.id];
+          return {
+            id: vm.id,
+            name: vm.name,
+            status: vm.status,
+            ipv6: vm.ipv6 || vm.ssh_host || "",
+            image: vm.image,
+            size: vm.size,
+            projectId: pm?.projectId || null,
+            projectName: pm?.projectName || null,
+          } as AdminTazVm;
+        });
+        batch(() => { v.tazcloud.vms = list; v.tazcloud.error = null; v.tazcloud.loading = false; });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:deleted": {
+      const v = $admin.getValue();
+      const deletedId = msg.payload.vmId;
+      batch(() => { v.tazcloud.vms = v.tazcloud.vms.filter((vm) => vm.id !== deletedId); });
       break;
     }
 

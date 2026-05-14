@@ -232,7 +232,14 @@ export function spawnSshPty(
       });
     })
     .on("error", (err) => {
-      eventCallback?.({ type: "terminal:error", payload: { id, message: `SSH connection failed: ${err.message}` } });
+      let message = `SSH connection failed: ${err.message}`;
+      const looksLikeIpv6 = /:[0-9a-f]{1,4}:/i.test(config.host);
+      if (err.message.includes("ENETUNREACH") && looksLikeIpv6) {
+        message = `SSH connection failed: no IPv6 route from this manager to ${config.host}. The target is IPv6-only and your network has no IPv6 connectivity. Enable IPv6 (e.g. a Hurricane Electric tunnel) or run the manager from a host with IPv6 egress.`;
+      } else if (err.message.includes("EHOSTUNREACH")) {
+        message = `SSH connection failed: host unreachable (${config.host}). Check that the VM is running and your firewall/NAT permits the connection.`;
+      }
+      eventCallback?.({ type: "terminal:error", payload: { id, message } });
       sessions.delete(id);
     })
     .connect({

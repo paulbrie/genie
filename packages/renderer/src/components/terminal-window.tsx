@@ -125,6 +125,11 @@ function SingleTerminalWindow({
       const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
       if (!tab.shared && !isRestored) {
         if (tab.ssh) {
+          // Show feedback so the pane isn't blank during connect (especially over
+          // slow links or when IPv6 is hanging at TCP timeout).
+          window.dispatchEvent(new CustomEvent("genie:terminal:data", {
+            detail: { id: tab.id, data: `\x1b[2mConnecting to ${tab.ssh.username || "genie"}@${tab.ssh.host}:${tab.ssh.port || 22}...\x1b[0m\r\n` },
+          }));
           wsSend("terminal:ssh:spawn", {
             id: tab.id,
             cols: term.cols,

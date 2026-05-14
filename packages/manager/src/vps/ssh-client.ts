@@ -20,6 +20,7 @@ export interface SshSession {
   forwardIn(bindAddr: string, bindPort: number): Promise<number>;
   unforwardIn(bindAddr: string, bindPort: number): Promise<void>;
   onTcpConnection(handler: (info: { destPort: number }, accept: () => ClientChannel) => void): void;
+  sftpOpenWrite(remotePath: string): Promise<SftpWriteHandle>;
   close(): void;
 }
 
@@ -28,6 +29,11 @@ export interface StreamingChannel {
   stdout: Readable;
   stderr: Readable;
   close(): void;
+}
+
+export interface SftpWriteHandle {
+  write(buffer: Buffer, offset: number): Promise<void>;
+  close(): Promise<void>;
 }
 
 function resolveHome(p: string): string {
@@ -189,6 +195,27 @@ function makeSession(conn: Client): SshSession {
       conn.on("tcp connection", (details: { destPort: number }, accept: () => ClientChannel) => {
         handler({ destPort: details.destPort }, accept);
       });
+    },
+
+    async sftpOpenWrite(remotePath: string): Promise<SftpWriteHandle> {
+      const sftp = await new Promise<import("ssh2").SFTPWrapper>((res, rej) => {
+        conn.sftp((err, s) => err ? rej(err) : res(s));
+      });
+      const handle = await new Promise<Buffer>((res, rej) => {
+        sftp.open(remotePath, "w", (err, h) => err ? rej(err) : res(h));
+      });
+      return {
+        write(buffer: Buffer, offset: number) {
+          return new Promise<void>((res, rej) => {
+            sftp.write(handle, buffer, 0, buffer.length, offset, (err) => err ? rej(err) : res());
+          });
+        },
+        close() {
+          return new Promise<void>((res) => {
+            sftp.close(handle, () => { try { sftp.end(); } catch { /* ignore */ } res(); });
+          });
+        },
+      };
     },
 
     close() {

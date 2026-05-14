@@ -21,6 +21,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   architecture: "architecture",
   users: "users",
   security: "security",
+  tazcloud: "tazcloud",
 };
 
 const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(

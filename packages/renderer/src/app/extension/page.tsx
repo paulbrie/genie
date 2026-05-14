@@ -2941,7 +2941,8 @@ function DropletPicker({
                   status={statsError ? "unreachable" : stats ? "active" : "checking"}
                   ip={ip}
                   region={inst?.digitalocean?.region}
-                  sizeSlug={inst?.digitalocean?.size}
+                  sizeSlug={inst?.digitalocean?.size ?? inst?.tazcloud?.size}
+                  provider={inst?.tazcloud ? "tazcloud" : "digitalocean"}
                   stats={stats}
                   statsLoading={!stats && !statsError}
                   statsError={statsError}

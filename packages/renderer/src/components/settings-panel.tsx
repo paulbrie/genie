@@ -271,6 +271,19 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
 
           <div className="bg-mantle rounded-lg p-4 mt-4">
             <label className="block text-md font-medium text-subtext0 mb-2">
+              TazCloud
+              <span className="ml-2 text-md text-overlay0 font-normal">Configured via env vars on the manager</span>
+            </label>
+            <p className="text-md text-overlay0">
+              The manager reads <code className="text-text font-mono bg-surface0 px-1 rounded">TAZCLOUD_API_TOKEN</code> and{" "}
+              <code className="text-text font-mono bg-surface0 px-1 rounded">TAZCLOUD_SSH_PRIVATE_KEY</code> from{" "}
+              <code className="text-text font-mono bg-surface0 px-1 rounded">packages/manager/.env.local</code> at startup.
+              Restart the manager after changing them. Snapshots, base-image templates, and hibernation are unsupported for TazCloud.
+            </p>
+          </div>
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
               GitLab Deploy Key (Private)
               <span className="ml-2 text-md text-overlay0 font-normal">Global default</span>
             </label>

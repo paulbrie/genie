@@ -11,6 +11,7 @@ import {
   $commandRunOutputs,
   addSshTerminalTab,
   deployToDo,
+  deployToProvider,
   checkVpsStatus,
   teardownVps,
   hibernateVps,
@@ -598,11 +599,19 @@ function ProjectCloudDetail({
           className="bg-mantle text-text text-md rounded px-2.5 py-1.5 border border-surface0 focus:border-blue focus:outline-none font-mono w-64"
         />
         <button
-          onClick={() => { deployToDo(project.id, deployLabel || undefined); setDeployLabel(""); }}
+          onClick={() => {
+            const provider = (project.vpsProvider || "digitalocean") as "digitalocean" | "tazcloud";
+            deployToProvider(project.id, provider, deployLabel || undefined);
+            setDeployLabel("");
+          }}
           className="flex items-center gap-2 px-3 py-1.5 bg-mantle rounded-lg hover:bg-surface0 transition-colors text-left"
         >
           <Server size={16} className="text-blue" />
-          <span className="text-md font-medium text-text">Deploy DigitalOcean Droplet</span>
+          <span className="text-md font-medium text-text">
+            {(project.vpsProvider || "digitalocean") === "tazcloud"
+              ? `Deploy TazCloud VM (${project.vpsImage || "ubuntu-22"} / ${project.vpsSize || "small"})`
+              : "Deploy DigitalOcean Droplet"}
+          </span>
         </button>
       </div>
 
@@ -725,24 +734,24 @@ const VPS_RECIPES: VpsRecipeDef[] = [
     checkScript: `if google-chrome-stable --version > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
 echo "Installing Chrome dependencies..."
-apt-get update -qq
-apt-get install -y -qq wget curl gnupg2 > /dev/null
+sudo apt-get update -qq
+sudo apt-get install -y -qq wget curl gnupg2 > /dev/null
 echo "Adding Chrome repository..."
-curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg 2>/dev/null
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg 2>/dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null
 echo "Updating package list..."
-apt-get update -qq
+sudo apt-get update -qq
 echo "Installing Chrome (this may take a minute)..."
-apt-get install -y google-chrome-stable
+sudo apt-get install -y google-chrome-stable
 echo "Verifying..."
 google-chrome-stable --version
 echo "Chrome installed successfully."`,
     uninstallScript: `set -e
 echo "Removing Chrome..."
-apt-get remove -y -qq google-chrome-stable > /dev/null 2>&1 || true
-rm -f /etc/apt/sources.list.d/google-chrome.list
-rm -f /usr/share/keyrings/google-chrome.gpg
-apt-get autoremove -y -qq > /dev/null
+sudo apt-get remove -y -qq google-chrome-stable > /dev/null 2>&1 || true
+sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+sudo rm -f /usr/share/keyrings/google-chrome.gpg
+sudo apt-get autoremove -y -qq > /dev/null
 echo "Chrome removed."`,
     setupShSnippet: `# Install Chrome
 apt-get update -qq && apt-get install -y -qq wget gnupg2 > /dev/null
@@ -767,31 +776,31 @@ apt-get update -qq && apt-get install -y -qq google-chrome-stable > /dev/null`,
     checkScript: `command -v psql > /dev/null 2>&1 && echo "INSTALLED" || echo "NOT_INSTALLED"`,
     installScript: `set -e
 echo "Installing PostgreSQL..."
-apt-get update -qq
-apt-get install -y -qq postgresql postgresql-contrib > /dev/null
+sudo apt-get update -qq
+sudo apt-get install -y -qq postgresql postgresql-contrib > /dev/null
 echo "Starting PostgreSQL..."
-service postgresql start
-su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""
+sudo service postgresql start
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
 echo "PostgreSQL ready (user: postgres, password: postgres, port: 5432)"`,
     uninstallScript: `set -e
 echo "Stopping PostgreSQL..."
-service postgresql stop 2>/dev/null || true
+sudo service postgresql stop 2>/dev/null || true
 echo "Removing PostgreSQL..."
-apt-get remove -y -qq postgresql postgresql-contrib > /dev/null
-apt-get autoremove -y -qq > /dev/null
+sudo apt-get remove -y -qq postgresql postgresql-contrib > /dev/null
+sudo apt-get autoremove -y -qq > /dev/null
 echo "PostgreSQL removed."`,
     setupShSnippet: `# Install and start PostgreSQL
 apt-get update -qq && apt-get install -y -qq postgresql postgresql-contrib > /dev/null
 service postgresql start
 su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
     commands: [
-      { name: "Start service", command: "service postgresql start" },
-      { name: "Stop service", command: "service postgresql stop" },
-      { name: "Restart service", command: "service postgresql restart" },
-      { name: "Check status", command: "service postgresql status" },
-      { name: "Connect as postgres", command: "su - postgres -c psql" },
-      { name: "List databases", command: "su - postgres -c 'psql -l'" },
-      { name: "Create database", command: "su - postgres -c 'createdb myapp'" },
+      { name: "Start service", command: "sudo service postgresql start" },
+      { name: "Stop service", command: "sudo service postgresql stop" },
+      { name: "Restart service", command: "sudo service postgresql restart" },
+      { name: "Check status", command: "sudo service postgresql status" },
+      { name: "Connect as postgres", command: "sudo -u postgres psql" },
+      { name: "List databases", command: "sudo -u postgres psql -l" },
+      { name: "Create database", command: "sudo -u postgres createdb myapp" },
       { name: "Connection string", command: "echo 'postgresql://postgres:postgres@localhost:5432/postgres'" },
     ],
   },
@@ -1606,7 +1615,8 @@ function VpsInstanceCard({
           status={isHibernated ? "hibernated" : isFailed ? "unreachable" : unreachable ? "unreachable" : checking ? "checking" : "active"}
           ip={instance.connection.host}
           region={instance.digitalocean?.region}
-          sizeSlug={instance.digitalocean?.size}
+          sizeSlug={instance.digitalocean?.size ?? instance.tazcloud?.size}
+          provider={instance.tazcloud ? "tazcloud" : "digitalocean"}
           stats={stats}
           statsLoading={isFailed ? false : checking}
           statsError={isFailed ? null : statsError}
@@ -1623,7 +1633,7 @@ function VpsInstanceCard({
             {instance.deployError && <p className="text-overlay1 mt-0.5">{instance.deployError}</p>}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={() => deployToDo(project.id, instance.label, instance.id)} className="px-2 py-1 rounded text-md text-blue hover:bg-blue/10 transition-colors font-medium">Retry</button>
+            <button onClick={() => deployToProvider(project.id, (project.vpsProvider || "digitalocean") as "digitalocean" | "tazcloud", instance.label, instance.id)} className="px-2 py-1 rounded text-md text-blue hover:bg-blue/10 transition-colors font-medium">Retry</button>
             <button onClick={() => teardownVps(project.id, instance.id)} className="flex items-center gap-1 px-2 py-1 rounded text-md text-red hover:bg-red/10 transition-colors"><Trash2 size={12} /> Destroy</button>
           </div>
         </div>

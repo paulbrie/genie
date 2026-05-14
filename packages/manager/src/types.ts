@@ -33,10 +33,21 @@ export interface DoDropletInfo {
   size: string;
 }
 
+export interface TazVmInfo {
+  vmId: string;       // TazCloud VM UUID
+  ipv6: string;       // public IPv6 (== ssh_host)
+  image: string;      // ubuntu-22 / almalinux-9 / debian-12 / ubuntu-24
+  size: string;       // small / medium / large / xlarge
+  sshUser: string;    // ubuntu / debian / almalinux
+}
+
+export type VpsProvider = "digitalocean" | "tazcloud";
+
 export interface VpsInfo {
   connection: VpsConnectionConfig;
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
+  tazcloud?: TazVmInfo;
 }
 
 export interface VpsHibernateInfo {
@@ -53,6 +64,7 @@ export interface VpsInstance {
   connection: VpsConnectionConfig;
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
+  tazcloud?: TazVmInfo;
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;
@@ -64,8 +76,10 @@ export interface ProjectDef {
   commands: ProjectCommand[];
   commandStatuses: Record<string, ProcessStatus>;
   vpsInstances: VpsInstance[];
-  vpsRegion?: string;
+  vpsProvider?: VpsProvider;          // defaults to "digitalocean" on DB read
+  vpsRegion?: string;                  // DO only
   vpsSize?: string;
+  vpsImage?: string;                   // TazCloud only
   vpsBaseImageId?: number;
   vpsBaseImageConfigName?: string;
   setupFiles?: Record<string, string>;

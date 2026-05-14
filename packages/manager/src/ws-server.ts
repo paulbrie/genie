@@ -32,10 +32,12 @@ import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers, fileTempl
 import { eq, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { connectSsh, type SshSession } from "./vps/ssh-client.js";
-import type { StreamingChannel } from "./vps/ssh-client.js";
+import type { StreamingChannel, SftpWriteHandle } from "./vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from "./vps/deploy-service.js";
 import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules } from "./vps/do-provision.js";
+import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
+import { createTazClient } from "./vps/tazcloud-api-client.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
 import { setupMcpTrackerTunnel, type McpTrackerTunnel } from "./vps/mcp-tracker-tunnel.js";
@@ -65,12 +67,37 @@ const activeConversationAbortControllers = new Map<string, AbortController>();
 
 /** Track active DO deploy AbortControllers by projectId */
 const activeDoAbortControllers = new Map<string, AbortController>();
+const activeTazAbortControllers = new Map<string, AbortController>();
 
 /** Track active security scan AbortControllers by scanId */
 const activeSecurityAbortControllers = new Map<string, AbortController>();
 
 /** Active SSH sessions for inline project commands (key: projectId:commandId) */
 const activeCommandSessions = new Map<string, SshSession>();
+
+/** In-flight chunked uploads, keyed by client-generated uploadId */
+interface PendingUpload {
+  session: SshSession;
+  handle: SftpWriteHandle;
+  offset: number;
+  filePath: string;
+  staleTimer: ReturnType<typeof setTimeout>;
+}
+const pendingUploads = new Map<string, PendingUpload>();
+async function cleanupUpload(uploadId: string, opts: { deletePartial?: boolean } = {}) {
+  const p = pendingUploads.get(uploadId);
+  if (!p) return;
+  clearTimeout(p.staleTimer);
+  pendingUploads.delete(uploadId);
+  try { await p.handle.close(); } catch { /* ignore */ }
+  if (opts.deletePartial) {
+    try {
+      const escaped = p.filePath.replace(/'/g, "'\\''");
+      await p.session.exec(`rm -f '${escaped}'`);
+    } catch { /* ignore */ }
+  }
+  try { p.session.close(); } catch { /* ignore */ }
+}
 
 /** Set of droplet IDs known to be alive (refreshed periodically via DO API) */
 let knownAliveDropletIds: Set<number> = new Set();
@@ -2223,7 +2250,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "project:add": {
-      const { name, commands, vpsRegion, vpsSize, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl } = msg.payload;
+      const { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl } = msg.payload;
       if (!name) {
         send(ws, {
           type: "error",
@@ -2231,15 +2258,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         });
         return;
       }
-      const added = await projectService.add({ name, commands, vpsRegion, vpsSize, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl });
+      const added = await projectService.add({ name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl });
       broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
       break;
     }
 
     case "project:update": {
-      const { id, name, commands, vpsRegion, vpsSize, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders } = msg.payload;
+      const { id, name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders } = msg.payload;
       await projectManager.stopAll(id);
-      const updated = await projectService.update(id, { name, commands, vpsRegion, vpsSize, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders });
+      const updated = await projectService.update(id, { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders });
       if (!updated) {
         send(ws, {
           type: "error",
@@ -3232,6 +3259,170 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // --- TazCloud handlers ---
+
+    case "tazcloud:deploy": {
+      const { projectId: tazProjectId, instanceId: tazInstanceId, label: tazLabel } = msg.payload;
+      const tazProject = await projectService.getById(tazProjectId);
+      if (!tazProject) {
+        send(ws, { type: "vps:deploy:error", payload: { projectId: tazProjectId, message: "Project not found" } });
+        break;
+      }
+      const tazToken = process.env.TAZCLOUD_API_TOKEN;
+      const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
+      if (!tazToken || !tazPrivateKey) {
+        send(ws, { type: "vps:deploy:error", payload: { projectId: tazProjectId, message: "TazCloud credentials not configured (TAZCLOUD_API_TOKEN and TAZCLOUD_SSH_PRIVATE_KEY env vars)." } });
+        break;
+      }
+
+      // Auto-create AGENT.md if missing (mirrors DO path).
+      if (!tazProject.setupFiles?.["AGENT.md"]) {
+        const defaultAgentMd = `# Agent Memory\n\nThis file is automatically maintained by Genie.\n`;
+        const updatedFiles = { ...(tazProject.setupFiles || {}), "AGENT.md": defaultAgentMd };
+        await projectService.patchProject(tazProjectId, { setupFiles: updatedFiles });
+        tazProject.setupFiles = updatedFiles;
+      }
+
+      const newTazInstanceId = tazInstanceId || uuidv4();
+      const abortController = new AbortController();
+      activeTazAbortControllers.set(tazProjectId, abortController);
+
+      const tazDb = getDb();
+      const [tazLogRow] = await tazDb.insert(deployLogs).values({ projectId: tazProjectId }).returning({ id: deployLogs.id });
+      const tazDeployLogId = tazLogRow.id;
+      const tazProgressAcc: string[] = [];
+
+      const tazFirstMsg = `Starting TazCloud auto-provision for "${tazProject.name}" (image: ${tazProject.vpsImage || "ubuntu-22"}, size: ${tazProject.vpsSize || "small"})...`;
+      tazProgressAcc.push(tazFirstMsg);
+      send(ws, { type: "vps:deploy:progress", payload: { projectId: tazProjectId, instanceId: newTazInstanceId, message: tazFirstMsg } });
+
+      const gitlabKey = await settingsService.resolveGitlabDeployKey(tazProjectId);
+      const gitTokenValue = await settingsService.resolveGitToken(userId);
+
+      void tazcloudProvisionAndDeploy(
+        {
+          token: tazToken,
+          privateKey: tazPrivateKey,
+          projectName: tazProject.name,
+          image: tazProject.vpsImage || undefined,
+          size: tazProject.vpsSize || undefined,
+          signal: abortController.signal,
+          gitlabDeployKey: gitlabKey || undefined,
+          gitToken: gitTokenValue || undefined,
+          envVars: tazProject.secrets?.reduce((acc, s) => { if (s.key) acc[s.key] = s.value; return acc; }, {} as Record<string, string>),
+          setupFiles: tazProject.setupFiles,
+        },
+        (step) => {
+          tazProgressAcc.push(step);
+          send(ws, { type: "vps:deploy:progress", payload: { projectId: tazProjectId, instanceId: newTazInstanceId, message: step } });
+        },
+      ).then(async (result) => {
+        activeTazAbortControllers.delete(tazProjectId);
+        const tazKeyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
+        const connection: VpsConnectionConfig = {
+          host: result.ipv6,
+          port: 22,
+          username: VPS_SSH_USERNAME,
+          privateKeyPath: tazKeyPath,
+        };
+        const instance: import("./types.js").VpsInstance = {
+          id: newTazInstanceId,
+          label: tazLabel || "production",
+          connection,
+          services: [],
+          tazcloud: {
+            vmId: result.vmId,
+            ipv6: result.ipv6,
+            image: result.image,
+            size: result.size,
+            sshUser: result.sshUser,
+          },
+        };
+        try {
+          instance.services = await vpsStatus(tazProject.name, connection);
+        } catch { /* keep empty */ }
+        const existing = tazProject.vpsInstances.find(v => v.id === newTazInstanceId);
+        if (existing) {
+          await projectService.updateVpsInstance(tazProjectId, newTazInstanceId, instance);
+        } else {
+          await projectService.addVpsInstance(tazProjectId, instance);
+        }
+        broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        await tazDb.update(deployLogs).set({ status: "success", progress: tazProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, tazDeployLogId));
+        send(ws, { type: "vps:deploy:done", payload: { projectId: tazProjectId, instanceId: newTazInstanceId, services: instance.services, deployLogId: tazDeployLogId } });
+      }).catch(async (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        activeTazAbortControllers.delete(tazProjectId);
+        await tazDb.update(deployLogs).set({ status: "error", progress: tazProgressAcc, error: message, endedAt: new Date() }).where(eq(deployLogs.id, tazDeployLogId));
+        const failedVmId = (err as Error & { vmId?: string }).vmId;
+        if (failedVmId) {
+          const failedInstance: import("./types.js").VpsInstance = {
+            id: newTazInstanceId,
+            label: tazLabel || "production",
+            connection: {
+              host: "unknown",
+              port: 22,
+              username: VPS_SSH_USERNAME,
+              privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey),
+            },
+            services: [],
+            tazcloud: {
+              vmId: failedVmId,
+              ipv6: "unknown",
+              image: tazProject.vpsImage || "unknown",
+              size: tazProject.vpsSize || "unknown",
+              sshUser: VPS_SSH_USERNAME,
+            },
+            deployFailed: true,
+            deployError: message,
+          };
+          await projectService.addVpsInstance(tazProjectId, failedInstance);
+          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        }
+        send(ws, {
+          type: "vps:deploy:error",
+          payload: {
+            projectId: tazProjectId,
+            instanceId: newTazInstanceId,
+            message,
+            deployLogId: tazDeployLogId,
+            ...(failedVmId ? { failedVm: { vmId: failedVmId, provider: "tazcloud" } } : {}),
+          },
+        });
+      });
+      break;
+    }
+
+    case "tazcloud:cancel": {
+      const { projectId: cancelProjectId } = msg.payload;
+      const controller = activeTazAbortControllers.get(cancelProjectId);
+      if (controller) {
+        controller.abort();
+        activeTazAbortControllers.delete(cancelProjectId);
+        send(ws, { type: "vps:deploy:progress", payload: { projectId: cancelProjectId, message: "Cancelling TazCloud deployment..." } });
+      }
+      break;
+    }
+
+    case "tazcloud:destroy-failed-vm": {
+      const { vmId: failedVmId, projectId: failedProjectId, instanceId: failedInstanceId } = msg.payload;
+      try {
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        await tazcloudDestroyVm(tazToken, failedVmId, (step) => {
+          send(ws, { type: "vps:deploy:progress", payload: { projectId: failedProjectId, instanceId: failedInstanceId, message: step } });
+        });
+        if (failedProjectId && failedInstanceId) {
+          try { await projectService.removeVpsInstance(failedProjectId, failedInstanceId); } catch {}
+          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        }
+        send(ws, { type: "tazcloud:destroy-failed-vm:done", payload: { vmId: failedVmId } });
+      } catch (err: unknown) {
+        send(ws, { type: "tazcloud:destroy-failed-vm:error", payload: { vmId: failedVmId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
     // --- VPS (SSH) deploy handlers ---
 
     case "vps:test-connection": {
@@ -3828,7 +4019,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           progress("Configuring firewall...");
           try {
             const fwSession = await connectSsh({ ...connConfig, username: "root" });
-            await fwSession.exec(buildUfwRules(process.env.MANAGER_PUBLIC_IP, process.env.MANAGER_PUBLIC_IP_DEV).join(" && "));
+            await fwSession.exec(buildUfwRules(process.env.MANAGER_PUBLIC_IP, process.env.MANAGER_PUBLIC_IP_DEV, process.env.MANAGER_PUBLIC_IP_V6, process.env.MANAGER_PUBLIC_IP_V6_DEV).join(" && "));
             fwSession.close();
           } catch (fwErr: unknown) {
             progress(`Warning: Firewall config failed: ${fwErr instanceof Error ? fwErr.message : String(fwErr)}`);
@@ -4276,6 +4467,56 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         backupService.deleteBackup(msg.payload.name);
         const files = backupService.listBackups();
         send(ws, { type: "admin:backups:deleted", payload: { files } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:list": {
+      const tazToken = process.env.TAZCLOUD_API_TOKEN;
+      if (!tazToken) {
+        send(ws, { type: "admin:tazcloud:list", payload: { vms: [], error: "TAZCLOUD_API_TOKEN not configured on the manager." } });
+        break;
+      }
+      try {
+        const tazClient = createTazClient(tazToken);
+        const vms = await tazClient.listVms();
+        // Map VM id → project for inline labeling (mirrors DO handler).
+        const projects = await projectService.getAll();
+        const projectMap: Record<string, { projectId: string; projectName: string }> = {};
+        for (const p of projects) {
+          for (const v of p.vpsInstances) {
+            if (v.tazcloud?.vmId) {
+              projectMap[v.tazcloud.vmId] = { projectId: p.id, projectName: p.name };
+            }
+          }
+        }
+        send(ws, { type: "admin:tazcloud:list", payload: { vms, projectMap } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:list", payload: { vms: [], error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:delete": {
+      try {
+        const { vmId } = msg.payload;
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        await tazClient.deleteVm(vmId);
+        // Detach from any owning project.
+        const projects = await projectService.getAll();
+        for (const p of projects) {
+          const inst = p.vpsInstances.find(v => v.tazcloud?.vmId === vmId);
+          if (inst) {
+            await projectService.removeVpsInstance(p.id, inst.id);
+            broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+            break;
+          }
+        }
+        send(ws, { type: "admin:tazcloud:deleted", payload: { vmId } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -5179,19 +5420,55 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "vps:fs:upload": {
-      const { projectId, instanceId, path: uploadDir, fileName, dataBase64, reqId } = msg.payload;
+      // Chunked upload over SFTP. Client sends chunks (base64-encoded on the wire,
+      // decoded here) with a shared uploadId. SFTP has proper flow control so chunk
+      // writes ack reliably — unlike piping into `base64 -d` via execStreaming, which
+      // can stall under SSH channel-window backpressure.
+      const { uploadId, projectId, instanceId, path: uploadDir, fileName, dataBase64, chunkIndex, totalChunks, reqId } = msg.payload;
       try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn);
-        try {
-          const dir = (uploadDir as string).replace(/'/g, "'\\''");
-          const safeName = (fileName as string).replace(/'/g, "'\\''");
-          const filePath = `${dir.replace(/\/$/, "")}/${safeName}`;
-          await session.exec(`echo '${dataBase64}' | base64 -d > '${filePath}'`);
-          send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
-        } finally { session.close(); }
+        if (typeof uploadId !== "string" || typeof chunkIndex !== "number" || typeof totalChunks !== "number") {
+          throw new Error("upload requires uploadId, chunkIndex, totalChunks");
+        }
+        if (chunkIndex === 0) {
+          await cleanupUpload(uploadId); // wipe any stale leftover with the same id
+          const conn = await getVpsConnection(projectId, instanceId);
+          const session = await connectSsh(conn);
+          const filePath = `${(uploadDir as string).replace(/\/$/, "")}/${fileName}`;
+          const handle = await session.sftpOpenWrite(filePath);
+          const staleTimer = setTimeout(() => { cleanupUpload(uploadId, { deletePartial: true }).catch(() => {}); }, 10 * 60 * 1000);
+          pendingUploads.set(uploadId, { session, handle, offset: 0, filePath, staleTimer });
+        }
+        const pending = pendingUploads.get(uploadId);
+        if (!pending) throw new Error("no pending upload for this uploadId");
+
+        const buf = Buffer.from(dataBase64, "base64");
+        // SFTP single write is capped at the negotiated max packet (~32 KB). Fire the
+        // sub-writes in parallel — SFTP allows ~64 outstanding requests, so this
+        // pipelines over the SSH round-trip latency instead of paying it per packet.
+        const SFTP_WRITE = 32 * 1024;
+        const writes: Promise<void>[] = [];
+        for (let p = 0; p < buf.length; p += SFTP_WRITE) {
+          const slice = buf.subarray(p, Math.min(p + SFTP_WRITE, buf.length));
+          writes.push(pending.handle.write(slice, pending.offset + p));
+        }
+        await Promise.all(writes);
+        pending.offset += buf.length;
+
+        if (chunkIndex + 1 === totalChunks) {
+          await cleanupUpload(uploadId);
+        }
+        send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
       } catch (err: unknown) {
+        if (typeof uploadId === "string") await cleanupUpload(uploadId, { deletePartial: true }).catch(() => {});
         send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
+      }
+      break;
+    }
+
+    case "vps:fs:upload-cancel": {
+      const { uploadId } = msg.payload;
+      if (typeof uploadId === "string") {
+        await cleanupUpload(uploadId, { deletePartial: true }).catch(() => {});
       }
       break;
     }
@@ -5572,11 +5849,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "terminal:ssh:spawn": {
-      const { id, host, port, privateKeyPath, cols, rows } = msg.payload;
+      const { id, host, port, username, privateKeyPath, cols, rows } = msg.payload;
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: port || 22,
-        username: VPS_SSH_USERNAME,
+        username: username || VPS_SSH_USERNAME,
         privateKeyPath: privateKeyPath || "~/.genie/ssh/genie_ed25519",
       }, userId);
       break;

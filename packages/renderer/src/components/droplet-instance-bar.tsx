@@ -12,6 +12,7 @@ export interface DropletInstanceBarProps {
   ip: string | null;
   region?: string;
   sizeSlug?: string;
+  provider?: "digitalocean" | "tazcloud";
   stats?: VpsStats | null;
   statsLoading?: boolean;
   statsError?: string | null;
@@ -92,6 +93,7 @@ export function DropletInstanceBar({
   ip,
   region,
   sizeSlug,
+  provider = "digitalocean",
   stats,
   statsLoading,
   statsError,
@@ -144,7 +146,7 @@ export function DropletInstanceBar({
 
       {sizeSlug && (
         <span className="text-md bg-blue/15 text-blue px-1.5 py-0.5 rounded font-mono shrink-0">
-          DO {sizeSlug}{region ? ` · ${region}` : ""}
+          {provider === "tazcloud" ? "Taz" : "DO"} {sizeSlug}{region ? ` · ${region}` : ""}
         </span>
       )}
 

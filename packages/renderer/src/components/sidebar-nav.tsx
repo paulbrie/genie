@@ -1,34 +1,42 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield } from "lucide-react";
-import { $activeNav, $docker, $presenceSessions, type DockerInfo, type NavKey } from "@/store";
+import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, Cloud } from "lucide-react";
+import { $activeNav, $auth, $docker, $presenceSessions, type DockerInfo, type NavKey } from "@/store";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@/lib/navigation";
 
-const navItems = [
-  { key: "apps" as const, label: "Apps", icon: LayoutGrid },
-  { key: "projects" as const, label: "Projects", icon: FolderKanban },
-  { key: "processes" as const, label: "Processes", icon: Activity },
+const baseNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = [
+  { key: "apps", label: "Apps", icon: LayoutGrid },
+  { key: "projects", label: "Projects", icon: FolderKanban },
+  { key: "processes", label: "Processes", icon: Activity },
 
-  { key: "docker" as const, label: "Docker", icon: Container },
-  { key: "docs" as const, label: "Docs", icon: FileText },
-  { key: "logs" as const, label: "Logs", icon: ScrollText },
-  { key: "chat" as const, label: "Chat", icon: MessageCircle },
-  { key: "tracker" as const, label: "Tracker", icon: SquareKanban },
-  { key: "settings" as const, label: "Settings", icon: Settings },
-  { key: "admin" as const, label: "Admin", icon: Database },
-  { key: "architecture" as const, label: "Architecture", icon: Network },
-  { key: "users" as const, label: "Connected Users", icon: Users },
-  { key: "security" as const, label: "Security", icon: Shield },
+  { key: "docker", label: "Docker", icon: Container },
+  { key: "docs", label: "Docs", icon: FileText },
+  { key: "logs", label: "Logs", icon: ScrollText },
+  { key: "chat", label: "Chat", icon: MessageCircle },
+  { key: "tracker", label: "Tracker", icon: SquareKanban },
+  { key: "settings", label: "Settings", icon: Settings },
+  { key: "admin", label: "Admin", icon: Database },
+  { key: "architecture", label: "Architecture", icon: Network },
+  { key: "users", label: "Connected Users", icon: Users },
+  { key: "security", label: "Security", icon: Shield },
+];
+
+const superAdminNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = [
+  { key: "tazcloud", label: "TazCloud", icon: Cloud },
 ];
 
 export function SidebarNav() {
   const [activeNav] = useSubject($activeNav);
+  const [auth] = useSubject($auth);
   const [docker] = useSubject($docker);
   const [sessions] = useSubject($presenceSessions);
   const { navigateToNav } = useNavigate();
   const uniqueUserCount = new Set(sessions.map(s => s.id)).size;
+  const isSuperAdmin = auth.user?.role === "superadmin";
+
+  const navItems = isSuperAdmin ? [...baseNavItems, ...superAdminNavItems] : baseNavItems;
 
   return (
     <nav className="flex flex-col gap-0.5">

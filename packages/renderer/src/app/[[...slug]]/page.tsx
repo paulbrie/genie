@@ -44,6 +44,7 @@ import { ChatView } from "@/components/chat-view";
 import { ChatNotificationToasts } from "@/components/chat-notification-toasts";
 import { TrackerPanel } from "@/components/tracker-panel";
 import { AdminPanel } from "@/components/admin-panel";
+import { TazCloudPanel } from "@/components/tazcloud-panel";
 import { ArchitecturePanel } from "@/components/architecture-panel";
 import { ConnectedUsersPanel } from "@/components/connected-users-panel";
 import { SecurityPanel } from "@/components/security-panel";
@@ -210,6 +211,10 @@ function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; setting
 
   if (activeNav === "admin") {
     return <AdminPanel />;
+  }
+
+  if (activeNav === "tazcloud") {
+    return <TazCloudPanel />;
   }
 
   if (activeNav === "architecture") {

@@ -26,18 +26,31 @@ export function sshKeyFingerprint(pubKeyContent: string): string {
   return hash.match(/.{2}/g)!.join(":");
 }
 
-/** Build UFW rules for firewall lockdown. If no managerIp, allows SSH from anywhere. */
-export function buildUfwRules(managerIp?: string, managerIpDev?: string): string[] {
+/** Build UFW rules for firewall lockdown.
+ *  Accepts both IPv4 and IPv6 manager addresses. If none are provided, falls back to
+ *  open SSH (no source restriction) — necessary for v6-only hosts when the manager
+ *  hasn't exposed an IPv6 outbound address.
+ *  IPv6 inputs accept literals (`2001:db8::1`), CIDR prefixes (`2001:db8::/64`), or
+ *  bracketed forms (UFW handles all three). */
+export function buildUfwRules(
+  managerIp?: string,
+  managerIpDev?: string,
+  managerIpV6?: string,
+  managerIpV6Dev?: string,
+): string[] {
   const rules = [
-    // Reset all existing rules (wipes anything the base image added)
     "ufw --force reset",
     "ufw default deny incoming",
     "ufw default allow outgoing",
   ];
-  if (managerIp) {
-    rules.push(`ufw allow from ${managerIp} to any port 22 proto tcp`);
-    if (managerIpDev) {
-      rules.push(`ufw allow from ${managerIpDev} to any port 22 proto tcp`);
+  const allowed: string[] = [];
+  for (const ip of [managerIp, managerIpDev, managerIpV6, managerIpV6Dev]) {
+    if (ip) allowed.push(ip);
+  }
+  if (allowed.length > 0) {
+    for (const ip of allowed) {
+      // UFW auto-detects family from the source address.
+      rules.push(`ufw allow from ${ip} to any port 22 proto tcp`);
     }
   } else {
     rules.push("ufw allow 22/tcp");
@@ -223,7 +236,7 @@ export async function doProvisionAndDeploy(
     onProgress(`Creating droplet "${dropletName}" (${size} in ${region}, image: ${useBaseImage ? `snapshot ${baseImageId}` : "docker-20-04"})...`);
     // cloud-init: configure UFW — default deny, allow SSH from manager IP(s) only + port 3000 public
     const userData = useBaseImage ? undefined
-      : `#!/bin/bash\n${buildUfwRules(process.env.MANAGER_PUBLIC_IP, process.env.MANAGER_PUBLIC_IP_DEV).join("\n")}\n`;
+      : `#!/bin/bash\n${buildUfwRules(process.env.MANAGER_PUBLIC_IP, process.env.MANAGER_PUBLIC_IP_DEV, process.env.MANAGER_PUBLIC_IP_V6, process.env.MANAGER_PUBLIC_IP_V6_DEV).join("\n")}\n`;
 
     const droplet = await client.createDroplet({
       name: dropletName,
@@ -358,13 +371,15 @@ export async function doProvisionAndDeploy(
 
     // 5b. Lock down firewall: SSH from manager IP(s) only + port 3000 public
     const managerIp = process.env.MANAGER_PUBLIC_IP;
-    if (managerIp) {
-      const managerIpDev = process.env.MANAGER_PUBLIC_IP_DEV;
-      const ipList = [managerIp, ...(managerIpDev ? [managerIpDev] : [])];
+    const managerIpDev = process.env.MANAGER_PUBLIC_IP_DEV;
+    const managerIpV6 = process.env.MANAGER_PUBLIC_IP_V6;
+    const managerIpV6Dev = process.env.MANAGER_PUBLIC_IP_V6_DEV;
+    if (managerIp || managerIpV6) {
+      const ipList = [managerIp, managerIpDev, managerIpV6, managerIpV6Dev].filter(Boolean);
       onProgress(`Configuring firewall: SSH from ${ipList.join(", ")}, port 3000 public...`);
       try {
         const fwSession = await connectSsh(connConfig);
-        await fwSession.exec(buildUfwRules(managerIp, managerIpDev).join(" && "));
+        await fwSession.exec(buildUfwRules(managerIp, managerIpDev, managerIpV6, managerIpV6Dev).join(" && "));
         fwSession.close();
         onProgress(`Firewall configured: SSH from ${ipList.join(", ")}, port 3000 open`);
       } catch (err: unknown) {

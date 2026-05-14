@@ -100,8 +100,10 @@ export const projects = pgTable("projects", {
   commands: jsonb("commands").default([]).notNull(),           // ProjectCommand[]
   commandStatuses: jsonb("command_statuses").default({}).notNull(), // Record<string, ProcessStatus>
   vps: jsonb("vps"),                                            // VpsInfo | null
+  vpsProvider: text("vps_provider").default("digitalocean").notNull(),  // "digitalocean" | "tazcloud"
   vpsRegion: text("vps_region"),
   vpsSize: text("vps_size"),
+  vpsImage: text("vps_image"),                                  // TazCloud image slug (ubuntu-22 etc.); null for DO
   vpsBaseImageId: integer("vps_base_image_id"),
   vpsBaseImageConfigName: text("vps_base_image_config_name"),
   setupFiles: jsonb("setup_files").default({}),

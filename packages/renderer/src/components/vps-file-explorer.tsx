@@ -4,8 +4,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import type { BeforeMount } from "@monaco-editor/react";
-import { File, Folder, ArrowLeft, Save, RefreshCw, Loader2, FileEdit, Trash2, Download, Upload } from "lucide-react";
-import { wsRequest } from "@/lib/ws";
+import { File, Folder, ArrowLeft, Save, RefreshCw, Loader2, FileEdit, Trash2, Download, Upload, X } from "lucide-react";
+import { wsRequest, wsSend } from "@/lib/ws";
+import { formatBytes } from "@/lib/utils";
 import { ErrorMessage } from "@/components/ui/error-message";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
@@ -210,6 +211,16 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
   const [renameValue, setRenameValue] = useState("");
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<{
+    fileName: string;
+    fileIndex: number;
+    fileCount: number;
+    percent: number;
+    bytesDone: number;
+    bytesTotal: number;
+    speedBps: number;
+  } | null>(null);
+  const uploadCancelRef = useRef(false);
   const dragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -331,33 +342,100 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
 
   const handleUpload = useCallback(async (files: FileList) => {
     if (!inst || files.length === 0) return;
+    uploadCancelRef.current = false;
     setUploading(true);
     setError(null);
+    setUploadStatus(null);
+    let failed = false;
+    let cancelled = false;
+    const CHUNK_SIZE = 256 * 1024; // base64 chars per chunk (~192KB of file data)
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const buffer = await file.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        let binary = "";
-        for (let j = 0; j < bytes.length; j++) binary += String.fromCharCode(bytes[j]);
-        const dataBase64 = btoa(binary);
-        const res = await wsRequest("vps:fs:upload", {
-          projectId: project.id,
-          instanceId: inst.id,
-          path: currentPath,
+        setUploadStatus({
           fileName: file.name,
-          dataBase64,
-        }, 60000);
-        if (!res.ok) {
-          setError(`Failed to upload ${file.name}: ${res.error}`);
-          break;
+          fileIndex: i,
+          fileCount: files.length,
+          percent: 0,
+          bytesDone: 0,
+          bytesTotal: file.size,
+          speedBps: 0,
+        });
+        // FileReader does base64 natively — fast for multi-MB files (manual
+        // String.fromCharCode loop would be O(n²) and freeze the UI).
+        const dataBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            const comma = result.indexOf(",");
+            resolve(comma >= 0 ? result.slice(comma + 1) : result);
+          };
+          reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+          reader.readAsDataURL(file);
+        });
+
+        const totalChunks = Math.max(1, Math.ceil(dataBase64.length / CHUNK_SIZE));
+        const uploadId = crypto.randomUUID();
+        const startedAt = performance.now();
+        let lastTickAt = startedAt;
+        let lastTickBytes = 0;
+        let emaSpeed = 0; // bytes/sec, exponential moving average
+        for (let c = 0; c < totalChunks; c++) {
+          if (uploadCancelRef.current) {
+            wsSend("vps:fs:upload-cancel", { uploadId, projectId: project.id, instanceId: inst.id });
+            cancelled = true;
+            break;
+          }
+          const chunk = dataBase64.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE);
+          const res = await wsRequest("vps:fs:upload", {
+            uploadId,
+            projectId: project.id,
+            instanceId: inst.id,
+            path: currentPath,
+            fileName: file.name,
+            dataBase64: chunk,
+            chunkIndex: c,
+            totalChunks,
+          }, 120000);
+          if (uploadCancelRef.current) {
+            wsSend("vps:fs:upload-cancel", { uploadId, projectId: project.id, instanceId: inst.id });
+            cancelled = true;
+            break;
+          }
+          if (!res.ok) {
+            setError(`Failed to upload ${file.name}: ${res.error}`);
+            failed = true;
+            break;
+          }
+          // Approximate raw bytes done from progress fraction.
+          const bytesDone = Math.round(((c + 1) / totalChunks) * file.size);
+          const now = performance.now();
+          const dt = (now - lastTickAt) / 1000;
+          if (dt > 0) {
+            const instant = (bytesDone - lastTickBytes) / dt;
+            emaSpeed = emaSpeed === 0 ? instant : emaSpeed * 0.6 + instant * 0.4;
+          }
+          lastTickAt = now;
+          lastTickBytes = bytesDone;
+          setUploadStatus({
+            fileName: file.name,
+            fileIndex: i,
+            fileCount: files.length,
+            percent: Math.round(((c + 1) / totalChunks) * 100),
+            bytesDone,
+            bytesTotal: file.size,
+            speedBps: emaSpeed,
+          });
         }
+        if (failed || cancelled) break;
       }
-      loadDirectory(currentPath);
+      if (!failed && !cancelled) loadDirectory(currentPath);
     } catch (err: any) {
       setError(err.message);
     }
+    uploadCancelRef.current = false;
     setUploading(false);
+    setUploadStatus(null);
   }, [project.id, inst?.id, currentPath, loadDirectory]);
 
   const commitRename = useCallback(async () => {
@@ -467,6 +545,43 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
 
         {error && (
           <ErrorMessage variant="banner" className="shrink-0">{error}</ErrorMessage>
+        )}
+
+        {uploadStatus && (
+          <div className="shrink-0 px-2 py-1 bg-background/50 border border-overlay0/30 rounded text-xs text-overlay1 select-none">
+            <div className="flex items-center justify-between gap-2 mb-1 font-mono">
+              <span className="truncate">
+                {uploadStatus.fileCount > 1
+                  ? `(${uploadStatus.fileIndex + 1}/${uploadStatus.fileCount}) `
+                  : ""}
+                {uploadStatus.fileName}
+              </span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span>{uploadStatus.percent}%</span>
+                <button
+                  onClick={() => { uploadCancelRef.current = true; }}
+                  disabled={uploadCancelRef.current}
+                  className="text-overlay0 hover:text-red transition-colors p-0.5 bg-transparent border-none cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                  title="Cancel upload"
+                  aria-label="Cancel upload"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+            <div className="h-1 bg-overlay0/30 rounded overflow-hidden">
+              <div
+                className="h-full bg-blue transition-[width] duration-150"
+                style={{ width: `${uploadStatus.percent}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2 mt-1 font-mono text-overlay0">
+              <span>
+                {formatBytes(uploadStatus.bytesDone)} / {formatBytes(uploadStatus.bytesTotal)}
+              </span>
+              <span>{uploadStatus.speedBps > 0 ? `${formatBytes(uploadStatus.speedBps)}/s` : ""}</span>
+            </div>
+          </div>
         )}
 
         {/* File list */}

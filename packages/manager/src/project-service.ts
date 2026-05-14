@@ -39,8 +39,10 @@ function rowToProjectDef(row: typeof projects.$inferSelect): ProjectDef {
     commands: (row.commands as ProjectCommand[]) || [],
     commandStatuses: (row.commandStatuses as Record<string, ProcessStatus>) || {},
     vpsInstances: migrateVpsInstances(row.vps),
+    vpsProvider: (row.vpsProvider as "digitalocean" | "tazcloud" | null) || "digitalocean",
     vpsRegion: row.vpsRegion || undefined,
     vpsSize: row.vpsSize || undefined,
+    vpsImage: row.vpsImage || undefined,
     vpsBaseImageId: row.vpsBaseImageId || undefined,
     vpsBaseImageConfigName: row.vpsBaseImageConfigName || undefined,
     setupFiles: (row.setupFiles as Record<string, string>) || {},
@@ -71,8 +73,10 @@ export async function getById(id: string): Promise<ProjectDef | null> {
 export async function add(entry: {
   name: string;
   commands?: { name: string; command: string; mode?: "inline" | "terminal" }[];
+  vpsProvider?: "digitalocean" | "tazcloud";
   vpsRegion?: string;
   vpsSize?: string;
+  vpsImage?: string;
   vpsBaseImageId?: number;
   vpsBaseImageConfigName?: string;
   secrets?: { key: string; value: string }[];
@@ -100,8 +104,10 @@ export async function add(entry: {
       name: entry.name,
       commands,
       commandStatuses,
+      vpsProvider: entry.vpsProvider || "digitalocean",
       vpsRegion: entry.vpsRegion || null,
       vpsSize: entry.vpsSize || null,
+      vpsImage: entry.vpsImage || null,
       vpsBaseImageId: entry.vpsBaseImageId || null,
       vpsBaseImageConfigName: entry.vpsBaseImageConfigName || null,
       secrets: entry.secrets || [],
@@ -119,8 +125,10 @@ export async function update(
   fields: {
     name?: string;
     commands?: { id?: string; name: string; command: string; mode?: "inline" | "terminal" }[];
+    vpsProvider?: "digitalocean" | "tazcloud";
     vpsRegion?: string;
     vpsSize?: string;
+    vpsImage?: string;
     vpsBaseImageId?: number | null;
     vpsBaseImageConfigName?: string;
     setupFiles?: Record<string, string>;
@@ -137,8 +145,10 @@ export async function update(
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (fields.name !== undefined) updates.name = fields.name;
+  if (fields.vpsProvider !== undefined) updates.vpsProvider = fields.vpsProvider;
   if (fields.vpsRegion !== undefined) updates.vpsRegion = fields.vpsRegion || null;
   if (fields.vpsSize !== undefined) updates.vpsSize = fields.vpsSize || null;
+  if (fields.vpsImage !== undefined) updates.vpsImage = fields.vpsImage || null;
   if (fields.vpsBaseImageId !== undefined) updates.vpsBaseImageId = fields.vpsBaseImageId || null;
   if (fields.vpsBaseImageConfigName !== undefined) updates.vpsBaseImageConfigName = fields.vpsBaseImageConfigName || null;
   if (fields.setupFiles !== undefined) updates.setupFiles = fields.setupFiles;
