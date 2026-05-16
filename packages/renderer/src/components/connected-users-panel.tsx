@@ -3,8 +3,9 @@
 import { useEffect, useMemo } from "react";
 import { useSubject } from "subjecto/react";
 import { Users, Monitor, Chrome, MapPin, Globe, Wifi } from "lucide-react";
-import { $presenceSessions, requestPresenceDetail, type PresenceSession } from "@/store";
-
+import type { PresenceSession } from "@/store/types";
+import { $presenceSessions } from "@/store/subjects";
+import { requestPresenceDetail } from "@/store/actions";
 function parseBrowser(ua: string | null): string {
   if (!ua) return "Unknown";
   if (ua.includes("Edg/")) return "Edge";

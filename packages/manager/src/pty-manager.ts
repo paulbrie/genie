@@ -235,7 +235,7 @@ export function spawnSshPty(
       let message = `SSH connection failed: ${err.message}`;
       const looksLikeIpv6 = /:[0-9a-f]{1,4}:/i.test(config.host);
       if (err.message.includes("ENETUNREACH") && looksLikeIpv6) {
-        message = `SSH connection failed: no IPv6 route from this manager to ${config.host}. The target is IPv6-only and your network has no IPv6 connectivity. Enable IPv6 (e.g. a Hurricane Electric tunnel) or run the manager from a host with IPv6 egress.`;
+        message = `SSH connection failed: no IPv6 route to ${config.host} (ENETUNREACH). This usually means the target VM is offline or its IPv6 tunnel is down — not necessarily a local IPv6 problem. If other IPv6 hosts work from this manager (e.g. \`ping6 2606:4700:4700::1111\`), the target is the issue. Otherwise enable IPv6 on this host (e.g. a Hurricane Electric tunnel).`;
       } else if (err.message.includes("EHOSTUNREACH")) {
         message = `SSH connection failed: host unreachable (${config.host}). Check that the VM is running and your firewall/NAT permits the connection.`;
       }

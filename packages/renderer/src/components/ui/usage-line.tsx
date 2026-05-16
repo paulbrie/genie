@@ -1,5 +1,4 @@
-import type { ChatMessageUsage } from "@/store";
-
+import type { ChatMessageUsage } from "@/store/types";
 function formatCost(cost: number): string {
   if (cost < 0.001) return `$${(cost * 100).toFixed(4)}c`;
   if (cost < 0.01) return `$${cost.toFixed(4)}`;

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { $settings, $doTokenValid, $railwayTestResult, $admin, loadSettings, saveSettingsField, validateDoToken, testRailwayToken, loadSshKey, regenerateSshKey, deleteSshKey } from "@/store";
+import { $admin, $doTokenValid, $railwayTestResult, $settings } from "@/store/subjects";
+import { deleteSshKey, loadSettings, loadSshKey, regenerateSshKey, saveSettingsField, testRailwayToken, validateDoToken } from "@/store/actions";
 import { useDeepSubject } from "subjecto/react";
 import { type AppSettings } from "@/lib/genie-api";
 import { Eye, EyeOff, Key, Copy, Check, Loader2, Trash2, RefreshCw } from "lucide-react";

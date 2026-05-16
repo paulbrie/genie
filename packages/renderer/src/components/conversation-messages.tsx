@@ -5,24 +5,9 @@ import { useSubject } from "subjecto/react";
 import { Send, Bot, SmilePlus, Reply, Pencil, X, Copy, Terminal, Square } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {
-  $conversationChat,
-  $auth,
-  sendConversationMessage,
-  stopConversationChat,
-  loadOlderMessages,
-  setReplyingTo,
-  startEditingMessage,
-  cancelEditingMessage,
-  toggleReaction,
-  sendEditedMessage,
-  acceptTerminalShare,
-  type ConversationMessage,
-  type ConversationMember,
-  type ToolUse,
-  type AuthUser,
-  type TerminalShareInvite,
-} from "@/store";
+import type { AuthUser, ConversationMember, ConversationMessage, TerminalShareInvite, ToolUse } from "@/store/types";
+import { $auth, $conversationChat } from "@/store/subjects";
+import { acceptTerminalShare, cancelEditingMessage, loadOlderMessages, sendConversationMessage, sendEditedMessage, setReplyingTo, startEditingMessage, stopConversationChat, toggleReaction } from "@/store/actions";
 import { cn } from "@/lib/utils";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";

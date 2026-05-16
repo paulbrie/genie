@@ -3,7 +3,8 @@
 import { useCallback, useRef } from "react";
 import { useSubject } from "subjecto/react";
 import { X } from "lucide-react";
-import { $fileExplorer, toggleFileExplorer, setFileExplorerPanelWidth } from "@/store";
+import { $fileExplorer } from "@/store/subjects";
+import { setFileExplorerPanelWidth, toggleFileExplorer } from "@/store/actions";
 import { FileExplorerToolbar } from "./file-explorer-toolbar";
 import { FileList } from "./file-list";
 

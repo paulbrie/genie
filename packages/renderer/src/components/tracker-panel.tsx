@@ -8,40 +8,9 @@ import {
   LayoutGrid, List, Plus, X, Filter, Search, Trash2, Tag,
   GripVertical, Loader2, Send, MessageSquare,
 } from "lucide-react";
-import {
-  $tracker,
-  $projects,
-  $conversationChat,
-  loadTrackerIssues,
-  loadTrackerComments,
-  createTrackerComment,
-  deleteTrackerComment,
-  type TrackerComment,
-  createTrackerIssue,
-  updateTrackerIssue,
-  deleteTrackerIssue,
-  selectTrackerIssue,
-  setTrackerViewMode,
-  setTrackerGroupBy,
-  setTrackerFilters,
-  clearTrackerFilters,
-  showTrackerCreateForm,
-  hideTrackerCreateForm,
-  setTrackerProject,
-  createTrackerLabel,
-  updateTrackerLabel,
-  deleteTrackerLabel,
-  type TrackerState,
-  type TrackerIssue,
-  type TrackerLabel,
-  type TrackerStatus,
-  type TrackerPriority,
-  type TrackerViewMode as TViewMode,
-  type TrackerGroupBy as TGroupBy,
-  type TrackerFilters,
-  type ChatUser,
-  type ProjectDef,
-} from "@/store";
+import type { ChatUser, ProjectDef, TrackerComment, TrackerFilters, TrackerGroupBy as TGroupBy, TrackerIssue, TrackerLabel, TrackerPriority, TrackerState, TrackerStatus, TrackerViewMode as TViewMode } from "@/store/types";
+import { $conversationChat, $projects, $tracker } from "@/store/subjects";
+import { clearTrackerFilters, createTrackerComment, createTrackerIssue, createTrackerLabel, deleteTrackerComment, deleteTrackerIssue, deleteTrackerLabel, hideTrackerCreateForm, loadTrackerComments, loadTrackerIssues, selectTrackerIssue, setTrackerFilters, setTrackerGroupBy, setTrackerProject, setTrackerViewMode, showTrackerCreateForm, updateTrackerIssue, updateTrackerLabel } from "@/store/actions";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";

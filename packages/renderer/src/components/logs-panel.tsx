@@ -2,7 +2,9 @@
 
 import { useEffect, useRef } from "react";
 import { useSubject } from "subjecto/react";
-import { $logs, switchLogSource, clearManagerLogs, type LogsState } from "@/store";
+import type { LogsState } from "@/store/types";
+import { $logs } from "@/store/subjects";
+import { clearManagerLogs, switchLogSource } from "@/store/actions";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";
 import { Select } from "@/components/ui/select";

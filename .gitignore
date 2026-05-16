@@ -9,3 +9,9 @@ out/
 *.tsbuildinfo
 .claude/worktrees/
 .mcp.json
+
+# Local-only test creds (TazCloud bearer + SSH key). Never commit.
+TESTER-CREDENTIALS.md
+
+# Scratch screenshots
+.tmp-*.png

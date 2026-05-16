@@ -1,7 +1,9 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { $projects, showAddProjectForm as openAddProjectForm, type ProjectDef } from "@/store";
+import { Users } from "lucide-react";
+import { $projects } from "@/store/subjects";
+import { showAddProjectForm as openAddProjectForm } from "@/store/actions";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";
 import { useNavigate } from "@/lib/navigation";
@@ -45,9 +47,21 @@ export function ProjectsGrid() {
                   </span>
                 </div>
 
-                <span className="text-md text-overlay0 font-mono truncate">
-                  {project.vpsInstances?.length ? `${project.vpsInstances.length} instance(s)` : "No VPS"}
-                </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {project.teamName ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-mauve/15 text-mauve text-md">
+                      <Users size={12} />
+                      {project.teamName}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-surface0 text-overlay0 text-md italic">
+                      No team
+                    </span>
+                  )}
+                  <span className="text-md text-overlay0 font-mono truncate">
+                    {project.vpsInstances?.length ? `${project.vpsInstances.length} instance(s)` : "No VPS"}
+                  </span>
+                </div>
               </button>
             ))}
           </div>

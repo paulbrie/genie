@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { X } from "lucide-react";
-import { createRoom } from "@/store";
+import { createRoom } from "@/store/actions";
 import { cn } from "@/lib/utils";
 
 export function CreateRoomDialog({ onClose }: { onClose: () => void }) {

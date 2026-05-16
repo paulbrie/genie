@@ -1,5 +1,4 @@
-import type { NavKey, DropletsSubTab, AiSubTab } from "@/store";
-
+import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey } from "@/store/types";
 export type ProjectTab = "files" | "commands" | "cloud" | "deploy-history" | "settings";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs";
 export type SettingsTab = "general" | "deploy";
@@ -21,8 +20,16 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   architecture: "architecture",
   users: "users",
   security: "security",
+  // tazcloud kept as a legacy alias for the standalone TazCloud admin panel.
+  // The unified `clouds` route is preferred — see CloudsPanel — but the type
+  // still allows tazcloud so `$activeNav` defaults survive without surgery.
   tazcloud: "tazcloud",
+  clouds: "clouds",
+  recipes: "recipes",
+  help: "help",
 };
+
+const VALID_CLOUD_SUBTABS = new Set<CloudSubTab>(["do", "taz"]);
 
 const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
   Object.entries(NAV_TO_PATH).map(([k, v]) => [v, k as NavKey])
@@ -39,7 +46,6 @@ const VALID_PROJECT_TABS = new Set<ProjectTab>([
 const VALID_ADMIN_TABS = new Set<AdminTab>(["database", "droplets", "ai", "backup", "users", "teams", "audit", "prodlogs"]);
 
 const VALID_DROPLETS_SUBTABS = new Set<DropletsSubTab>([
-  "instances",
   "snapshots",
   "templates",
   "configs",
@@ -54,15 +60,16 @@ const VALID_SETTINGS_TABS = new Set<SettingsTab>(["general", "deploy"]);
 export function buildNavPath(nav: NavKey): string {
   if (nav === "admin") return "/admin/database";
   if (nav === "settings") return "/settings/general";
+  if (nav === "clouds") return "/clouds/do";
   return `/${NAV_TO_PATH[nav]}`;
+}
+
+export function buildCloudPath(sub: CloudSubTab): string {
+  return `/clouds/${sub}`;
 }
 
 export function buildSettingsPath(tab: SettingsTab): string {
   return `/settings/${tab}`;
-}
-
-export function buildAppPath(slug: string): string {
-  return `/apps/${slug}`;
 }
 
 export function buildProjectPath(slug: string, tab?: ProjectTab): string {
@@ -78,7 +85,7 @@ export function buildDocPath(folderPath: string[], fileName: string, fileId: str
 
 export function buildAdminPath(adminTab: AdminTab, subTab?: DropletsSubTab | AiSubTab): string {
   if (adminTab === "droplets") {
-    const sub = subTab ? `/${subTab}` : "/instances";
+    const sub = subTab ? `/${subTab}` : "/snapshots";
     return `/admin/droplets${sub}`;
   }
   if (adminTab === "ai") {
@@ -98,6 +105,7 @@ export interface ParsedRoute {
   dropletsSubTab?: DropletsSubTab;
   aiSubTab?: AiSubTab;
   settingsTab?: SettingsTab;
+  cloudSubTab?: CloudSubTab;
   docId?: string;
 }
 
@@ -135,16 +143,11 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
       return {
         nav,
         adminTab,
-        dropletsSubTab: adminTab === "droplets" ? "instances" : undefined,
+        dropletsSubTab: adminTab === "droplets" ? "snapshots" : undefined,
         aiSubTab: adminTab === "ai" ? "costs" : undefined,
       };
     }
     return { nav };
-  }
-
-  // Apps entity
-  if (nav === "apps") {
-    return { nav, entitySlug };
   }
 
   // Projects entity + optional tab (default to "files")
@@ -161,6 +164,13 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
     const seg1 = slugSegments[1]?.toLowerCase();
     const settingsTab = seg1 && VALID_SETTINGS_TABS.has(seg1 as SettingsTab) ? (seg1 as SettingsTab) : "general";
     return { nav, settingsTab };
+  }
+
+  // Clouds sub-routes: /clouds/do, /clouds/taz
+  if (nav === "clouds") {
+    const seg1 = slugSegments[1]?.toLowerCase();
+    const cloudSubTab = seg1 && VALID_CLOUD_SUBTABS.has(seg1 as CloudSubTab) ? (seg1 as CloudSubTab) : "do";
+    return { nav, cloudSubTab };
   }
 
   // Docs sub-routes: /docs/[...folders]/filename/docId — last segment is the doc ID

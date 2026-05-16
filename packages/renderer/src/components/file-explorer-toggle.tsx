@@ -3,8 +3,8 @@
 import { useSubject } from "subjecto/react";
 import { FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { $fileExplorer, toggleFileExplorer } from "@/store";
-
+import { $fileExplorer } from "@/store/subjects";
+import { toggleFileExplorer } from "@/store/actions";
 export function FileExplorerToggle() {
   const [fileExplorer] = useSubject($fileExplorer);
   const open = fileExplorer.open;

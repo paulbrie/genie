@@ -88,26 +88,13 @@ export interface ProjectDef {
   gitlabDeployKey?: string;
   dbUrl?: string;
   gitFolders?: string[];
-}
-
-export interface AppDef {
-  id: string;
-  name: string;
-  command: string;
-  cwd?: string;
-  env?: Record<string, string>;
-  status: ProcessStatus;
+  teamId?: string | null;              // Owning team — required for normal users to see the project
+  teamName?: string | null;            // Resolved team name (read-only, populated on list responses)
 }
 
 export interface WsMessage {
   type: string;
   payload: unknown;
-}
-
-export interface AppStats {
-  cpu: number;
-  mem: number;
-  pid: number;
 }
 
 export interface MemoryInfo {
@@ -158,7 +145,6 @@ export interface DockerInfo {
 
 export interface StatsPayload {
   system: SystemStats;
-  apps: Record<string, AppStats>;
   processes: ProcessInfo[];
   docker: DockerInfo;
 }

@@ -5,38 +5,9 @@ import { useSubject } from "subjecto/react";
 import { FileText, Plus, Save, Trash2, X, FolderPlus, ChevronRight, ChevronDown, Folder, Download, Share2, Users, Globe, Lock, Copy, Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {
-  $docs,
-  $conversationChat,
-  $projects,
-  loadDocsList,
-  openDoc,
-  saveDoc,
-  deleteDoc,
-  createNewDoc,
-  createFolder,
-  renameFolder,
-  deleteFolder,
-  moveDoc,
-  renameDoc,
-  shareDoc,
-  unshareDoc,
-  openShareModal,
-  closeShareModal,
-  downloadAllDocs,
-  downloadDoc,
-  downloadFolder,
-  toggleDocPublic,
-  toggleFolderPublic,
-  setDocProject,
-  setFolderProject,
-  type DocsState,
-  type DocItem,
-  type FolderItem,
-  type DocShare,
-  type ChatUser,
-  type ProjectDef,
-} from "@/store";
+import type { ChatUser, DocItem, DocShare, DocsState, FolderItem, ProjectDef } from "@/store/types";
+import { $conversationChat, $docs, $projects } from "@/store/subjects";
+import { closeShareModal, createFolder, createNewDoc, deleteDoc, deleteFolder, downloadAllDocs, downloadDoc, downloadFolder, loadDocsList, moveDoc, openDoc, openShareModal, renameDoc, renameFolder, saveDoc, setDocProject, setFolderProject, shareDoc, toggleDocPublic, toggleFolderPublic, unshareDoc } from "@/store/actions";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";

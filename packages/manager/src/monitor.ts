@@ -4,7 +4,6 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import pidusage from "pidusage";
 import type { DockerContainerInfo, DockerInfo, MemoryInfo, ProcessInfo, StatsPayload } from "./types.js";
-import { getRunningPids } from "./app-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -274,28 +273,6 @@ async function collectDockerInfo(processes: ProcessInfo[]): Promise<DockerInfo> 
 export async function collectStats(): Promise<StatsPayload> {
   const systemCpu = getCpuUsage();
 
-  const pids = getRunningPids();
-  const appStats: StatsPayload["apps"] = {};
-
-  if (pids.size > 0) {
-    const pidArray = Array.from(pids.values());
-    try {
-      const stats = await pidusage(pidArray);
-      for (const [id, pid] of pids) {
-        const s = stats[pid];
-        if (s) {
-          appStats[id] = {
-            cpu: Math.round(s.cpu * 10) / 10,
-            mem: Math.round(s.memory / 1024 / 1024 * 10) / 10,
-            pid,
-          };
-        }
-      }
-    } catch {
-      // Process may have exited between check and stat collection
-    }
-  }
-
   const [processes, memoryInfo] = await Promise.all([
     collectProcesses(),
     collectMemoryInfo(),
@@ -317,7 +294,6 @@ export async function collectStats(): Promise<StatsPayload> {
 
   return {
     system: { cpu: systemCpu, mem: systemMem, memory: memoryInfo ?? undefined },
-    apps: appStats,
     processes,
     docker: cachedDockerInfo,
   };

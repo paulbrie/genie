@@ -9,9 +9,8 @@ interface WsMessage extends Omit<WsMessageBase, 'payload'> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload: Record<string, any>;
 }
-import * as store from "./store.js";
-import * as appManager from "./app-manager.js";
 import * as projectService from "./project-service.js";
+import * as cloudVmAliases from "./cloud-vm-alias-service.js";
 import * as projectManager from "./project-manager.js";
 import { startMonitoring, stopMonitoring, setMonitoringInterval, getDockerBin } from "./monitor.js";
 import { handleChat, type ChatModelId } from "./chat.js";
@@ -37,7 +36,8 @@ import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from 
 import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules } from "./vps/do-provision.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
-import { createTazClient } from "./vps/tazcloud-api-client.js";
+import { createTazClient, sshUserForImage } from "./vps/tazcloud-api-client.js";
+import * as recipesService from "./recipes-service.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
 import { setupMcpTrackerTunnel, type McpTrackerTunnel } from "./vps/mcp-tracker-tunnel.js";
@@ -948,7 +948,7 @@ async function syncDropletStatuses(): Promise<void> {
       }
     }
     if (changed) {
-      broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      await broadcastProjectList();
     }
   } catch (err) {
     // Silently ignore — sync will retry next interval
@@ -967,6 +967,8 @@ interface ClientAction {
 interface ClientState {
   userId: string | null;
   user: { id: string; name: string; email: string; avatarUrl: string | null } | null;
+  /** When the active session is a superadmin impersonating another user, this holds the real superadmin's id. */
+  impersonatedBy: string | null;
   clientType: ClientType;
   assistantSessionId: string | null;
   currentNav: string | null;
@@ -977,9 +979,17 @@ interface ClientState {
 
 const clients = new Map<WebSocket, ClientState>();
 
-async function buildAuthPayload(user: { id: string; name: string; email: string; avatarUrl: string | null; role: string }, token: string) {
+async function buildAuthPayload(
+  user: { id: string; name: string; email: string; avatarUrl: string | null; role: string },
+  token: string,
+  impersonatedBy?: { id: string; name: string; email: string } | null,
+) {
   const admin = await isAdmin(user.id);
-  return { token, user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl, isAdmin: admin, role: user.role } };
+  return {
+    token,
+    user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl, isAdmin: admin, role: user.role },
+    impersonatedBy: impersonatedBy ?? null,
+  };
 }
 
 /** Force-disconnect all WebSocket connections for a given user */
@@ -1219,6 +1229,55 @@ function send(ws: WebSocket, message: WsMessage): void {
   }
 }
 
+/**
+ * Fire-and-forget email notification to the app's superadmin. Silent no-op when
+ * SENDGRID_API_KEY is not configured — never throws into the caller. Pattern mirrors
+ * the new-user-signup notification in auth.ts.
+ */
+async function notifySuperadmin(subject: string, text: string): Promise<void> {
+  const sgApiKey = process.env.SENDGRID_API_KEY;
+  if (!sgApiKey) return;
+  try {
+    const sgMail = (await import("@sendgrid/mail")).default;
+    sgMail.setApiKey(sgApiKey);
+    await sgMail.send({
+      to: "paul.brie@teleporthq.io",
+      from: process.env.BACKUP_EMAIL || "noreply@teleporthq.io",
+      subject,
+      text,
+    });
+  } catch (err: unknown) {
+    console.warn("[notify] Failed to send admin email:", err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * Send the project:list filtered to what the given socket's user is allowed to see.
+ * Use this instead of `send(ws, { type: "project:list", ... })` to enforce team-based visibility.
+ */
+async function sendProjectListTo(ws: WebSocket): Promise<void> {
+  const state = clients.get(ws);
+  const list = await projectService.getAllForUser(state?.userId ?? null);
+  send(ws, { type: "project:list", payload: { projects: list } });
+}
+
+/**
+ * Broadcast project:list to every authenticated client, filtered per recipient.
+ * Use this instead of `broadcast({ type: "project:list", ... })` to enforce team-based visibility.
+ */
+async function broadcastProjectList(): Promise<void> {
+  const tasks: Promise<unknown>[] = [];
+  for (const [ws, state] of clients) {
+    if (ws.readyState !== ws.OPEN || !state.userId) continue;
+    tasks.push(
+      projectService.getAllForUser(state.userId).then((list) => {
+        send(ws, { type: "project:list", payload: { projects: list } });
+      }),
+    );
+  }
+  await Promise.all(tasks);
+}
+
 function getConnectedUserIds(): string[] {
   const ids = new Set<string>();
   for (const [, state] of clients) {
@@ -1274,15 +1333,8 @@ function broadcastPresenceDetail(): void {
 }
 
 async function sendInitialData(ws: WebSocket, userId?: string): Promise<void> {
-  // Send current app list and log backlog on connect
-  send(ws, { type: "app:list", payload: { apps: store.getAll() } });
-  const logs = appManager.getAllLogBuffers();
-  for (const [id, data] of Object.entries(logs)) {
-    send(ws, { type: "app:log", payload: { id, stream: "stdout", data } });
-  }
-
   // Send current project list and log backlogs on connect
-  send(ws, { type: "project:list", payload: { projects: await projectService.getAll() } });
+  await sendProjectListTo(ws);
   const projectLogs = projectManager.getAllLogBuffers();
   for (const [key, data] of Object.entries(projectLogs)) {
     const [projectId, commandId] = key.split(":");
@@ -1330,6 +1382,7 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
             if (state) {
               state.userId = user.id;
               state.user = { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl };
+              state.impersonatedBy = null;
             }
             const authPayload = await buildAuthPayload(user, token);
             send(ws, { type: "auth:success", payload: authPayload });
@@ -1358,12 +1411,19 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
             send(ws, { type: "auth:failed", payload: { message: "Your account is pending validation. Please contact the administrator." } });
             return true;
           }
+          // If this token represents an impersonation, fetch the impersonator for the UI banner.
+          let impersonatedBy: { id: string; name: string; email: string } | null = null;
+          if (decoded.impersonatedBy) {
+            const impUser = await getUserById(decoded.impersonatedBy);
+            if (impUser) impersonatedBy = { id: impUser.id, name: impUser.name, email: impUser.email };
+          }
           const state = clients.get(ws);
           if (state) {
             state.userId = user.id;
             state.user = { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl };
+            state.impersonatedBy = decoded.impersonatedBy ?? null;
           }
-          const authPayload = await buildAuthPayload(user, token);
+          const authPayload = await buildAuthPayload(user, token, impersonatedBy);
           send(ws, { type: "auth:success", payload: authPayload });
           sendInitialData(ws, user.id);
           broadcastPresence();
@@ -1479,64 +1539,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   }
 
   switch (msg.type) {
-    case "app:add": {
-      const { name, command, cwd, env } = msg.payload;
-      if (!name || !command) {
-        send(ws, {
-          type: "error",
-          payload: { message: "name and command are required" },
-        });
-        return;
-      }
-      const app = store.add({ name, command, cwd, env });
-      broadcast({ type: "app:list", payload: { apps: store.getAll() } });
-      break;
-    }
-
-    case "app:remove": {
-      const { id } = msg.payload;
-      appManager.stopApp(id);
-      const removed = store.remove(id);
-      if (!removed) {
-        send(ws, {
-          type: "error",
-          payload: { message: `App ${id} not found` },
-        });
-        return;
-      }
-      broadcast({ type: "app:list", payload: { apps: store.getAll() } });
-      break;
-    }
-
-    case "app:start": {
-      const { id } = msg.payload;
-      const started = appManager.startApp(id);
-      if (!started) {
-        send(ws, {
-          type: "error",
-          payload: { message: `Cannot start app ${id}` },
-        });
-      }
-      break;
-    }
-
-    case "app:stop": {
-      const { id } = msg.payload;
-      const stopped = appManager.stopApp(id);
-      if (!stopped) {
-        send(ws, {
-          type: "error",
-          payload: { message: `Cannot stop app ${id}` },
-        });
-      }
-      break;
-    }
-
-    case "app:list": {
-      send(ws, { type: "app:list", payload: { apps: store.getAll() } });
-      break;
-    }
-
     case "process:kill": {
       const { pid } = msg.payload;
       try {
@@ -1623,7 +1625,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "chat:send": {
-      const { messages, context: chatContext, domSnapshot, source, modelId } = msg.payload;
+      const { messages, context: chatContext, domSnapshot, source, modelId, pinnedVm } = msg.payload;
       const abortController = new AbortController();
       activeChatAbortControllers.set(ws, abortController);
 
@@ -1769,13 +1771,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             activeChatAbortControllers.delete(ws);
             send(ws, { type: "chat:error", payload: { message } });
           },
-          (name, input, result) => {
-            send(ws, { type: "chat:tool", payload: { name, input, result } });
+          (name, input, result, id, durationMs) => {
+            send(ws, { type: "chat:tool", payload: { id, name, input, result, durationMs } });
             collectedToolUses.push({ name, input, result });
             if (name === "write_project_file") {
-              void projectService.getAll().then((ps) =>
-                broadcast({ type: "project:list", payload: { projects: ps } })
-              );
+              void broadcastProjectList();
             }
           },
           enrichedContext,
@@ -1784,6 +1784,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           domActionExecutor,
           resolvedModelId,
           resolvedMaxToolRounds,
+          pinnedVm || null,
+          (id, name, input) => {
+            // Tool started — emit so the UI can show a live elapsed-time ticker.
+            send(ws, { type: "chat:tool:start", payload: { id, name, input } });
+          },
         );
       })().catch((err) => {
         activeChatAbortControllers.delete(ws);
@@ -2250,7 +2255,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "project:add": {
-      const { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl } = msg.payload;
+      const { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl, teamId: projTeamId } = msg.payload;
       if (!name) {
         send(ws, {
           type: "error",
@@ -2258,15 +2263,34 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         });
         return;
       }
-      const added = await projectService.add({ name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl });
-      broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      // Auto-assign creator's first team if none provided and creator is a normal user —
+      // otherwise the project would be invisible to them under the team-visibility rule.
+      let resolvedTeamId: string | null = projTeamId ?? null;
+      const creatorId = clients.get(ws)?.userId ?? null;
+      if (!resolvedTeamId && creatorId && !(await isAdmin(creatorId))) {
+        const [firstTeam] = await getDb().select({ teamId: teamMembers.teamId })
+          .from(teamMembers)
+          .where(eq(teamMembers.userId, creatorId))
+          .limit(1);
+        resolvedTeamId = firstTeam?.teamId ?? null;
+      }
+      const added = await projectService.add({ name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl, teamId: resolvedTeamId });
+      await broadcastProjectList();
       break;
     }
 
     case "project:update": {
-      const { id, name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders } = msg.payload;
+      const { id, name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders, teamId: projTeamIdUpdate } = msg.payload;
+      // Only admins/superadmins can transfer a project to another team. Non-admins must not
+      // be able to grant themselves access to projects they don't own or evict others.
+      const updaterRealId = (() => {
+        const st = clients.get(ws);
+        return st?.impersonatedBy ?? st?.userId ?? null;
+      })();
+      const updaterIsAdmin = updaterRealId ? await isAdmin(updaterRealId) : false;
+      const teamIdFieldAllowed = updaterIsAdmin ? projTeamIdUpdate : undefined;
       await projectManager.stopAll(id);
-      const updated = await projectService.update(id, { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders });
+      const updated = await projectService.update(id, { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders, teamId: teamIdFieldAllowed });
       if (!updated) {
         send(ws, {
           type: "error",
@@ -2274,7 +2298,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         });
         return;
       }
-      broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      await broadcastProjectList();
       break;
     }
 
@@ -2289,7 +2313,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         });
         return;
       }
-      broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      await broadcastProjectList();
       break;
     }
 
@@ -2310,13 +2334,13 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const updatedSetup = setupSh.trimEnd() + `\n\n${marker}\n${snippet}\n`;
       const setupFiles = { ...files, "setup.sh": updatedSetup };
       await projectService.patchProject(projectId, { setupFiles });
-      broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      await broadcastProjectList();
       send(ws, { type: "project:setup-snippet:result", payload: { projectId, recipeId, added: true } });
       break;
     }
 
     case "project:list": {
-      send(ws, { type: "project:list", payload: { projects: await projectService.getAll() } });
+      await sendProjectListTo(ws);
       break;
     }
 
@@ -3189,7 +3213,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } else {
           await projectService.addVpsInstance(doProjectId, instance);
         }
-        broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        await broadcastProjectList();
         await doDb.update(deployLogs).set({ status: "success", progress: doProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, doDeployLogId));
         if (doAgentMemoryCreated) {
           send(ws, { type: "vps:deploy:progress", payload: { projectId: doProjectId, instanceId: newDoInstanceId, message: "Created AGENT.md — ask Genie to explore your codebase to build memory." } });
@@ -3221,7 +3245,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             deployError: (err instanceof Error ? err.message : String(err)),
           };
           await projectService.addVpsInstance(doProjectId, failedInstance);
-          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          await broadcastProjectList();
         }
         send(ws, { type: "vps:deploy:error", payload: { projectId: doProjectId, instanceId: newDoInstanceId, message: (err instanceof Error ? err.message : String(err)), deployLogId: doDeployLogId, ...(((err as Error & { dropletId?: number }).dropletId) ? { failedDroplet: { dropletId: ((err as Error & { dropletId?: number }).dropletId), ipAddress: ((err as Error & { dropletIp?: string }).dropletIp) } } : {}) } });
       });
@@ -3250,7 +3274,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         // Remove the VPS instance if it was saved
         if (failedProjectId && failedInstanceId) {
           try { await projectService.removeVpsInstance(failedProjectId, failedInstanceId); } catch {}
-          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          await broadcastProjectList();
         }
         send(ws, { type: "do:destroy-failed-droplet:done", payload: { dropletId: failedDropletId } });
       } catch (err: unknown) {
@@ -3347,7 +3371,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } else {
           await projectService.addVpsInstance(tazProjectId, instance);
         }
-        broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        await broadcastProjectList();
         await tazDb.update(deployLogs).set({ status: "success", progress: tazProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, tazDeployLogId));
         send(ws, { type: "vps:deploy:done", payload: { projectId: tazProjectId, instanceId: newTazInstanceId, services: instance.services, deployLogId: tazDeployLogId } });
       }).catch(async (err: unknown) => {
@@ -3377,7 +3401,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             deployError: message,
           };
           await projectService.addVpsInstance(tazProjectId, failedInstance);
-          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          await broadcastProjectList();
         }
         send(ws, {
           type: "vps:deploy:error",
@@ -3414,7 +3438,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         });
         if (failedProjectId && failedInstanceId) {
           try { await projectService.removeVpsInstance(failedProjectId, failedInstanceId); } catch {}
-          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          await broadcastProjectList();
         }
         send(ws, { type: "tazcloud:destroy-failed-vm:done", payload: { vmId: failedVmId } });
       } catch (err: unknown) {
@@ -3435,6 +3459,103 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "vps:test-connection:ok", payload: { hostname: hostname.trim() } });
       } catch (err: unknown) {
         send(ws, { type: "vps:test-connection:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "vps:attach-existing": {
+      // Attach an already-existing cloud VM (DO droplet or TazCloud VM) to a project
+      // without re-provisioning. Admin-only because the source lists are admin-scoped.
+      const { projectId, provider, vmId, label } = msg.payload as {
+        projectId: string; provider: "digitalocean" | "tazcloud"; vmId: string | number; label?: string;
+      };
+      try {
+        const callerState = clients.get(ws);
+        const realCallerId = callerState?.impersonatedBy ?? callerState?.userId ?? null;
+        if (!realCallerId || !(await isAdmin(realCallerId))) {
+          send(ws, { type: "vps:attach-existing:error", payload: { message: "Admins only" } });
+          break;
+        }
+        const project = await projectService.getById(projectId);
+        if (!project) {
+          send(ws, { type: "vps:attach-existing:error", payload: { message: "Project not found" } });
+          break;
+        }
+
+        // Refuse if this VM is already attached to any project.
+        const allProjects = await projectService.getAll();
+        for (const p of allProjects) {
+          for (const v of p.vpsInstances) {
+            const matchDo = provider === "digitalocean" && v.digitalocean?.dropletId === Number(vmId);
+            const matchTaz = provider === "tazcloud" && v.tazcloud?.vmId === String(vmId);
+            if (matchDo || matchTaz) {
+              send(ws, { type: "vps:attach-existing:error", payload: { message: `Already attached to project "${p.name}"` } });
+              return;
+            }
+          }
+        }
+
+        let instance;
+        if (provider === "digitalocean") {
+          const doToken = await settingsService.getGlobalDoToken();
+          if (!doToken) throw new Error("DigitalOcean API token not configured");
+          const doClient = createDoClient(doToken);
+          const droplet = await doClient.getDroplet(Number(vmId));
+          const publicV4 = droplet.networks.v4.find((n) => n.type === "public")?.ip_address;
+          if (!publicV4) throw new Error("Droplet has no public IPv4 yet");
+          instance = {
+            id: uuidv4(),
+            label: (label || droplet.name).slice(0, 64),
+            connection: {
+              host: publicV4,
+              port: 22,
+              username: VPS_SSH_USERNAME,
+              privateKeyPath: "~/.genie/ssh/genie_ed25519",
+            },
+            services: [],
+            digitalocean: {
+              dropletId: droplet.id,
+              ipAddress: publicV4,
+              region: droplet.region.slug,
+              size: droplet.size_slug,
+            },
+          };
+        } else {
+          const tazToken = process.env.TAZCLOUD_API_TOKEN;
+          if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+          const tazClient = createTazClient(tazToken);
+          const vm = await tazClient.getVm(String(vmId));
+          if (!vm.ipv6) throw new Error("VM has no IPv6 address yet");
+          // Image-default user — these VMs aren't Genie-provisioned so the `genie` user doesn't exist.
+          const sshUser = vm.image ? sshUserForImage(vm.image) : "ubuntu";
+          instance = {
+            id: uuidv4(),
+            label: (label || vm.name).slice(0, 64),
+            connection: {
+              host: vm.ipv6,
+              port: vm.ssh_port || 22,
+              username: sshUser,
+              privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
+            },
+            services: [],
+            tazcloud: {
+              vmId: vm.id,
+              ipv6: vm.ipv6,
+              image: vm.image || "ubuntu-22",
+              size: vm.size || "small",
+              sshUser,
+            },
+          };
+        }
+
+        await projectService.addVpsInstance(projectId, instance);
+        await broadcastProjectList();
+        // Refresh the cloud panels so the "Project" column updates.
+        broadcast({ type: "admin:droplets:list:stale", payload: {} });
+        broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
+        send(ws, { type: "vps:attach-existing:ok", payload: { projectId, provider, vmId, instanceId: instance.id } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:attach-existing:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3520,7 +3641,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } else {
           await projectService.addVpsInstance(projectId, instance);
         }
-        broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        await broadcastProjectList();
         await vpsDb.update(deployLogs).set({ status: "success", progress: vpsProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, vpsDeployLogId));
         if (vpsAgentMemoryCreated) {
           send(ws, { type: "vps:deploy:progress", payload: { projectId, instanceId: newSshInstanceId, message: "Created AGENT.md — ask Genie to explore your codebase to build memory." } });
@@ -3554,7 +3675,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const containers = await vpsStatus(project!.name, vpsInst.connection);
         await projectService.updateVpsInstance(projectId, instanceId, { services: containers });
         send(ws, { type: "vps:status:update", payload: { projectId, instanceId, services: containers } });
-        broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        await broadcastProjectList();
       } catch (err: unknown) {
         send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -3853,7 +3974,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         }
         await projectService.removeVpsInstance(projectId, instanceId);
-        broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+        await broadcastProjectList();
         send(ws, { type: "vps:teardown:done", payload: { projectId, instanceId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:teardown:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
@@ -3921,7 +4042,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             },
           });
 
-          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          await broadcastProjectList();
           progress("Droplet destroyed. Instance hibernated.");
           send(ws, { type: "vps:hibernate:done", payload: { projectId, instanceId } });
         } catch (err: unknown) {
@@ -4055,7 +4176,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             hibernate: undefined,
           });
 
-          broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+          await broadcastProjectList();
           progress(`Instance woken up at ${ip}`);
           send(ws, { type: "vps:wake:done", payload: { projectId, instanceId } });
         } catch (err: unknown) {
@@ -4068,7 +4189,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "vps:disconnect": {
       const { projectId, instanceId } = msg.payload;
       await projectService.removeVpsInstance(projectId, instanceId);
-      broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+      await broadcastProjectList();
       break;
     }
 
@@ -4482,6 +4603,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const tazClient = createTazClient(tazToken);
         const vms = await tazClient.listVms();
+        // Overlay Genie-side aliases — preferred over the cloud-returned name so the
+        // rename UX feels consistent even though the TazCloud API can't rename in-place.
+        const aliasMap = await cloudVmAliases.getAliasMap("tazcloud", vms.map((v) => v.id));
+        const decoratedVms = vms.map((v) => aliasMap.has(v.id) ? { ...v, name: aliasMap.get(v.id)! } : v);
         // Map VM id → project for inline labeling (mirrors DO handler).
         const projects = await projectService.getAll();
         const projectMap: Record<string, { projectId: string; projectName: string }> = {};
@@ -4492,9 +4617,271 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             }
           }
         }
-        send(ws, { type: "admin:tazcloud:list", payload: { vms, projectMap } });
+        send(ws, { type: "admin:tazcloud:list", payload: { vms: decoratedVms, projectMap } });
       } catch (err: unknown) {
         send(ws, { type: "admin:tazcloud:list", payload: { vms: [], error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:stats": {
+      // SSH-probe every ACTIVE TazCloud VM for runtime port info, regardless of
+      // project linkage. Mirrors admin:droplets:stats but uses the project-
+      // independent credential path from admin:tazcloud:exec.
+      try {
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
+        if (!tazToken || !tazPrivateKey) {
+          send(ws, { type: "admin:tazcloud:stats", payload: { stats: {} } });
+          break;
+        }
+        const tazClient = createTazClient(tazToken);
+        const vms = await tazClient.listVms();
+        const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
+        const projects = await projectService.getAll();
+        const linked = new Set<string>();
+        for (const p of projects) {
+          for (const v of p.vpsInstances) {
+            if (v.tazcloud?.vmId) linked.add(v.tazcloud.vmId);
+          }
+        }
+        const results: Record<string, unknown> = {};
+        await Promise.allSettled(
+          vms
+            .filter((vm) => vm.status === "ACTIVE" && vm.ssh_host)
+            .map(async (vm) => {
+              try {
+                const username = linked.has(vm.id) ? VPS_SSH_USERNAME : sshUserForImage(vm.image || "ubuntu-22");
+                const stats = await vpsStats({ host: vm.ssh_host, port: 22, username, privateKeyPath: keyPath });
+                results[vm.id] = stats;
+              } catch { /* skip unreachable VM */ }
+            }),
+        );
+        send(ws, { type: "admin:tazcloud:stats", payload: { stats: results } });
+      } catch {
+        send(ws, { type: "admin:tazcloud:stats", payload: { stats: {} } });
+      }
+      break;
+    }
+
+    // --- Recipes CRUD ---
+
+    case "recipes:list": {
+      try {
+        const rows = await recipesService.listRecipes();
+        send(ws, { type: "recipes:list", payload: { recipes: rows } });
+      } catch (err: unknown) {
+        send(ws, { type: "recipes:list", payload: { recipes: [], error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "recipes:create": {
+      try {
+        const row = await recipesService.createRecipe(msg.payload as recipesService.RecipeInput, userId);
+        send(ws, { type: "recipes:upserted", payload: { recipe: row } });
+        broadcast({ type: "recipes:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "recipes:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "recipes:update": {
+      try {
+        const { id, ...rest } = msg.payload;
+        const row = await recipesService.updateRecipe(id, rest);
+        if (!row) throw new Error("Recipe not found");
+        send(ws, { type: "recipes:upserted", payload: { recipe: row } });
+        broadcast({ type: "recipes:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "recipes:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "recipes:delete": {
+      try {
+        const { id } = msg.payload;
+        await recipesService.deleteRecipe(id);
+        send(ws, { type: "recipes:deleted", payload: { id } });
+        broadcast({ type: "recipes:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "recipes:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:exec": {
+      // Run an arbitrary SSH command on a TazCloud VM. Renderer passes `host` so we
+      // don't hit the TazCloud API on every command — previously every recipe check
+      // (5+ per panel open) triggered a getVm() call, which is wasteful and dies when
+      // the upstream API is flaky.
+      const { vmId, sshUser, host: hostFromClient, command, execId } = msg.payload as {
+        vmId: string; sshUser: string; host?: string; command: string; execId: string;
+      };
+      try {
+        const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
+        if (!tazPrivateKey) throw new Error("TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager");
+        let host = hostFromClient;
+        if (!host) {
+          // Fallback: ask the API (used only when the renderer doesn't know the host yet).
+          const tazToken = process.env.TAZCLOUD_API_TOKEN;
+          if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured on the manager");
+          const tazClient = createTazClient(tazToken);
+          const vm = await tazClient.getVm(vmId);
+          host = vm?.ssh_host;
+          if (!host) throw new Error(`VM ${vmId} has no ssh_host`);
+        }
+        const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
+        const session = await connectSsh({
+          host,
+          port: 22,
+          username: sshUser || "ubuntu",
+          privateKeyPath: keyPath,
+        });
+        try {
+          // Generous timeouts — recipe installs (apt + downloads) can take several
+          // minutes. idleTimeoutMs is bumped to 10 minutes since recipe scripts
+          // often redirect apt output to /dev/null and may go silent for a while.
+          const output = await session.exec(`${command} 2>&1`, (chunk) => {
+            send(ws, { type: "admin:tazcloud:exec:progress", payload: { execId, chunk } });
+          }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
+          send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
+      }
+      break;
+    }
+
+    case "admin:droplets:rename": {
+      try {
+        const { dropletId, name } = msg.payload as { dropletId: number; name: string };
+        if (!name || typeof name !== "string") throw new Error("name is required");
+        // Genie DB is the source of truth for the display name. Best-effort propagate to DO
+        // so the cloud console agrees; never fail the rename when the provider call errors.
+        await cloudVmAliases.setAlias("digitalocean", String(dropletId), name);
+        try {
+          const doToken = await settingsService.getGlobalDoToken();
+          if (doToken) {
+            const doClient = createDoClient(doToken);
+            await doClient.renameDroplet(dropletId, name);
+          }
+        } catch (apiErr) {
+          console.warn(`[droplets:rename] DO API rename failed for ${dropletId} (alias still saved):`, apiErr instanceof Error ? apiErr.message : apiErr);
+        }
+        send(ws, { type: "admin:droplets:renamed", payload: { dropletId, name } });
+        // Refresh list so the UI picks up the new name.
+        broadcast({ type: "admin:droplets:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:rename": {
+      try {
+        const { vmId, name } = msg.payload as { vmId: string; name: string };
+        if (!vmId || typeof vmId !== "string") throw new Error("vmId is required");
+        if (!name || typeof name !== "string") throw new Error("name is required");
+        // TazCloud API doesn't support renaming, so this is Genie-DB only.
+        await cloudVmAliases.setAlias("tazcloud", vmId, name);
+        send(ws, { type: "admin:tazcloud:renamed", payload: { vmId, name } });
+        broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:droplets:exec": {
+      // Run an arbitrary SSH command on a DO droplet by ID (admin/superadmin scope).
+      // Parallels admin:tazcloud:exec for the unified Clouds panel.
+      const { dropletId, command, execId } = msg.payload as {
+        dropletId: number; command: string; execId: string;
+      };
+      try {
+        const doToken = await settingsService.getGlobalDoToken();
+        if (!doToken) throw new Error("DigitalOcean API token not configured");
+        const doClient = createDoClient(doToken);
+        const droplet = await doClient.getDroplet(dropletId);
+        const pub = droplet.networks?.v4?.find((n) => n.type === "public");
+        if (!pub?.ip_address) throw new Error(`Droplet ${dropletId} has no public IPv4`);
+        const keyPath = await ensureGenieKeyOnDisk();
+        const session = await connectSsh({
+          host: pub.ip_address,
+          port: 22,
+          username: VPS_SSH_USERNAME,
+          privateKeyPath: keyPath,
+        });
+        try {
+          const output = await session.exec(`${command} 2>&1`, (chunk) => {
+            send(ws, { type: "admin:droplets:exec:progress", payload: { execId, chunk } });
+          }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
+          send(ws, { type: "admin:droplets:exec:result", payload: { execId, output } });
+        } finally { session.close(); }
+      } catch (err: unknown) {
+        send(ws, { type: "admin:droplets:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:create": {
+      try {
+        const { name, image, size } = msg.payload;
+        if (!name || typeof name !== "string") throw new Error("name is required");
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        const vm = await tazClient.createVm({ name, image, size });
+        send(ws, { type: "admin:tazcloud:created", payload: { vm } });
+
+        // Async firewall preset: wait for SSH, then apply default-deny + allow 22/3000.
+        // Fire-and-forget so the UI can show the VM immediately; the firewall card
+        // will reflect the new rules on next refresh.
+        if (tazPrivateKey && vm.ssh_host) {
+          void (async () => {
+            const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
+            const sshUser = sshUserForImage(image || "ubuntu-22");
+            const conn = { host: vm.ssh_host, port: 22, username: sshUser, privateKeyPath: keyPath };
+            // Poll SSH up to 3 minutes.
+            const sshStart = Date.now();
+            let ready = false;
+            while (Date.now() - sshStart < 180_000) {
+              try {
+                const s = await connectSsh(conn, { timeoutMs: 10_000 });
+                await s.exec("true");
+                s.close();
+                ready = true;
+                break;
+              } catch { /* not yet */ }
+              await new Promise((r) => setTimeout(r, 5_000));
+            }
+            if (!ready) {
+              console.warn(`[tazcloud] firewall preset: SSH didn't come up for ${vm.id} (${vm.ssh_host}) within 3min — skipping`);
+              return;
+            }
+            try {
+              const ufwSession = await connectSsh(conn);
+              await ufwSession.exec([
+                "sudo ufw --force reset",
+                "sudo ufw default deny incoming",
+                "sudo ufw default allow outgoing",
+                "sudo ufw allow 22/tcp",
+                "sudo ufw allow 3000/tcp",
+                "sudo ufw --force enable",
+              ].join(" && "));
+              ufwSession.close();
+              console.log(`[tazcloud] firewall preset applied to ${vm.id} (${vm.ssh_host}): SSH + 3000 open`);
+            } catch (err) {
+              console.warn(`[tazcloud] firewall preset failed for ${vm.id}:`, err);
+            }
+          })().catch(() => {});
+        }
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:create:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -4506,13 +4893,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
         const tazClient = createTazClient(tazToken);
         await tazClient.deleteVm(vmId);
+        await cloudVmAliases.clearAlias("tazcloud", vmId);
         // Detach from any owning project.
         const projects = await projectService.getAll();
         for (const p of projects) {
           const inst = p.vpsInstances.find(v => v.tazcloud?.vmId === vmId);
           if (inst) {
             await projectService.removeVpsInstance(p.id, inst.id);
-            broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+            await broadcastProjectList();
             break;
           }
         }
@@ -4532,6 +4920,12 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const doClient = createDoClient(doToken);
         const droplets = await doClient.listDroplets("genie");
+        // Overlay Genie-side aliases — prefer them so DO and Taz share one unified rename source.
+        const aliasMap = await cloudVmAliases.getAliasMap("digitalocean", droplets.map((d) => String(d.id)));
+        const decoratedDroplets = droplets.map((d) => {
+          const alias = aliasMap.get(String(d.id));
+          return alias ? { ...d, name: alias } : d;
+        });
         const projects = await projectService.getAll();
         const projectMap: Record<number, { projectId: string; projectName: string }> = {};
         for (const p of projects) {
@@ -4541,9 +4935,44 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             }
           }
         }
-        send(ws, { type: "admin:droplets:list", payload: { droplets, projectMap } });
+        send(ws, { type: "admin:droplets:list", payload: { droplets: decoratedDroplets, projectMap } });
       } catch (err: unknown) {
         send(ws, { type: "admin:droplets:list", payload: { droplets: [], error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:droplets:create": {
+      // Create a bare detached droplet (no Genie setup.sh, no project link).
+      // Mirrors admin:tazcloud:create. Uses the genie SSH key (uploads it to the
+      // DO account on first use), tags with "genie" so admin:droplets:list shows it.
+      try {
+        const { name, region, size, image } = msg.payload as {
+          name: string; region: string; size: string; image: string;
+        };
+        if (!name || typeof name !== "string") throw new Error("name is required");
+        if (!region) throw new Error("region is required");
+        if (!size) throw new Error("size is required");
+        if (!image) throw new Error("image is required");
+        const doToken = await settingsService.getGlobalDoToken();
+        if (!doToken) throw new Error("DigitalOcean API token not configured");
+        const client = createDoClient(doToken);
+        const keyPair = await ensureGenieKeyPair();
+        const fingerprint = sshKeyFingerprint(keyPair.publicKey);
+        const existingKeys = await client.listSshKeys();
+        let sshKeyId = existingKeys.find((k) => k.fingerprint === fingerprint)?.id;
+        if (!sshKeyId) {
+          const newKey = await client.createSshKey(`genie-${Date.now()}`, keyPair.publicKey);
+          sshKeyId = newKey.id;
+        }
+        const droplet = await client.createDroplet({
+          name, region, size, image,
+          sshKeyIds: [sshKeyId],
+          tags: ["genie"],
+        });
+        send(ws, { type: "admin:droplets:created", payload: { droplet } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:droplets:create:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -4555,13 +4984,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (!doToken) throw new Error("DigitalOcean API token not configured");
         const doClient = createDoClient(doToken);
         await doClient.deleteDroplet(dropletId);
+        await cloudVmAliases.clearAlias("digitalocean", String(dropletId));
         // Clear vps instance from owning project if any
         const projects = await projectService.getAll();
         for (const p of projects) {
           const inst = p.vpsInstances.find(v => v.digitalocean?.dropletId === dropletId);
           if (inst) {
             await projectService.removeVpsInstance(p.id, inst.id);
-            broadcast({ type: "project:list", payload: { projects: await projectService.getAll() } });
+            await broadcastProjectList();
             break;
           }
         }
@@ -5098,6 +5528,76 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const { userId } = msg.payload;
         await db.delete(users).where(eq(users.id, userId));
         send(ws, { type: "admin:users:deleted", payload: { userId } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:impersonate:start": {
+      try {
+        const state = clients.get(ws);
+        const callerId = state?.userId ?? null;
+        if (!callerId) {
+          send(ws, { type: "admin:error", payload: { message: "Not authenticated" } });
+          break;
+        }
+        // Only superadmins (the real superadmin, not the currently-impersonated user) can start impersonation.
+        const realCallerId = state?.impersonatedBy ?? callerId;
+        const caller = await getUserById(realCallerId);
+        if (caller?.role !== "superadmin") {
+          send(ws, { type: "admin:error", payload: { message: "Only superadmins can impersonate" } });
+          break;
+        }
+        const { userId: targetId } = msg.payload as { userId: string };
+        if (!targetId || targetId === realCallerId) {
+          send(ws, { type: "admin:error", payload: { message: "Invalid impersonation target" } });
+          break;
+        }
+        const target = await getUserById(targetId);
+        if (!target || target.isAgent) {
+          send(ws, { type: "admin:error", payload: { message: "Target user not found" } });
+          break;
+        }
+        const newToken = createToken(target.id, realCallerId);
+        if (state) {
+          state.userId = target.id;
+          state.user = { id: target.id, name: target.name, email: target.email, avatarUrl: target.avatarUrl };
+          state.impersonatedBy = realCallerId;
+        }
+        const authPayload = await buildAuthPayload(target, newToken, { id: caller.id, name: caller.name, email: caller.email });
+        send(ws, { type: "auth:success", payload: authPayload });
+        await sendInitialData(ws, target.id);
+        broadcastPresence();
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:impersonate:stop": {
+      try {
+        const state = clients.get(ws);
+        const realCallerId = state?.impersonatedBy ?? null;
+        if (!realCallerId) {
+          send(ws, { type: "admin:error", payload: { message: "Not currently impersonating" } });
+          break;
+        }
+        const caller = await getUserById(realCallerId);
+        if (!caller) {
+          send(ws, { type: "admin:error", payload: { message: "Original user no longer exists" } });
+          break;
+        }
+        const newToken = createToken(caller.id);
+        if (state) {
+          state.userId = caller.id;
+          state.user = { id: caller.id, name: caller.name, email: caller.email, avatarUrl: caller.avatarUrl };
+          state.impersonatedBy = null;
+        }
+        const authPayload = await buildAuthPayload(caller, newToken, null);
+        send(ws, { type: "auth:success", payload: authPayload });
+        await sendInitialData(ws, caller.id);
+        broadcastPresence();
       } catch (err) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -5849,13 +6349,34 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "terminal:ssh:spawn": {
-      const { id, host, port, username, privateKeyPath, cols, rows } = msg.payload;
+      const { id, host, port, username, privateKeyPath, cols, rows, title, command } = msg.payload as {
+        id: string; host: string; port?: number; username?: string; privateKeyPath?: string;
+        cols?: number; rows?: number; title?: string; command?: string;
+      };
+      const resolvedUser = username || VPS_SSH_USERNAME;
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: port || 22,
-        username: username || VPS_SSH_USERNAME,
+        username: resolvedUser,
         privateKeyPath: privateKeyPath || "~/.genie/ssh/genie_ed25519",
       }, userId);
+      // Notify the superadmin that someone opened a remote shell. Fire-and-forget;
+      // a missing SENDGRID_API_KEY makes this a silent no-op.
+      const actor = clients.get(ws)?.user;
+      const actorLabel = actor ? `${actor.name} <${actor.email}>` : "Unknown user";
+      // "Claude Terminal" is just an SSH session that auto-runs `claude` after connect —
+      // detect via the command or the user-facing title set by the renderer.
+      const isClaude = (command?.trim().startsWith("claude") ?? false) || (title?.toLowerCase().startsWith("claude") ?? false);
+      const kindLabel = isClaude ? "Claude Terminal" : "SSH Terminal";
+      const lines = [
+        `${actorLabel} started a ${kindLabel}.`,
+        ``,
+        `Target: ${resolvedUser}@${host}:${port || 22}`,
+      ];
+      if (title) lines.push(`Label: ${title}`);
+      if (command) lines.push(`Initial command: ${command}`);
+      lines.push(``, `Time: ${new Date().toISOString()}`);
+      void notifySuperadmin(`[Genie] ${kindLabel} started by ${actor?.name ?? "user"}`, lines.join("\n"));
       break;
     }
 
@@ -6003,6 +6524,16 @@ export async function createServer(): Promise<WebSocketServer> {
     console.warn("Could not restore Genie SSH key from DB:", (err instanceof Error ? err.message : String(err)));
   }
 
+  // Same for the TazCloud SSH key — terminal/SSH features that target TazCloud VMs
+  // read this file by path, so it must exist before any client tries to connect.
+  if (process.env.TAZCLOUD_SSH_PRIVATE_KEY) {
+    try {
+      ensureTazcloudKeyOnDisk(process.env.TAZCLOUD_SSH_PRIVATE_KEY);
+    } catch (err: unknown) {
+      console.warn("Could not write TazCloud SSH key to disk:", (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
   const httpServer = http.createServer(async (req, res) => {
     // CORS headers for public doc API
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -6019,6 +6550,60 @@ export async function createServer(): Promise<WebSocketServer> {
 
     // OAuth callback handler
     if (await handleOAuthCallback(req, res)) return;
+
+    // Dev-only login bypass — issues a JWT for an existing user by email and
+    // stores it in localStorage via a self-contained HTML page that redirects
+    // to /. Bound to loopback (127.0.0.1 / ::1) so it can't be reached from
+    // other hosts even if the dev server is exposed. Intended for UI automation
+    // (Chrome DevTools MCP) where Google OAuth can't be completed headlessly.
+    if (req.url?.startsWith("/test-login") && req.method === "GET") {
+      const remote = req.socket.remoteAddress ?? "";
+      const isLoopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+      if (!isLoopback) {
+        res.writeHead(403, { "Content-Type": "text/plain" });
+        res.end("test-login is loopback-only");
+        return;
+      }
+      try {
+        const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+        const email = url.searchParams.get("email");
+        if (!email) {
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("Missing ?email=...");
+          return;
+        }
+        const db = getDb();
+        const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+        if (!user) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end(`No user with email ${email}. Sign in via Google once to create the row, then this endpoint can reuse it.`);
+          return;
+        }
+        if (!user.validated) {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end(`User ${email} is not validated.`);
+          return;
+        }
+        const token = createToken(user.id);
+        // Redirect to the renderer (port 3000) with ?token=… — the renderer's WS
+        // client (packages/renderer/src/lib/ws.ts:65) auto-picks it up, stores
+        // it in localStorage, and strips it from the URL. This avoids the
+        // cross-origin localStorage issue between port 9876 (manager) and 3000
+        // (renderer).
+        const rendererBase = process.env.RENDERER_URL || "http://localhost:3000";
+        const target = url.searchParams.get("redirect") || "/";
+        const safePath = target.startsWith("/") ? target : `/${target}`;
+        const sep = safePath.includes("?") ? "&" : "?";
+        const redirectTo = `${rendererBase}${safePath}${sep}token=${encodeURIComponent(token)}`;
+        res.writeHead(302, { Location: redirectTo });
+        res.end();
+        console.log(`[dev-login] issued token for ${email} → ${rendererBase}${safePath}`);
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end(`dev-login error: ${(err instanceof Error ? err.message : String(err))}`);
+      }
+      return;
+    }
 
     const match = req.url?.match(/^\/api\/public\/doc\/([A-Za-z0-9_-]+)$/);
     if (match && req.method === "GET") {
@@ -6044,10 +6629,6 @@ export async function createServer(): Promise<WebSocketServer> {
 
   const wss = new WebSocketServer({ server: httpServer });
   httpServer.listen(PORT);
-
-  appManager.setEventCallback((event) => {
-    broadcast(event as WsMessage);
-  });
 
   projectManager.setEventCallback((event) => {
     broadcast(event as WsMessage);
@@ -6085,7 +6666,7 @@ export async function createServer(): Promise<WebSocketServer> {
   wss.on("connection", (ws, req) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
     const userAgent = (req.headers["user-agent"] as string) || null;
-    clients.set(ws, { userId: null, user: null, clientType: "web", assistantSessionId: null, currentNav: null, recentActions: [], ip, userAgent });
+    clients.set(ws, { userId: null, user: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, recentActions: [], ip, userAgent });
     console.log(`Client connected (${clients.size} total)`);
 
     // Tell client auth is required
@@ -6172,7 +6753,6 @@ export function shutdown(wss: WebSocketServer): void {
   backupService.stopBackupCron();
   stopMonitoring();
   projectManager.stopEverything();
-  appManager.stopAll();
   closeAllPtys();
   // Close all VPS agent sessions
   for (const [, session] of activeAgentSessions) {

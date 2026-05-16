@@ -4,24 +4,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { TerminalSquare, X, Minus, Maximize2, Minimize2, Share2 } from "lucide-react";
-import {
-  $terminal,
-  $windowManager,
-  $conversationChat,
-  $auth,
-  registerWindow,
-  openWindow,
-  closeWindow,
-  minimizeWindow,
-  focusWindow,
-  updateWindowPosition,
-  removeTerminalTab,
-  leaveSharedTerminal,
-  shareTerminal,
-  type TerminalTab,
-  type FloatingWindowState,
-  type ChatUser,
-} from "@/store";
+import type { ChatUser, FloatingWindowState, TerminalTab } from "@/store/types";
+import { $auth, $conversationChat, $terminal, $windowManager } from "@/store/subjects";
+import { closeWindow, focusWindow, leaveSharedTerminal, minimizeWindow, openWindow, registerWindow, removeTerminalTab, shareTerminal, updateWindowPosition } from "@/store/actions";
 import {
   createTerminal,
   disposeTerminal,
@@ -138,6 +123,8 @@ function SingleTerminalWindow({
             port: tab.ssh.port,
             username: tab.ssh.username,
             privateKeyPath: tab.ssh.privateKeyPath,
+            title: tab.title,
+            command: tab.command,
           });
           if (tab.command) {
             const cmdToSend = tab.command;

@@ -112,9 +112,38 @@ export const projects = pgTable("projects", {
   gitlabDeployKey: text("gitlab_deploy_key"),
   dbUrl: text("db_url"),
   gitFolders: jsonb("git_folders").default([]),              // string[] — paths relative to project root
+  // Visibility: normal users only see projects whose teamId matches one of their teams.
+  // Null teamId = visible only to admins/superadmins.
+  teamId: uuid("team_id").references(() => teams.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_projects_team").on(table.teamId),
+]);
+
+/** User-created recipes for the Add-ons panel. Built-in recipes live in code
+ *  (VPS_RECIPES in renderer/project-detail.tsx) and are merged with these on the
+ *  client. A recipe describes how to check/install/uninstall a piece of software
+ *  on a VM over SSH. */
+export const recipes = pgTable("recipes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  slug: text("slug").notNull().unique(),       // url-safe stable id (e.g. "redis")
+  label: text("label").notNull(),              // display name (e.g. "Redis 7")
+  description: text("description").default("").notNull(),
+  icon: text("icon").default("Package").notNull(),  // lucide icon name
+  port: integer("port"),
+  checkScript: text("check_script").notNull(),
+  installScript: text("install_script").notNull(),
+  uninstallScript: text("uninstall_script").default("").notNull(),
+  setupShSnippet: text("setup_sh_snippet").default("").notNull(),
+  commands: jsonb("commands").default([]).notNull(),  // RecipeCommand[]
+  options: jsonb("options").default([]).notNull(),    // RecipeOption[]
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_recipes_slug").on(table.slug),
+]);
 
 export const trackerLabels = pgTable("tracker_labels", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -330,5 +359,26 @@ export const teamMembers = pgTable(
   (table) => [
     index("idx_team_members_team").on(table.teamId),
     index("idx_team_members_user").on(table.userId),
+  ]
+);
+
+/**
+ * Genie-side display names for cloud VMs, independent of provider API support.
+ * DO supports renaming via its API; TazCloud does not. To give a unified rename
+ * experience we store the name here and prefer it over the provider-returned name.
+ * (provider, vmId) is unique.
+ */
+export const cloudVmAliases = pgTable(
+  "cloud_vm_aliases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    provider: text("provider", { enum: ["digitalocean", "tazcloud"] }).notNull(),
+    vmId: text("vm_id").notNull(),                  // text — DO ids are numeric, taz ids are uuid
+    name: text("name").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_cloud_vm_aliases_lookup").on(table.provider, table.vmId),
   ]
 );

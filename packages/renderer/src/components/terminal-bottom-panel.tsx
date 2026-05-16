@@ -3,22 +3,9 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import { useSubject } from "subjecto/react";
 import { ChevronDown, ChevronUp, Plus, X, Share2, Users } from "lucide-react";
-import {
-  $terminal,
-  $activeNav,
-  $conversationChat,
-  $auth,
-  toggleTerminalBottomPanel,
-  setTerminalBottomPanelHeight,
-  addTerminalTab,
-  removeTerminalTab,
-  switchTerminalTab,
-  shareTerminal,
-  leaveSharedTerminal,
-  type NavKey,
-  type TerminalTab,
-  type ChatUser,
-} from "@/store";
+import type { ChatUser, NavKey, TerminalTab } from "@/store/types";
+import { $activeNav, $auth, $conversationChat, $terminal } from "@/store/subjects";
+import { addTerminalTab, leaveSharedTerminal, removeTerminalTab, setTerminalBottomPanelHeight, shareTerminal, switchTerminalTab, toggleTerminalBottomPanel } from "@/store/actions";
 import {
   createTerminal,
   disposeTerminal,
@@ -152,6 +139,8 @@ export function TerminalBottomPanel() {
             port: tab.ssh.port,
             username: tab.ssh.username,
             privateKeyPath: tab.ssh.privateKeyPath,
+            title: tab.title,
+            command: tab.command,
           });
           if (tab.command) {
             const cmdToSend = tab.command;

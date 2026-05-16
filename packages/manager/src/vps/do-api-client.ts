@@ -88,6 +88,7 @@ export interface DoApiClient {
   deleteSnapshot(snapshotId: number): Promise<void>;
   listAccountSnapshots(): Promise<DoSnapshot[]>;
   dropletAction(dropletId: number, type: string): Promise<DoAction>;
+  renameDroplet(dropletId: number, name: string): Promise<DoAction>;
 }
 
 export function createDoClient(token: string): DoApiClient {
@@ -173,6 +174,15 @@ export function createDoClient(token: string): DoApiClient {
       const data = await doFetch(token, `/droplets/${dropletId}/actions`, {
         method: "POST",
         body: { type },
+      });
+      return data!.action as DoAction;
+    },
+
+    async renameDroplet(dropletId: number, name: string) {
+      // DO's rename uses the action API with an extra `name` field.
+      const data = await doFetch(token, `/droplets/${dropletId}/actions`, {
+        method: "POST",
+        body: { type: "rename", name },
       });
       return data!.action as DoAction;
     },

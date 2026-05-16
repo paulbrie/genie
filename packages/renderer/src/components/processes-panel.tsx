@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { $processes, $processSortBy, $filterPortsOnly, $appStats, toggleSort, togglePortFilter, type ProcessInfo, type AppStats } from "@/store";
+import type { ProcessInfo } from "@/store/types";
+import { $filterPortsOnly, $processSortBy, $processes } from "@/store/subjects";
+import { togglePortFilter, toggleSort } from "@/store/actions";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";
 import { ProcessContextMenu } from "@/components/process-context-menu";
@@ -18,7 +20,6 @@ export function ProcessesPanel() {
   const [processes] = useSubject($processes);
   const [processSortBy] = useSubject($processSortBy);
   const [filterPortsOnly] = useSubject($filterPortsOnly);
-  const [appStats] = useSubject($appStats);
   const [filterText, setFilterText] = useState("");
   const [refreshRate, setRefreshRate] = useState(2000);
   const [viewMode, setViewMode] = useState<"table" | "city">("city");
@@ -41,13 +42,7 @@ export function ProcessesPanel() {
   const hiddenPidRestoreTimeouts = useRef<Map<number, number>>(new Map());
   const latestProcesses = useRef<ProcessInfo[]>(processes);
 
-  const geniePids = useMemo(() => {
-    const ids = new Set<number>();
-    for (const stats of Object.values(appStats)) {
-      ids.add(stats.pid);
-    }
-    return ids;
-  }, [appStats]);
+  const geniePids = useMemo(() => new Set<number>(), []);
 
   let filtered = filterPortsOnly
     ? processes.filter((p) => p.port !== "")

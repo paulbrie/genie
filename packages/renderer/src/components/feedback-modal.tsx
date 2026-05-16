@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { X, Loader2, Send } from "lucide-react";
-import { submitFeedback } from "@/store";
+import { submitFeedback } from "@/store/actions";
 import { cn } from "@/lib/utils";
 
 interface FeedbackModalProps {

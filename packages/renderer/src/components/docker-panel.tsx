@@ -2,7 +2,8 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useSubject } from "subjecto/react";
-import { $docker, type DockerInfo, type DockerContainerInfo } from "@/store";
+import type { DockerContainerInfo, DockerInfo } from "@/store/types";
+import { $docker } from "@/store/subjects";
 import { ExternalLink, Loader2, ChevronRight, Play, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DockerContextMenu } from "@/components/docker-context-menu";

@@ -1,7 +1,8 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { $projects, $selectedProjectId, type ProjectDef } from "@/store";
+import type { ProjectDef } from "@/store/types";
+import { $projects, $selectedProjectId } from "@/store/subjects";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@/lib/navigation";
 

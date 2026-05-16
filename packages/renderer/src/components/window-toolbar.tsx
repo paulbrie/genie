@@ -2,8 +2,9 @@
 
 import { useSubject } from "subjecto/react";
 import { Bot, StickyNote, Loader2, Rocket, Terminal, AppWindow, type LucideIcon } from "lucide-react";
-import { $windowManager, restoreWindow, type FloatingWindowState } from "@/store";
-
+import type { FloatingWindowState } from "@/store/types";
+import { $windowManager } from "@/store/subjects";
+import { restoreWindow } from "@/store/actions";
 const iconMap: Record<string, LucideIcon> = {
   bot: Bot,
   "sticky-note": StickyNote,

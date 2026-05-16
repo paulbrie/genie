@@ -10,8 +10,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import type { ProcessInfo } from "@/store";
-
+import type { ProcessInfo } from "@/store/types";
 interface ProcessCityProps {
   processes: ProcessInfo[];
   geniePids: Set<number>;

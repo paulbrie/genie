@@ -2,7 +2,9 @@
 
 import { useState, useEffect } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { $admin, hideAddProjectForm, loadBaseImageConfigs, type BaseImageTemplate } from "@/store";
+import type { BaseImageTemplate } from "@/store/types";
+import { $admin } from "@/store/subjects";
+import { hideAddProjectForm, loadBaseImageConfigs } from "@/store/actions";
 import { wsSend } from "@/lib/ws";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";

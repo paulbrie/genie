@@ -5,20 +5,9 @@ import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { RefreshCw, X, Check, Copy, Minus, Maximize2, Minimize2, Terminal, Trash2 } from "lucide-react";
-import {
-  $admin,
-  $windowManager,
-  registerWindow,
-  openWindow,
-  closeWindow,
-  minimizeWindow,
-  focusWindow,
-  updateWindowPosition,
-  addTerminalTab,
-  destroyFailedBuildDroplet,
-  type AdminBaseImageState,
-  type FloatingWindowState,
-} from "@/store";
+import type { AdminBaseImageState, FloatingWindowState } from "@/store/types";
+import { $admin, $windowManager } from "@/store/subjects";
+import { addTerminalTab, closeWindow, destroyFailedBuildDroplet, focusWindow, minimizeWindow, openWindow, registerWindow, updateWindowPosition } from "@/store/actions";
 import { useDraggable, useResizable } from "@/components/use-draggable";
 import { ErrorMessage } from "@/components/ui/error-message";
 

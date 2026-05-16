@@ -2,12 +2,25 @@ import { streamText, stepCountIs, tool, type LanguageModel, type Tool } from "ai
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createFireworks } from "@ai-sdk/fireworks";
 import { z } from "zod";
-import * as store from "./store.js";
 import { getCachedProcesses, getCachedDockerInfo } from "./monitor.js";
 import { tools } from "./tools/index.js";
+import { executeSshExec } from "./tools/ssh-exec.js";
 import type { DomAction, DomActionExecutor } from "./types.js";
 
-export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "kimi-k2";
+/** Set by the renderer's pin selector. When present, all assistant ssh_exec
+ *  calls are forced onto this (projectId, instanceId) pair — the LLM cannot
+ *  pick a different VM, and the tool description hides the instance/project
+ *  args entirely so it never even tries. */
+export interface PinnedAssistantVm {
+  projectId: string;
+  projectName: string;
+  instanceId: string;
+  label: string;
+  host: string;
+  provider: "digitalocean" | "tazcloud" | "other";
+}
+
+export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "kimi-k2" | "kimi-k2.6";
 
 export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthropic" | "fireworks" | "claude-code"; modelId: string }> = {
   "claude-code": { label: "Claude Code", provider: "claude-code", modelId: "claude-code" },
@@ -15,6 +28,7 @@ export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthro
   "claude-sonnet": { label: "Claude Sonnet", provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
   "deepseek-v3": { label: "DeepSeek V3", provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v3p2" },
   "kimi-k2": { label: "Kimi K2.5", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p5" },
+  "kimi-k2.6": { label: "Kimi K2.6", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p6" },
 };
 
 // Price per million tokens (USD)
@@ -24,6 +38,7 @@ export const MODEL_PRICING: Record<ChatModelId, { input: number; output: number 
   "claude-sonnet": { input: 3, output: 15 },
   "deepseek-v3": { input: 0.3, output: 0.9 },
   "kimi-k2": { input: 0.6, output: 2.4 },
+  "kimi-k2.6": { input: 0.6, output: 2.4 },  // mirror K2.5 pricing until Fireworks confirms
 };
 
 export interface ChatUsage {
@@ -62,13 +77,12 @@ function getModel(modelId?: ChatModelId) {
 }
 
 function buildSystemContext(): string {
-  const apps = store.getAll();
   const processes = getCachedProcesses();
   const docker = getCachedDockerInfo();
 
   const lines: string[] = [
     "You are Genie, a helpful assistant embedded in a desktop system-monitoring app.",
-    "You help users understand their system — processes, apps, Docker containers, memory usage, etc.",
+    "You help users understand their system — processes, Docker containers, memory usage, etc.",
     "The assistant context will tell you which client you are running in (web desktop app or Chrome browser extension). Adapt your behavior accordingly — in the Chrome extension, you are looking at the user's browser page; in the desktop app, you are looking at the Genie system monitor.",
     "Answer concisely. Use the live system state below to give contextual answers.",
     "",
@@ -85,18 +99,14 @@ function buildSystemContext(): string {
     "Use list_project_docs and read_project_doc to access project documentation written by the team.",
     "Use the view_page tool to see the exact UI content the user is looking at. Call it when you need to understand what the user sees on screen.",
     "",
-    "=== Managed Apps ===",
+    "Recipes (Add-ons): you can author and edit reusable bash scripts that install/check/remove software on Genie-managed VMs.",
+    "Use list_recipes to discover existing user recipes, get_recipe to read one, create_recipe to author a new one, update_recipe to edit fields (full-replace per field), and delete_recipe to remove.",
+    "A user recipe whose slug matches a built-in (chrome, postgres, genie-browser, navision, docker) OVERRIDES the built-in in the Add-ons panel. Deleting the override resets to the built-in.",
+    "Install/uninstall scripts have `log \"msg\"` (timestamped echo) and `wait_apt` (blocks for apt/dpkg locks with heartbeat) auto-injected — call those in your scripts instead of bare echo and raw apt-get.",
+    "When asked to 'improve' or 'fix' a recipe, read it with get_recipe first, modify only the fields that change, then call update_recipe.",
+    "",
+    "=== Top Processes (by CPU) ===",
   ];
-
-  if (apps.length === 0) {
-    lines.push("No apps registered.");
-  } else {
-    for (const app of apps) {
-      lines.push(`- ${app.name} [${app.status}] cmd="${app.command}"${app.cwd ? ` cwd=${app.cwd}` : ""}`);
-    }
-  }
-
-  lines.push("", "=== Top Processes (by CPU) ===");
   const topProcs = processes.slice(0, 20);
   if (topProcs.length === 0) {
     lines.push("No process data available.");
@@ -126,6 +136,8 @@ function buildSystemContext(): string {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  /** Pasted/attached images as data URLs (e.g. "data:image/png;base64,..."). User messages only. */
+  images?: string[];
 }
 
 const DEFAULT_MAX_TOOL_ROUNDS = 10;
@@ -149,19 +161,26 @@ export async function handleChat(
   onToken: (token: string) => void,
   onDone: (fullContent: string, usage?: ChatUsage) => void | Promise<void>,
   onError: (message: string) => void,
-  onTool?: (name: string, input: Record<string, unknown>, result: string) => void,
+  onTool?: (name: string, input: Record<string, unknown>, result: string, id?: string, durationMs?: number) => void,
   context?: string,
   domSnapshot?: string,
   abortSignal?: AbortSignal,
   domActionExecutor?: DomActionExecutor,
   modelId?: ChatModelId,
   maxToolRounds?: number,
+  pinnedVm?: PinnedAssistantVm | null,
+  onToolStart?: (id: string, name: string, input: Record<string, unknown>) => void,
 ): Promise<void> {
   try {
     const model = getModel(modelId);
+    const pinNote = pinnedVm
+      ? `\n\n=== PINNED VM (ssh_exec target) ===\n`
+        + `All ssh_exec calls run on "${pinnedVm.label}" (host: ${pinnedVm.host}, provider: ${pinnedVm.provider}, project: ${pinnedVm.projectName}).\n`
+        + `The instance and project are pre-set — you only specify the command. Do NOT mention or attempt to target any other VM; the server will reject it.`
+      : "";
     const systemPrompt = context
-      ? `${buildSystemContext()}\n\n${context}`
-      : buildSystemContext();
+      ? `${buildSystemContext()}\n\n${context}${pinNote}`
+      : `${buildSystemContext()}${pinNote}`;
 
     // Merge static tools with the dynamic view_page tool
     const allTools: Record<string, Tool> = {
@@ -179,6 +198,28 @@ export async function handleChat(
         },
       }),
     };
+
+    // When a VM is pinned, replace the generic ssh_exec tool with a locked-down
+    // variant that takes only `command`. The pinned project/instance are baked
+    // in here so the LLM cannot route to a different VM even if its context
+    // suggests otherwise.
+    if (pinnedVm) {
+      allTools.ssh_exec = tool({
+        description:
+          `Run a shell command on the pinned VPS instance "${pinnedVm.label}" `
+          + `(host ${pinnedVm.host}, project "${pinnedVm.projectName}"). `
+          + `The target is fixed — you only choose the command. `
+          + `For long-running tasks (>10 min), suggest nohup or screen/tmux.`,
+        inputSchema: z.object({
+          command: z.string().describe("The shell command to execute on the pinned remote VM"),
+          timeoutSeconds: z.number().optional().describe("Command timeout in seconds (default 120, max 600)"),
+        }),
+        execute: async ({ command, timeoutSeconds }) => {
+          const timeout = Math.min(Math.max((timeoutSeconds ?? 120), 5), 600) * 1000;
+          return executeSshExec(pinnedVm.projectId, pinnedVm.instanceId, command, timeout);
+        },
+      });
+    }
 
     // Add dom_action tool when a Chrome extension is connected
     if (domActionExecutor) {
@@ -215,9 +256,21 @@ export async function handleChat(
     const result = streamText({
       model,
       system: systemPrompt,
+      // Expand user messages with images into the SDK's multi-part content shape so
+      // multimodal models (Claude Opus/Sonnet) see the image alongside the prompt.
+      // Non-vision models will error; the user can switch model in the selector.
       messages: messages
-        .filter((m) => m.content.length > 0)
-        .map((m) => ({ role: m.role, content: m.content })),
+        .filter((m) => m.content.length > 0 || (m.images && m.images.length > 0))
+        .map((m) => {
+          if (m.role === "user" && m.images && m.images.length > 0) {
+            const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [];
+            if (m.content) parts.push({ type: "text", text: m.content });
+            for (const img of m.images) parts.push({ type: "image", image: img });
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            return { role: m.role, content: parts as any };
+          }
+          return { role: m.role, content: m.content };
+        }),
       tools: allTools,
       stopWhen: stepCountIs(maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS),
       abortSignal,
@@ -227,6 +280,9 @@ export async function handleChat(
     });
 
     let fullContent = "";
+    // Per-call start timestamps, keyed by toolCallId. Used to report duration on
+    // tool-result so the UI can render an elapsed-time badge.
+    const toolStarts = new Map<string, number>();
 
     try {
       for await (const chunk of result.fullStream) {
@@ -236,16 +292,24 @@ export async function handleChat(
             fullContent += chunk.text;
             onToken(chunk.text);
             break;
-          case "tool-call":
-            // Tool is about to execute — we'll report the result when it arrives
+          case "tool-call": {
+            toolStarts.set(chunk.toolCallId, Date.now());
+            onToolStart?.(chunk.toolCallId, chunk.toolName, chunk.input as Record<string, unknown>);
             break;
-          case "tool-result":
+          }
+          case "tool-result": {
+            const started = toolStarts.get(chunk.toolCallId);
+            const durationMs = started != null ? Date.now() - started : undefined;
+            toolStarts.delete(chunk.toolCallId);
             onTool?.(
               chunk.toolName,
               chunk.input as Record<string, unknown>,
               typeof chunk.output === "string" ? chunk.output : JSON.stringify(chunk.output),
+              chunk.toolCallId,
+              durationMs,
             );
             break;
+          }
         }
       }
     } catch (streamErr: unknown) {

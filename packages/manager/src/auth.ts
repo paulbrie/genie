@@ -19,13 +19,15 @@ interface GoogleUserInfo {
   picture?: string;
 }
 
-export function createToken(userId: string): string {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+export function createToken(userId: string, impersonatedBy?: string): string {
+  const payload: { userId: string; impersonatedBy?: string } = { userId };
+  if (impersonatedBy) payload.impersonatedBy = impersonatedBy;
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRY });
 }
 
-export function verifyToken(token: string): { userId: string } | null {
+export function verifyToken(token: string): { userId: string; impersonatedBy?: string } | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; impersonatedBy?: string };
     return decoded;
   } catch {
     return null;

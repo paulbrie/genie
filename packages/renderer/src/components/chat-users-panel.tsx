@@ -3,17 +3,9 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useSubject } from "subjecto/react";
 import { Bot, X, Plus, Search, MessageSquare } from "lucide-react";
-import {
-  $conversationChat,
-  $auth,
-  addMemberToConversation,
-  removeMemberFromConversation,
-  openDmWith,
-  type ChatUser,
-  type ConversationMember,
-  type ConversationSummary,
-  type AuthUser,
-} from "@/store";
+import type { AuthUser, ChatUser, ConversationMember, ConversationSummary } from "@/store/types";
+import { $auth, $conversationChat } from "@/store/subjects";
+import { addMemberToConversation, openDmWith, removeMemberFromConversation } from "@/store/actions";
 import { cn } from "@/lib/utils";
 
 export function ChatUsersPanel() {

@@ -9,7 +9,8 @@ import {
   FolderPlus,
   RefreshCw,
 } from "lucide-react";
-import { $fileExplorer, navigateBack, navigateForward, navigateUp, navigateTo, refreshDirectory } from "@/store";
+import { $fileExplorer } from "@/store/subjects";
+import { navigateBack, navigateForward, navigateTo, navigateUp, refreshDirectory } from "@/store/actions";
 import { genie } from "@/lib/genie-api";
 
 export function FileExplorerToolbar() {

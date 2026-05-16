@@ -1,4 +1,5 @@
-import { handleWsMessage, $auth } from "@/store";
+import { $auth } from "@/store/subjects";
+import { handleWsMessage } from "@/store/handlers";
 import { logSent, logReceived } from "@/lib/ws-log";
 
 let ws: WebSocket | null = null;
@@ -135,5 +136,5 @@ export function sendAuthToken(token: string): void {
 export function logout(): void {
   setStoredToken(null);
   wsSend("auth:logout", {});
-  $auth.next({ status: "unauthenticated", user: null, token: null });
+  $auth.next({ status: "unauthenticated", user: null, token: null, impersonatedBy: null });
 }

@@ -3,7 +3,9 @@
 import { useState } from "react";
 import { useSubject } from "subjecto/react";
 import { TerminalSquare, LogOut, Radio, MessageSquarePlus } from "lucide-react";
-import { $manager, $auth, addTerminalTab, type AuthUser } from "@/store";
+import type { AuthUser } from "@/store/types";
+import { $auth, $manager } from "@/store/subjects";
+import { addTerminalTab } from "@/store/actions";
 import { logout } from "@/lib/ws";
 import { SystemStats } from "@/components/system-stats";
 import { SidebarNav } from "@/components/sidebar-nav";

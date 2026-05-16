@@ -5,25 +5,9 @@ import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { Loader2, Check, X, Minus, Copy, Rocket, Maximize2, Minimize2, ArrowDownToLine, Search, Trash2 } from "lucide-react";
-import {
-  $projects,
-  $windowManager,
-  $vpsDeploy,
-  registerWindow,
-  openWindow,
-  closeWindow,
-  minimizeWindow,
-  focusWindow,
-  updateWindowPosition,
-  clearVpsDeployState,
-  destroyFailedDroplet,
-  keepFailedDroplet,
-  setWindowBusy,
-  type PendingDeploy,
-  type VpsDeployState,
-  type ProjectDef,
-  type FloatingWindowState,
-} from "@/store";
+import type { FloatingWindowState, PendingDeploy, ProjectDef, VpsDeployState } from "@/store/types";
+import { $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { clearVpsDeployState, closeWindow, destroyFailedDroplet, focusWindow, keepFailedDroplet, minimizeWindow, openWindow, registerWindow, setWindowBusy, updateWindowPosition } from "@/store/actions";
 import { useDraggable, useResizable } from "@/components/use-draggable";
 import { ErrorMessage } from "@/components/ui/error-message";
 

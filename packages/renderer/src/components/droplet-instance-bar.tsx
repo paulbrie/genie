@@ -4,8 +4,7 @@ import { cn } from "@/lib/utils";
 import { CopyableIp } from "@/components/ui/copyable-ip";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { ExternalLink, RefreshCw, Terminal, Trash2 } from "lucide-react";
-import type { VpsStats } from "@/store";
-
+import type { VpsStats } from "@/store/types";
 export interface DropletInstanceBarProps {
   name: string;
   status: string;

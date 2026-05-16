@@ -199,22 +199,22 @@ export async function tazcloudProvisionAndDeploy(
     onProgress("Installing Docker, Node.js, and Claude Code...");
     const bootstrapScript = [
       "set -e",
+      "export DEBIAN_FRONTEND=noninteractive",
+      "wait_apt() { local i=0; while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do i=$((i+1)); [ \"$i\" -gt 600 ] && { echo 'Timeout waiting for apt lock'; exit 1; }; sleep 1; done; }",
       "if command -v apt-get >/dev/null 2>&1; then",
-      "  export DEBIAN_FRONTEND=noninteractive",
-      "  sudo apt-get update -qq",
-      "  sudo apt-get install -y -qq docker.io docker-compose-v2 git curl ca-certificates",
-      "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -",
-      "  sudo apt-get install -y -qq nodejs",
+      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq",
+      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 git curl ca-certificates > /dev/null",
+      "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1",
+      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null",
       "elif command -v dnf >/dev/null 2>&1; then",
-      "  sudo dnf install -y -q docker git curl",
-      "  sudo systemctl enable --now docker",
-      "  curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -",
-      "  sudo dnf install -y -q nodejs",
+      "  sudo dnf install -y -q docker git curl > /dev/null",
+      "  curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1",
+      "  sudo dnf install -y -q nodejs > /dev/null",
       "else",
       "  echo 'No supported package manager (need apt-get or dnf)'; exit 1",
       "fi",
-      "sudo systemctl enable --now docker",
-      "sudo npm install -g @anthropic-ai/claude-code @genie/vps-agent 2>&1 | tail -3",
+      "sudo systemctl enable --now docker > /dev/null 2>&1",
+      "sudo npm install -g --silent @anthropic-ai/claude-code @genie/vps-agent 2>&1 | tail -3",
     ].join("\n");
 
     try {

@@ -2,7 +2,9 @@
 
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { $security, startSecurityScan, stopSecurityScan, loadSecurityScans, deleteSecurityScan, type SecurityScan, type SecurityState, type Severity, type WebFinding, type PortResult } from "@/store";
+import type { PortResult, SecurityScan, SecurityState, Severity, WebFinding } from "@/store/types";
+import { $security } from "@/store/subjects";
+import { deleteSecurityScan, loadSecurityScans, startSecurityScan, stopSecurityScan } from "@/store/actions";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";
 import { cn } from "@/lib/utils";

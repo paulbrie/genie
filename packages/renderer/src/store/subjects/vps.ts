@@ -1,0 +1,30 @@
+import { Subject } from "subjecto/core";
+import { DeepSubject } from "subjecto";
+import type {
+  DoSnapshot,
+  ProjectDef,
+  TerminalState,
+  VpsDeployState,
+} from "../types/vps";
+import type { FileEditorState, FileTemplatesState } from "../types/common";
+
+export const $terminal = new Subject<TerminalState>({
+  tabs: [], activeTabId: null, bottomPanelOpen: false, bottomPanelHeight: 200, shareInvites: [],
+});
+
+export const $projects = new Subject<ProjectDef[]>([]);
+export const $selectedProjectId = new Subject<string | null>(null);
+export const $showAddProjectForm = new Subject<boolean>(false);
+export const $projectLogBuffers = new Subject<Record<string, string>>({});
+export const $commandRunOutputs = new Subject<Record<string, { output: string; running: boolean; exitCode: number | null }>>({});
+export const $doTokenValid = new Subject<{ valid: boolean; email?: string } | null>(null);
+export const $railwayTestResult = new Subject<{ ok: boolean; message: string } | null>(null);
+export const $doSnapshots = new Subject<DoSnapshot[]>([]);
+export const $doSnapshotsLoading = new Subject<boolean>(false);
+export const $vpsDeploy = new DeepSubject<VpsDeployState>({ instances: {}, activeDeploys: {}, testResult: null, deployLogs: [] });
+
+export const $fileEditor = new Subject<FileEditorState>({
+  projectId: null, files: [], selectedFile: null, content: null,
+  savedContent: null, loading: false, saving: false, error: null,
+});
+export const $fileTemplates = new Subject<FileTemplatesState>({ templates: [], loading: false });

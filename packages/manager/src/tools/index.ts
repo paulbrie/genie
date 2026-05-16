@@ -3,8 +3,10 @@ import { z } from "zod";
 import { executeWebSearch } from "./web-search.js";
 import { executeBrowseUrl } from "./web-browse.js";
 import { executeSshExec } from "./ssh-exec.js";
+import { executeTazListVms, executeTazCreateVm, executeTazDeleteVm } from "./tazcloud.js";
 import * as projectService from "../project-service.js";
 import * as docsService from "../docs-service.js";
+import * as recipesService from "../recipes-service.js";
 
 export const tools = {
   web_search: tool({
@@ -76,12 +78,21 @@ export const tools = {
   }),
   ssh_exec: tool({
     description:
-      "Run a shell command on a remote VPS instance via SSH. Use this when the user asks to execute commands, check logs, manage services, or do anything on their remote server. The command runs in a non-interactive shell. For long-running tasks (>10 min), suggest using nohup or screen/tmux.",
+      "Run a shell command on a remote VPS instance via SSH. Use this for quick " +
+      "commands (status checks, logs, single-line operations). The tool aborts if " +
+      "the command goes silent for 90s, and the chat panel can't show progress while " +
+      "the command runs, so the user is left in the dark for long operations.\n\n" +
+      "For RECIPE INSTALLS or anything that takes >30s, do NOT call this tool with " +
+      "the full install script. Instead, tell the user to click the recipe's " +
+      "Install button in the Add-ons panel — that path streams output live, " +
+      "shows progress, and survives the chat being closed. Reserve ssh_exec for " +
+      "diagnostics (`ps aux`, `journalctl`, `cat /var/log/...`).\n\n" +
+      "For long-running tasks like apt installs, suggest nohup + tail -f or screen/tmux.",
     inputSchema: z.object({
       projectId: z.string().describe("The project ID (from context)"),
       instance: z.string().describe("The VPS instance label or ID. If the project has only one instance, any value works."),
       command: z.string().describe("The shell command to execute on the remote server"),
-      timeoutSeconds: z.number().optional().describe("Command timeout in seconds (default 120, max 600)"),
+      timeoutSeconds: z.number().optional().describe("Command timeout in seconds (default 120, max 600). The tool also aborts on 90s of silent output."),
     }),
     execute: async ({ projectId, instance, command, timeoutSeconds }) => {
       const timeout = Math.min(Math.max((timeoutSeconds ?? 120), 5), 600) * 1000;
@@ -127,6 +138,128 @@ export const tools = {
       const doc = await docsService.getDocById(docId);
       if (!doc) return `Error: Doc not found (id: ${docId})`;
       return `# ${doc.title}\n\n${doc.content}`;
+    },
+  }),
+  tazcloud_list_vms: tool({
+    description:
+      "List all TazCloud VMs on the configured account. Read-only. Returns each VM's id, name, status, public IPv6, image, and size.",
+    inputSchema: z.object({}),
+    execute: async () => executeTazListVms(),
+  }),
+  tazcloud_create_vm: tool({
+    description:
+      "Create a new TazCloud VM. DESTRUCTIVE: incurs cost on the TazCloud account. Confirm intent with the user before calling. The VM is bare — it does NOT include Docker/Node or a `genie` user; for a full Genie-managed VPS, use the project deploy flow instead.",
+    inputSchema: z.object({
+      name: z.string().describe("VM name (lowercase letters, digits, hyphens; ≤63 chars)"),
+      image: z.string().optional().describe("Image slug. One of: ubuntu-22, ubuntu-24, debian-12, almalinux-9. Default: ubuntu-22."),
+      size: z.string().optional().describe("Size slug. One of: small, medium, large, xlarge. Default: small."),
+    }),
+    execute: async ({ name, image, size }) => executeTazCreateVm({ name, image, size }),
+  }),
+  tazcloud_delete_vm: tool({
+    description:
+      "Delete a TazCloud VM by id. DESTRUCTIVE and irreversible — the VM and its data are gone. Confirm intent with the user before calling. Use tazcloud_list_vms first to look up the id.",
+    inputSchema: z.object({
+      vmId: z.string().describe("The TazCloud VM id (from tazcloud_list_vms)"),
+    }),
+    execute: async ({ vmId }) => executeTazDeleteVm(vmId),
+  }),
+
+  // --- Recipes (Add-ons authoring) ---
+  list_recipes: tool({
+    description:
+      "List all user-created recipes (Add-ons scripts) stored in Genie's DB. " +
+      "Returns slug, label, description, port for each. Built-in recipes (Chrome, " +
+      "Postgres, Genie Browser, Navision, Docker) live in code and are NOT returned " +
+      "here — use get_builtin_recipe for those.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const rows = await recipesService.listRecipes();
+      if (rows.length === 0) return "No user recipes yet.";
+      return rows
+        .map((r) => `- ${r.slug} (id: ${r.id}) — "${r.label}" port=${r.port ?? "none"} — ${r.description || "(no description)"}`)
+        .join("\n");
+    },
+  }),
+  get_recipe: tool({
+    description:
+      "Read a single user recipe by slug. Returns label, description, icon, port, " +
+      "checkScript, installScript, uninstallScript, setupShSnippet, commands, options. " +
+      "Use list_recipes first to discover slugs. Slugs matching a built-in recipe " +
+      "(e.g. 'chrome') mean the user has overridden the built-in.",
+    inputSchema: z.object({
+      slug: z.string().describe("The recipe slug (e.g. 'redis', 'chrome')"),
+    }),
+    execute: async ({ slug }) => {
+      const rows = await recipesService.listRecipes();
+      const r = rows.find((x) => x.slug === slug);
+      if (!r) return `No user recipe with slug "${slug}". Did you mean to call get_builtin_recipe instead?`;
+      return JSON.stringify({
+        id: r.id, slug: r.slug, label: r.label, description: r.description,
+        icon: r.icon, port: r.port,
+        checkScript: r.checkScript, installScript: r.installScript,
+        uninstallScript: r.uninstallScript, setupShSnippet: r.setupShSnippet,
+        commands: r.commands, options: r.options,
+      }, null, 2);
+    },
+  }),
+  create_recipe: tool({
+    description:
+      "Create a new user recipe. Use this when the user asks Genie to author a new " +
+      "Add-on (e.g. 'add a Redis recipe'). The slug must be URL-safe (lowercase, " +
+      "hyphens) and unique. Scripts get `log` and `wait_apt` helpers injected at runtime.",
+    inputSchema: z.object({
+      slug: z.string().describe("URL-safe identifier, e.g. 'redis-7'"),
+      label: z.string().describe("Display name, e.g. 'Redis 7'"),
+      description: z.string().optional().describe("Short blurb shown in the tile tooltip"),
+      icon: z.string().optional().describe("Lucide icon name, e.g. 'Database' (default: Package)"),
+      port: z.number().optional().describe("Default port the service listens on, e.g. 6379"),
+      checkScript: z.string().describe("Bash that echoes INSTALLED or NOT_INSTALLED"),
+      installScript: z.string().describe("Bash install script (apt/dnf etc.)"),
+      uninstallScript: z.string().optional().describe("Bash to undo the install"),
+      setupShSnippet: z.string().optional().describe("Inlined snippet for project deploy setup.sh"),
+    }),
+    execute: async (input) => {
+      const created = await recipesService.createRecipe(input, null);
+      return `Created recipe "${created.slug}" (id: ${created.id}). It now appears in the Add-ons panel for all VMs.`;
+    },
+  }),
+  update_recipe: tool({
+    description:
+      "Update an existing user recipe by id. Pass only the fields you want to change. " +
+      "Use list_recipes / get_recipe to find the id and current values first — and " +
+      "include the EXISTING content of any field you're partially modifying, since " +
+      "this is a full replace per field.",
+    inputSchema: z.object({
+      id: z.string().describe("Recipe row id (UUID) from list_recipes"),
+      slug: z.string().optional(),
+      label: z.string().optional(),
+      description: z.string().optional(),
+      icon: z.string().optional(),
+      port: z.number().nullable().optional(),
+      checkScript: z.string().optional(),
+      installScript: z.string().optional(),
+      uninstallScript: z.string().optional(),
+      setupShSnippet: z.string().optional(),
+    }),
+    execute: async (input) => {
+      const { id, ...patch } = input;
+      const updated = await recipesService.updateRecipe(id, patch);
+      if (!updated) return `Error: recipe ${id} not found.`;
+      return `Updated recipe "${updated.slug}". Changes are live in the Add-ons panel.`;
+    },
+  }),
+  delete_recipe: tool({
+    description:
+      "Delete a user recipe by id. If the slug matches a built-in (e.g. 'chrome'), " +
+      "this 'resets' the override and the built-in returns. Confirm intent with " +
+      "the user before calling.",
+    inputSchema: z.object({
+      id: z.string().describe("Recipe row id (UUID) from list_recipes"),
+    }),
+    execute: async ({ id }) => {
+      await recipesService.deleteRecipe(id);
+      return `Deleted recipe ${id}.`;
     },
   }),
 };

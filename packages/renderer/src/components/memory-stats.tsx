@@ -1,7 +1,8 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { $system, type MemoryInfo } from "@/store";
+import type { MemoryInfo } from "@/store/types";
+import { $system } from "@/store/subjects";
 import { formatBytes } from "@/lib/utils";
 import {
   Tooltip,

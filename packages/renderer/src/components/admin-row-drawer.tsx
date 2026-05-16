@@ -4,8 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
-import type { AdminColumnInfo } from "@/store";
-
+import type { AdminColumnInfo } from "@/store/types";
 interface AdminRowDrawerProps {
   open: boolean;
   mode: "edit" | "create";

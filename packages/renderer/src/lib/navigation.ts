@@ -2,9 +2,11 @@
 
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { $apps, $projects, $selectedProjectId, selectApp, selectProject, deselectProject, switchNav, saveUiState, type NavKey, type AppDef, type ProjectDef } from "@/store";
+import type { NavKey, ProjectDef } from "@/store/types";
+import { $projects, $selectedProjectId } from "@/store/subjects";
+import { deselectProject, selectProject, switchNav } from "@/store/actions";
 import { slugify } from "@/lib/utils";
-import { buildNavPath, buildAppPath, buildProjectPath, type ProjectTab } from "@/lib/routes";
+import { buildNavPath, buildProjectPath, type ProjectTab } from "@/lib/routes";
 
 export function useNavigate() {
   const router = useRouter();
@@ -14,16 +16,6 @@ export function useNavigate() {
       if (nav === "projects") deselectProject();
       switchNav(nav);
       router.push(buildNavPath(nav));
-    },
-    [router]
-  );
-
-  const navigateToApp = useCallback(
-    (appId: string) => {
-      const app = $apps.getValue().find((a: AppDef) => a.id === appId);
-      if (!app) return;
-      selectApp(appId);
-      router.push(buildAppPath(slugify(app.name)));
     },
     [router]
   );
@@ -49,5 +41,5 @@ export function useNavigate() {
     [router]
   );
 
-  return { navigateToNav, navigateToApp, navigateToProject, navigateToProjectTab };
+  return { navigateToNav, navigateToProject, navigateToProjectTab };
 }

@@ -50,26 +50,20 @@ export async function executeSshExec(
 
   let output = "";
   try {
-    const execPromise = session.exec(command, (chunk) => {
+    // Use ssh-client's built-in timeouts:
+    //   timeoutMs    — hard cap on total runtime (caller-controlled, max 10 min)
+    //   idleTimeoutMs — kill if no stdout/stderr for 90s. Recipe installs all
+    //     emit `log`/`wait_apt` heartbeats so they reset this timer; only a
+    //     genuinely-hung command silently exceeds it, and now we surface that
+    //     fast (with partial output) instead of waiting the full timeoutMs.
+    const result = await session.exec(command, (chunk) => {
       output += chunk;
-    });
-
-    const timeoutPromise = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), timeoutMs),
-    );
-
-    const result = await Promise.race([execPromise, timeoutPromise]);
-
-    if (result === "timeout") {
-      return truncateOutput(output) + `\n\n[Command timed out after ${Math.round(timeoutMs / 1000)}s — output above is partial]`;
-    }
-
+    }, { timeoutMs, idleTimeoutMs: 90_000 });
     return truncateOutput(result as string) || "(no output)";
   } catch (err: unknown) {
-    // Non-zero exit code — still return the output
     const errMsg = err instanceof Error ? err.message : String(err);
     if (output) {
-      return truncateOutput(output) + `\n\n[Command failed: ${errMsg}]`;
+      return truncateOutput(output) + `\n\n[Aborted: ${errMsg}]`;
     }
     return `Error: ${errMsg}`;
   } finally {

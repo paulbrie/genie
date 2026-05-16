@@ -4,27 +4,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSubject } from "subjecto/react";
 import dynamic from "next/dynamic";
 import type { OnMount, BeforeMount } from "@monaco-editor/react";
-import {
-  $fileEditor,
-  $projects,
-  $fileTemplates,
-  loadProjectFiles,
-  selectFile,
-  saveFile,
-  updateFileContent,
-  clearFileEditor,
-  deleteProjectFile,
-  addProjectFile,
-  renameProjectFile,
-  loadFileTemplates,
-  createFileTemplate,
-  saveTemplateFromProject,
-  updateFileTemplate,
-  deleteFileTemplate,
-  injectFileTemplate,
-  injectSingleFileFromTemplate,
-  type FileTemplate,
-} from "@/store";
+import type { FileTemplate } from "@/store/types";
+import { $fileEditor, $fileTemplates, $projects } from "@/store/subjects";
+import { addProjectFile, clearFileEditor, createFileTemplate, deleteFileTemplate, deleteProjectFile, injectFileTemplate, injectSingleFileFromTemplate, loadFileTemplates, loadProjectFiles, renameProjectFile, saveFile, saveTemplateFromProject, selectFile, updateFileContent, updateFileTemplate } from "@/store/actions";
 import { wsRequest } from "@/lib/ws";
 import { Loader2, Save, Check, FileCode, FileText, Plus, X, Upload, Trash2, Download, Pencil, Package, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";

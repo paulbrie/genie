@@ -1,13 +1,13 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, Cloud } from "lucide-react";
-import { $activeNav, $auth, $docker, $presenceSessions, type DockerInfo, type NavKey } from "@/store";
+import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, Cloud, ChefHat, HelpCircle } from "lucide-react";
+import type { DockerInfo, NavKey } from "@/store/types";
+import { $activeNav, $auth, $docker, $presenceSessions } from "@/store/subjects";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@/lib/navigation";
 
 const baseNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = [
-  { key: "apps", label: "Apps", icon: LayoutGrid },
   { key: "projects", label: "Projects", icon: FolderKanban },
   { key: "processes", label: "Processes", icon: Activity },
 
@@ -21,10 +21,7 @@ const baseNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = 
   { key: "architecture", label: "Architecture", icon: Network },
   { key: "users", label: "Connected Users", icon: Users },
   { key: "security", label: "Security", icon: Shield },
-];
-
-const superAdminNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = [
-  { key: "tazcloud", label: "TazCloud", icon: Cloud },
+  { key: "help", label: "Help", icon: HelpCircle },
 ];
 
 export function SidebarNav() {
@@ -36,11 +33,17 @@ export function SidebarNav() {
   const uniqueUserCount = new Set(sessions.map(s => s.id)).size;
   const isSuperAdmin = auth.user?.role === "superadmin";
 
-  const navItems = isSuperAdmin ? [...baseNavItems, ...superAdminNavItems] : baseNavItems;
+  const items = isSuperAdmin
+    ? [
+        ...baseNavItems,
+        { key: "recipes" as NavKey, label: "Recipes", icon: ChefHat },
+        { key: "clouds" as NavKey, label: "Clouds", icon: Cloud },
+      ]
+    : baseNavItems;
 
   return (
     <nav className="flex flex-col gap-0.5">
-      {navItems.map(({ key, label, icon: Icon }) => (
+      {items.map(({ key, label, icon: Icon }) => (
         <button
           key={key}
           onClick={() => navigateToNav(key)}

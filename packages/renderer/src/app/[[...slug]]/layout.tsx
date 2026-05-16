@@ -2,15 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Terminal, X } from "lucide-react";
-import {
-  $auth,
-  $terminal,
-  loadUiState,
-  acceptTerminalShare,
-  declineTerminalShare,
-  type TerminalShareInvite,
-} from "@/store";
+import { Terminal, X, UserCheck } from "lucide-react";
+import type { TerminalShareInvite } from "@/store/types";
+import { $auth, $terminal } from "@/store/subjects";
+import { acceptTerminalShare, declineTerminalShare, loadUiState, stopImpersonating } from "@/store/actions";
 import { connectWs, setManagerRunning } from "@/lib/ws";
 import { Sidebar } from "@/components/sidebar";
 import { WindowToolbar } from "@/components/window-toolbar";
@@ -53,19 +48,43 @@ export default function AppShellLayout({
   }
 
   return (
-    <div className="flex flex-row h-screen">
-      <Sidebar wsLogOpen={wsLogOpen} onToggleWsLog={toggleWsLog} />
-      <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-        {children}
-        <WindowToolbar />
-      </main>
-      <FileExplorerPanel />
-      <WsLogDrawer open={wsLogOpen} onClose={toggleWsLog} />
-      <GenieAssistant />
-      <DeployWindow />
-      <BuildLogWindow />
-      <TerminalWindows />
-      <TerminalShareToasts />
+    <div className="flex flex-col h-screen">
+      <ImpersonationBanner />
+      <div className="flex flex-row flex-1 min-h-0">
+        <Sidebar wsLogOpen={wsLogOpen} onToggleWsLog={toggleWsLog} />
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {children}
+          <WindowToolbar />
+        </main>
+        <FileExplorerPanel />
+        <WsLogDrawer open={wsLogOpen} onClose={toggleWsLog} />
+        <GenieAssistant />
+        <DeployWindow />
+        <BuildLogWindow />
+        <TerminalWindows />
+        <TerminalShareToasts />
+      </div>
+    </div>
+  );
+}
+
+function ImpersonationBanner() {
+  const [auth] = useSubject($auth);
+  if (!auth.impersonatedBy || !auth.user) return null;
+  return (
+    <div className="flex items-center justify-between px-4 py-1.5 bg-mauve/15 border-b border-mauve/30 text-mauve text-md">
+      <div className="flex items-center gap-2">
+        <UserCheck size={14} />
+        <span>
+          Impersonating <strong className="text-text">{auth.user.name}</strong> ({auth.user.email}) — signed in as {auth.impersonatedBy.name}
+        </span>
+      </div>
+      <button
+        onClick={stopImpersonating}
+        className="px-2 py-0.5 rounded bg-mauve/25 hover:bg-mauve/40 text-text border-none cursor-pointer transition-colors"
+      >
+        Stop impersonating
+      </button>
     </div>
   );
 }

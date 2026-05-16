@@ -3,40 +3,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Bot, Send, Square, X, Minus, Maximize2, Minimize2 } from "lucide-react";
+import { Bot, Send, Square, X, Minus, Maximize2, Minimize2, Pin, PinOff, ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {
-  $chat,
-  $activeNav,
-  $selectedProjectId,
-  $selectedAppId,
-  $windowManager,
-  $auth,
-  $projects,
-  $apps,
-  $fileEditor,
-  sendChatMessage,
-  stopChat,
-  resetChat,
-  registerWindow,
-  openWindow,
-  closeWindow,
-  minimizeWindow,
-  focusWindow,
-  updateWindowPosition,
-  setChatModel,
-  CHAT_MODELS,
-  type ChatModelId,
-  type ChatMessage,
-  type ToolUse,
-  type StreamingStep,
-  type NavKey,
-  type AuthUser,
-  type ProjectDef,
-  type AppDef,
-  type FloatingWindowState,
-} from "@/store";
+import type { AuthUser, ChatMessage, FloatingWindowState, NavKey, PinnedAssistantVm, ProjectDef, StreamingStep, ToolUse } from "@/store/types";
+import { $activeNav, $auth, $chat, $fileEditor, $pinnedAssistantVm, $projects, $selectedProjectId, $terminal, $windowManager } from "@/store/subjects";
+import type { ChatModelId } from "@/store/actions";
+import { CHAT_MODELS, closeWindow, focusWindow, minimizeWindow, openWindow, registerWindow, resetChat, sendChatMessage, setChatModel, setPinnedAssistantVm, stopChat, updateWindowPosition } from "@/store/actions";
+import { wsSend } from "@/lib/ws";
+import { Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
@@ -97,13 +72,40 @@ function buildAssistantContext(): string {
     }
   }
 
-  // Selected app
-  const appId = $selectedAppId.getValue();
-  if (appId) {
-    const apps = $apps.getValue();
-    const app = apps.find((a) => a.id === appId);
-    if (app) {
-      lines.push("", `App: ${app.name} [${app.status}] cmd="${app.command}"`);
+  // Pinned VM — the assistant's ssh_exec is locked to this target on the server.
+  const pin = $pinnedAssistantVm.getValue();
+  if (pin) {
+    lines.push(
+      "",
+      "=== Pinned VM ===",
+      `Label: ${pin.label}`,
+      `Project: ${pin.projectName} (id: ${pin.projectId})`,
+      `Instance: ${pin.instanceId}`,
+      `Host: ${pin.host} (${pin.provider})`,
+      "All ssh_exec calls run on this VM. Do not propose commands intended for another VM.",
+    );
+  }
+
+  // Active terminal — so the LLM knows where commands will land if the user clicks Run.
+  const terminalState = $terminal.getValue();
+  if (terminalState.activeTabId) {
+    const activeTab = terminalState.tabs.find((t) => t.id === terminalState.activeTabId);
+    if (activeTab) {
+      lines.push("", "=== Active Terminal ===");
+      lines.push(`Title: ${activeTab.title}`);
+      if (activeTab.ssh) {
+        const u = activeTab.ssh.username || "?";
+        const h = activeTab.ssh.host;
+        const p = activeTab.ssh.port ?? 22;
+        lines.push(`Connection: SSH ${u}@${h}:${p}`);
+      } else {
+        lines.push("Connection: local terminal");
+      }
+      if (activeTab.cwd) lines.push(`CWD: ${activeTab.cwd}`);
+      lines.push(
+        "",
+        "Shell code blocks (```bash, ```sh, ```shell, or unlabeled fenced code) will get a 'Run' button in the UI that executes them in this terminal. Tailor command suggestions to that environment.",
+      );
     }
   }
 
@@ -138,14 +140,163 @@ function getContextItems(): ContextItem[] {
     }
   }
 
-  const appId = $selectedAppId.getValue();
-  if (appId) {
-    const apps = $apps.getValue();
-    const app = apps.find((a) => a.id === appId);
-    if (app) items.push({ label: "App", value: app.name });
+  const terminalState = $terminal.getValue();
+  if (terminalState.activeTabId) {
+    const activeTab = terminalState.tabs.find((t) => t.id === terminalState.activeTabId);
+    if (activeTab) items.push({ label: "Terminal", value: activeTab.title });
   }
 
+  const pin = $pinnedAssistantVm.getValue();
+  if (pin) items.push({ label: "Pinned VM", value: pin.label });
+
   return items;
+}
+
+// --- Runnable code blocks ---
+
+/** When a fenced code block in an assistant message is shell-flavored (or
+ *  unlabeled), show a hovering "Run" button that pipes it into whichever
+ *  terminal tab is currently active. */
+function RunnableCode({ inline, className, children }: { inline?: boolean; className?: string; children: React.ReactNode }) {
+  const [terminal] = useSubject($terminal);
+  // ReactMarkdown passes `inline: true` for `<code>` (vs `<pre><code>`). We only
+  // augment block code blocks.
+  if (inline) {
+    return <code className={className}>{children}</code>;
+  }
+  const lang = (className || "").match(/language-(\S+)/)?.[1]?.toLowerCase() ?? "";
+  const isShell = lang === "" || lang === "bash" || lang === "sh" || lang === "shell" || lang === "zsh";
+  const text = String(children).replace(/\n$/, "");
+  const activeTab = terminal.tabs.find((t) => t.id === terminal.activeTabId);
+  const canRun = isShell && !!activeTab;
+
+  function run() {
+    if (!activeTab) return;
+    // Each line as its own write so multi-line snippets land naturally in the shell.
+    wsSend("terminal:data", { id: activeTab.id, data: text + "\n" });
+  }
+
+  return (
+    <span className="relative group block">
+      <code className={className}>{children}</code>
+      {canRun && (
+        <button
+          onClick={run}
+          className="absolute top-1 right-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue/20 text-blue text-xs opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue/30"
+          title={`Run in ${activeTab!.title}`}
+        >
+          <Play size={10} /> Run
+        </button>
+      )}
+    </span>
+  );
+}
+
+const assistantMarkdownComponents = {
+  ...markdownComponents,
+  code: RunnableCode as unknown as React.ComponentType<React.HTMLAttributes<HTMLElement> & { inline?: boolean }>,
+};
+
+// --- Pin VM picker ---
+
+/** Flatten all projects' VPS instances into a pickable list. Cloud VMs that
+ *  aren't attached to any project can't be ssh_exec'd by the assistant (the
+ *  tool requires a projectId), so we only list project-attached instances. */
+function getPinCandidates(projects: ProjectDef[]): PinnedAssistantVm[] {
+  const out: PinnedAssistantVm[] = [];
+  for (const p of projects) {
+    for (const inst of p.vpsInstances ?? []) {
+      const provider: PinnedAssistantVm["provider"] = inst.tazcloud
+        ? "tazcloud"
+        : inst.digitalocean
+          ? "digitalocean"
+          : "other";
+      out.push({
+        projectId: p.id,
+        projectName: p.name,
+        instanceId: inst.id,
+        label: `${p.name} / ${inst.label}`,
+        host: inst.connection.host,
+        provider,
+      });
+    }
+  }
+  return out;
+}
+
+function PinPicker() {
+  const [pin] = useSubject($pinnedAssistantVm);
+  const [projects] = useSubject($projects);
+  const [open, setOpen] = useState(false);
+  const candidates = getPinCandidates(projects);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] border transition-colors",
+          pin
+            ? "bg-mauve/15 text-mauve border-mauve/40 hover:bg-mauve/20"
+            : "bg-surface0 text-overlay1 border-surface1 hover:bg-surface1",
+        )}
+        title={pin ? `Pinned to ${pin.label} — ${pin.host}` : "Pin the assistant to a single VM"}
+      >
+        {pin ? <Pin size={10} /> : <PinOff size={10} />}
+        <span className="max-w-[160px] truncate font-medium">
+          {pin ? pin.label : "Pin VM"}
+        </span>
+        <ChevronDown size={9} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onPointerDown={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 z-40 bg-mantle border border-surface0 rounded-md shadow-lg py-1 min-w-[260px] max-h-[300px] overflow-auto">
+            <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-overlay0">
+              ssh_exec target
+            </div>
+            <button
+              onClick={() => { setPinnedAssistantVm(null); setOpen(false); }}
+              className={cn(
+                "w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2",
+                !pin && "text-mauve",
+              )}
+            >
+              <PinOff size={11} />
+              <span>No pin (LLM picks based on context)</span>
+            </button>
+            {candidates.length === 0 ? (
+              <div className="px-3 py-1.5 text-md text-overlay0">
+                No project-attached VMs. Attach a cloud VM to a project first.
+              </div>
+            ) : (
+              candidates.map((c) => {
+                const active = pin?.projectId === c.projectId && pin?.instanceId === c.instanceId;
+                return (
+                  <button
+                    key={`${c.projectId}:${c.instanceId}`}
+                    onClick={() => { setPinnedAssistantVm(c); setOpen(false); }}
+                    className={cn(
+                      "w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2",
+                      active && "bg-mauve/10 text-mauve",
+                    )}
+                  >
+                    <Pin size={11} className="shrink-0" />
+                    <span className="flex-1 min-w-0">
+                      <span className="block truncate font-medium">{c.label}</span>
+                      <span className="block text-[10px] text-overlay0 font-mono truncate">
+                        {c.provider} · {c.host}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 // --- Floating chat window ---
@@ -165,13 +316,42 @@ function FloatingChatWindow({
   // Subscribe to store values that affect context pills
   const [activeNav] = useSubject($activeNav);
   const [selectedProjectId] = useSubject($selectedProjectId);
-  const [selectedAppId] = useSubject($selectedAppId);
+  const [pin] = useSubject($pinnedAssistantVm);
   const contextItems = getContextItems();
 
   const [input, setInput] = useState("");
   const [maximized, setMaximized] = useState(false);
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  /** Read clipboard items on paste, extract any images, push their data URLs as previews. */
+  function handlePaste(e: React.ClipboardEvent<HTMLInputElement>) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const newImages: Promise<string>[] = [];
+    for (const it of items) {
+      if (it.kind === "file" && it.type.startsWith("image/")) {
+        const blob = it.getAsFile();
+        if (blob) {
+          newImages.push(new Promise<string>((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result as string);
+            r.onerror = () => reject(r.error);
+            r.readAsDataURL(blob);
+          }));
+        }
+      }
+    }
+    if (newImages.length > 0) {
+      e.preventDefault();
+      Promise.all(newImages).then((urls) => setPendingImages((prev) => [...prev, ...urls]));
+    }
+  }
+
+  function removePendingImage(idx: number) {
+    setPendingImages((prev) => prev.filter((_, i) => i !== idx));
+  }
 
   // Compute initial position: use stored position if valid, otherwise default
   const storedPos = windowState.position;
@@ -196,11 +376,14 @@ function FloatingChatWindow({
 
   function handleSend() {
     const text = input.trim();
-    if (!text || chatLoading) return;
+    const hasImages = pendingImages.length > 0;
+    if ((!text && !hasImages) || chatLoading) return;
     setInput("");
+    const images = hasImages ? pendingImages : undefined;
+    setPendingImages([]);
     const context = buildAssistantContext();
     const domSnapshot = document.body.innerText;
-    sendChatMessage(text, context, domSnapshot);
+    sendChatMessage(text, context, domSnapshot, images);
   }
 
   const containerStyle: React.CSSProperties = maximized
@@ -248,7 +431,7 @@ function FloatingChatWindow({
         </div>
       </div>
 
-      {/* Context pills + model selector */}
+      {/* Context pills + pin + model selector */}
       <div className="flex items-center gap-1 px-3 py-1.5 border-b border-surface0/50 shrink-0">
         <div className="flex flex-wrap gap-1 flex-1">
           {contextItems.map((item) => (
@@ -258,6 +441,7 @@ function FloatingChatWindow({
             </span>
           ))}
         </div>
+        <PinPicker />
         <select
           value={chatModelId}
           onChange={(e) => setChatModel(e.target.value as ChatModelId)}
@@ -268,6 +452,26 @@ function FloatingChatWindow({
           ))}
         </select>
       </div>
+
+      {/* Pinned VM banner — makes it unambiguous where ssh_exec lands. Always
+          visible while a pin is set so it can't be missed mid-conversation. */}
+      {pin && (
+        <div className="flex items-center gap-2 px-3 py-1 border-b border-mauve/20 bg-mauve/10 text-[11px] shrink-0">
+          <Pin size={10} className="text-mauve shrink-0" />
+          <span className="text-mauve font-medium truncate">
+            Commands run on <span className="font-mono">{pin.label}</span>
+          </span>
+          <span className="text-overlay0 font-mono truncate hidden sm:inline">· {pin.host}</span>
+          <div className="flex-1" />
+          <button
+            onClick={() => setPinnedAssistantVm(null)}
+            className="text-overlay0 hover:text-text transition-colors"
+            title="Unpin"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2 scrollbar-thin min-h-0">
@@ -282,8 +486,24 @@ function FloatingChatWindow({
         {chatMessages.map((msg: ChatMessage, i: number) => (
           <div key={i} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
             {msg.role === "user" ? (
-              <div className="max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text bg-surface0 text-text rounded-br-sm whitespace-pre-wrap">
-                {msg.content}
+              <div className="max-w-[90%] flex flex-col items-end gap-1">
+                {msg.images && msg.images.length > 0 && (
+                  <div className="flex flex-wrap gap-1 justify-end">
+                    {msg.images.map((url, k) => (
+                      <img
+                        key={k}
+                        src={url}
+                        alt={`sent ${k + 1}`}
+                        className="max-h-48 max-w-full rounded border border-surface1"
+                      />
+                    ))}
+                  </div>
+                )}
+                {msg.content && (
+                  <div className="px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text bg-surface0 text-text rounded-br-sm whitespace-pre-wrap">
+                    {msg.content}
+                  </div>
+                )}
               </div>
             ) : msg.steps ? (
               <div className={cn(
@@ -296,7 +516,7 @@ function FloatingChatWindow({
                   <div key={j}>
                     {step.content && (
                       <div className="chat-markdown select-text cursor-text">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
                           {step.content}
                         </ReactMarkdown>
                       </div>
@@ -327,7 +547,7 @@ function FloatingChatWindow({
                   )}
                 >
                   <div className="chat-markdown select-text cursor-text">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
                       {msg.content}
                     </ReactMarkdown>
                   </div>
@@ -348,7 +568,7 @@ function FloatingChatWindow({
                 <div key={i}>
                   {step.content && (
                     <div className="chat-markdown select-text cursor-text">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
                         {step.content}
                       </ReactMarkdown>
                     </div>
@@ -362,7 +582,7 @@ function FloatingChatWindow({
               ))}
               {chatStreaming && (
                 <div className="chat-markdown select-text cursor-text">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
                     {chatStreaming}
                   </ReactMarkdown>
                 </div>
@@ -392,43 +612,66 @@ function FloatingChatWindow({
       </div>
 
       {/* Input */}
-      <div className="flex items-center gap-2 px-3 py-2 border-t border-surface0 shrink-0">
-        <input
-          ref={inputRef}
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-          placeholder="Ask Genie anything..."
-          className="flex-1 bg-surface0 border border-surface1 rounded-md px-2.5 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-mauve"
-        />
-        {chatLoading ? (
-          <button
-            onClick={stopChat}
-            className="p-1.5 rounded-md bg-red text-background hover:bg-red/80 transition-colors"
-            title="Stop generating"
-          >
-            <Square size={12} />
-          </button>
-        ) : (
-          <button
-            onClick={handleSend}
-            disabled={!input.trim()}
-            className={cn(
-              "p-1.5 rounded-md transition-colors",
-              !input.trim()
-                ? "bg-surface0 text-overlay0 cursor-not-allowed"
-                : "bg-mauve text-background hover:bg-mauve/80"
-            )}
-          >
-            <Send size={12} />
-          </button>
+      <div className="flex flex-col gap-1.5 px-3 py-2 border-t border-surface0 shrink-0">
+        {pendingImages.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {pendingImages.map((url, idx) => (
+              <div key={idx} className="relative group">
+                <img
+                  src={url}
+                  alt={`pasted ${idx + 1}`}
+                  className="h-14 w-14 object-cover rounded border border-surface1"
+                />
+                <button
+                  onClick={() => removePendingImage(idx)}
+                  className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red text-background flex items-center justify-center text-[10px] leading-none border-none cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Remove image"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
         )}
+        <div className="flex items-center gap-2">
+          <input
+            ref={inputRef}
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onPaste={handlePaste}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder={pendingImages.length > 0 ? "Add a question about the image…" : "Ask Genie anything..."}
+            className="flex-1 bg-surface0 border border-surface1 rounded-md px-2.5 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-mauve"
+          />
+          {chatLoading ? (
+            <button
+              onClick={stopChat}
+              className="p-1.5 rounded-md bg-red text-background hover:bg-red/80 transition-colors"
+              title="Stop generating"
+            >
+              <Square size={12} />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() && pendingImages.length === 0}
+              className={cn(
+                "p-1.5 rounded-md transition-colors",
+                !input.trim() && pendingImages.length === 0
+                  ? "bg-surface0 text-overlay0 cursor-not-allowed"
+                  : "bg-mauve text-background hover:bg-mauve/80"
+              )}
+            >
+              <Send size={12} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Resize handle */}

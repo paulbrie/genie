@@ -3,13 +3,9 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useSubject } from "subjecto/react";
 import { Plus, X } from "lucide-react";
-import {
-  $terminal,
-  addTerminalTab,
-  removeTerminalTab,
-  switchTerminalTab,
-  type TerminalTab,
-} from "@/store";
+import type { TerminalTab } from "@/store/types";
+import { $terminal } from "@/store/subjects";
+import { addTerminalTab, removeTerminalTab, switchTerminalTab } from "@/store/actions";
 import {
   createTerminal,
   disposeTerminal,
@@ -78,6 +74,8 @@ export function TerminalPanel() {
           port: tab.ssh.port,
           username: tab.ssh.username,
           privateKeyPath: tab.ssh.privateKeyPath,
+          title: tab.title,
+          command: tab.command,
         });
         if (tab.command) {
           const cmdToSend = tab.command;

@@ -3,46 +3,9 @@
 import { useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import {
-  $projects,
-  $selectedProjectId,
-  $vpsDeploy,
-  $admin,
-  $commandRunOutputs,
-  addSshTerminalTab,
-  deployToDo,
-  deployToProvider,
-  checkVpsStatus,
-  teardownVps,
-  hibernateVps,
-  wakeVps,
-  disconnectVps,
-  fetchVpsLogs,
-  fetchVpsStats,
-  killVpsProcess,
-  clearVpsInstanceState,
-  loadDeployLogs,
-  openWindow,
-  loadBaseImageConfigs,
-  runProjectCommand,
-  stopProjectCommand,
-  runVpsRecipe,
-  checkVpsRecipe,
-  uninstallVpsRecipe,
-  startMcpTunnel,
-  vpsExec,
-  type ProjectDef,
-  type ProjectCommand,
-  type VpsDeployState,
-  type VpsInstanceState,
-  type VpsInstance,
-  type DeployLogEntry,
-  type VpsStats,
-  type VpsProcessInfo,
-  type VpsServiceInfo,
-  type BaseImageTemplate,
-  type RecipeState,
-} from "@/store";
+import type { BaseImageTemplate, DeployLogEntry, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
+import { $admin, $auth, $commandRunOutputs, $projects, $selectedProjectId, $vpsDeploy } from "@/store/subjects";
+import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadDeployLogs, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, uninstallVpsRecipe, vpsExec, wakeVps } from "@/store/actions";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
 import { ErrorMessage } from "@/components/ui/error-message";
@@ -83,6 +46,8 @@ import {
   Lock,
   Moon,
   Sun,
+  Cloud,
+  Container,
 } from "lucide-react";
 import { ChatView } from "@/components/chat-view";
 import { DbExplorer } from "@/components/db-explorer";
@@ -161,7 +126,7 @@ function ClaudeTerminalButton({ projectId, instance }: { projectId: string; inst
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
-import type { ProcessInfo } from "@/store";
+import type { ProcessInfo } from "@/store/types";
 import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
 
@@ -590,8 +555,8 @@ function ProjectCloudDetail({
 
       <span className="text-base font-semibold text-text mb-1">{project.name}</span>
 
-      {/* Deploy controls */}
-      <div className="flex items-center gap-2">
+      {/* Deploy controls — both providers always available; per-button explicit. */}
+      <div className="flex items-center gap-2 flex-wrap">
         <input
           value={deployLabel}
           onChange={(e) => setDeployLabel(e.target.value)}
@@ -600,17 +565,34 @@ function ProjectCloudDetail({
         />
         <button
           onClick={() => {
-            const provider = (project.vpsProvider || "digitalocean") as "digitalocean" | "tazcloud";
-            deployToProvider(project.id, provider, deployLabel || undefined);
+            deployToProvider(project.id, "digitalocean", deployLabel || undefined);
             setDeployLabel("");
           }}
           className="flex items-center gap-2 px-3 py-1.5 bg-mantle rounded-lg hover:bg-surface0 transition-colors text-left"
         >
           <Server size={16} className="text-blue" />
           <span className="text-md font-medium text-text">
-            {(project.vpsProvider || "digitalocean") === "tazcloud"
-              ? `Deploy TazCloud VM (${project.vpsImage || "ubuntu-22"} / ${project.vpsSize || "small"})`
-              : "Deploy DigitalOcean Droplet"}
+            Deploy DigitalOcean Droplet
+            {project.vpsSize && project.vpsRegion && (
+              <span className="text-overlay0 font-normal ml-1">
+                ({project.vpsSize} / {project.vpsRegion})
+              </span>
+            )}
+          </span>
+        </button>
+        <button
+          onClick={() => {
+            deployToProvider(project.id, "tazcloud", deployLabel || undefined);
+            setDeployLabel("");
+          }}
+          className="flex items-center gap-2 px-3 py-1.5 bg-mantle rounded-lg hover:bg-surface0 transition-colors text-left"
+        >
+          <Cloud size={16} className="text-blue" />
+          <span className="text-md font-medium text-text">
+            Deploy TazCloud VM
+            <span className="text-overlay0 font-normal ml-1">
+              ({project.vpsImage || "ubuntu-22"} / {project.vpsSize && ["small","medium","large","xlarge"].includes(project.vpsSize) ? project.vpsSize : "small"})
+            </span>
           </span>
         </button>
       </div>
@@ -711,7 +693,15 @@ interface RecipeCommand {
   command: string;
 }
 
-interface VpsRecipeDef {
+export interface RecipeOption {
+  /** Env var name set when running the install script (e.g. `PG_VERSION`). */
+  name: string;
+  label: string;
+  choices: { value: string; label: string }[];
+  defaultValue: string;
+}
+
+export interface VpsRecipeDef {
   id: string;
   label: string;
   icon: typeof Globe;
@@ -722,9 +712,53 @@ interface VpsRecipeDef {
   uninstallScript: string;
   setupShSnippet: string;
   commands: RecipeCommand[];
+  /** Optional pre-install options shown as a small form in the admin panel. */
+  options?: RecipeOption[];
 }
 
-const VPS_RECIPES: VpsRecipeDef[] = [
+/** Shared bash helpers for every Add-on install/uninstall script.
+ *  - `log "msg"` — printf with [HH:MM:SS] prefix; visible in the streaming output pane.
+ *  - `wait_apt` — block until no other process holds an apt/dpkg lock; logs a
+ *    heartbeat every 10 s with the holder process name (unattended-upgrades, etc.).
+ *
+ *  Embedded into a JS template literal, so any `${...}` that should reach bash
+ *  must be escaped as `\${...}` here.
+ */
+export const BASH_HELPERS = `log() { printf '[%s] %s\\n' "$(date '+%H:%M:%S')" "$*"; }
+wait_apt() {
+  local i=0
+  local LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock"
+  # Returns "<pid> <elapsed> <cmd>" lines for every PID holding any apt/dpkg lock.
+  apt_lock_holder_details() {
+    local pids
+    pids=$(sudo fuser $LOCKS 2>/dev/null | tr -s ' \\t' '\\n' | sed '/^$/d' | sort -u)
+    [ -z "$pids" ] && { echo "unknown"; return; }
+    local out=""
+    for pid in $pids; do
+      local row
+      row=$(ps -o pid=,etime=,args= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//; s/  */ /g')
+      if [ -n "$row" ]; then
+        # Truncate to keep heartbeat lines readable.
+        out="$out\\n  $(echo "$row" | head -c 110)"
+      fi
+    done
+    [ -z "$out" ] && { echo "unknown"; return; }
+    printf '%b' "$out"
+  }
+  if ! sudo fuser $LOCKS >/dev/null 2>&1; then return; fi
+  log "Waiting for apt lock — held by:$(apt_lock_holder_details)"
+  while sudo fuser $LOCKS >/dev/null 2>&1; do
+    i=$((i+1))
+    [ "$i" -gt 600 ] && { log "Timeout waiting for apt lock (10min)"; exit 1; }
+    if [ $((i % 10)) = 0 ]; then
+      log "Still waiting (\${i}s) — held by:$(apt_lock_holder_details)"
+    fi
+    sleep 1
+  done
+  log "apt lock released after \${i}s."
+}`;
+
+export const VPS_RECIPES: VpsRecipeDef[] = [
   {
     id: "chrome",
     label: "Chrome",
@@ -733,27 +767,33 @@ const VPS_RECIPES: VpsRecipeDef[] = [
     port: 9222,
     checkScript: `if google-chrome-stable --version > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
-echo "Installing Chrome dependencies..."
-sudo apt-get update -qq
-sudo apt-get install -y -qq wget curl gnupg2 > /dev/null
-echo "Adding Chrome repository..."
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+log "Installing Chrome dependencies..."
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq wget curl gnupg2 > /dev/null
+log "Adding Chrome repository..."
 curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg 2>/dev/null
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null
-echo "Updating package list..."
-sudo apt-get update -qq
-echo "Installing Chrome (this may take a minute)..."
-sudo apt-get install -y google-chrome-stable
-echo "Verifying..."
+log "Refreshing package list (with new Chrome repo)..."
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
+log "Installing google-chrome-stable (download ~80MB, takes 1-2 min)..."
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq google-chrome-stable > /dev/null
+log "Verifying..."
 google-chrome-stable --version
-echo "Chrome installed successfully."`,
+log "Chrome installed successfully."`,
     uninstallScript: `set -e
-echo "Removing Chrome..."
-sudo apt-get remove -y -qq google-chrome-stable > /dev/null 2>&1 || true
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+log "Removing Chrome..."
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 remove -y -qq google-chrome-stable > /dev/null 2>&1 || true
 sudo rm -f /etc/apt/sources.list.d/google-chrome.list
 sudo rm -f /usr/share/keyrings/google-chrome.gpg
-sudo apt-get autoremove -y -qq > /dev/null
-echo "Chrome removed."`,
+log "Autoremove..."
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+log "Chrome removed."`,
     setupShSnippet: `# Install Chrome
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq && apt-get install -y -qq wget gnupg2 > /dev/null
 wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
@@ -775,33 +815,113 @@ apt-get update -qq && apt-get install -y -qq google-chrome-stable > /dev/null`,
     port: 5432,
     checkScript: `command -v psql > /dev/null 2>&1 && echo "INSTALLED" || echo "NOT_INSTALLED"`,
     installScript: `set -e
-echo "Installing PostgreSQL..."
-sudo apt-get update -qq
-sudo apt-get install -y -qq postgresql postgresql-contrib > /dev/null
-echo "Starting PostgreSQL..."
-sudo service postgresql start
-sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
-echo "PostgreSQL ready (user: postgres, password: postgres, port: 5432)"`,
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+PG_VERSION="\${PG_VERSION:-default}"
+log "Installing PostgreSQL (version: $PG_VERSION)..."
+if [ "$PG_VERSION" = "default" ]; then
+  log "apt-get update..."
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq
+  log "apt-get install postgresql (this can take 1-2 min)..."
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq postgresql postgresql-contrib > /dev/null
+  log "apt-get install done."
+else
+  # Add PGDG repository to get specific PG versions (Ubuntu/Debian only).
+  log "Installing prereqs (curl, ca-certificates, lsb-release)..."
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates lsb-release > /dev/null
+  log "Adding PGDG repository key + source..."
+  sudo install -d /etc/apt/keyrings
+  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/keyrings/postgresql.asc > /dev/null
+  CODENAME=$(lsb_release -cs)
+  echo "deb [signed-by=/etc/apt/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt $CODENAME-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+  log "Codename: $CODENAME — apt-get update (refresh PGDG)..."
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq
+  log "apt-get install postgresql-$PG_VERSION (can take 1-3 min)..."
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq postgresql-$PG_VERSION postgresql-contrib-$PG_VERSION > /dev/null
+  log "apt-get install done."
+fi
+log "Starting PostgreSQL..."
+# Prefer systemctl (modern Ubuntu/Debian/Almalinux); fall back to legacy 'service'.
+if command -v systemctl >/dev/null 2>&1; then
+  # Unmask in case a previous install/uninstall cycle left the unit masked
+  # (postgresql.service is a Type=oneshot meta-unit; postgres-common postinst
+  # can mask it under certain reinstall paths). systemctl start on a masked
+  # unit exits 5 and the cluster never starts.
+  if systemctl status postgresql 2>&1 | grep -q "Loaded: masked"; then
+    log "postgresql.service is masked — unmasking..."
+    sudo systemctl unmask postgresql 2>/dev/null || true
+  fi
+  # Also unmask the per-cluster instance unit (this is the one that actually
+  # runs the postmaster — postgresql.service is just a oneshot dispatcher).
+  if [ "$PG_VERSION" != "default" ] && systemctl status "postgresql@$PG_VERSION-main" 2>&1 | grep -q "Loaded: masked"; then
+    log "postgresql@$PG_VERSION-main.service is masked — unmasking..."
+    sudo systemctl unmask "postgresql@$PG_VERSION-main" 2>/dev/null || true
+  fi
+  sudo systemctl enable postgresql > /dev/null 2>&1 || true
+  sudo systemctl start postgresql || sudo systemctl restart postgresql
+else
+  sudo service postgresql start
+fi
+# Wait for the postgres socket to actually accept connections — start may return
+# before initdb-on-first-boot has finished creating the cluster.
+log "Waiting for PostgreSQL to accept connections..."
+for i in $(seq 1 30); do
+  if sudo -i -u postgres psql -tAc "SELECT 1" > /dev/null 2>&1; then
+    log "Connected after $i second(s)."
+    break
+  fi
+  if [ "$i" = 5 ] || [ "$i" = 15 ] || [ "$i" = 25 ]; then log "Still waiting ($i s)..."; fi
+  sleep 1
+done
+if ! sudo -i -u postgres psql -tAc "SELECT 1" > /dev/null 2>&1; then
+  log "PostgreSQL did not become reachable within 30s. Diagnostics:"
+  sudo systemctl status postgresql --no-pager 2>&1 | head -30 || true
+  echo "--- last 50 lines of postgres log ---"
+  sudo journalctl -u postgresql --no-pager -n 50 2>&1 || true
+  exit 1
+fi
+log "Setting postgres password..."
+sudo -i -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';" > /dev/null
+INSTALLED_VERSION=$(sudo -i -u postgres psql -tAc "SHOW server_version" 2>/dev/null | head -1)
+log "PostgreSQL ready (user: postgres, password: postgres, port: 5432, version: $INSTALLED_VERSION)"`,
     uninstallScript: `set -e
-echo "Stopping PostgreSQL..."
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+log "Stopping PostgreSQL..."
 sudo service postgresql stop 2>/dev/null || true
-echo "Removing PostgreSQL..."
-sudo apt-get remove -y -qq postgresql postgresql-contrib > /dev/null
-sudo apt-get autoremove -y -qq > /dev/null
-echo "PostgreSQL removed."`,
+log "Removing PostgreSQL packages..."
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 remove -y -qq postgresql postgresql-contrib > /dev/null
+log "Autoremove..."
+wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+log "PostgreSQL removed."`,
     setupShSnippet: `# Install and start PostgreSQL
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq && apt-get install -y -qq postgresql postgresql-contrib > /dev/null
 service postgresql start
-su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
+cd / && su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
     commands: [
       { name: "Start service", command: "sudo service postgresql start" },
       { name: "Stop service", command: "sudo service postgresql stop" },
       { name: "Restart service", command: "sudo service postgresql restart" },
       { name: "Check status", command: "sudo service postgresql status" },
-      { name: "Connect as postgres", command: "sudo -u postgres psql" },
-      { name: "List databases", command: "sudo -u postgres psql -l" },
-      { name: "Create database", command: "sudo -u postgres createdb myapp" },
+      { name: "Connect as postgres", command: "sudo -i -u postgres psql" },
+      { name: "List databases", command: "sudo -i -u postgres psql -l" },
+      { name: "Create database", command: "sudo -i -u postgres createdb myapp" },
       { name: "Connection string", command: "echo 'postgresql://postgres:postgres@localhost:5432/postgres'" },
+    ],
+    options: [
+      {
+        name: "PG_VERSION",
+        label: "Version",
+        defaultValue: "default",
+        choices: [
+          { value: "default", label: "Ubuntu default (14 on 22.04, 16 on 24.04)" },
+          { value: "14", label: "14" },
+          { value: "15", label: "15" },
+          { value: "16", label: "16" },
+          { value: "17", label: "17 (latest)" },
+        ],
+      },
     ],
   },
   {
@@ -812,30 +932,56 @@ su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
     port: 9877,
     checkScript: `curl -sf http://127.0.0.1:9877/mcp > /dev/null 2>&1 && echo "INSTALLED" || echo "NOT_INSTALLED"`,
     installScript: `set -e
-echo "Configuring genie-browser MCP..."
+${BASH_HELPERS}
+log "Configuring genie-browser MCP..."
+# /opt/project is created by the Genie project-deploy flow; for bare VMs we create it.
+if [ ! -d /opt/project ]; then
+  log "Creating /opt/project directory..."
+  sudo mkdir -p /opt/project && sudo chown "$(whoami):$(whoami)" /opt/project
+fi
 if [ ! -f /opt/project/.mcp.json ]; then
+  log "Seeding empty .mcp.json..."
   echo '{"mcpServers":{}}' > /opt/project/.mcp.json
 fi
-node -e "
-  const fs = require('fs');
-  const cfg = JSON.parse(fs.readFileSync('/opt/project/.mcp.json', 'utf8'));
-  if (!cfg.mcpServers) cfg.mcpServers = {};
-  cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:9877/mcp' };
-  fs.writeFileSync('/opt/project/.mcp.json', JSON.stringify(cfg, null, 2));
-"
-echo "genie-browser MCP configured in .mcp.json"
-echo "Note: The browser tunnel is established automatically when the Chrome extension connects."`,
-    uninstallScript: `set -e
-echo "Removing genie-browser from .mcp.json..."
-if [ -f /opt/project/.mcp.json ]; then
+log "Merging genie-browser entry into .mcp.json..."
+# Use jq if available, else fall back to node, else a python one-liner.
+if command -v jq >/dev/null 2>&1; then
+  tmp=$(mktemp)
+  jq '.mcpServers["genie-browser"] = {"type":"http","url":"http://127.0.0.1:9877/mcp"}' /opt/project/.mcp.json > "$tmp" && mv "$tmp" /opt/project/.mcp.json
+elif command -v node >/dev/null 2>&1; then
   node -e "
     const fs = require('fs');
     const cfg = JSON.parse(fs.readFileSync('/opt/project/.mcp.json', 'utf8'));
-    delete cfg.mcpServers['genie-browser'];
+    if (!cfg.mcpServers) cfg.mcpServers = {};
+    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:9877/mcp' };
     fs.writeFileSync('/opt/project/.mcp.json', JSON.stringify(cfg, null, 2));
   "
+else
+  python3 -c "
+import json
+with open('/opt/project/.mcp.json') as f: cfg = json.load(f)
+cfg.setdefault('mcpServers', {})['genie-browser'] = {'type': 'http', 'url': 'http://127.0.0.1:9877/mcp'}
+with open('/opt/project/.mcp.json', 'w') as f: json.dump(cfg, f, indent=2)
+"
 fi
-echo "genie-browser removed."`,
+log "genie-browser MCP configured in .mcp.json"
+log "Note: the browser tunnel is established when the Chrome extension connects."`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Removing genie-browser from .mcp.json..."
+if [ -f /opt/project/.mcp.json ]; then
+  if command -v jq >/dev/null 2>&1; then
+    tmp=$(mktemp); jq 'del(.mcpServers["genie-browser"])' /opt/project/.mcp.json > "$tmp" && mv "$tmp" /opt/project/.mcp.json
+  elif command -v node >/dev/null 2>&1; then
+    node -e "
+      const fs = require('fs');
+      const cfg = JSON.parse(fs.readFileSync('/opt/project/.mcp.json', 'utf8'));
+      delete cfg.mcpServers['genie-browser'];
+      fs.writeFileSync('/opt/project/.mcp.json', JSON.stringify(cfg, null, 2));
+    "
+  fi
+fi
+log "genie-browser removed."`,
     setupShSnippet: `# Configure genie-browser MCP
 if [ ! -f /opt/project/.mcp.json ]; then echo '{"mcpServers":{}}' > /opt/project/.mcp.json; fi
 node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('/opt/project/.mcp.json','utf8'));c.mcpServers=c.mcpServers||{};c.mcpServers['genie-browser']={type:'http',url:'http://127.0.0.1:9877/mcp'};fs.writeFileSync('/opt/project/.mcp.json',JSON.stringify(c,null,2));"`,
@@ -853,10 +999,33 @@ node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('/opt/project
     port: 8080,
     checkScript: `docker ps --format "{{.Names}}" 2>/dev/null | grep -qx "bc-sandbox" && echo "INSTALLED" || echo "NOT_INSTALLED"`,
     installScript: `set -e
-echo "Pulling Business Central Docker image (this may take several minutes)..."
-docker pull mcr.microsoft.com/businesscentral:latest
-echo "Creating BC sandbox container..."
-docker run -d --name bc-sandbox \\
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+# Ensure Docker is installed — Navision depends on it.
+if ! command -v docker >/dev/null 2>&1; then
+  log "Docker not found — installing first..."
+  if command -v apt-get >/dev/null 2>&1; then
+    wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
+    wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y -q docker docker-compose-plugin > /dev/null 2>&1 || sudo dnf install -y -q docker > /dev/null
+  else
+    log "Unsupported package manager (need apt-get or dnf)"; exit 1
+  fi
+  sudo systemctl enable --now docker > /dev/null 2>&1
+  sudo usermod -aG docker "$USER" 2>/dev/null || true
+  log "Docker installed: $(docker --version)"
+fi
+log "Pulling Business Central image — ~5GB, takes several minutes..."
+sudo docker pull mcr.microsoft.com/businesscentral:latest 2>&1 | while IFS= read -r line; do
+  # Docker pull emits dozens of "Pulling fs layer / Downloading / Extracting" lines.
+  # Surface only the high-signal ones so the panel doesn't spam.
+  case "$line" in
+    *"Pull complete"*|*"Status:"*|*"Digest:"*) log "$line" ;;
+  esac
+done
+log "Creating BC sandbox container..."
+sudo docker run -d --name bc-sandbox \\
   -e ACCEPT_EULA=Y \\
   -e USESSL=N \\
   -e USERNAME=admin \\
@@ -865,29 +1034,29 @@ docker run -d --name bc-sandbox \\
   -p 7049:7049 \\
   -p 7048:7048 \\
   --memory=8g \\
-  mcr.microsoft.com/businesscentral:latest
-echo "Waiting for BC to initialize (this takes 3-5 minutes)..."
+  mcr.microsoft.com/businesscentral:latest > /dev/null
+log "Waiting for BC to initialize (3-5 min)..."
 for i in $(seq 1 60); do
-  if docker logs bc-sandbox 2>&1 | grep -q "Ready for connections"; then
-    echo "Business Central is ready!"
-    echo ""
-    echo "Web Client: http://\$(hostname -I | awk '{print \$1}'):8080/BC/"
-    echo "Username: admin"
-    echo "Password: P@ssw0rd123!"
-    echo "OData: http://\$(hostname -I | awk '{print \$1}'):7048/BC/ODataV4"
-    echo "SOAP: http://\$(hostname -I | awk '{print \$1}'):7047/BC/WS"
-    echo "Dev endpoint: http://\$(hostname -I | awk '{print \$1}'):7049/BC"
+  if sudo docker logs bc-sandbox 2>&1 | grep -q "Ready for connections"; then
+    log "Business Central is ready!"
+    log "Web Client: http://\$(hostname -I | awk '{print \$1}'):8080/BC/"
+    log "Username: admin"
+    log "Password: P@ssw0rd123!"
+    log "OData:     http://\$(hostname -I | awk '{print \$1}'):7048/BC/ODataV4"
+    log "Dev:       http://\$(hostname -I | awk '{print \$1}'):7049/BC"
     exit 0
   fi
+  if [ $((i % 6)) = 0 ]; then log "Still initializing ($((i*5))s elapsed)..."; fi
   sleep 5
 done
-echo "BC container started but still initializing. Check logs with: docker logs -f bc-sandbox"`,
+log "BC container started but still initializing. Check with: docker logs -f bc-sandbox"`,
     uninstallScript: `set -e
-echo "Stopping Business Central..."
-docker stop bc-sandbox 2>/dev/null || true
-docker rm bc-sandbox 2>/dev/null || true
-echo "Business Central removed."
-echo "Note: Docker image still cached. Run 'docker rmi mcr.microsoft.com/businesscentral:latest' to free disk space."`,
+${BASH_HELPERS}
+log "Stopping Business Central..."
+sudo docker stop bc-sandbox 2>/dev/null || true
+sudo docker rm bc-sandbox 2>/dev/null || true
+log "Business Central removed."
+log "Note: Docker image still cached. Run 'docker rmi mcr.microsoft.com/businesscentral:latest' to free disk space."`,
     setupShSnippet: `# Business Central (Navision) sandbox
 docker pull mcr.microsoft.com/businesscentral:latest
 docker run -d --name bc-sandbox \\
@@ -909,6 +1078,71 @@ docker run -d --name bc-sandbox \\
       { name: "Dev endpoint", command: `echo "http://$(hostname -I | awk '{print $1}'):7049/BC"` },
       { name: "PowerShell into BC", command: "docker exec -it bc-sandbox powershell" },
       { name: "List extensions", command: `docker exec bc-sandbox powershell -Command "Get-NAVAppInfo -ServerInstance BC" 2>/dev/null || echo "BC still starting..."` },
+    ],
+  },
+  {
+    id: "docker",
+    label: "Docker",
+    icon: Container,
+    description: "Container runtime (engine + compose)",
+    checkScript: `if command -v docker > /dev/null 2>&1 && sudo systemctl is-active --quiet docker 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+if command -v apt-get > /dev/null 2>&1; then
+  log "Installing Docker via apt..."
+  log "apt-get update..."
+  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
+  log "apt-get install docker.io docker-compose-v2 (~250MB, 1-2 min)..."
+  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
+elif command -v dnf > /dev/null 2>&1; then
+  log "Installing Docker via dnf..."
+  sudo dnf install -y -q docker docker-compose-plugin > /dev/null 2>&1 || sudo dnf install -y -q docker > /dev/null
+else
+  log "Unsupported package manager (need apt-get or dnf)"; exit 1
+fi
+log "Enabling and starting docker service..."
+sudo systemctl enable --now docker > /dev/null 2>&1
+sudo usermod -aG docker "$USER" 2>/dev/null || true
+log "Docker installed: $(docker --version)"`,
+    uninstallScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+log "Stopping Docker..."
+sudo systemctl stop docker > /dev/null 2>&1 || true
+sudo systemctl disable docker > /dev/null 2>&1 || true
+if command -v apt-get > /dev/null 2>&1; then
+  log "apt-get remove docker.io docker-compose-v2..."
+  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 remove -y -qq docker.io docker-compose-v2 > /dev/null 2>&1 || true
+  log "Autoremove..."
+  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+elif command -v dnf > /dev/null 2>&1; then
+  log "dnf remove docker docker-compose-plugin..."
+  sudo dnf remove -y -q docker docker-compose-plugin > /dev/null 2>&1 || true
+fi
+log "Docker removed."`,
+    setupShSnippet: `# Install Docker
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get > /dev/null 2>&1; then
+  apt-get update -qq && apt-get install -y -qq docker.io docker-compose-v2 > /dev/null
+elif command -v dnf > /dev/null 2>&1; then
+  dnf install -y -q docker docker-compose-plugin > /dev/null
+fi
+systemctl enable --now docker`,
+    commands: [
+      { name: "Version", command: "docker --version && docker compose version 2>/dev/null || true" },
+      { name: "List running containers", command: "docker ps" },
+      { name: "List all containers", command: "docker ps -a" },
+      { name: "List images", command: "docker images" },
+      { name: "Disk usage", command: "docker system df" },
+      { name: "Live stats", command: "docker stats --no-stream" },
+      { name: "Prune (containers/images/volumes)", command: "docker system prune -f" },
+      { name: "Service status", command: "sudo systemctl status docker --no-pager | head -10" },
+      { name: "Restart Docker", command: "sudo systemctl restart docker && echo restarted" },
+      { name: "Compose: up", command: "cd /opt/project && sudo docker compose up -d" },
+      { name: "Compose: down", command: "cd /opt/project && sudo docker compose down" },
+      { name: "Compose: ps", command: "cd /opt/project && sudo docker compose ps" },
+      { name: "Compose: logs (tail 100)", command: "cd /opt/project && sudo docker compose logs --tail 100" },
     ],
   },
 ];
@@ -1358,7 +1592,11 @@ function isCriticalSshRule(rule: UfwRule): boolean {
   return port === "22" && rule.action === "ALLOW" && rule.direction === "IN" && rule.from !== "Anywhere" && rule.from !== "Anywhere (v6)";
 }
 
-function VpsFirewall({ projectId, instanceId }: { projectId: string; instanceId: string }) {
+/** Function-shaped SSH exec — lets VpsFirewall be reused across project-based and
+ *  admin-context VMs by swapping the actual exec function. */
+type VpsExecFn = (command: string) => Promise<{ output: string; error?: boolean }>;
+
+export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
   const [rules, setRules] = useState<UfwRule[]>([]);
   const [active, setActive] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1372,7 +1610,7 @@ function VpsFirewall({ projectId, instanceId }: { projectId: string; instanceId:
     setLoading(true);
     setError(null);
     try {
-      const res = await vpsExec(projectId, instanceId, "sudo ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
+      const res = await exec("sudo ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
       if (res.error || res.output.includes("UFW_NOT_INSTALLED")) {
         setActive(false);
         setRules([]);
@@ -1395,18 +1633,18 @@ function VpsFirewall({ projectId, instanceId }: { projectId: string; instanceId:
       setError(err.message);
     }
     setLoading(false);
-  }, [projectId, instanceId]);
+  }, [exec]);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
   const execAndRefresh = useCallback(async (cmd: string) => {
     setActionLoading(true);
     setError(null);
-    const res = await vpsExec(projectId, instanceId, cmd);
+    const res = await exec(cmd);
     if (res.error) setError(res.output);
     await fetchStatus();
     setActionLoading(false);
-  }, [projectId, instanceId, fetchStatus]);
+  }, [exec, fetchStatus]);
 
   const enableFirewall = useCallback(() => {
     execAndRefresh("sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw --force enable");
@@ -1734,7 +1972,7 @@ function VpsInstanceCard({
           <VpsRecipes projectId={project.id} instanceId={instance.id} recipes={instanceState?.recipes ?? {}} />
 
           {/* Firewall */}
-          <VpsFirewall projectId={project.id} instanceId={instance.id} />
+          <VpsFirewall exec={(cmd) => vpsExec(project.id, instance.id, cmd)} />
 
           {/* Run Commands */}
           <VpsRunCommands project={project} instanceId={instance.id} />
@@ -2567,13 +2805,21 @@ function ProjectSettingsTab({ project }: { project: ProjectDef }) {
   const [dbUrl, setDbUrl] = useState(project.dbUrl || "");
   const [gitFolders, setGitFolders] = useState<string[]>(project.gitFolders || []);
   const [newGitFolder, setNewGitFolder] = useState("");
+  const [teamId, setTeamId] = useState<string | null>(project.teamId ?? null);
 
   const adminState = useDeepSubjectAll($admin);
   const baseImageTemplates = adminState.baseImage.templates;
+  const teamList = adminState.teams.list;
+
+  const [auth] = useSubject($auth);
+  // Owning-team transfer is admin-only — server enforces this too (project:update drops
+  // the teamId field for non-admins), but we hide the control to make that explicit.
+  const canChangeTeam = auth.user?.role === "admin" || auth.user?.role === "superadmin";
 
   useEffect(() => {
     loadBaseImageConfigs();
-  }, []);
+    if (canChangeTeam) loadAdminTeams();
+  }, [canChangeTeam]);
 
   // Reset form when project changes
   useEffect(() => {
@@ -2586,6 +2832,7 @@ function ProjectSettingsTab({ project }: { project: ProjectDef }) {
     setDbUrl(project.dbUrl || "");
     setGitFolders(project.gitFolders || []);
     setNewGitFolder("");
+    setTeamId(project.teamId ?? null);
   }, [project.id]);
 
   const [saved, setSaved] = useState(false);
@@ -2594,7 +2841,7 @@ function ProjectSettingsTab({ project }: { project: ProjectDef }) {
     const trimName = name.trim();
     if (!trimName) return;
 
-    wsSend("project:update", {
+    const payload: Record<string, unknown> = {
       id: project.id,
       name: trimName,
       vpsRegion,
@@ -2604,7 +2851,11 @@ function ProjectSettingsTab({ project }: { project: ProjectDef }) {
       gitlabDeployKey: gitlabDeployKey || undefined,
       dbUrl: dbUrl || undefined,
       gitFolders,
-    });
+    };
+    // Only send teamId when the operator is permitted to change it. The server
+    // also drops the field for non-admins, but this keeps the wire payload honest.
+    if (canChangeTeam) payload.teamId = teamId;
+    wsSend("project:update", payload);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -2621,6 +2872,25 @@ function ProjectSettingsTab({ project }: { project: ProjectDef }) {
           className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans placeholder:text-overlay0 focus:border-mauve"
         />
       </div>
+
+      {canChangeTeam && (
+        <div className="flex flex-col gap-1">
+          <label className="text-md font-semibold text-subtext0">Owning Team</label>
+          <select
+            value={teamId ?? ""}
+            onChange={(e) => setTeamId(e.target.value || null)}
+            className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans focus:border-mauve"
+          >
+            <option value="">No team (admin-only)</option>
+            {teamList.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </select>
+          <p className="text-md text-overlay0">
+            Normal users only see projects whose team they belong to. Projects with no team are hidden from non-admins.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-col gap-1">
         <label className="text-md font-semibold text-subtext0">VPS Configuration</label>

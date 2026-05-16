@@ -5,7 +5,7 @@ import {
   ContextMenuItem,
 } from "@/components/ui/context-menu";
 import { genie } from "@/lib/genie-api";
-import { setRenamingEntry, refreshDirectory } from "@/store";
+import { refreshDirectory, setRenamingEntry } from "@/store/actions";
 import type { DirEntry } from "@/lib/genie-api";
 
 interface FileContextMenuProps {

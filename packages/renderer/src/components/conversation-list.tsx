@@ -2,7 +2,9 @@
 
 import { useSubject } from "subjecto/react";
 import { MessageCircle, Bot, Users } from "lucide-react";
-import { $conversationChat, $auth, selectConversation, type ConversationSummary, type MentionNotification } from "@/store";
+import type { ConversationSummary, MentionNotification } from "@/store/types";
+import { $auth, $conversationChat } from "@/store/subjects";
+import { selectConversation } from "@/store/actions";
 import { cn } from "@/lib/utils";
 
 export function ConversationList() {

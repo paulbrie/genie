@@ -13,13 +13,8 @@ import {
   Music,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  $fileExplorer,
-  navigateTo,
-  selectFileEntry,
-  setRenamingEntry,
-  refreshDirectory,
-} from "@/store";
+import { $fileExplorer } from "@/store/subjects";
+import { navigateTo, refreshDirectory, selectFileEntry, setRenamingEntry } from "@/store/actions";
 import { genie } from "@/lib/genie-api";
 import type { DirEntry } from "@/lib/genie-api";
 import { FileContextMenu } from "./file-context-menu";

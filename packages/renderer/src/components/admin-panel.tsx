@@ -11,90 +11,14 @@ import {
   RefreshCw, ExternalLink, Settings, X, Copy, Check, Key, AlertTriangle,
   RotateCcw, History, Clock, Download, Users, UserPlus, Shield, Crown,
 } from "lucide-react";
-import {
-  $admin,
-  addSshTerminalTab,
-  loadAdminTables,
-  selectAdminTable,
-  loadAdminRows,
-  setAdminSort,
-  openAdminRowDrawer,
-  closeAdminRowDrawer,
-  saveAdminRow,
-  deleteAdminRow,
-  executeAdminSql,
-  toggleAdminSqlPanel,
-  setAdminTab,
-  setDropletsSubTab,
-  setAiSubTab,
-  loadAdminDroplets,
-  loadAdminDropletStats,
-  adminDeleteDroplet,
-  createAdminBaseImage,
-  testBaseImageTemplate,
-  loadBaseImageConfigs,
-  saveBaseImageConfig,
-  deleteBaseImageConfig,
-  saveBaseImageTemplate,
-  deleteBaseImageTemplate,
-  restoreBaseImageTemplate,
-  hardDeleteBaseImageTemplate,
-  loadTemplateHistory,
-  loadAiCosts,
-  loadAiSettings,
-  saveAiSettings,
-  CHAT_MODELS,
-  type ChatModelId,
-  type AiSettings,
-  type AdminState,
-  type AdminBaseImageState,
-  type BaseImageConfig,
-  type BaseImageTemplate,
-  type TemplateHistoryEntry,
-  type DropletsSubTab,
-  type AiSubTab,
-  type AiUsageRow,
-  type AdminColumnInfo,
-  loadAdminUsers,
-  validateUser,
-  deleteUser,
-  saveUser,
-  loadAdminTeams,
-  createTeam,
-  updateTeam,
-  deleteTeam,
-  addTeamMember,
-  removeTeamMember,
-  setTeamMemberRole,
-  type AdminUser,
-  type AdminTeam,
-  type AdminTeamMember,
-  loadSshKey,
-  regenerateSshKey,
-  runDrizzlePush,
-  closeDrizzlePush,
-  loadBackups,
-  createBackup,
-  deleteBackup,
-  loadAuditLogs,
-  loadProdDeployments,
-  loadProdLogs,
-  type AuditLogEntry,
-  type RailwayDeployment,
-  type RailwayLogEntry,
-  type AdminDroplet,
-  type VpsStats,
-  $doSnapshots,
-  $doSnapshotsLoading,
-  loadDoSnapshots,
-  deleteDoSnapshot,
-} from "@/store";
+import type { AdminBaseImageState, AdminColumnInfo, AdminState, AdminTeam, AdminTeamMember, AdminUser, AiSettings, AiSubTab, AiUsageRow, AuditLogEntry, BaseImageConfig, BaseImageTemplate, DropletsSubTab, RailwayDeployment, RailwayLogEntry, TemplateHistoryEntry } from "@/store/types";
+import { $admin, $auth, $doSnapshots, $doSnapshotsLoading } from "@/store/subjects";
+import type { ChatModelId } from "@/store/actions";
+import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser } from "@/store/actions";
 import { useSubject } from "subjecto/react";
 import { cn } from "@/lib/utils";
 import { buildAdminPath } from "@/lib/routes";
 import { Button } from "@/components/ui/button";
-import { CopyableIp } from "@/components/ui/copyable-ip";
-import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { ViewHeader } from "@/components/view-header";
 import { ViewTabs } from "@/components/view-tabs";
 import { AdminRowDrawer } from "@/components/admin-row-drawer";
@@ -135,24 +59,6 @@ const catppuccinMocha = {
 const handleEditorWillMount: BeforeMount = (monaco) => {
   monaco.editor.defineTheme("catppuccin-mocha", catppuccinMocha);
 };
-
-function formatActiveSince(createdAt: string | null): string {
-  if (!createdAt) return "-";
-  const created = new Date(createdAt).getTime();
-  if (isNaN(created)) return "-";
-  const diffMs = Date.now() - created;
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo`;
-  const years = Math.floor(days / 365);
-  return `${years}y`;
-}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -786,8 +692,11 @@ function SnapshotsSubTab() {
 export function AdminPanel() {
   const router = useRouter();
   const admin = useDeepSubjectAll($admin);
-  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, sqlResult, sqlError, sqlLoading, sqlOpen, droplets, dropletsLoading, dropletsError, dropletStats, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush, users: usersState, teams: teamsState } = admin;
+  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, sqlResult, sqlError, sqlLoading, sqlOpen, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush, users: usersState, teams: teamsState } = admin;
 
+
+  const [auth] = useSubject($auth);
+  const isSuperadmin = auth.user?.role === "superadmin";
 
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; user: AdminUser } | null>(null);
@@ -815,7 +724,6 @@ export function AdminPanel() {
   useEffect(() => {
     loadAdminTables();
     if (activeTab === "droplets") {
-      loadAdminDroplets();
       loadBaseImageConfigs();
     }
     if (activeTab === "ai") {
@@ -836,14 +744,6 @@ export function AdminPanel() {
       loadAiCosts();
     }
   }, [activeTab]);
-
-  // Poll real-time stats while the droplets sub-tab is visible
-  useEffect(() => {
-    if (activeTab !== "droplets" || dropletsSubTab !== "instances" || droplets.length === 0) return;
-    loadAdminDropletStats();
-    const id = setInterval(loadAdminDropletStats, 10000);
-    return () => clearInterval(id);
-  }, [activeTab, dropletsSubTab, droplets.length]);
 
 
 
@@ -901,16 +801,6 @@ export function AdminPanel() {
                   </Button>
                 </>
               )}
-              {activeTab === "droplets" && dropletsSubTab === "instances" && (
-                <Button
-                  size="sm"
-                  onClick={loadAdminDroplets}
-                  disabled={dropletsLoading}
-                >
-                  <RefreshCw size={14} className={cn("mr-1", dropletsLoading && "animate-spin")} />
-                  Refresh
-                </Button>
-              )}
             </>
           }
         />
@@ -918,7 +808,7 @@ export function AdminPanel() {
           tabs={[
             { key: "database" as const, label: "Database" },
             { key: "backup" as const, label: "Backup" },
-            { key: "droplets" as const, label: "Droplets" },
+            { key: "droplets" as const, label: "DO Build" },
             { key: "ai" as const, label: "AI" },
             { key: "users" as const, label: "Users" },
             { key: "teams" as const, label: "Teams" },
@@ -929,7 +819,7 @@ export function AdminPanel() {
           onTabChange={(tab) => {
             if (tab === "database") { setAdminTab("database"); router.push(buildAdminPath("database")); }
             else if (tab === "backup") { setAdminTab("backup"); loadBackups(); router.push(buildAdminPath("backup")); }
-            else if (tab === "droplets") { setAdminTab("droplets"); loadAdminDroplets(); loadBaseImageConfigs(); router.push(buildAdminPath("droplets", dropletsSubTab)); }
+            else if (tab === "droplets") { setAdminTab("droplets"); loadBaseImageConfigs(); router.push(buildAdminPath("droplets", dropletsSubTab)); }
             else if (tab === "ai") { setAdminTab("ai"); loadAiCosts(); router.push(buildAdminPath("ai", aiState.subTab)); }
             else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); router.push(buildAdminPath("users")); }
             else if (tab === "teams") { setAdminTab("teams"); loadAdminTeams(); loadAdminUsers(); router.push(buildAdminPath("teams")); }
@@ -1150,12 +1040,11 @@ export function AdminPanel() {
           </div>
         </div>
       ) : activeTab === "droplets" ? (
-        /* ===== DROPLETS TAB ===== */
+        /* ===== DO BUILD TAB (snapshots / templates / configs / ssh key) ===== */
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           <div className="px-4">
             <ViewTabs
               tabs={[
-                { key: "instances" as const, label: "Instances" },
                 { key: "snapshots" as const, label: "Snapshots" },
                 { key: "templates" as const, label: "Templates" },
                 { key: "configs" as const, label: "Configs" },
@@ -1170,61 +1059,6 @@ export function AdminPanel() {
               }}
             />
           </div>
-
-
-          {/* ── Instances sub-tab ── */}
-          {dropletsSubTab === "instances" && (
-            <>
-              {dropletsError ? (
-                <div className="flex-1 flex items-center justify-center text-overlay0 text-base">
-                  {dropletsError}
-                </div>
-              ) : dropletsLoading && droplets.length === 0 ? (
-                <div className="flex-1 flex items-center justify-center text-overlay0 text-base">
-                  Loading...
-                </div>
-              ) : droplets.length === 0 ? (
-                <div className="flex-1 flex items-center justify-center text-overlay0 text-base">
-                  No droplets found. Deploy a project to DigitalOcean to see it here.
-                </div>
-              ) : (
-                <div className="flex-1 overflow-auto flex flex-col gap-2 p-2">
-                  {droplets.map((d) => {
-                    const isActive = d.status === "active";
-                    const stats = dropletStats[d.id];
-                    return (
-                      <div key={d.id} className="bg-background rounded-lg px-3 py-2">
-                        <DropletInstanceBar
-                          name={d.name}
-                          status={d.status}
-                          ip={d.ip}
-                          region={d.region}
-                          sizeSlug={d.size}
-                          stats={stats ?? null}
-                          statsLoading={isActive && !stats}
-                          onRefresh={() => { loadAdminDroplets(); loadAdminDropletStats(); }}
-                          onSshTerminal={isActive && d.ip ? () => {
-                            addSshTerminalTab({ host: d.ip! });
-                          } : undefined}
-                          onDelete={() => {
-                            if (confirm(`Delete droplet "${d.name}"? This cannot be undone.`)) {
-                              adminDeleteDroplet(d.id);
-                            }
-                          }}
-                        />
-                        {/* Extra info row */}
-                        <div className="flex items-center gap-4 mt-1 text-md text-overlay0">
-                          {d.projectName && <span>Project: <span className="text-text">{d.projectName}</span></span>}
-                          {d.createdAt && <span>Active: <span className="text-text">{formatActiveSince(d.createdAt)}</span></span>}
-                          {d.createdBy && <span>By: <span className="text-text">{d.createdBy}</span></span>}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          )}
 
           {/* ── Snapshots sub-tab ── */}
           {dropletsSubTab === "snapshots" && (
@@ -1931,6 +1765,14 @@ export function AdminPanel() {
                   >
                     {contextMenu.user.validated ? "Revoke validation" : "Validate"}
                   </button>
+                  {isSuperadmin && contextMenu.user.id !== auth.user?.id && (
+                    <button
+                      className="w-full text-left px-4 py-2 text-md hover:bg-surface0 text-text"
+                      onClick={() => { impersonateUser(contextMenu.user.id); setContextMenu(null); }}
+                    >
+                      Impersonate
+                    </button>
+                  )}
                   <button
                     className="w-full text-left px-4 py-2 text-md hover:bg-surface0 text-red"
                     onClick={() => { if (confirm(`Delete user ${contextMenu.user.name}?`)) deleteUser(contextMenu.user.id); setContextMenu(null); }}

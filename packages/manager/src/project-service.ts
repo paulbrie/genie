@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { getDb } from "./db/index.js";
-import { projects } from "./db/schema.js";
+import { projects, teamMembers, teams, users } from "./db/schema.js";
 import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "./types.js";
 import { v4 as uuidv4 } from "uuid";
 
@@ -51,7 +51,34 @@ function rowToProjectDef(row: typeof projects.$inferSelect): ProjectDef {
     gitlabDeployKey: row.gitlabDeployKey || undefined,
     dbUrl: row.dbUrl || undefined,
     gitFolders: (row.gitFolders as string[]) || [],
+    teamId: row.teamId ?? null,
   };
+}
+
+/** Team IDs the given user is a member of. */
+async function getUserTeamIds(userId: string): Promise<string[]> {
+  const db = getDb();
+  const rows = await db.select({ teamId: teamMembers.teamId })
+    .from(teamMembers)
+    .where(eq(teamMembers.userId, userId));
+  return rows.map((r) => r.teamId);
+}
+
+async function isUserAdmin(userId: string): Promise<boolean> {
+  const db = getDb();
+  const [u] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
+  return u?.role === "admin" || u?.role === "superadmin";
+}
+
+/** Map of teamId → team name, for decorating ProjectDef.teamName on list responses. */
+async function getTeamNameMap(): Promise<Map<string, string>> {
+  const db = getDb();
+  const rows = await db.select({ id: teams.id, name: teams.name }).from(teams);
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
+
+function attachTeamName(p: ProjectDef, teamMap: Map<string, string>): ProjectDef {
+  return { ...p, teamName: p.teamId ? teamMap.get(p.teamId) ?? null : null };
 }
 
 // --- CRUD ---
@@ -60,7 +87,42 @@ export async function getAll(): Promise<ProjectDef[]> {
 
   const db = getDb();
   const rows = await db.select().from(projects).orderBy(projects.createdAt);
-  return rows.map(rowToProjectDef);
+  const teamMap = await getTeamNameMap();
+  return rows.map((r) => attachTeamName(rowToProjectDef(r), teamMap));
+}
+
+/**
+ * Project list a given user is allowed to see.
+ *   - Admin/superadmin: every project.
+ *   - Normal user:      projects whose teamId is one of the user's teams.
+ *                       Projects with null teamId are hidden from normal users.
+ *   - userId === null:  empty list (unauthenticated).
+ */
+export async function getAllForUser(userId: string | null): Promise<ProjectDef[]> {
+  if (!userId) return [];
+  if (await isUserAdmin(userId)) return getAll();
+
+  const teamIds = await getUserTeamIds(userId);
+  if (teamIds.length === 0) return [];
+
+  const db = getDb();
+  const rows = await db.select()
+    .from(projects)
+    .where(inArray(projects.teamId, teamIds))
+    .orderBy(projects.createdAt);
+  const teamMap = await getTeamNameMap();
+  return rows.map((r) => attachTeamName(rowToProjectDef(r), teamMap));
+}
+
+/** True iff the given user is allowed to see the given project. */
+export async function userCanSeeProject(userId: string | null, projectId: string): Promise<boolean> {
+  if (!userId) return false;
+  if (await isUserAdmin(userId)) return true;
+  const db = getDb();
+  const [row] = await db.select({ teamId: projects.teamId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!row || !row.teamId) return false;
+  const teamIds = await getUserTeamIds(userId);
+  return teamIds.includes(row.teamId);
 }
 
 export async function getById(id: string): Promise<ProjectDef | null> {
@@ -83,6 +145,7 @@ export async function add(entry: {
   doToken?: string;
   gitlabDeployKey?: string;
   dbUrl?: string;
+  teamId?: string | null;
 }): Promise<ProjectDef> {
 
   const db = getDb();
@@ -114,6 +177,7 @@ export async function add(entry: {
       doToken: entry.doToken || null,
       gitlabDeployKey: entry.gitlabDeployKey || null,
       dbUrl: entry.dbUrl || null,
+      teamId: entry.teamId ?? null,
     })
     .returning();
 
@@ -137,6 +201,7 @@ export async function update(
     gitlabDeployKey?: string;
     dbUrl?: string;
     gitFolders?: string[];
+    teamId?: string | null;
   },
 ): Promise<ProjectDef | null> {
   const db = getDb();
@@ -157,6 +222,7 @@ export async function update(
   if (fields.gitlabDeployKey !== undefined) updates.gitlabDeployKey = fields.gitlabDeployKey || null;
   if (fields.dbUrl !== undefined) updates.dbUrl = fields.dbUrl || null;
   if (fields.gitFolders !== undefined) updates.gitFolders = fields.gitFolders;
+  if (fields.teamId !== undefined) updates.teamId = fields.teamId;
 
   if (fields.commands) {
     const existingCommands = (existing.commands as ProjectCommand[]) || [];

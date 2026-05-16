@@ -3,8 +3,8 @@
 import { useEffect } from "react";
 import { useSubject } from "subjecto/react";
 import { MessageSquare, X } from "lucide-react";
-import { $conversationChat, selectConversation, dismissMentionNotification, switchNav } from "@/store";
-
+import { $conversationChat } from "@/store/subjects";
+import { dismissMentionNotification, selectConversation, switchNav } from "@/store/actions";
 export function ChatNotificationToasts() {
   const [conversationChat] = useSubject($conversationChat);
   const { mentionNotifications } = conversationChat;
