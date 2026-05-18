@@ -1,0 +1,37 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Skip duplicate runs when a PR is opened from the same repo (the push event
+# already covers it).
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Renderer unit tests (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` honours package-lock.json and skips lifecycle scripts unless
+      # they are required. The renderer doesn't have any postinstall hooks,
+      # so this is a clean, reproducible install.
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run vitest
+        run: npm test --workspace=packages/renderer
