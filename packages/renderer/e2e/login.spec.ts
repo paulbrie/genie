@@ -1,5 +1,14 @@
 import { test, expect } from "@playwright/test";
 
+const TEST_USER = "paul.brie@teleporthq.io";
+
+/** Path used to fetch a real, validated JWT from the dev-only manager
+ *  endpoint. The endpoint is loopback-only and follows a 302 to the
+ *  renderer with ?token=<jwt>. */
+function testLoginUrl(redirect = "/"): string {
+  return `http://localhost:9876/test-login?email=${encodeURIComponent(TEST_USER)}&redirect=${redirect}`;
+}
+
 test.describe.configure({ mode: "serial" });
 
 test.describe("Login flow", () => {
@@ -46,69 +55,75 @@ test.describe("Login flow", () => {
     }).toPass({ timeout: 5_000 });
   });
 
-  test("authenticated user sees sidebar and main app", async ({ page }) => {
-    // Simulate a successful auth by injecting a token and mocking the WS response
-    await page.goto("/");
-
-    // Wait for WS connection, then inject auth state via localStorage and reload
-    // This test verifies the post-login state
-    const authenticated = await page.evaluate(() => {
-      return !!localStorage.getItem("genie-auth-token");
-    });
-
-    if (authenticated) {
-      // Already logged in — should see the sidebar
-      await expect(page.locator("text=Projects").first()).toBeVisible({ timeout: 10_000 });
-    } else {
-      // Not logged in — should see login screen
-      await expect(page.getByText("Sign in to continue")).toBeVisible({ timeout: 10_000 });
-    }
-  });
-
-  test("token in URL query param authenticates user", async ({ browser, baseURL }) => {
-    // Use a fresh browser context with no existing storage
+  test("token in URL persists to localStorage and is stripped from the URL", async ({ browser, baseURL }) => {
+    // Fresh context so we start with no stored token.
     const context = await browser.newContext({ baseURL });
     const page = await context.newPage();
 
-    // Navigate with token in URL — simulates OAuth redirect callback
-    await page.goto("/?token=test-oauth-token-123");
+    // /test-login mints a real JWT and 302s back to the renderer with
+    // ?token=<jwt>. Replicates the OAuth-redirect callback flow.
+    await page.goto(testLoginUrl("/"));
 
-    // Wait for the app to process the token and store it
+    // The renderer (ws.ts:65-72) sees `?token=…`, persists it, and strips it
+    // from the URL before the WS auth round-trip even completes.
     await expect(async () => {
       const storedToken = await page.evaluate(() => localStorage.getItem("genie-auth-token"));
-      expect(storedToken).toBe("test-oauth-token-123");
+      expect(storedToken).toBeTruthy();
+      expect(typeof storedToken).toBe("string");
+      expect(storedToken!.length).toBeGreaterThan(20);  // JWT shape sanity
     }).toPass({ timeout: 10_000 });
 
-    // URL should be cleaned (token removed from query params)
-    await expect(page).toHaveURL("/");
+    // URL should have the ?token=… query stripped.
+    expect(page.url()).not.toContain("token=");
 
     await context.close();
   });
 
-  test("logout clears token and shows login screen", async ({ page }) => {
-    // Pre-set a token to simulate being logged in
+  test("authenticated session via /test-login lands on the main app", async ({ page }) => {
+    await page.goto(testLoginUrl("/"));
+
+    // Sidebar identity is visible once the WS auth round-trip completes.
+    await expect(page.getByText("Paul Brie")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("superadmin")).toBeVisible();
+
+    // Sidebar nav buttons are clickable (sanity: app shell is rendered, not
+    // the login screen).
+    await expect(page.getByRole("button", { name: "Projects" })).toBeVisible();
+  });
+
+  test("sign-out clears the stored token and shows the login screen", async ({ page }) => {
+    await page.goto(testLoginUrl("/"));
+
+    // Wait until we're fully signed in.
+    await expect(page.getByText("Paul Brie")).toBeVisible({ timeout: 15_000 });
+
+    // Sign-out button is rendered as a button with text "Sign out" in the sidebar.
+    await page.getByRole("button", { name: "Sign out" }).click();
+
+    // Token cleared.
+    await expect(async () => {
+      const token = await page.evaluate(() => localStorage.getItem("genie-auth-token"));
+      expect(token).toBeNull();
+    }).toPass({ timeout: 5_000 });
+
+    // Login screen visible.
+    await expect(page.getByText("Sign in to continue")).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("invalid stored token is cleared on connect (defense in depth)", async ({ page }) => {
+    // Pre-seed a bogus token; the manager will reject it. The renderer should
+    // wipe localStorage in response to auth:error and drop back to the login screen.
     await page.goto("/");
-    await page.evaluate(() => localStorage.setItem("genie-auth-token", "fake-token"));
+    await page.evaluate(() => localStorage.setItem("genie-auth-token", "not-a-real-jwt"));
     await page.reload();
 
-    // If the WS server rejects the token, we'll see the login screen
-    // Wait for either the app or login screen to appear
-    const loginVisible = await page.getByText("Sign in to continue").isVisible().catch(() => false);
-
-    if (!loginVisible) {
-      // We're in the app — find and click the logout button
-      const logoutBtn = page.getByTitle("Sign out");
-      if (await logoutBtn.isVisible().catch(() => false)) {
-        await logoutBtn.click();
-
-        // Token should be cleared
-        const token = await page.evaluate(() => localStorage.getItem("genie-auth-token"));
-        expect(token).toBeNull();
-
-        // Should show login screen
-        await expect(page.getByText("Sign in to continue")).toBeVisible({ timeout: 5_000 });
-      }
-    }
+    // After the WS auth round-trip rejects the token, login screen should appear
+    // and the token should be gone.
+    await expect(page.getByText("Sign in to continue")).toBeVisible({ timeout: 15_000 });
+    await expect(async () => {
+      const token = await page.evaluate(() => localStorage.getItem("genie-auth-token"));
+      expect(token).toBeNull();
+    }).toPass({ timeout: 5_000 });
   });
 
   test("shows connecting state while loading", async ({ page }) => {

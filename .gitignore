@@ -15,3 +15,7 @@ TESTER-CREDENTIALS.md
 
 # Scratch screenshots
 .tmp-*.png
+
+# Playwright generated output — never commit
+packages/*/playwright-report/
+packages/*/test-results/
