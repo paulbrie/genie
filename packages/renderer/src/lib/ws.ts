@@ -1,11 +1,22 @@
 import { $auth } from "@/store/subjects";
-import { handleWsMessage } from "@/store/handlers";
 import { logSent, logReceived } from "@/lib/ws-log";
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let managerRunning = false;
 let currentWsUrl = "";
+
+// Lazy-loaded to break the circular import: ws.ts ↔ store/handlers/{auth,conversation}.
+// `connectWs()` is only called at component mount, so by then ws.ts has fully initialized.
+let dispatcher: ((msg: { type: string; payload: any }) => void) | null = null;
+const pendingInbound: { type: string; payload: any }[] = [];
+function ensureDispatcherLoaded() {
+  if (dispatcher) return;
+  import("@/store/handlers").then((mod) => {
+    dispatcher = mod.handleWsMessage;
+    while (pendingInbound.length) dispatcher(pendingInbound.shift()!);
+  });
+}
 
 export function getWsUrl(): string {
   return currentWsUrl;
@@ -50,6 +61,8 @@ export function connectWs(): void {
   if (typeof window === "undefined") return;
   if (ws && ws.readyState <= 1) return;
 
+  ensureDispatcherLoaded();
+
   const url = process.env.NEXT_PUBLIC_WS_URL || (window.location.hostname !== "localhost" ? "wss://api.genie.teleporthq.ai" : "ws://localhost:9876");
   currentWsUrl = url;
   ws = new WebSocket(url);
@@ -91,7 +104,8 @@ export function connectWs(): void {
         return;
       }
 
-      handleWsMessage(msg);
+      if (dispatcher) dispatcher(msg);
+      else pendingInbound.push(msg);
     } catch (e) {
       console.error("Bad message:", e);
     }
