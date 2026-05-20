@@ -51,6 +51,20 @@ function defaultVmName(): string {
   return `taz-${ts}-${rand}`;
 }
 
+// Must match the API's rule: starts lowercase letter, ends lowercase letter or
+// digit, body of lowercase letters/digits/hyphens, total length 3–63.
+const TAZ_NAME_RE = /^[a-z][a-z0-9-]{1,61}[a-z0-9]$/;
+
+function validateTazVmName(name: string): string | null {
+  if (!name) return "Name is required.";
+  if (name.length < 3) return "Name must be at least 3 characters.";
+  if (name.length > 63) return "Name must be at most 63 characters.";
+  if (!TAZ_NAME_RE.test(name)) {
+    return "Name must be lowercase, start with a letter, end with a letter or digit, and contain only letters, digits, and hyphens.";
+  }
+  return null;
+}
+
 export function TazCloudPanel() {
   const admin = useDeepSubjectAll($admin);
   const [auth] = useSubject($auth);
@@ -137,7 +151,7 @@ export function TazCloudPanel() {
 
   function submitCreate() {
     const trimmed = vmName.trim();
-    if (!trimmed) return;
+    if (validateTazVmName(trimmed)) return;
     createAdminTazVm({ name: trimmed, image: vmImage, size: vmSize });
   }
 
@@ -208,6 +222,10 @@ export function TazCloudPanel() {
               disabled={creating}
               className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue disabled:opacity-50"
             />
+            {(() => {
+              const err = validateTazVmName(vmName.trim());
+              return err ? <p className="text-xs text-red italic">{err}</p> : null;
+            })()}
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-md text-overlay0">Image</label>
@@ -221,7 +239,7 @@ export function TazCloudPanel() {
               {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
             </Select>
           </div>
-          <Button variant="primary" size="sm" onClick={submitCreate} disabled={creating || !vmName.trim()}>
+          <Button variant="primary" size="sm" onClick={submitCreate} disabled={creating || validateTazVmName(vmName.trim()) !== null}>
             {creating ? <Loader2 size={14} className="animate-spin mr-1" /> : null}
             {creating ? "Creating…" : "Create"}
           </Button>

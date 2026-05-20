@@ -3,7 +3,18 @@ import { z } from "zod";
 import { executeWebSearch } from "./web-search.js";
 import { executeBrowseUrl } from "./web-browse.js";
 import { executeSshExec } from "./ssh-exec.js";
-import { executeTazListVms, executeTazCreateVm, executeTazDeleteVm } from "./tazcloud.js";
+import {
+  executeTazListVms,
+  executeTazCreateVm,
+  executeTazDeleteVm,
+  executeTazListSnapshots,
+  executeTazGetSnapshot,
+  executeTazCreateSnapshot,
+  executeTazDeleteSnapshot,
+  executeTazRegisterIngress,
+  executeTazRemoveIngress,
+  executeTazGetCapabilities,
+} from "./tazcloud.js";
 import * as projectService from "../project-service.js";
 import * as docsService from "../docs-service.js";
 import * as recipesService from "../recipes-service.js";
@@ -148,21 +159,78 @@ export const tools = {
   }),
   tazcloud_create_vm: tool({
     description:
-      "Create a new TazCloud VM. DESTRUCTIVE: incurs cost on the TazCloud account. Confirm intent with the user before calling. The VM is bare — it does NOT include Docker/Node or a `genie` user; for a full Genie-managed VPS, use the project deploy flow instead.",
+      "Create a new TazCloud VM. DESTRUCTIVE: incurs cost on the TazCloud account. Confirm intent with the user before calling. The VM is bare — it does NOT include Docker/Node or a `genie` user; for a full Genie-managed VPS, use the project deploy flow instead. Pass `snapshot_id` to boot from an existing active snapshot instead of a base image (mutually exclusive with `image`).",
     inputSchema: z.object({
       name: z.string().describe("VM name (lowercase letters, digits, hyphens; ≤63 chars)"),
-      image: z.string().optional().describe("Image slug. One of: ubuntu-22, ubuntu-24, debian-12, almalinux-9. Default: ubuntu-22."),
-      size: z.string().optional().describe("Size slug. One of: small, medium, large, xlarge. Default: small."),
+      image: z.string().optional().describe("Image slug. One of: ubuntu-22, ubuntu-24, debian-12, almalinux-9. Default: almalinux-9. Ignored if snapshot_id is provided."),
+      size: z.string().optional().describe("Size slug. One of: small, medium, large, xlarge. Default: small. Must be ≥ the snapshot's recorded disk size when booting from a snapshot."),
+      snapshot_id: z.string().optional().describe("Boot from this active snapshot id instead of a base image. Mutually exclusive with `image`."),
     }),
-    execute: async ({ name, image, size }) => executeTazCreateVm({ name, image, size }),
+    execute: async ({ name, image, size, snapshot_id }) => executeTazCreateVm({ name, image, size, snapshot_id }),
   }),
   tazcloud_delete_vm: tool({
     description:
-      "Delete a TazCloud VM by id. DESTRUCTIVE and irreversible — the VM and its data are gone. Confirm intent with the user before calling. Use tazcloud_list_vms first to look up the id.",
+      "Delete a TazCloud VM by id. DESTRUCTIVE and irreversible — the VM and its data are gone. Also removes any registered ingress for that VM. Confirm intent with the user before calling. Use tazcloud_list_vms first to look up the id.",
     inputSchema: z.object({
       vmId: z.string().describe("The TazCloud VM id (from tazcloud_list_vms)"),
     }),
     execute: async ({ vmId }) => executeTazDeleteVm(vmId),
+  }),
+  tazcloud_get_capabilities: tool({
+    description:
+      "Get TazCloud deployment capabilities: available images, sizes, IPv6 prefix, and whether the ingress (HTTPS-via-domain) feature is available on this deployment.",
+    inputSchema: z.object({}),
+    execute: async () => executeTazGetCapabilities(),
+  }),
+  tazcloud_list_snapshots: tool({
+    description:
+      "List all TazCloud snapshots on the configured account. Snapshot lifecycle is `pending` → `active` | `error`; only `active` snapshots can be booted from.",
+    inputSchema: z.object({}),
+    execute: async () => executeTazListSnapshots(),
+  }),
+  tazcloud_get_snapshot: tool({
+    description:
+      "Get a single TazCloud snapshot by id. Use this to poll until `status` is `active` after calling tazcloud_create_snapshot (typically 1–5 min).",
+    inputSchema: z.object({
+      snapshotId: z.string().describe("The TazCloud snapshot id"),
+    }),
+    execute: async ({ snapshotId }) => executeTazGetSnapshot(snapshotId),
+  }),
+  tazcloud_create_snapshot: tool({
+    description:
+      "Snapshot a TazCloud VM's disk to create a reusable image. Returns immediately with `status=pending` — poll tazcloud_get_snapshot until `active`. DESTRUCTIVE-ish: incurs storage cost. Confirm intent with the user before calling. Set `stop_first` to true for a consistent-disk snapshot (VM restarts automatically after).",
+    inputSchema: z.object({
+      vmId: z.string().describe("The source TazCloud VM id"),
+      name: z.string().describe("Snapshot name (lowercase letters, digits, hyphens; 3–63 chars)"),
+      stop_first: z.boolean().optional().describe("Stop the VM before snapshotting for disk consistency. Adds ~30–90s. Default: false."),
+    }),
+    execute: async ({ vmId, name, stop_first }) => executeTazCreateSnapshot({ vmId, name, stop_first }),
+  }),
+  tazcloud_delete_snapshot: tool({
+    description:
+      "Delete a TazCloud snapshot by id. DESTRUCTIVE and irreversible. VMs already booted from this snapshot are unaffected. Confirm intent with the user before calling.",
+    inputSchema: z.object({
+      snapshotId: z.string().describe("The TazCloud snapshot id (from tazcloud_list_snapshots)"),
+    }),
+    execute: async ({ snapshotId }) => executeTazDeleteSnapshot(snapshotId),
+  }),
+  tazcloud_register_ingress: tool({
+    description:
+      "Expose a TazCloud VM's web app over HTTPS at a custom domain. TLS is handled automatically via Let's Encrypt at the ingress layer; the VM serves plain HTTP on app_port internally. Returns a `dns_action` instructing the user to add an A record to their DNS provider pointing the domain to TazCloud's shared ingress IP (188.213.48.229). HTTPS goes live ~60s after DNS propagates.",
+    inputSchema: z.object({
+      vmId: z.string().describe("The TazCloud VM id"),
+      domain: z.string().describe("The FQDN to expose, e.g. 'myapp.example.com'"),
+      app_port: z.number().optional().describe("Port your app listens on inside the VM. Default: 80. Range: 1–65535."),
+    }),
+    execute: async ({ vmId, domain, app_port }) => executeTazRegisterIngress({ vmId, domain, app_port }),
+  }),
+  tazcloud_remove_ingress: tool({
+    description:
+      "Remove the ingress (custom-domain HTTPS routing) from a TazCloud VM without deleting the VM. Use this to detach or swap a domain.",
+    inputSchema: z.object({
+      vmId: z.string().describe("The TazCloud VM id"),
+    }),
+    execute: async ({ vmId }) => executeTazRemoveIngress(vmId),
   }),
 
   // --- Recipes (Add-ons authoring) ---
