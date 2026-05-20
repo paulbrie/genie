@@ -1,0 +1,156 @@
+// WebSocket access-control list.
+//
+// Single source of truth for which role may emit (send) and which role may
+// receive each WS message type. Pure data + pure functions; no IO. Tested in
+// ws-acl.test.ts and consulted by ws-server.ts.
+//
+// Hierarchy (numeric levels):
+//   user (0) < tazcloud (1) < admin (2) < superadmin (3)
+//
+// A role passes a check iff its level is >= the required level. tazcloud sits
+// just above user: it gets user-level access plus the cloud panels (do:*,
+// tazcloud:*, admin:droplets:*, admin:tazcloud:*).
+//
+// Lookup precedence (first hit wins):
+//   1. ACL_OVERRIDES[type]              — exact match
+//   2. NAMESPACE_DEFAULTS[longest-prefix] — walks "a:b:c" → "a:b" → "a"
+//   3. POLICY                            — "deny-unknown"
+
+export type Role = "user" | "tazcloud" | "admin" | "superadmin";
+
+export const ROLE_LEVEL: Record<Role, number> = {
+  user: 0,
+  tazcloud: 1,
+  admin: 2,
+  superadmin: 3,
+};
+
+export interface AclEntry {
+  /** Minimum role required to emit this type from client → server. Omitted → not sendable from a client. */
+  send?: Role;
+  /** Minimum role required to receive this type from server → client. Omitted → not deliverable. */
+  receive?: Role;
+  /** Documentation only; actual scoping happens via sendToUser/broadcastToUsers in the handler. */
+  scope?: "self" | "owner" | "team" | "global";
+  /** Optional comment. */
+  notes?: string;
+}
+
+export type Policy = "deny-unknown";
+
+export const POLICY: Policy = "deny-unknown";
+
+// Namespace-level defaults. The lookup walks from the longest prefix down, so
+// "admin:droplets" wins over "admin" for any type starting with "admin:droplets:".
+const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
+  // User-facing namespaces — ownership/scope is enforced inside the handler
+  // (e.g. chat sessions are filtered by userId in the query).
+  auth: { send: "user", receive: "user", scope: "self" },
+  chat: { send: "user", receive: "user", scope: "self" },
+  assistant: { send: "user", receive: "user", scope: "self" },
+  compose: { send: "user", receive: "user", scope: "self" },
+  content_block_delta: { receive: "user", scope: "self" },
+  content_block_start: { receive: "user", scope: "self" },
+  content_block_stop: { receive: "user", scope: "self" },
+  message_start: { receive: "user", scope: "self" },
+  message_delta: { receive: "user", scope: "self" },
+  message_stop: { receive: "user", scope: "self" },
+  result: { receive: "user", scope: "self" },
+  project: { send: "user", receive: "user", scope: "self" },
+  "project-file": { send: "user", receive: "user", scope: "self" },
+  "file-template": { send: "user", receive: "user", scope: "self" },
+  fs: { send: "user", receive: "user", scope: "self" },
+  git: { send: "user", receive: "user", scope: "self" },
+  mcp: { send: "user", receive: "user", scope: "self" },
+  docs: { send: "user", receive: "user", scope: "self" },
+  terminal: { send: "user", receive: "user", scope: "owner" },
+  "terminal-share": { send: "user", receive: "user", scope: "owner" },
+  tracker: { send: "user", receive: "user", scope: "team" },
+  settings: { send: "user", receive: "user", scope: "self" },
+  feedback: { send: "user", receive: "user", scope: "self" },
+  vps: { send: "user", receive: "user", scope: "self" },
+  extension: { send: "user", receive: "user", scope: "self" },
+  error: { receive: "user", scope: "self" },
+  ping: { send: "user", receive: "user" },
+  pong: { send: "user", receive: "user" },
+  init: { send: "user", receive: "user" },
+  // presence:nav is fine for any user; presence:detail is admin-only (see ACL_OVERRIDES).
+  presence: { send: "user", receive: "user" },
+
+  // Cloud namespaces — tazcloud role can also access these.
+  do: { send: "tazcloud", receive: "tazcloud" },
+  tazcloud: { send: "tazcloud", receive: "tazcloud" },
+
+  // Admin namespaces.
+  admin: { send: "admin", receive: "admin" },
+  // The Clouds panel uses admin:droplets:* and admin:tazcloud:* — exposed to tazcloud.
+  "admin:droplets": { send: "tazcloud", receive: "tazcloud" },
+  "admin:tazcloud": { send: "tazcloud", receive: "tazcloud" },
+  db: { send: "admin", receive: "admin" },
+  security: { send: "admin", receive: "admin" },
+  deploy: { send: "admin", receive: "admin" },
+  docker: { send: "admin", receive: "admin" },
+  logs: { send: "admin", receive: "admin" },
+  monitor: { send: "admin", receive: "admin" },
+  stats: { send: "admin", receive: "admin" },
+  system: { send: "admin", receive: "admin" },
+  process: { send: "admin", receive: "admin" },
+
+  // Superadmin-only namespace.
+  recipes: { send: "superadmin", receive: "superadmin" },
+};
+
+// Per-type overrides. These win over NAMESPACE_DEFAULTS. Use sparingly — the
+// namespace default should be the right answer for most types.
+const ACL_OVERRIDES: Record<string, AclEntry> = {
+  // Audit HIGH: don't leak emails/IPs to standard users.
+  "presence:detail": { send: "user", receive: "admin", notes: "client requests it; only admin clients receive the response" },
+
+  // Audit MEDIUM: noisy ops data.
+  "monitor:interval": { receive: "admin" },
+
+  // Admin-only inside an otherwise-user namespace.
+  "vps:attach-existing": { send: "admin", receive: "user", notes: "admin command; error/ok responses still readable by the originating user" },
+  "vps:attach-existing:error": { receive: "user" },
+  "vps:attach-existing:ok": { receive: "user" },
+
+  // Impersonation lifecycle — gated to superadmins. Start/stop reuse the
+  // existing inline check on the *real* caller; ACL gates on the active role.
+  "admin:impersonate:start": { send: "superadmin", receive: "superadmin" },
+  "admin:impersonate:stop": { send: "superadmin", receive: "superadmin" },
+  "admin:impersonate:started": { receive: "user", notes: "active session is the impersonated user → user-level receive" },
+  "admin:impersonate:stopped": { receive: "user", notes: "same — confirmation that impersonation ended" },
+};
+
+/** Look up the effective ACL entry for a message type. Returns null when nothing matches and policy is deny-unknown. */
+export function getEntry(type: string): AclEntry | null {
+  const override = ACL_OVERRIDES[type];
+  if (override) return override;
+  const parts = type.split(":");
+  for (let i = parts.length; i >= 1; i--) {
+    const prefix = parts.slice(0, i).join(":");
+    const ns = NAMESPACE_DEFAULTS[prefix];
+    if (ns) return ns;
+  }
+  return null;
+}
+
+/** True iff `role` may emit `type` from client → server. Unauthenticated (null role) is always false. */
+export function canSend(role: Role | null, type: string): boolean {
+  if (!role) return false;
+  const entry = getEntry(type);
+  if (!entry || entry.send === undefined) return false;
+  return ROLE_LEVEL[role] >= ROLE_LEVEL[entry.send];
+}
+
+/** True iff `role` may receive `type` from server → client. */
+export function canReceive(role: Role | null, type: string): boolean {
+  if (!role) return false;
+  const entry = getEntry(type);
+  if (!entry || entry.receive === undefined) return false;
+  return ROLE_LEVEL[role] >= ROLE_LEVEL[entry.receive];
+}
+
+// Test-only escape hatches so the unit tests can introspect the registry
+// without us exporting mutable internals.
+export const __internal = { NAMESPACE_DEFAULTS, ACL_OVERRIDES };

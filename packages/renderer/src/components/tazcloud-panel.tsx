@@ -109,17 +109,18 @@ export function TazCloudPanel() {
     setRenameDraft("");
   }
 
-  const isSuperAdmin = auth.user?.role === "superadmin";
+  const role = auth.user?.role;
+  const canAccess = role === "superadmin" || role === "tazcloud";
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
+    if (!canAccess) return;
     loadAdminTazVms();
     loadAdminTazcloudStats();
     // SSH-probing every VM is expensive; refresh on a slow cadence and let the
     // user hit Refresh for an immediate update.
     const id = setInterval(loadAdminTazcloudStats, 30_000);
     return () => clearInterval(id);
-  }, [isSuperAdmin]);
+  }, [canAccess]);
 
   // Close the deploy form when a creation completes successfully (creating: true → false, no error).
   const prevCreatingRef = useRef(false);
@@ -130,11 +131,11 @@ export function TazCloudPanel() {
     prevCreatingRef.current = admin.tazcloud.creating;
   }, [admin.tazcloud.creating, admin.tazcloud.createError]);
 
-  if (!isSuperAdmin) {
+  if (!canAccess) {
     return (
       <div className="flex-1 flex items-center justify-center text-overlay0">
         <div className="text-center">
-          <p className="text-base">TazCloud admin is restricted to super admin users.</p>
+          <p className="text-base">TazCloud admin is restricted to super admin and tazcloud users.</p>
           <button onClick={() => switchNav("projects")} className="mt-3 text-blue hover:underline text-md">
             Back to Projects
           </button>

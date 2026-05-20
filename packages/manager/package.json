@@ -7,6 +7,8 @@
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "db:push": "drizzle-kit push",
     "postinstall": "node -e \"const p=require('path'),fs=require('fs');const d=p.join(p.dirname(require.resolve('node-pty')),'..','prebuilds');if(fs.existsSync(d)){const r=fs.readdirSync(d);r.forEach(a=>{const h=p.join(d,a,'spawn-helper');if(fs.existsSync(h))fs.chmodSync(h,0o755)})}\""
   },
@@ -43,6 +45,7 @@
     "@types/ws": "^8.5.14",
     "drizzle-kit": "^0.31.9",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.6"
   }
 }

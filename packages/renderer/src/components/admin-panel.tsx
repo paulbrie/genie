@@ -333,12 +333,12 @@ function DrizzlePushWindow({ output, running, onClose }: { output: string; runni
 }
 
 const TEAM_ROLES: ("member" | "owner" | "superadmin")[] = ["member", "owner", "superadmin"];
-const USER_ROLES: ("user" | "admin" | "superadmin")[] = ["user", "admin", "superadmin"];
+const USER_ROLES: ("user" | "tazcloud" | "admin" | "superadmin")[] = ["user", "tazcloud", "admin", "superadmin"];
 
 function UserDrawer({ user, teams, teamMembers, onClose }: { user: AdminUser; teams: AdminTeam[]; teamMembers: AdminTeamMember[]; onClose: () => void }) {
   const [name, setName] = useState(user.name);
   const [validated, setValidated] = useState(user.validated);
-  const [role, setRole] = useState<"user" | "admin" | "superadmin">(user.role || "user");
+  const [role, setRole] = useState<"user" | "tazcloud" | "admin" | "superadmin">(user.role || "user");
   const [addingTeam, setAddingTeam] = useState(false);
   const [addTeamRole, setAddTeamRole] = useState<"member" | "owner" | "superadmin">("member");
 
@@ -1723,6 +1723,8 @@ export function AdminPanel() {
                           <span className="text-mauve inline-flex items-center gap-1"><Shield size={14} /> Super Admin</span>
                         ) : u.role === "admin" ? (
                           <span className="text-blue inline-flex items-center gap-1"><Shield size={14} /> Admin</span>
+                        ) : u.role === "tazcloud" ? (
+                          <span className="text-teal inline-flex items-center gap-1"><Shield size={14} /> TazCloud</span>
                         ) : (
                           <span className="text-subtext0">User</span>
                         )}

@@ -52,17 +52,17 @@ describe("terminal:data / exit", () => {
 
 describe("terminal:error", () => {
   it("renders the error as red ANSI text into the terminal pane", () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     handlers["terminal:error"]({ id: "tab-1", message: "ssh refused" });
 
-    expect(errorSpy).toHaveBeenCalledWith("Terminal error:", "ssh refused");
+    expect(warnSpy).toHaveBeenCalledWith("Terminal error:", "ssh refused");
     const ev = lastDispatchedEvent("genie:terminal:data");
     // Wrapped in red ANSI escape codes — \x1b[31m … \x1b[0m
     expect(ev!.detail).toEqual({
       id: "tab-1",
       data: "\r\n\x1b[31mssh refused\x1b[0m\r\n",
     });
-    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });
 
@@ -189,10 +189,10 @@ describe("terminal:share lifecycle", () => {
   });
 
   it("share:error logs to console and dispatches an error event", () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     handlers["terminal:share:error"]({ message: "permission denied" });
-    expect(errSpy).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
     expect(lastDispatchedEvent("genie:terminal:share:error")?.detail).toEqual({ message: "permission denied" });
-    errSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });

@@ -6,7 +6,7 @@ export interface AuthUser {
   email: string;
   avatarUrl: string | null;
   isAdmin?: boolean;
-  role: "user" | "admin" | "superadmin";
+  role: "user" | "tazcloud" | "admin" | "superadmin";
 }
 
 /** When a superadmin starts an impersonation session, the server keeps a record

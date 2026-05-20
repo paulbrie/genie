@@ -31,15 +31,26 @@ export function SidebarNav() {
   const [sessions] = useSubject($presenceSessions);
   const { navigateToNav } = useNavigate();
   const uniqueUserCount = new Set(sessions.map(s => s.id)).size;
-  const isSuperAdmin = auth.user?.role === "superadmin";
+  const role = auth.user?.role;
+  const isSuperAdmin = role === "superadmin";
+  const isAdmin = role === "admin" || isSuperAdmin;
+  const isTazcloud = role === "tazcloud";
 
-  const items = isSuperAdmin
-    ? [
-        ...baseNavItems,
-        { key: "recipes" as NavKey, label: "Recipes", icon: ChefHat },
-        { key: "clouds" as NavKey, label: "Clouds", icon: Cloud },
-      ]
-    : baseNavItems;
+  const standardUserKeys = new Set<NavKey>(["projects", "tracker", "chat"]);
+  const items = isAdmin
+    ? (isSuperAdmin
+        ? [
+            ...baseNavItems,
+            { key: "recipes" as NavKey, label: "Recipes", icon: ChefHat },
+            { key: "clouds" as NavKey, label: "Clouds", icon: Cloud },
+          ]
+        : baseNavItems)
+    : isTazcloud
+      ? [
+          ...baseNavItems.filter((item) => standardUserKeys.has(item.key)),
+          { key: "clouds" as NavKey, label: "Clouds", icon: Cloud },
+        ]
+      : baseNavItems.filter((item) => standardUserKeys.has(item.key));
 
   return (
     <nav className="flex flex-col gap-0.5">

@@ -122,7 +122,7 @@ export function HelpPanel() {
             <RolePyramid />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <div className="border border-mauve/40 rounded-md p-4 bg-mauve/5">
               <div className="flex items-center gap-2 mb-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-mauve" />
@@ -142,6 +142,18 @@ export function HelpPanel() {
               <p className="text-subtext0 text-md">
                 Counts as admin for permission checks across chat, projects, and the WebSocket API.
                 Does not get superadmin-only sidebar items.
+              </p>
+            </div>
+
+            <div className="border border-teal/40 rounded-md p-4 bg-teal/5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-teal" />
+                <h4 className="font-semibold text-text">tazcloud</h4>
+              </div>
+              <p className="text-subtext0 text-md">
+                Same access as <code className="text-mauve">user</code>, plus the
+                <strong className="text-text"> Clouds</strong> sidebar item — restricted to the
+                TazCloud tab. No DigitalOcean access and no admin privileges.
               </p>
             </div>
 
@@ -181,9 +193,10 @@ export function HelpPanel() {
               <thead>
                 <tr className="bg-surface0/50 text-overlay0 text-left">
                   <th className="py-2 px-3 font-medium">Capability</th>
-                  <th className="py-2 px-3 font-medium text-center w-28">user</th>
-                  <th className="py-2 px-3 font-medium text-center w-28">admin</th>
-                  <th className="py-2 px-3 font-medium text-center w-28">superadmin</th>
+                  <th className="py-2 px-3 font-medium text-center w-24">user</th>
+                  <th className="py-2 px-3 font-medium text-center w-24">tazcloud</th>
+                  <th className="py-2 px-3 font-medium text-center w-24">admin</th>
+                  <th className="py-2 px-3 font-medium text-center w-24">superadmin</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface0">
@@ -192,9 +205,11 @@ export function HelpPanel() {
                   <td className="py-2 px-3 text-center"><CheckIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
                 </tr>
                 <tr>
                   <td className="py-2 px-3 text-text">Auto-assigned to the first user</td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><CheckIcon /></td>
@@ -202,17 +217,41 @@ export function HelpPanel() {
                 <tr>
                   <td className="py-2 px-3 text-text">Counts as admin in <code className="text-mauve">isAdmin()</code></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><CheckIcon /></td>
                   <td className="py-2 px-3 text-center"><CheckIcon /></td>
                 </tr>
                 <tr>
-                  <td className="py-2 px-3 text-text">Sees Recipes &amp; Clouds in the sidebar</td>
+                  <td className="py-2 px-3 text-text">Sees Clouds in the sidebar</td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><CheckIcon /></td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><CheckIcon /></td>
+                </tr>
+                <tr>
+                  <td className="py-2 px-3 text-text">Sees Recipes in the sidebar</td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><CheckIcon /></td>
+                </tr>
+                <tr>
+                  <td className="py-2 px-3 text-text">Access to DigitalOcean VMs</td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><CheckIcon /></td>
+                </tr>
+                <tr>
+                  <td className="py-2 px-3 text-text">Access to TazCloud VMs</td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><CheckIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><CheckIcon /></td>
                 </tr>
                 <tr>
                   <td className="py-2 px-3 text-text">Can impersonate other users</td>
+                  <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><CheckIcon /></td>

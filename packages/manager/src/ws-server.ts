@@ -52,6 +52,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { type Role, canSend, canReceive, getEntry, POLICY } from "./ws-acl.js";
 
 
 /** Track active base image creation AbortController */
@@ -967,6 +968,9 @@ interface ClientAction {
 interface ClientState {
   userId: string | null;
   user: { id: string; name: string; email: string; avatarUrl: string | null } | null;
+  // Role of the currently-active identity (the impersonated user when impersonating, else the real user).
+  // ACL gates on this. Real-caller role for impersonation start lives behind getUserById(state.impersonatedBy).
+  role: Role | null;
   /** When the active session is a superadmin impersonating another user, this holds the real superadmin's id. */
   impersonatedBy: string | null;
   clientType: ClientType;
@@ -1004,6 +1008,7 @@ function disconnectUser(targetUserId: string): void {
       // Clear auth so no further messages are processed
       state.userId = null;
       state.user = null;
+      state.role = null;
       // Delay close to let the message flush
       setTimeout(() => clientWs.close(), 1000);
     }
@@ -1200,10 +1205,20 @@ async function teardownPersistentMcpTunnels(userId: string): Promise<void> {
   }
 }
 
+// Outbound ACL gate. Returns true iff the recipient's role may receive `type`
+// per the registry. Unauthenticated sockets bypass the gate ONLY for auth:*
+// and pre-auth handshake messages (auth:required, auth:failed, auth:success).
+function aclAllowsDelivery(state: ClientState | undefined, type: string): boolean {
+  // Auth handshake messages must be deliverable to sockets that haven't authed yet.
+  if (type.startsWith("auth:")) return true;
+  if (!state) return false;
+  return canReceive(state.role, type);
+}
+
 function broadcast(message: WsMessage): void {
   const data = JSON.stringify(message);
   for (const [ws, state] of clients) {
-    if (ws.readyState === ws.OPEN && state.userId) {
+    if (ws.readyState === ws.OPEN && state.userId && aclAllowsDelivery(state, message.type)) {
       ws.send(data);
     }
   }
@@ -1213,7 +1228,7 @@ function broadcastToUsers(userIds: string[], message: WsMessage): void {
   const idSet = new Set(userIds);
   const data = JSON.stringify(message);
   for (const [ws, state] of clients) {
-    if (ws.readyState === ws.OPEN && state.userId && idSet.has(state.userId)) {
+    if (ws.readyState === ws.OPEN && state.userId && idSet.has(state.userId) && aclAllowsDelivery(state, message.type)) {
       ws.send(data);
     }
   }
@@ -1224,9 +1239,15 @@ function sendToUser(targetUserId: string, message: WsMessage): void {
 }
 
 function send(ws: WebSocket, message: WsMessage): void {
-  if (ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify(message));
+  if (ws.readyState !== ws.OPEN) return;
+  const state = clients.get(ws);
+  if (!aclAllowsDelivery(state, message.type)) {
+    // Drop silently. We could log here when running locally; in prod this is
+    // expected for any handler that emits to a client whose role is too low
+    // (the wire is the right place to enforce it, not every call site).
+    return;
   }
+  ws.send(JSON.stringify(message));
 }
 
 /**
@@ -1421,6 +1442,7 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
           if (state) {
             state.userId = user.id;
             state.user = { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl };
+            state.role = user.role as Role;
             state.impersonatedBy = decoded.impersonatedBy ?? null;
           }
           const authPayload = await buildAuthPayload(user, token, impersonatedBy);
@@ -1439,6 +1461,7 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
       if (state) {
         state.userId = null;
         state.user = null;
+        state.role = null;
       }
       send(ws, { type: "auth:logged-out", payload: {} });
       broadcastPresence();
@@ -1503,6 +1526,23 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   }
 
   const userId = state.userId;
+
+  // --- Inbound ACL gate ---
+  // Single chokepoint for role-based authorization on every non-auth message.
+  // Default-deny: types missing from ws-acl.ts get rejected here. Handlers
+  // remain responsible for ownership/scope checks (e.g. "is this *your* terminal").
+  if (!canSend(state.role, msg.type)) {
+    const entry = getEntry(msg.type);
+    if (!entry) {
+      console.warn(`[ws-acl] ${POLICY}: rejecting unlisted message type "${msg.type}" from user ${userId}`);
+    } else {
+      console.warn(`[ws-acl] role ${state.role} forbidden from sending "${msg.type}" (requires ${entry.send ?? "—"})`);
+    }
+    // ws.send() bypasses ACL for auth:* but error:* still must be allowed. The
+    // error namespace is user-receivable per registry, so this delivers.
+    send(ws, { type: "error:forbidden", payload: { type: msg.type, message: "Not permitted" } });
+    return;
+  }
 
   // --- Presence handlers ---
   if (msg.type === "presence:nav") {
@@ -6666,7 +6706,7 @@ export async function createServer(): Promise<WebSocketServer> {
   wss.on("connection", (ws, req) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
     const userAgent = (req.headers["user-agent"] as string) || null;
-    clients.set(ws, { userId: null, user: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, recentActions: [], ip, userAgent });
+    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, recentActions: [], ip, userAgent });
     console.log(`Client connected (${clients.size} total)`);
 
     // Tell client auth is required

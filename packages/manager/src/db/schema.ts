@@ -8,7 +8,7 @@ export const users = pgTable("users", {
   avatarUrl: text("avatar_url"),
   isAgent: boolean("is_agent").default(false).notNull(),
   validated: boolean("validated").default(false).notNull(),
-  role: text("role", { enum: ["user", "admin", "superadmin"] }).default("user").notNull(),
+  role: text("role", { enum: ["user", "tazcloud", "admin", "superadmin"] }).default("user").notNull(),
   gitToken: text("git_token"),
   defaultEditor: text("default_editor"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

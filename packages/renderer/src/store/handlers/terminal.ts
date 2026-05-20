@@ -23,7 +23,7 @@ export const handlers: HandlerMap = {
   },
 
   "terminal:error": (payload) => {
-    console.error("Terminal error:", payload.message);
+    console.warn("Terminal error:", payload.message);
     // Render the error into the terminal pane so the user actually sees it.
     const id = payload.id;
     const text = `\r\n\x1b[31m${payload.message}\x1b[0m\r\n`;
@@ -131,7 +131,7 @@ export const handlers: HandlerMap = {
 
   "terminal:share:error": (payload) => {
     const errMsg = payload.message || "Failed to share terminal";
-    console.error("Terminal share error:", errMsg);
+    console.warn("Terminal share error:", errMsg);
     window.dispatchEvent(new CustomEvent("genie:terminal:share:error", { detail: { message: errMsg } }));
   },
 

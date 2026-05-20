@@ -22,8 +22,11 @@ export function Sidebar({
   onToggleWsLog?: () => void;
 }) {
   const [manager] = useSubject($manager);
+  const [auth] = useSubject($auth);
   const managerRunning = manager.running;
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const role = auth.user?.role;
+  const isAdmin = role === "admin" || role === "superadmin";
 
   return (
     <aside className="w-60 min-w-60 bg-mantle border-r border-surface0 flex flex-col gap-2.5 px-3 pb-3 pt-3 overflow-hidden">
@@ -43,11 +46,15 @@ export function Sidebar({
       <SystemStats />
       <SidebarNav />
       <div className="mt-auto pt-2 border-t border-surface0 flex flex-col gap-0.5">
-        <FileExplorerToggle />
-        <TerminalToggle />
-        <FeedbackToggle onOpen={() => setFeedbackOpen(true)} />
-        {onToggleWsLog && (
-          <WsLogToggle open={!!wsLogOpen} onToggle={onToggleWsLog} />
+        {isAdmin && (
+          <>
+            <FileExplorerToggle />
+            <TerminalToggle />
+            <FeedbackToggle onOpen={() => setFeedbackOpen(true)} />
+            {onToggleWsLog && (
+              <WsLogToggle open={!!wsLogOpen} onToggle={onToggleWsLog} />
+            )}
+          </>
         )}
         <UserBadge />
       </div>
@@ -80,7 +87,18 @@ function UserBadge() {
       <div className="flex flex-col flex-1 min-w-0">
         <span className="text-md text-subtext0 truncate">{user.name}</span>
         {user.role && user.role !== "user" && (
-          <span className={cn("text-xs", user.role === "superadmin" ? "text-mauve" : "text-blue")}>{user.role}</span>
+          <span
+            className={cn(
+              "text-xs",
+              user.role === "superadmin"
+                ? "text-mauve"
+                : user.role === "tazcloud"
+                  ? "text-teal"
+                  : "text-blue",
+            )}
+          >
+            {user.role}
+          </span>
         )}
       </div>
       <button

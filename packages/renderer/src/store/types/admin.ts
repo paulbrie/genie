@@ -127,7 +127,7 @@ export interface AdminUser {
   avatarUrl: string | null;
   isAgent: boolean;
   validated: boolean;
-  role: "user" | "admin" | "superadmin";
+  role: "user" | "tazcloud" | "admin" | "superadmin";
   createdAt: string;
 }
 
