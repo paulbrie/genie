@@ -6,15 +6,15 @@ import { defaultNavForRole, navAllowedForRole } from "./routes";
 // type /admin/users or /security in the address bar and see the admin shell.
 
 describe("navAllowedForRole", () => {
-  it("standard user gets only projects / tracker / chat", () => {
+  it("standard user gets projects / tracker / chat / settings", () => {
     expect(navAllowedForRole("projects", "user")).toBe(true);
     expect(navAllowedForRole("tracker", "user")).toBe(true);
     expect(navAllowedForRole("chat", "user")).toBe(true);
+    expect(navAllowedForRole("settings", "user")).toBe(true);
 
     expect(navAllowedForRole("admin", "user")).toBe(false);
     expect(navAllowedForRole("security", "user")).toBe(false);
     expect(navAllowedForRole("logs", "user")).toBe(false);
-    expect(navAllowedForRole("settings", "user")).toBe(false);
     expect(navAllowedForRole("clouds", "user")).toBe(false);
   });
 
