@@ -457,17 +457,15 @@ async function routeChatToVpsAgent(
     projectId = projectIdMatch?.[1] || null;
   }
 
-  // Fallback: if still no project ID, find any project with VPS instances
+  // No fallback to a random project: previously, when the user was on a non-
+  // project view (e.g. Clouds) with no `Project ID:` in context, we silently
+  // picked the first project that had a VPS and SSH'd into it. That made the
+  // chat appear to hang against the wrong host (cold tunnels, missing CLI,
+  // wrong credentials) with no visible error. Refuse early instead — the
+  // outer handler converts `false` into a clear `chat:error` to the user.
   if (!projectId) {
-    const allProjects = await projectService.getAll();
-    const vpsProject = allProjects.find(p => p.vpsInstances.length > 0);
-    if (vpsProject) {
-      projectId = vpsProject.id;
-      console.log(`[claude-code] No project in context, falling back to project "${vpsProject.name}" (${vpsProject.id})`);
-    } else {
-      console.log(`[claude-code] No project with VPS instances found. Context: ${chatContext?.slice(0, 200) || "(none)"}`);
-      return false;
-    }
+    console.log(`[claude-code] No project in context; refusing to route. Context: ${chatContext?.slice(0, 200) || "(none)"}`);
+    return false;
   }
 
   const project = await projectService.getById(projectId);

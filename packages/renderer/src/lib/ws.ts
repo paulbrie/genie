@@ -12,10 +12,17 @@ let dispatcher: ((msg: { type: string; payload: any }) => void) | null = null;
 const pendingInbound: { type: string; payload: any }[] = [];
 function ensureDispatcherLoaded() {
   if (dispatcher) return;
-  import("@/store/handlers").then((mod) => {
-    dispatcher = mod.handleWsMessage;
-    while (pendingInbound.length) dispatcher(pendingInbound.shift()!);
-  });
+  import("@/store/handlers")
+    .then((mod) => {
+      dispatcher = mod.handleWsMessage;
+      while (pendingInbound.length) dispatcher(pendingInbound.shift()!);
+    })
+    .catch((err) => {
+      // Without this catch, a chunk-load failure would leave `dispatcher` null
+      // forever — every inbound WS message would silently pile into
+      // `pendingInbound` and the UI would look like the server stopped responding.
+      console.error("[ws] Failed to load store handlers; inbound messages will not be processed:", err);
+    });
 }
 
 export function getWsUrl(): string {
