@@ -1,4 +1,4 @@
-import { $auth } from "@/store/subjects";
+import { $auth, $manager } from "@/store/subjects";
 import { logSent, logReceived } from "@/lib/ws-log";
 
 let ws: WebSocket | null = null;
@@ -76,6 +76,10 @@ export function connectWs(): void {
 
   ws.onopen = () => {
     console.log("Connected to manager");
+    // Drive the sidebar's "connected" dot off the actual socket lifecycle.
+    // setManagerRunning(true) elsewhere only flips an internal reconnect-intent
+    // flag — it never touched the Subject, so the dot was stuck gray.
+    $manager.next({ running: true });
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -120,6 +124,7 @@ export function connectWs(): void {
 
   ws.onclose = () => {
     ws = null;
+    $manager.next({ running: false });
     if (managerRunning) {
       reconnectTimer = setTimeout(connectWs, 2000);
     }
