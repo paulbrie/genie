@@ -24,6 +24,8 @@ export interface AdminDroplet {
   createdBy: string | null;
   projectId: string | null;
   projectName: string | null;
+  /** Deletion lock — when true, only a superadmin can delete this droplet (typed-name confirm). Default false. */
+  locked: boolean;
 }
 
 export interface AdminTazVm {
@@ -35,6 +37,32 @@ export interface AdminTazVm {
   size?: string;
   projectId: string | null;
   projectName: string | null;
+  /** Deletion lock — when true, only a superadmin can delete this VM (typed-name confirm). Default false. */
+  locked: boolean;
+  /** Present when the VM has a TazCloud ingress (custom-domain HTTPS) attached.
+   *  Deletion is refused while ingress is registered — remove the ingress first. */
+  ingress?: {
+    domain: string;
+    url?: string;
+    status?: string;
+    /** Shared anycast IP all TazCloud ingresses resolve to. Same value for every
+     *  customer/VM/domain (188.213.48.229 today). */
+    ip?: string;
+    /** Human-readable "Add A record: foo.example.com -> 188.213.48.229" hint
+     *  returned by the API; show it to the user so they know what DNS record
+     *  to add. */
+    dnsAction?: string;
+  } | null;
+}
+
+/** A TazCloud snapshot — server-returned shape (see API.md "Get Snapshot"). */
+export interface AdminTazSnapshot {
+  id: string;
+  name: string;
+  sourceVmId: string;          // snake-cased `source_vm_id` from the API, normalised on receipt
+  status: "pending" | "active" | "error";
+  sizeGb: number;
+  created: string;             // ISO-8601
 }
 
 export interface AdminTazState {
@@ -52,6 +80,19 @@ export interface AdminTazState {
   vmStats: Record<string, VpsStats>;
   /** True while the periodic stats refresh is in flight. */
   vmStatsLoading: boolean;
+  /** Snapshot inventory + load state. Populated by `admin:tazcloud:snapshot:list`. */
+  snapshots: AdminTazSnapshot[];
+  snapshotsLoading: boolean;
+  snapshotsError: string | null;
+  /** Per-VM "creating snapshot" flag; cleared on `:created` or `:error`. */
+  snapshotCreating: Record<string, boolean>;
+  /** Latest create error (banner-style) — separate from list-load error. */
+  snapshotCreateError: string | null;
+  /** Per-VM "ingress register/remove in flight" flag — cleared on
+   *  `admin:tazcloud:ingress:registered/removed/error`. */
+  ingressBusy: Record<string, boolean>;
+  /** Latest ingress operation error (banner-style). */
+  ingressError: string | null;
 }
 
 export interface BaseImageConfig {
@@ -202,6 +243,10 @@ export interface AdminState {
    *  (list-load) so the deploy form can show a dedicated banner. */
   dropletsCreateError: string | null;
   dropletStats: Record<number, VpsStats>;
+  /** Per-droplet resize progress. Keyed by dropletId. While present, the row
+   *  shows a streaming progress strip and other actions are disabled.
+   *  Entries are cleared on `:done` or `:error`. */
+  dropletResize: Record<number, { messages: string[]; targetSize: string; error: string | null; done: boolean }>;
   tazcloud: AdminTazState;
   baseImage: AdminBaseImageState;
   sshKey: {

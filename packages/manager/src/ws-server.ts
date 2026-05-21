@@ -33,6 +33,7 @@ import { v4 as uuidv4 } from "uuid";
 import { connectSsh, type SshSession } from "./vps/ssh-client.js";
 import type { StreamingChannel, SftpWriteHandle } from "./vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from "./vps/deploy-service.js";
+import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
 import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules } from "./vps/do-provision.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
@@ -2340,6 +2341,17 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "project:dbUrl:set": {
+      const { id, dbUrl: newDbUrl } = msg.payload as { id: string; dbUrl: string };
+      const updated = await projectService.update(id, { dbUrl: newDbUrl });
+      if (!updated) {
+        send(ws, { type: "error", payload: { message: `Project ${id} not found` } });
+        return;
+      }
+      await broadcastProjectList();
+      break;
+    }
+
     case "project:remove": {
       const { id } = msg.payload;
       await projectManager.stopAll(id);
@@ -3630,66 +3642,86 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
       const secretEnvVars = project.secrets?.reduce((acc, s) => { if (s.key) acc[s.key] = s.value; return acc; }, {} as Record<string, string>);
 
-      void vpsDeploy(project.name, connection, (step) => {
+      const onProgress = (step: string) => {
         vpsProgressAcc.push(step);
         send(ws, { type: "vps:deploy:progress", payload: { projectId, instanceId: newSshInstanceId, message: step } });
-      }, secretEnvVars, project.setupFiles).then(async () => {
-        const instance: import("./types.js").VpsInstance = {
-          id: newSshInstanceId,
-          label: sshLabel || "default",
-          connection,
-          services: [],
-        };
-        // Write server info into CLAUDE.md
+      };
+
+      void (async () => {
         try {
-          const sshTmp = await connectSsh(connection, { timeoutMs: 15_000 });
-          const claudeMdPath = `${remoteDir(project.name)}/CLAUDE.md`;
-          const ip = connection.host;
-          const serverBlock = [
-            `Server public IP: ${ip}`,
-            ``,
-            `## Browser & MCP Tools`,
-            `This server runs in the cloud at ${ip}. When using browser tools:`,
-            `- The app is accessible at http://${ip}:3000 (or whichever port). NEVER use localhost or 127.0.0.1 URLs.`,
-            `- genie-browser: Always use the public IP (http://${ip}:PORT) for navigation. Never pass localhost URLs.`,
-            `- chrome-devtools: Runs Puppeteer on the VPS with no display server — always use headless mode. Navigate to http://${ip}:PORT, never localhost.`,
-          ].join('\\n');
-          const script = `node -e "
-            const fs = require('fs');
-            const p = '${claudeMdPath}';
-            let c = '';
-            try { c = fs.readFileSync(p, 'utf8'); } catch {}
-            if (c.includes('Server public IP:')) {
-              c = c.replace(/Server public IP:[\\\\s\\\\S]*?(?=\\n##[^#]|\\n\\n[^#\\\\s]|$)/, '${serverBlock}');
-            } else {
-              const i = c.indexOf('\\n');
-              c = i >= 0 ? c.slice(0, i + 1) + '\\n${serverBlock}\\n' + c.slice(i + 1) : '${serverBlock}\\n' + c;
-            }
-            fs.writeFileSync(p, c);
-          "`;
-          await sshTmp.exec(script, undefined, { timeoutMs: 10_000 });
-          sshTmp.close();
-        } catch {}
-        try {
-          instance.services = await vpsStatus(project.name, connection);
-        } catch { /* keep empty services */ }
-        const existing = project.vpsInstances.find(v => v.id === newSshInstanceId);
-        if (existing) {
-          await projectService.updateVpsInstance(projectId, newSshInstanceId, instance);
-        } else {
-          await projectService.addVpsInstance(projectId, instance);
+          // First-time setup for attached/external servers: install Docker, Node,
+          // Claude Code, and create the `genie` user. No-op if already bootstrapped.
+          const effectiveConnection = await ensureBootstrapped(
+            connection,
+            { gitlabDeployKey: project.gitlabDeployKey },
+            onProgress,
+          );
+
+          await vpsDeploy(
+            project.name,
+            effectiveConnection,
+            onProgress,
+            secretEnvVars,
+            project.setupFiles,
+          );
+
+          const instance: import("./types.js").VpsInstance = {
+            id: newSshInstanceId,
+            label: sshLabel || "default",
+            connection: effectiveConnection,
+            services: [],
+          };
+          // Write server info into CLAUDE.md
+          try {
+            const sshTmp = await connectSsh(effectiveConnection, { timeoutMs: 15_000 });
+            const claudeMdPath = `${remoteDir(project.name)}/CLAUDE.md`;
+            const ip = effectiveConnection.host;
+            const serverBlock = [
+              `Server public IP: ${ip}`,
+              ``,
+              `## Browser & MCP Tools`,
+              `This server runs in the cloud at ${ip}. When using browser tools:`,
+              `- The app is accessible at http://${ip}:3000 (or whichever port). NEVER use localhost or 127.0.0.1 URLs.`,
+              `- genie-browser: Always use the public IP (http://${ip}:PORT) for navigation. Never pass localhost URLs.`,
+              `- chrome-devtools: Runs Puppeteer on the VPS with no display server — always use headless mode. Navigate to http://${ip}:PORT, never localhost.`,
+            ].join('\\n');
+            const script = `node -e "
+              const fs = require('fs');
+              const p = '${claudeMdPath}';
+              let c = '';
+              try { c = fs.readFileSync(p, 'utf8'); } catch {}
+              if (c.includes('Server public IP:')) {
+                c = c.replace(/Server public IP:[\\\\s\\\\S]*?(?=\\n##[^#]|\\n\\n[^#\\\\s]|$)/, '${serverBlock}');
+              } else {
+                const i = c.indexOf('\\n');
+                c = i >= 0 ? c.slice(0, i + 1) + '\\n${serverBlock}\\n' + c.slice(i + 1) : '${serverBlock}\\n' + c;
+              }
+              fs.writeFileSync(p, c);
+            "`;
+            await sshTmp.exec(script, undefined, { timeoutMs: 10_000 });
+            sshTmp.close();
+          } catch {}
+          try {
+            instance.services = await vpsStatus(project.name, effectiveConnection);
+          } catch { /* keep empty services */ }
+          const existing = project.vpsInstances.find(v => v.id === newSshInstanceId);
+          if (existing) {
+            await projectService.updateVpsInstance(projectId, newSshInstanceId, instance);
+          } else {
+            await projectService.addVpsInstance(projectId, instance);
+          }
+          await broadcastProjectList();
+          await vpsDb.update(deployLogs).set({ status: "success", progress: vpsProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, vpsDeployLogId));
+          if (vpsAgentMemoryCreated) {
+            send(ws, { type: "vps:deploy:progress", payload: { projectId, instanceId: newSshInstanceId, message: "Created AGENT.md — ask Genie to explore your codebase to build memory." } });
+          }
+          send(ws, { type: "vps:deploy:done", payload: { projectId, instanceId: newSshInstanceId, services: instance.services, deployLogId: vpsDeployLogId } });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          await vpsDb.update(deployLogs).set({ status: "error", progress: vpsProgressAcc, error: message, endedAt: new Date() }).where(eq(deployLogs.id, vpsDeployLogId));
+          send(ws, { type: "vps:deploy:error", payload: { projectId, instanceId: newSshInstanceId, message, deployLogId: vpsDeployLogId } });
         }
-        await broadcastProjectList();
-        await vpsDb.update(deployLogs).set({ status: "success", progress: vpsProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, vpsDeployLogId));
-        if (vpsAgentMemoryCreated) {
-          send(ws, { type: "vps:deploy:progress", payload: { projectId, instanceId: newSshInstanceId, message: "Created AGENT.md — ask Genie to explore your codebase to build memory." } });
-        }
-        send(ws, { type: "vps:deploy:done", payload: { projectId, instanceId: newSshInstanceId, services: instance.services, deployLogId: vpsDeployLogId } });
-      }).catch(async (err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        await vpsDb.update(deployLogs).set({ status: "error", progress: vpsProgressAcc, error: message, endedAt: new Date() }).where(eq(deployLogs.id, vpsDeployLogId));
-        send(ws, { type: "vps:deploy:error", payload: { projectId, instanceId: newSshInstanceId, message: (err instanceof Error ? err.message : String(err)), deployLogId: vpsDeployLogId } });
-      });
+      })();
       break;
     }
 
@@ -4949,6 +4981,60 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "admin:tazcloud:ingress:register": {
+      // Attach a custom-domain HTTPS ingress to a TazCloud VM. All ingresses
+      // resolve to TazCloud's shared anycast IP (188.213.48.229); the user must
+      // add the A record at their DNS provider, then HTTPS goes live ~60s after
+      // DNS propagates (Let's Encrypt is issued automatically by Traefik).
+      try {
+        const { vmId, domain, appPort } = msg.payload as {
+          vmId: string; domain: string; appPort?: number;
+        };
+        if (!vmId || typeof vmId !== "string") throw new Error("vmId is required");
+        if (!domain || typeof domain !== "string") throw new Error("domain is required");
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        const ingress = await tazClient.registerIngress(vmId, {
+          domain: domain.trim(),
+          app_port: appPort,
+        });
+        send(ws, { type: "admin:tazcloud:ingress:registered", payload: { vmId, ingress } });
+        broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "admin:tazcloud:ingress:error",
+          payload: {
+            vmId: (msg.payload as { vmId?: string })?.vmId,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:ingress:remove": {
+      try {
+        const { vmId } = msg.payload as { vmId: string };
+        if (!vmId || typeof vmId !== "string") throw new Error("vmId is required");
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        await tazClient.removeIngress(vmId);
+        send(ws, { type: "admin:tazcloud:ingress:removed", payload: { vmId } });
+        broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "admin:tazcloud:ingress:error",
+          payload: {
+            vmId: (msg.payload as { vmId?: string })?.vmId,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      break;
+    }
+
     case "admin:droplets:list": {
       const doToken = await settingsService.getGlobalDoToken();
       if (!doToken) {
@@ -6191,7 +6277,9 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const session = await connectSsh(conn, { timeoutMs: 120_000 });
         try {
           const escapedUrl = (dbUrl as string).replace(/'/g, "'\\''");
-          await session.exec("mkdir -p /opt/genie-backups");
+          // /opt is root-owned; create dir via sudo and chown to ssh user so subsequent
+          // pg_dump/gzip redirection and rm can run without sudo.
+          await session.exec('sudo mkdir -p /opt/genie-backups && sudo chown "$(id -un):$(id -gn)" /opt/genie-backups');
           const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
           const fileName = `backup-${ts}.sql.gz`;
           const filePath = `/opt/genie-backups/${fileName}`;
@@ -6226,7 +6314,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const conn = await getVpsConnection(projectId, instanceId);
         const session = await connectSsh(conn, { timeoutMs: 15_000 });
         try {
-          await session.exec("mkdir -p /opt/genie-backups");
+          await session.exec('sudo mkdir -p /opt/genie-backups && sudo chown "$(id -un):$(id -gn)" /opt/genie-backups');
           const out = await session.exec("ls -lh --time-style=long-iso /opt/genie-backups/*.sql.gz 2>/dev/null || echo ''");
           const backups = out.trim().split("\n").filter(Boolean).filter(l => !l.startsWith("total")).map((line) => {
             const parts = line.split(/\s+/);

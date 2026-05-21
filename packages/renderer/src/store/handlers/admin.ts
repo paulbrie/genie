@@ -14,6 +14,7 @@ import {
   loadAdminRows,
   loadAdminTables,
   loadAdminTazVms,
+  loadTazSnapshots,
 } from "../actions/admin";
 import type { HandlerMap } from "./types";
 
@@ -78,7 +79,7 @@ export const handlers: HandlerMap = {
   },
 
   "admin:error": (payload) => {
-    console.error("Admin error:", payload.message);
+    console.warn("Admin error:", payload.message);
     $admin.getValue().loading = false;
   },
 
@@ -136,6 +137,7 @@ export const handlers: HandlerMap = {
           createdBy: pm?.createdBy || null,
           projectId: pm?.projectId || null,
           projectName: pm?.projectName || null,
+          locked: d.locked === true,
         } as AdminDroplet;
       });
       batch(() => { v.droplets = running; v.dropletsError = null; v.dropletsLoading = false; });
@@ -169,6 +171,16 @@ export const handlers: HandlerMap = {
           size: vm.size,
           projectId: pm?.projectId || null,
           projectName: pm?.projectName || null,
+          locked: vm.locked === true,
+          ingress: vm.ingress
+            ? {
+                domain: vm.ingress.domain,
+                url: vm.ingress.url,
+                status: vm.ingress.status,
+                ip: vm.ingress.ip,
+                dnsAction: vm.ingress.dns_action ?? vm.ingress.dnsAction,
+              }
+            : null,
         } as AdminTazVm;
       });
       batch(() => { v.tazcloud.vms = list; v.tazcloud.error = null; v.tazcloud.loading = false; });
@@ -209,6 +221,46 @@ export const handlers: HandlerMap = {
     const v = $admin.getValue();
     const d = v.droplets.find((x) => x.id === payload.dropletId);
     if (d) d.name = payload.name;
+  },
+
+  "admin:droplets:locked": (payload) => {
+    const v = $admin.getValue();
+    const d = v.droplets.find((x) => x.id === payload.dropletId);
+    if (d) d.locked = payload.locked === true;
+  },
+
+  "admin:droplets:resize:progress": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.dropletId as number;
+    batch(() => {
+      const cur = v.dropletResize[id] ?? { messages: [], targetSize: payload.targetSize ?? "", error: null, done: false };
+      cur.messages = [...cur.messages, payload.message];
+      v.dropletResize[id] = cur;
+    });
+  },
+
+  "admin:droplets:resize:done": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.dropletId as number;
+    batch(() => {
+      const cur = v.dropletResize[id] ?? { messages: [], targetSize: payload.size ?? "", error: null, done: false };
+      cur.done = true;
+      cur.targetSize = payload.size ?? cur.targetSize;
+      v.dropletResize[id] = cur;
+    });
+    // Refresh stats (size + vcpus change). The :list:stale broadcast already
+    // covers the list refetch; stats need their own ping.
+    loadAdminDroplets();
+  },
+
+  "admin:droplets:resize:error": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.dropletId as number;
+    batch(() => {
+      const cur = v.dropletResize[id] ?? { messages: [], targetSize: "", error: null, done: false };
+      cur.error = payload.message;
+      v.dropletResize[id] = cur;
+    });
   },
 
   // Broadcast by the server after any droplet mutation — refetch to pick
@@ -262,8 +314,99 @@ export const handlers: HandlerMap = {
     if (vm) vm.name = payload.name;
   },
 
+  "admin:tazcloud:locked": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    const vm = t.vms.find((x) => x.id === payload.vmId);
+    if (vm) vm.locked = payload.locked === true;
+  },
+
   "admin:tazcloud:list:stale": (_payload) => {
     loadAdminTazVms();
+  },
+
+  "admin:tazcloud:snapshot:list": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    if (payload.error) {
+      batch(() => { t.snapshotsError = payload.error; t.snapshots = []; t.snapshotsLoading = false; });
+      return;
+    }
+    // Wire format uses snake_case (mirrors the TazCloud API). Normalise to
+    // camelCase to match the rest of the store.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const list = (payload.snapshots || []).map((s: any) => ({
+      id: s.id,
+      name: s.name,
+      sourceVmId: s.source_vm_id ?? s.sourceVmId,
+      status: s.status,
+      sizeGb: s.size_gb ?? s.sizeGb,
+      created: s.created,
+    }));
+    batch(() => { t.snapshots = list; t.snapshotsError = null; t.snapshotsLoading = false; });
+  },
+
+  // Server-broadcast after create/delete — pick up the refreshed list without
+  // the originating client having to call loadTazSnapshots itself.
+  "admin:tazcloud:snapshot:list:stale": (_payload) => {
+    loadTazSnapshots();
+  },
+
+  "admin:tazcloud:snapshot:created": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    batch(() => {
+      delete t.snapshotCreating[payload.snapshot.source_vm_id];
+      t.snapshotCreateError = null;
+    });
+  },
+
+  "admin:tazcloud:snapshot:deleted": (_payload) => {
+    // No-op — the :list:stale broadcast reloads the table.
+  },
+
+  "admin:tazcloud:snapshot:error": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    batch(() => {
+      // We don't get the vmId echoed back, so clear all "creating" flags — only
+      // the one that failed had a matching :error and not :created in this round.
+      t.snapshotCreating = {};
+      t.snapshotCreateError = payload.message ?? "Snapshot operation failed";
+    });
+  },
+
+  "admin:tazcloud:ingress:registered": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    batch(() => {
+      delete t.ingressBusy[payload.vmId];
+      t.ingressError = null;
+      const vm = t.vms.find((x) => x.id === payload.vmId);
+      if (vm && payload.ingress) {
+        vm.ingress = {
+          domain: payload.ingress.domain,
+          url: payload.ingress.url,
+          status: payload.ingress.status,
+          ip: payload.ingress.ip,
+          dnsAction: payload.ingress.dns_action ?? payload.ingress.dnsAction,
+        };
+      }
+    });
+  },
+
+  "admin:tazcloud:ingress:removed": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    batch(() => {
+      delete t.ingressBusy[payload.vmId];
+      t.ingressError = null;
+      const vm = t.vms.find((x) => x.id === payload.vmId);
+      if (vm) vm.ingress = null;
+    });
+  },
+
+  "admin:tazcloud:ingress:error": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    batch(() => {
+      if (payload.vmId) delete t.ingressBusy[payload.vmId];
+      else t.ingressBusy = {};
+      t.ingressError = payload.message ?? "Ingress operation failed";
+    });
   },
 
   "admin:tazcloud:exec:progress": (payload) => {

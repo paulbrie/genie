@@ -169,6 +169,14 @@ export function renameAdminDroplet(dropletId: number, name: string): void {
   wsSend("admin:droplets:rename", { dropletId, name });
 }
 
+/** Resize a droplet. The manager orchestrates power-off → resize → power-on
+ *  and streams `admin:droplets:resize:progress` events back. `disk: true` also
+ *  grows the disk (permanent, irreversible); `disk: false` resizes CPU/RAM
+ *  only and can be undone later. */
+export function resizeAdminDroplet(dropletId: number, size: string, disk: boolean): void {
+  wsSend("admin:droplets:resize", { dropletId, size, disk });
+}
+
 // --- TazCloud actions ---
 
 /** SSH-probe every ACTIVE TazCloud VM for runtime port info. Mirrors the
@@ -192,6 +200,81 @@ export function createAdminTazVm(opts: { name: string; image: string; size: stri
  *  renaming). */
 export function renameAdminTazVm(vmId: string, name: string): void {
   wsSend("admin:tazcloud:rename", { vmId, name });
+}
+
+// --- TazCloud snapshot actions ---
+
+/** Fetch all TazCloud snapshots. The server responds with
+ *  `admin:tazcloud:snapshot:list` (full list). */
+export function loadTazSnapshots(): void {
+  batch(() => {
+    const t = $admin.getValue().tazcloud;
+    t.snapshotsLoading = true;
+    t.snapshotsError = null;
+  });
+  wsSend("admin:tazcloud:snapshot:list", {});
+}
+
+/** Trigger snapshot creation. The server returns 202 immediately with a pending
+ *  snapshot; status transitions to `active` in 1-5 min — list-stale broadcasts
+ *  and the panel's pending-poll handle the refresh. */
+export function createTazSnapshot(vmId: string, name: string, stopFirst: boolean): void {
+  batch(() => {
+    const t = $admin.getValue().tazcloud;
+    t.snapshotCreating[vmId] = true;
+    t.snapshotCreateError = null;
+  });
+  wsSend("admin:tazcloud:snapshot:create", { vmId, name, stopFirst });
+}
+
+export function deleteTazSnapshot(snapshotId: string): void {
+  wsSend("admin:tazcloud:snapshot:delete", { snapshotId });
+}
+
+// --- Ingress actions ---
+//
+// Attaching an ingress maps the VM's `app_port` (default 80) to a custom domain
+// over HTTPS via TazCloud's shared edge (Traefik + Let's Encrypt). The DNS A
+// record must point at 188.213.48.229 (shared anycast IP for all customers).
+
+export function registerTazIngress(vmId: string, domain: string, appPort?: number): void {
+  batch(() => {
+    const t = $admin.getValue().tazcloud;
+    t.ingressBusy[vmId] = true;
+    t.ingressError = null;
+  });
+  wsSend("admin:tazcloud:ingress:register", { vmId, domain, appPort });
+}
+
+export function removeTazIngress(vmId: string): void {
+  batch(() => {
+    const t = $admin.getValue().tazcloud;
+    t.ingressBusy[vmId] = true;
+    t.ingressError = null;
+  });
+  wsSend("admin:tazcloud:ingress:remove", { vmId });
+}
+
+// --- Lock actions ---
+//
+// Setting a lock can be done by any role with cloud-panel access (tazcloud+);
+// clearing a lock is enforced superadmin-only by the server ACL. The UI hides
+// the unlock control from non-superadmins to keep things obvious.
+
+export function lockAdminDroplet(dropletId: number): void {
+  wsSend("admin:droplets:lock", { dropletId });
+}
+
+export function unlockAdminDroplet(dropletId: number): void {
+  wsSend("admin:droplets:unlock", { dropletId });
+}
+
+export function lockAdminTazVm(vmId: string): void {
+  wsSend("admin:tazcloud:lock", { vmId });
+}
+
+export function unlockAdminTazVm(vmId: string): void {
+  wsSend("admin:tazcloud:unlock", { vmId });
 }
 
 // --- Promise-based admin exec helpers ---
@@ -223,14 +306,37 @@ export function deletePendingAdminExec(execId: string): void {
   pendingAdminExecs.delete(execId);
 }
 
+/** Tells the manager to force-close the SSH session for an in-flight admin exec.
+ *  The manager replies with the normal `:result` (error: true), which resolves
+ *  the pending promise — callers don't need a separate cancel callback. */
+function attachAbort(execId: string, signal?: AbortSignal): void {
+  if (!signal) return;
+  if (signal.aborted) {
+    wsSend("admin:exec:cancel", { execId });
+    return;
+  }
+  signal.addEventListener("abort", () => {
+    // Guard against races: the pending entry is gone the moment :result arrives.
+    if (pendingAdminExecs.has(execId)) wsSend("admin:exec:cancel", { execId });
+  }, { once: true });
+}
+
 /** Run a command on a DO droplet by id, as the genie user. Returns the
  *  combined stdout+stderr; `error` is true if the manager flagged an SSH or
- *  exec failure. `onChunk` streams output as it arrives. */
-export function adminDropletExec(dropletId: number, command: string, onChunk?: ExecChunk): Promise<ExecResult> {
+ *  exec failure. `onChunk` streams output as it arrives. Pass `signal` to allow
+ *  the caller to cancel the in-flight command — the manager closes the SSH
+ *  session and the returned promise resolves with `error: true`. */
+export function adminDropletExec(
+  dropletId: number,
+  command: string,
+  onChunk?: ExecChunk,
+  signal?: AbortSignal,
+): Promise<ExecResult> {
   const execId = crypto.randomUUID();
   return new Promise((resolve) => {
     pendingAdminExecs.set(execId, { resolve, onChunk, output: "" });
     wsSend("admin:droplets:exec", { dropletId, command, execId });
+    attachAbort(execId, signal);
     // Recipe installs can take many minutes — match the server-side
     // `idleTimeoutMs: 600_000` plus headroom.
     setTimeout(() => {
@@ -251,11 +357,13 @@ export function adminTazcloudExec(
   command: string,
   host?: string,
   onChunk?: ExecChunk,
+  signal?: AbortSignal,
 ): Promise<ExecResult> {
   const execId = crypto.randomUUID();
   return new Promise((resolve) => {
     pendingAdminExecs.set(execId, { resolve, onChunk, output: "" });
     wsSend("admin:tazcloud:exec", { vmId, sshUser, host, command, execId });
+    attachAbort(execId, signal);
     setTimeout(() => {
       const pending = pendingAdminExecs.get(execId);
       if (pending) {
