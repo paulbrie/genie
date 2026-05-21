@@ -3,6 +3,34 @@ export type ProjectTab = "files" | "commands" | "cloud" | "deploy-history" | "se
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs";
 export type SettingsTab = "general" | "deploy";
 
+// --- Nav-level role gate ---
+//
+// Mirrors the sidebar's `baseNavItems` filtering in sidebar-nav.tsx. Kept here
+// so the URL router (app/[[...slug]]/page.tsx) and the sidebar agree on who
+// gets to see what — otherwise typing /admin/users into the address bar lands
+// a regular user on the admin shell with empty data, instead of bouncing them.
+type NavRole = "user" | "tazcloud" | "admin" | "superadmin" | undefined | null;
+
+const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat"]);
+const TAZCLOUD_EXTRA_NAVS = new Set<NavKey>(["recipes", "clouds"]);
+const ADMIN_NAVS = new Set<NavKey>([
+  "projects", "processes", "docker", "docs", "logs", "chat", "tracker",
+  "settings", "admin", "architecture", "users", "security", "help",
+]);
+
+export function navAllowedForRole(nav: NavKey, role: NavRole): boolean {
+  if (role === "superadmin") return true;
+  if (role === "admin") return ADMIN_NAVS.has(nav);
+  if (role === "tazcloud") return STANDARD_USER_NAVS.has(nav) || TAZCLOUD_EXTRA_NAVS.has(nav);
+  // null/undefined/"user" → standard
+  return STANDARD_USER_NAVS.has(nav);
+}
+
+/** Landing route the router should redirect to when a user hits a forbidden URL. */
+export function defaultNavForRole(_role: NavRole): NavKey {
+  return "projects";
+}
+
 // Bidirectional NavKey ↔ URL segment maps (all lowercase)
 const NAV_TO_PATH: Record<NavKey, string> = {
   apps: "apps",

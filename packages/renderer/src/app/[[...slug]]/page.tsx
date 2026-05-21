@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSubject } from "subjecto/react";
-import { $activeNav, $projects, $selectedProjectId, $showAddProjectForm } from "@/store/subjects";
+import { $activeNav, $auth, $projects, $selectedProjectId, $showAddProjectForm } from "@/store/subjects";
 import { loadAiCosts, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDocsList, loadProdDeployments, loadSshKey, openDoc, selectProject, setAdminTab, setAiSubTab, setDropletsSubTab, switchNav } from "@/store/actions";
 import { AddProjectForm } from "@/components/add-project-form";
 import { ProjectDetail } from "@/components/project-detail";
@@ -23,7 +23,7 @@ import { ConnectedUsersPanel } from "@/components/connected-users-panel";
 import { SecurityPanel } from "@/components/security-panel";
 import { HelpPanel } from "@/components/help-panel";
 import { ProjectsGrid } from "@/components/projects-grid";
-import { parseRoute, type ProjectTab, type SettingsTab } from "@/lib/routes";
+import { defaultNavForRole, navAllowedForRole, parseRoute, type ProjectTab, type SettingsTab } from "@/lib/routes";
 import { findBySlug } from "@/lib/utils";
 import { buildNavPath } from "@/lib/routes";
 
@@ -52,6 +52,16 @@ function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab } {
     const parsed = parseRoute(slugSegments);
     if (!parsed) {
       router.replace(buildNavPath("projects"));
+      return;
+    }
+
+    // Role gate. The sidebar already hides forbidden nav items, but a user
+    // can still type /admin/users or /security into the address bar — without
+    // this check the page would render the admin shell with empty data
+    // (server ACL blocks the actual fetch). Bounce them to their landing nav.
+    const role = $auth.getValue()?.user?.role as "user" | "tazcloud" | "admin" | "superadmin" | undefined;
+    if (!navAllowedForRole(parsed.nav, role)) {
+      router.replace(buildNavPath(defaultNavForRole(role)));
       return;
     }
 
