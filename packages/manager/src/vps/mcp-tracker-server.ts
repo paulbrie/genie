@@ -82,6 +82,35 @@ const TOOLS = [
       required: ["identifier", "content"],
     },
   },
+  {
+    name: "tracker_create_issue",
+    description:
+      "Create a new tracker issue (ticket) in this project. Use this when the user asks to file a bug, capture a follow-up, or record a TODO they want tracked. The project is fixed — you only choose the content. Defaults: status='todo', priority='none'. Returns the newly assigned identifier (e.g. #42).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Short imperative-form summary, e.g. 'Fix login redirect on Safari'. Required.",
+        },
+        description: {
+          type: "string",
+          description: "Body of the ticket — context, reproduction steps, links. Markdown supported. Optional but recommended for anything non-trivial.",
+        },
+        status: {
+          type: "string",
+          enum: ["backlog", "todo", "in_progress", "in_review", "done", "cancelled"],
+          description: "Initial status. Defaults to 'todo'. Use 'backlog' for ideas you don't want on the active board yet.",
+        },
+        priority: {
+          type: "string",
+          enum: ["none", "urgent", "high", "medium", "low"],
+          description: "Initial priority. Defaults to 'none' — only set when the user signals urgency.",
+        },
+      },
+      required: ["title"],
+    },
+  },
 ];
 
 function jsonRpcResponse(id: unknown, result: unknown) {
@@ -263,6 +292,38 @@ export function createMcpTrackerServer(
                   },
                 ],
                 isError: !updated,
+              });
+            }
+          } else if (toolName === "tracker_create_issue") {
+            const title = args.title as string | undefined;
+            if (!title || typeof title !== "string" || title.trim().length === 0) {
+              result = jsonRpcResponse(id, {
+                content: [{ type: "text", text: "Cannot create issue: 'title' is required and must be a non-empty string." }],
+                isError: true,
+              });
+            } else {
+              const description = typeof args.description === "string" ? args.description : undefined;
+              const status = typeof args.status === "string" ? args.status : undefined;
+              const priority = typeof args.priority === "string" ? args.priority : undefined;
+              // "system" mirrors the userId convention used by the update / comment branches.
+              const created = await trackerService.createIssue("system", {
+                projectId,
+                title: title.trim(),
+                description,
+                status,
+                priority,
+              });
+              if (created) onIssueUpdated?.();
+              result = jsonRpcResponse(id, {
+                content: [
+                  {
+                    type: "text",
+                    text: created
+                      ? `Created issue #${created.identifier}: ${created.title}`
+                      : "Failed to create issue.",
+                  },
+                ],
+                isError: !created,
               });
             }
           } else if (toolName === "tracker_comment_on_issue") {
