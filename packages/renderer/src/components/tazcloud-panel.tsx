@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, UserPlus, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2 } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search } from "lucide-react";
 import { $admin, $auth } from "@/store/subjects";
 import type { AdminTazVm } from "@/store/types";
 import { addSshTerminalTab, adminTazcloudExec, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, loadAdminTazVms, loadAdminTazcloudStats, loadTazSnapshots, lockAdminTazVm, registerTazIngress, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm } from "@/store/actions";
@@ -11,7 +11,6 @@ import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
 import { AdminSystemPanel } from "@/components/admin-system-panel";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
-import { GenieUserSetup, GENIE_USER_INSTALL_SCRIPT } from "@/components/genie-user-setup";
 import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -21,6 +20,11 @@ import { ErrorMessage } from "@/components/ui/error-message";
 
 const IMAGES = ["ubuntu-22", "ubuntu-24", "debian-12", "almalinux-9"];
 const SIZES = ["small", "medium", "large", "xlarge"];
+
+// Ingress is locked to the Genie-owned zone — a wildcard A record covers it
+// at the DNS level, so attaching a new VM is a one-field operation.
+const INGRESS_DOMAIN_SUFFIX = "cloud.teleporthq.ai";
+const INGRESS_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /** Image-default SSH user — the one TazCloud injects the key into. Always exists,
  *  regardless of whether Genie's bootstrap has run on this VM. */
@@ -77,34 +81,34 @@ export function TazCloudPanel() {
   const [vmImage, setVmImage] = useState("ubuntu-22");
   const [vmSize, setVmSize] = useState("small");
   const [userMenuOpenFor, setUserMenuOpenFor] = useState<string | null>(null);
+  /** Per-row overflow menu. Collapses the rename/lock/security/rkhunter/snapshot/
+   *  ingress/manage/delete cluster so the row isn't visually swamped. */
+  const [actionMenuOpenFor, setActionMenuOpenFor] = useState<string | null>(null);
   const [manageExpanded, setManageExpanded] = useState<string | null>(null);
+  /** VM-list view mode + search query. Persisted to localStorage so the user
+   *  doesn't have to re-toggle on every visit. Search is case-insensitive,
+   *  applied to vm.name (the field admins actually scan by). */
+  const [vmViewMode, setVmViewMode] = useState<"list" | "cards">(() => {
+    if (typeof window === "undefined") return "list";
+    return (window.localStorage.getItem("genie.tazcloud.vmViewMode") as "list" | "cards") || "list";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("genie.tazcloud.vmViewMode", vmViewMode);
+  }, [vmViewMode]);
+  const [vmSearch, setVmSearch] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  // Per-row "add genie user" state — vmId → "running" | "done" | "error: <msg>"
-  const [genieInstallState, setGenieInstallState] = useState<Record<string, "running" | "done" | string>>({});
   // Which VM has its inline snapshot form open, and the draft form state.
   const [snapshotFormFor, setSnapshotFormFor] = useState<string | null>(null);
   const [snapshotName, setSnapshotName] = useState("");
   const [snapshotStopFirst, setSnapshotStopFirst] = useState(true);
   // Inline "Attach domain" form (TazCloud Ingress).
   const [ingressFormFor, setIngressFormFor] = useState<string | null>(null);
-  const [ingressDomain, setIngressDomain] = useState("");
+  // User picks only the leftmost subdomain label; the full FQDN is built as
+  // `${label}.${INGRESS_DOMAIN_SUFFIX}`.
+  const [ingressLabel, setIngressLabel] = useState("");
   const [ingressAppPort, setIngressAppPort] = useState("3000");
-
-  async function installGenieUser(vm: { id: string; ipv6: string; image?: string; projectId: string | null }) {
-    setGenieInstallState((s) => ({ ...s, [vm.id]: "running" }));
-    // Force image-default user — the install BOOTSTRAPS the genie user, so SSHing
-    // as genie would fail on VMs that don't have it yet (the whole point).
-    const user = imageDefaultUser(vm.image);
-    const res = await adminTazcloudExec(vm.id, user, GENIE_USER_INSTALL_SCRIPT, vm.ipv6);
-    if (res.error || !res.output.trim().endsWith("OK")) {
-      setGenieInstallState((s) => ({ ...s, [vm.id]: "error: " + (res.output.slice(0, 100) || "failed") }));
-      setTimeout(() => setGenieInstallState((s) => { const n = { ...s }; delete n[vm.id]; return n; }), 6000);
-      return;
-    }
-    setGenieInstallState((s) => ({ ...s, [vm.id]: "done" }));
-    setTimeout(() => setGenieInstallState((s) => { const n = { ...s }; delete n[vm.id]; return n; }), 4000);
-  }
 
   function startRename(vm: { id: string; name: string }) {
     setRenamingId(vm.id);
@@ -221,15 +225,16 @@ export function TazCloudPanel() {
 
   function openIngressForm(vmId: string) {
     setIngressFormFor(vmId);
-    setIngressDomain("");
+    setIngressLabel("");
     setIngressAppPort("3000");
   }
 
   function submitIngress(vmId: string) {
-    const domain = ingressDomain.trim();
-    if (!domain) return;
+    const label = ingressLabel.trim().toLowerCase();
+    if (!INGRESS_LABEL_RE.test(label)) return;
+    const fqdn = `${label}.${INGRESS_DOMAIN_SUFFIX}`;
     const port = parseInt(ingressAppPort, 10);
-    registerTazIngress(vmId, domain, Number.isFinite(port) && port > 0 ? port : undefined);
+    registerTazIngress(vmId, fqdn, Number.isFinite(port) && port > 0 ? port : undefined);
     setIngressFormFor(null);
   }
 
@@ -254,6 +259,48 @@ export function TazCloudPanel() {
         <Cloud size={16} className="text-blue" />
         <span className="text-md font-medium text-subtext0">VMs</span>
         <span className="text-md text-overlay0 font-mono">{vms.length}</span>
+        <div className="relative ml-2">
+          <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-overlay0 pointer-events-none" />
+          <input
+            type="text"
+            value={vmSearch}
+            onChange={(e) => setVmSearch(e.target.value)}
+            placeholder="Search by name…"
+            spellCheck={false}
+            className="bg-background border border-surface0 rounded-md pl-7 pr-2 py-1 text-md text-text outline-none focus:border-blue w-44"
+          />
+          {vmSearch && (
+            <button
+              onClick={() => setVmSearch("")}
+              className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-overlay0 hover:text-text"
+              title="Clear"
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+        <div className="inline-flex rounded-md border border-surface0 bg-background overflow-hidden">
+          <button
+            onClick={() => setVmViewMode("list")}
+            className={cn(
+              "px-1.5 py-1 transition-colors",
+              vmViewMode === "list" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
+            )}
+            title="List view"
+          >
+            <ListIcon size={13} />
+          </button>
+          <button
+            onClick={() => setVmViewMode("cards")}
+            className={cn(
+              "px-1.5 py-1 transition-colors border-l border-surface0",
+              vmViewMode === "cards" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
+            )}
+            title="Card view"
+          >
+            <LayoutGrid size={13} />
+          </button>
+        </div>
         <div className="flex-1" />
         <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
           <Plus size={14} className="mr-1" />
@@ -323,28 +370,46 @@ export function TazCloudPanel() {
       )}
 
       <div>
-        {loading && vms.length === 0 ? (
-          <div className="flex items-center justify-center text-overlay0 py-12">
-            <Loader2 size={16} className="animate-spin mr-2" />
-            Loading…
-          </div>
-        ) : vms.length === 0 && !error ? (
-          <div className="text-center text-overlay0 py-12">
-            <p className="text-base">No TazCloud VMs.</p>
-            <p className="text-md mt-1">Deploy a project with the TazCloud provider to see it here.</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {vms.map((vm) => {
+        {(() => {
+          const q = vmSearch.trim().toLowerCase();
+          const visibleVms = q ? vms.filter((v) => v.name.toLowerCase().includes(q)) : vms;
+          if (loading && vms.length === 0) {
+            return (
+              <div className="flex items-center justify-center text-overlay0 py-12">
+                <Loader2 size={16} className="animate-spin mr-2" />
+                Loading…
+              </div>
+            );
+          }
+          if (vms.length === 0 && !error) {
+            return (
+              <div className="text-center text-overlay0 py-12">
+                <p className="text-base">No TazCloud VMs.</p>
+                <p className="text-md mt-1">Deploy a project with the TazCloud provider to see it here.</p>
+              </div>
+            );
+          }
+          if (visibleVms.length === 0) {
+            return (
+              <div className="text-center text-overlay0 py-12">
+                <p className="text-md">No VMs match &ldquo;{vmSearch}&rdquo;.</p>
+              </div>
+            );
+          }
+          return (
+          <div
+            className={cn(
+              vmViewMode === "cards"
+                ? "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2"
+                : "flex flex-col gap-2",
+            )}
+          >
+            {visibleVms.map((vm) => {
               const isActive = vm.status === "ACTIVE";
               const isPending = pendingDelete === vm.id;
               const isDeleting = deleting.has(vm.id);
               const isRenaming = renamingId === vm.id;
               const stats = admin.tazcloud.vmStats[vm.id];
-              const gState = genieInstallState[vm.id];
-              const installBusy = gState === "running";
-              const installDone = gState === "done";
-              const installErr = typeof gState === "string" && gState.startsWith("error:") ? gState.slice(7) : null;
               return (
                 <div key={vm.id} className="bg-mantle rounded-lg px-3 py-2 border border-overlay0/10">
                   {isRenaming ? (
@@ -473,103 +538,122 @@ export function TazCloudPanel() {
                             </>
                           )}
                         </div>
-                        <button
-                          onClick={() => installGenieUser(vm)}
-                          disabled={installBusy || !isActive}
-                          className={cn(
-                            "p-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
-                            installDone ? "text-green" : installErr ? "text-red" : "text-overlay0 hover:text-blue",
+                        <div className="relative inline-flex items-center">
+                          <button
+                            onClick={() => setActionMenuOpenFor(actionMenuOpenFor === vm.id ? null : vm.id)}
+                            className={cn(
+                              "p-1 transition-colors",
+                              actionMenuOpenFor === vm.id ? "text-blue" : "text-overlay0 hover:text-blue",
+                            )}
+                            title="More actions"
+                          >
+                            <MoreVertical size={13} />
+                          </button>
+                          {actionMenuOpenFor === vm.id && (
+                            <>
+                              <div className="fixed inset-0 z-10" onClick={() => setActionMenuOpenFor(null)} />
+                              <div className="absolute right-0 top-full mt-1 z-20 bg-mantle border border-overlay0/30 rounded-md shadow-lg py-1 min-w-[220px]">
+                                {!isRenaming && (
+                                  <button
+                                    onClick={() => { setActionMenuOpenFor(null); startRename(vm); }}
+                                    className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                                  >
+                                    <Pencil size={12} className="text-overlay0" />
+                                    Rename
+                                  </button>
+                                )}
+                                {vm.locked ? (
+                                  <button
+                                    onClick={() => { setActionMenuOpenFor(null); unlockAdminTazVm(vm.id); }}
+                                    disabled={!isSuperAdmin}
+                                    className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    title={isSuperAdmin ? "Unlock (allow deletion)" : "Only a superadmin can unlock"}
+                                  >
+                                    <Unlock size={12} className="text-red" />
+                                    Unlock
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => { setActionMenuOpenFor(null); lockAdminTazVm(vm.id); }}
+                                    className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                                    title="Lock this VM to prevent accidental deletion"
+                                  >
+                                    <Lock size={12} className="text-overlay0" />
+                                    Lock (prevent deletion)
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => { setActionMenuOpenFor(null); setManageExpanded(manageExpanded === vm.id ? null : vm.id); }}
+                                  disabled={!isActive}
+                                  className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  <SettingsIcon size={12} className={manageExpanded === vm.id ? "text-blue" : "text-overlay0"} />
+                                  {manageExpanded === vm.id ? "Hide" : "Show"} firewall & services
+                                </button>
+                                <div className="my-1 border-t border-overlay0/15" />
+                                <button
+                                  onClick={() => { setActionMenuOpenFor(null); startSecurityScan(vm.ipv6); switchNav("security"); }}
+                                  disabled={!isActive || !vm.ipv6}
+                                  className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                                  title={isActive && vm.ipv6 ? `Run security scan against ${vm.ipv6}` : "VM is not active"}
+                                >
+                                  <Shield size={12} className="text-mauve" />
+                                  Run security scan
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setActionMenuOpenFor(null);
+                                    const username = defaultSshUserFor(vm);
+                                    addSshTerminalTab(
+                                      { host: vm.ipv6, port: 22, username, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+                                      `rkhunter @ ${vm.name}`,
+                                      "sudo rkhunter --check --sk",
+                                    );
+                                  }}
+                                  disabled={!isActive || !vm.ipv6}
+                                  className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                                  title={isActive && vm.ipv6 ? `Run rkhunter on ${vm.name}` : "VM is not active"}
+                                >
+                                  <Bug size={12} className="text-yellow" />
+                                  Run rkhunter
+                                </button>
+                                <button
+                                  onClick={() => { setActionMenuOpenFor(null); openSnapshotForm(vm); }}
+                                  disabled={!isActive || !!admin.tazcloud.snapshotCreating[vm.id]}
+                                  className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                                  title={isActive ? `Snapshot ${vm.name}` : "VM is not active"}
+                                >
+                                  {admin.tazcloud.snapshotCreating[vm.id]
+                                    ? <Loader2 size={12} className="animate-spin text-teal" />
+                                    : <Camera size={12} className="text-teal" />}
+                                  Create snapshot…
+                                </button>
+                                {!vm.ingress && (
+                                  <button
+                                    onClick={() => { setActionMenuOpenFor(null); openIngressForm(vm.id); }}
+                                    disabled={!isActive || !!admin.tazcloud.ingressBusy[vm.id]}
+                                    className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    title={isActive ? "Attach a domain (HTTPS via TazCloud ingress)" : "VM is not active"}
+                                  >
+                                    {admin.tazcloud.ingressBusy[vm.id]
+                                      ? <Loader2 size={12} className="animate-spin text-mauve" />
+                                      : <Globe size={12} className="text-mauve" />}
+                                    Attach domain…
+                                  </button>
+                                )}
+                                <div className="my-1 border-t border-overlay0/15" />
+                                <button
+                                  onClick={() => { setActionMenuOpenFor(null); confirmDelete(vm.id); }}
+                                  className="w-full text-left px-3 py-1.5 text-md hover:bg-red/10 text-red flex items-center gap-2"
+                                  title={vm.locked ? "Locked — superadmin can still confirm" : "Delete this VM"}
+                                >
+                                  <Trash2 size={12} className="text-red" />
+                                  Delete VM…
+                                </button>
+                              </div>
+                            </>
                           )}
-                          title={
-                            installErr ? `Install failed: ${installErr}` :
-                            installDone ? "Genie user created" :
-                            installBusy ? "Creating genie user…" :
-                            "Add genie user (sudo + SSH key from current user)"
-                          }
-                        >
-                          {installBusy ? <Loader2 size={13} className="animate-spin" />
-                            : installDone ? <Check size={13} />
-                            : <UserPlus size={13} />}
-                        </button>
-                        {!isRenaming && (
-                          <button
-                            onClick={() => startRename(vm)}
-                            className="text-overlay0 hover:text-blue transition-colors p-1"
-                            title="Rename VM (stored in Genie's DB; TazCloud cloud name stays unchanged)"
-                          >
-                            <Pencil size={13} />
-                          </button>
-                        )}
-                        {vm.locked ? (
-                          <button
-                            onClick={() => unlockAdminTazVm(vm.id)}
-                            disabled={!isSuperAdmin}
-                            className="p-1 text-red hover:text-red/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                            title={isSuperAdmin ? "Unlock (allow deletion)" : "Only a superadmin can unlock"}
-                          >
-                            <Unlock size={13} />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => lockAdminTazVm(vm.id)}
-                            className="p-1 text-overlay0 hover:text-red transition-colors"
-                            title="Lock this VM to prevent accidental deletion"
-                          >
-                            <Lock size={13} />
-                          </button>
-                        )}
-                        <button
-                          onClick={() => { startSecurityScan(vm.ipv6); switchNav("security"); }}
-                          disabled={!isActive || !vm.ipv6}
-                          className="p-1 text-overlay0 hover:text-mauve transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={isActive && vm.ipv6 ? `Run security scan against ${vm.ipv6}` : "VM is not active"}
-                        >
-                          <Shield size={13} />
-                        </button>
-                        <button
-                          onClick={() => {
-                            const username = defaultSshUserFor(vm);
-                            addSshTerminalTab(
-                              { host: vm.ipv6, port: 22, username, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
-                              `rkhunter @ ${vm.name}`,
-                              "sudo rkhunter --check --sk",
-                            );
-                          }}
-                          disabled={!isActive || !vm.ipv6}
-                          className="p-1 text-overlay0 hover:text-yellow transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={isActive && vm.ipv6 ? `Run rkhunter on ${vm.name}` : "VM is not active"}
-                        >
-                          <Bug size={13} />
-                        </button>
-                        <button
-                          onClick={() => openSnapshotForm(vm)}
-                          disabled={!isActive || !!admin.tazcloud.snapshotCreating[vm.id]}
-                          className="p-1 text-overlay0 hover:text-teal transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={isActive ? `Snapshot ${vm.name}` : "VM is not active"}
-                        >
-                          {admin.tazcloud.snapshotCreating[vm.id] ? <Loader2 size={13} className="animate-spin" /> : <Camera size={13} />}
-                        </button>
-                        {!vm.ingress && (
-                          <button
-                            onClick={() => openIngressForm(vm.id)}
-                            disabled={!isActive || !!admin.tazcloud.ingressBusy[vm.id]}
-                            className="p-1 text-overlay0 hover:text-mauve transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                            title={isActive ? "Attach a domain (HTTPS via TazCloud ingress)" : "VM is not active"}
-                          >
-                            {admin.tazcloud.ingressBusy[vm.id] ? <Loader2 size={13} className="animate-spin" /> : <Globe size={13} />}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => setManageExpanded(manageExpanded === vm.id ? null : vm.id)}
-                          disabled={!isActive}
-                          className={cn(
-                            "p-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
-                            manageExpanded === vm.id ? "text-blue" : "text-overlay0 hover:text-blue",
-                          )}
-                          title="Manage firewall & services"
-                        >
-                          <SettingsIcon size={13} />
-                        </button>
+                        </div>
                       </>
                     )}
                   </div>
@@ -616,49 +700,62 @@ export function TazCloudPanel() {
                       </Button>
                     </div>
                   )}
-                  {ingressFormFor === vm.id && (
-                    <div className="mt-3 border-t border-overlay0/10 pt-3 flex flex-col gap-2">
-                      <div className="flex items-end gap-2 flex-wrap">
-                        <div className="flex flex-col gap-1 flex-1 min-w-[260px]">
-                          <label className="text-md text-overlay0">Domain (FQDN)</label>
-                          <input
-                            type="text"
-                            value={ingressDomain}
-                            onChange={(e) => setIngressDomain(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === "Enter") submitIngress(vm.id); if (e.key === "Escape") setIngressFormFor(null); }}
-                            placeholder="genie.cloud.teleporthq.io"
-                            spellCheck={false}
-                            autoFocus
-                            className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue"
-                          />
+                  {ingressFormFor === vm.id && (() => {
+                    const label = ingressLabel.trim().toLowerCase();
+                    const labelValid = INGRESS_LABEL_RE.test(label);
+                    return (
+                      <div className="mt-3 border-t border-overlay0/10 pt-3 flex flex-col gap-2">
+                        <div className="flex items-end gap-2 flex-wrap">
+                          <div className="flex flex-col gap-1 flex-1 min-w-[260px]">
+                            <label className="text-md text-overlay0">Subdomain</label>
+                            <div className="flex items-stretch font-mono text-md">
+                              <input
+                                type="text"
+                                value={ingressLabel}
+                                onChange={(e) => setIngressLabel(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") submitIngress(vm.id); if (e.key === "Escape") setIngressFormFor(null); }}
+                                placeholder="genie"
+                                spellCheck={false}
+                                autoFocus
+                                className="flex-1 min-w-0 bg-background border border-surface0 rounded-l-md border-r-0 px-2.5 py-1.5 text-text outline-none focus:border-blue"
+                              />
+                              <span className="inline-flex items-center px-2.5 py-1.5 bg-surface0 border border-surface0 rounded-r-md text-overlay1 select-none">
+                                .{INGRESS_DOMAIN_SUFFIX}
+                              </span>
+                            </div>
+                            {ingressLabel && !labelValid && (
+                              <span className="text-xs text-red italic">
+                                Lowercase letters, digits, and hyphens only (1–63 chars, must start and end alphanumeric).
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-col gap-1 w-[120px]">
+                            <label className="text-md text-overlay0">App port</label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={65535}
+                              value={ingressAppPort}
+                              onChange={(e) => setIngressAppPort(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter") submitIngress(vm.id); if (e.key === "Escape") setIngressFormFor(null); }}
+                              className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue"
+                            />
+                          </div>
+                          <Button size="sm" variant="primary" onClick={() => submitIngress(vm.id)} disabled={!labelValid || !!admin.tazcloud.ingressBusy[vm.id]}>
+                            {admin.tazcloud.ingressBusy[vm.id] ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Globe size={14} className="mr-1" />}
+                            Attach
+                          </Button>
+                          <Button size="sm" onClick={() => setIngressFormFor(null)}>
+                            Cancel
+                          </Button>
                         </div>
-                        <div className="flex flex-col gap-1 w-[120px]">
-                          <label className="text-md text-overlay0">App port</label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={65535}
-                            value={ingressAppPort}
-                            onChange={(e) => setIngressAppPort(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === "Enter") submitIngress(vm.id); if (e.key === "Escape") setIngressFormFor(null); }}
-                            className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue"
-                          />
-                        </div>
-                        <Button size="sm" variant="primary" onClick={() => submitIngress(vm.id)} disabled={!ingressDomain.trim() || !!admin.tazcloud.ingressBusy[vm.id]}>
-                          {admin.tazcloud.ingressBusy[vm.id] ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Globe size={14} className="mr-1" />}
-                          Attach
-                        </Button>
-                        <Button size="sm" onClick={() => setIngressFormFor(null)}>
-                          Cancel
-                        </Button>
+                        <p className="text-xs text-overlay0 italic">
+                          A wildcard A record <span className="font-mono text-overlay1">*.{INGRESS_DOMAIN_SUFFIX}</span> at{" "}
+                          <span className="font-mono text-overlay1">188.213.48.229</span> covers this — TLS is issued by Let's Encrypt within ~60s of attaching.
+                        </p>
                       </div>
-                      <p className="text-xs text-overlay0 italic">
-                        TLS via Let's Encrypt is issued automatically once your DNS A record points{" "}
-                        <span className="font-mono text-overlay1">{ingressDomain || "yourdomain"}</span>{" "}
-                        at <span className="font-mono text-overlay1">188.213.48.229</span> (TazCloud's shared ingress IP).
-                      </p>
-                    </div>
-                  )}
+                    );
+                  })()}
                   {manageExpanded === vm.id && isActive && (
                     <div className="mt-3 border-t border-overlay0/10 pt-3">
                       <ManageVmInline vm={vm} />
@@ -668,7 +765,8 @@ export function TazCloudPanel() {
               );
             })}
           </div>
-        )}
+          );
+        })()}
       </div>
 
       <TazSnapshotsSection vms={vms} />
@@ -781,7 +879,6 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
       <p className="text-xs text-overlay0">
         Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.ipv6}</span>
       </p>
-      <GenieUserSetup vmId={vm.id} exec={exec} />
       <AdminSystemPanel exec={exec} />
       <AdminRecipesPanel exec={exec} />
       <VpsFirewall exec={exec} />
