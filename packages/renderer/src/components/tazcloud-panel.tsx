@@ -583,12 +583,12 @@ export function TazCloudPanel() {
                                   </button>
                                 )}
                                 <button
-                                  onClick={() => { setActionMenuOpenFor(null); setManageExpanded(manageExpanded === vm.id ? null : vm.id); }}
+                                  onClick={() => { setActionMenuOpenFor(null); setManageExpanded(vm.id); }}
                                   disabled={!isActive}
                                   className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
-                                  <SettingsIcon size={12} className={manageExpanded === vm.id ? "text-blue" : "text-overlay0"} />
-                                  {manageExpanded === vm.id ? "Hide" : "Show"} firewall & services
+                                  <SettingsIcon size={12} className="text-overlay0" />
+                                  Manage firewall &amp; services…
                                 </button>
                                 <div className="my-1 border-t border-overlay0/15" />
                                 <button
@@ -756,11 +756,6 @@ export function TazCloudPanel() {
                       </div>
                     );
                   })()}
-                  {manageExpanded === vm.id && isActive && (
-                    <div className="mt-3 border-t border-overlay0/10 pt-3">
-                      <ManageVmInline vm={vm} />
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -770,7 +765,52 @@ export function TazCloudPanel() {
       </div>
 
       <TazSnapshotsSection vms={vms} />
+
+      <ManageVmModal
+        vm={vms.find((v) => v.id === manageExpanded) ?? null}
+        onClose={() => setManageExpanded(null)}
+      />
     </div>
+  );
+}
+
+/** Modal wrapper around ManageVmInline. Replaces the old per-row inline
+ *  expansion: inlining a three-panel control surface (firewall + recipes +
+ *  system info) under a single row pushed every other row down and was
+ *  particularly broken in card view, where it punched out of the grid. */
+function ManageVmModal({
+  vm,
+  onClose,
+}: {
+  vm: { id: string; name: string; ipv6: string; image?: string; projectId: string | null } | null;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!vm) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [vm, onClose]);
+
+  if (!vm) return null;
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/40 z-40" onClick={onClose} />
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[900px] max-w-[95vw] max-h-[90vh] bg-mantle border border-surface0 rounded-lg shadow-xl z-50 flex flex-col">
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-surface0 shrink-0">
+          <SettingsIcon size={14} className="text-blue" />
+          <span className="text-text font-medium text-md">Manage</span>
+          <span className="text-overlay0 text-md font-mono">{vm.name}</span>
+          <div className="flex-1" />
+          <button onClick={onClose} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer" title="Close (Esc)">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="overflow-y-auto px-4 py-3">
+          <ManageVmInline vm={vm} />
+        </div>
+      </div>
+    </>
   );
 }
 
