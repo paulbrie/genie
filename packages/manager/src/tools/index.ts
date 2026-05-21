@@ -5,6 +5,7 @@ import { executeBrowseUrl } from "./web-browse.js";
 import { executeSshExec } from "./ssh-exec.js";
 import {
   executeTazListVms,
+  executeTazGetVm,
   executeTazCreateVm,
   executeTazDeleteVm,
   executeTazListSnapshots,
@@ -18,6 +19,7 @@ import {
 import * as projectService from "../project-service.js";
 import * as docsService from "../docs-service.js";
 import * as recipesService from "../recipes-service.js";
+import * as trackerService from "../tracker-service.js";
 
 export const tools = {
   web_search: tool({
@@ -153,9 +155,17 @@ export const tools = {
   }),
   tazcloud_list_vms: tool({
     description:
-      "List all TazCloud VMs on the configured account. Read-only. Returns each VM's id, name, status, public IPv6, image, and size.",
+      "List all TazCloud VMs on the configured account. Read-only. Returns each VM's id, name, status, public IPv6, image, size, and — when a custom domain has been attached via ingress — the public domain and HTTPS URL.",
     inputSchema: z.object({}),
     execute: async () => executeTazListVms(),
+  }),
+  tazcloud_get_vm: tool({
+    description:
+      "Get full details for one TazCloud VM by id, including SSH endpoint and (if attached) the custom domain, public HTTPS URL, ingress status, and DNS action. Use this when you need to know the public domain associated with a VM.",
+    inputSchema: z.object({
+      vmId: z.string().describe("The TazCloud VM id (from tazcloud_list_vms)"),
+    }),
+    execute: async ({ vmId }) => executeTazGetVm(vmId),
   }),
   tazcloud_create_vm: tool({
     description:
@@ -328,6 +338,35 @@ export const tools = {
     execute: async ({ id }) => {
       await recipesService.deleteRecipe(id);
       return `Deleted recipe ${id}.`;
+    },
+  }),
+  tracker_create_issue: tool({
+    description:
+      "File a new tracker ticket (issue) in a project. Use this when the user asks to capture a bug, a TODO, or a follow-up they want tracked. Mirrors the MCP tracker_create_issue tool so the in-app chat can write tickets without going through Claude Code on the VPS. Defaults: status='todo', priority='none'. Returns the assigned identifier (e.g. #42).",
+    inputSchema: z.object({
+      projectId: z.string().describe("The project ID to file the ticket against (from assistant context)"),
+      title: z.string().describe("Short imperative-form summary, e.g. 'Fix login redirect on Safari'"),
+      description: z.string().optional().describe("Body of the ticket — context, repro steps, links. Markdown supported. Optional but recommended for non-trivial items."),
+      status: z.enum(["backlog", "todo", "in_progress", "in_review", "done", "cancelled"]).optional().describe("Initial status. Defaults to 'todo'."),
+      priority: z.enum(["none", "urgent", "high", "medium", "low"]).optional().describe("Initial priority. Defaults to 'none' — only set when the user signals urgency."),
+    }),
+    execute: async ({ projectId, title, description, status, priority }) => {
+      const project = await projectService.getById(projectId);
+      if (!project) return `Error: Project not found (id: ${projectId})`;
+      const trimmed = (title ?? "").trim();
+      if (!trimmed) return "Error: 'title' is required and must be a non-empty string.";
+      // "system" mirrors the userId convention used by the MCP tracker server's
+      // create / update / comment branches when the agent (not a human) is the author.
+      const created = await trackerService.createIssue("system", {
+        projectId,
+        title: trimmed,
+        description,
+        status,
+        priority,
+      });
+      return created
+        ? `Created issue #${created.identifier}: ${created.title}`
+        : "Failed to create issue.";
     },
   }),
 };
