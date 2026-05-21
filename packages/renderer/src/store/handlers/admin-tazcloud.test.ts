@@ -123,3 +123,24 @@ describe("admin:tazcloud:list:stale", () => {
     expect(loadAdminTazVms).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("admin:tazcloud:locked", () => {
+  it("toggles the locked flag in place when the VM is known", () => {
+    $admin.getValue().tazcloud.vms = [
+      { id: "vm-1", name: "a", locked: false } as never,
+      { id: "vm-2", name: "b", locked: true } as never,
+    ];
+
+    handlers["admin:tazcloud:locked"]({ vmId: "vm-1", locked: true });
+    expect($admin.getValue().tazcloud.vms[0].locked).toBe(true);
+
+    handlers["admin:tazcloud:locked"]({ vmId: "vm-2", locked: false });
+    expect($admin.getValue().tazcloud.vms[1].locked).toBe(false);
+  });
+
+  it("is a no-op when the vmId is not present", () => {
+    $admin.getValue().tazcloud.vms = [{ id: "vm-1", name: "a", locked: false } as never];
+    handlers["admin:tazcloud:locked"]({ vmId: "does-not-exist", locked: true });
+    expect($admin.getValue().tazcloud.vms[0].locked).toBe(false);
+  });
+});

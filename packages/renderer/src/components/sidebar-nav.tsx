@@ -48,6 +48,7 @@ export function SidebarNav() {
     : isTazcloud
       ? [
           ...baseNavItems.filter((item) => standardUserKeys.has(item.key)),
+          { key: "recipes" as NavKey, label: "Recipes", icon: ChefHat },
           { key: "clouds" as NavKey, label: "Clouds", icon: Cloud },
         ]
       : baseNavItems.filter((item) => standardUserKeys.has(item.key));

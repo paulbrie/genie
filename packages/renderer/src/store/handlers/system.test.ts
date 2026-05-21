@@ -83,10 +83,10 @@ describe("logs:sources", () => {
 });
 
 describe("error (manager-level sink)", () => {
-  it("logs to console.error", () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("logs to console.warn", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     handlers["error"]({ message: "unexpected websocket close" });
-    expect(errSpy).toHaveBeenCalledWith("Manager error:", "unexpected websocket close");
-    errSpy.mockRestore();
+    expect(warnSpy).toHaveBeenCalledWith("Manager error:", "unexpected websocket close");
+    warnSpy.mockRestore();
   });
 });

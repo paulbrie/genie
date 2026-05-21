@@ -151,9 +151,10 @@ export function HelpPanel() {
                 <h4 className="font-semibold text-text">tazcloud</h4>
               </div>
               <p className="text-subtext0 text-md">
-                Same access as <code className="text-mauve">user</code>, plus the
-                <strong className="text-text"> Clouds</strong> sidebar item — restricted to the
-                TazCloud tab. No DigitalOcean access and no admin privileges.
+                Same access as <code className="text-mauve">user</code>, plus
+                <strong className="text-text"> Recipes</strong> and the
+                <strong className="text-text"> Clouds</strong> sidebar item — Clouds is restricted to
+                the TazCloud tab. No DigitalOcean access and no admin privileges.
               </p>
             </div>
 
@@ -231,7 +232,7 @@ export function HelpPanel() {
                 <tr>
                   <td className="py-2 px-3 text-text">Sees Recipes in the sidebar</td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
-                  <td className="py-2 px-3 text-center"><DashIcon /></td>
+                  <td className="py-2 px-3 text-center"><CheckIcon /></td>
                   <td className="py-2 px-3 text-center"><DashIcon /></td>
                   <td className="py-2 px-3 text-center"><CheckIcon /></td>
                 </tr>

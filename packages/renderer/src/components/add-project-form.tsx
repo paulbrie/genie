@@ -172,9 +172,6 @@ export function AddProjectForm() {
                 </Select>
               </div>
             </div>
-            <p className="text-xs text-overlay0 italic">
-              TazCloud credentials must be set via TAZCLOUD_API_TOKEN and TAZCLOUD_SSH_PRIVATE_KEY env vars on the manager. Snapshots, base-image templates, and hibernation are not available for this provider.
-            </p>
           </>
         )}
         <div className="flex flex-col gap-1">

@@ -1,5 +1,6 @@
 import * as projectService from "../project-service.js";
 import { connectSsh } from "../vps/ssh-client.js";
+import { ensureTazcloudKeyOnDisk } from "../vps/tazcloud-provision.js";
 
 const MAX_OUTPUT_BYTES = 30_000;
 const HEAD_BYTES = 8_000;
@@ -65,6 +66,46 @@ export async function executeSshExec(
     if (output) {
       return truncateOutput(output) + `\n\n[Aborted: ${errMsg}]`;
     }
+    return `Error: ${errMsg}`;
+  } finally {
+    session.close();
+  }
+}
+
+/** Run an ssh command on a bare TazCloud VM (not attached to any project).
+ *  Used by the assistant when its pinned VM is an admin-only TazCloud VM —
+ *  there's no project.vpsInstances entry to look up, so we connect directly
+ *  with the TazCloud-managed SSH key. The caller has already resolved host
+ *  + sshUser at pin time. */
+export async function executeBareTazSshExec(
+  host: string,
+  sshUser: string,
+  command: string,
+  timeoutMs: number,
+): Promise<string> {
+  const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
+  if (!tazPrivateKey) {
+    return "Error: TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager — cannot ssh to a bare TazCloud VM.";
+  }
+  let session;
+  try {
+    session = await connectSsh(
+      { host, port: 22, username: sshUser, privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey) },
+      { timeoutMs: 30_000 },
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Error: Failed to connect to ${sshUser}@${host}: ${message}`;
+  }
+  let output = "";
+  try {
+    const result = await session.exec(command, (chunk) => {
+      output += chunk;
+    }, { timeoutMs, idleTimeoutMs: 90_000 });
+    return truncateOutput(result as string) || "(no output)";
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (output) return truncateOutput(output) + `\n\n[Aborted: ${errMsg}]`;
     return `Error: ${errMsg}`;
   } finally {
     session.close();

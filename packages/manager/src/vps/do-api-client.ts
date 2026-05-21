@@ -89,6 +89,10 @@ export interface DoApiClient {
   listAccountSnapshots(): Promise<DoSnapshot[]>;
   dropletAction(dropletId: number, type: string): Promise<DoAction>;
   renameDroplet(dropletId: number, name: string): Promise<DoAction>;
+  /** Resize a droplet to a new size slug. `disk: false` resizes CPU/RAM only
+   *  (reversible); `disk: true` also grows the disk (permanent). DO requires
+   *  the droplet to be powered off first — the caller must orchestrate that. */
+  resizeDroplet(dropletId: number, size: string, disk: boolean): Promise<DoAction>;
 }
 
 export function createDoClient(token: string): DoApiClient {
@@ -183,6 +187,14 @@ export function createDoClient(token: string): DoApiClient {
       const data = await doFetch(token, `/droplets/${dropletId}/actions`, {
         method: "POST",
         body: { type: "rename", name },
+      });
+      return data!.action as DoAction;
+    },
+
+    async resizeDroplet(dropletId: number, size: string, disk: boolean) {
+      const data = await doFetch(token, `/droplets/${dropletId}/actions`, {
+        method: "POST",
+        body: { type: "resize", size, disk },
       });
       return data!.action as DoAction;
     },

@@ -114,12 +114,21 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   "vps:attach-existing:error": { receive: "user" },
   "vps:attach-existing:ok": { receive: "user" },
 
-  // Impersonation lifecycle — gated to superadmins. Start/stop reuse the
-  // existing inline check on the *real* caller; ACL gates on the active role.
+  // Impersonation lifecycle.
+  // start: superadmin only — before impersonation begins, the active role IS the real superadmin.
+  // stop: any authenticated role — once impersonating, the active role becomes the *impersonated*
+  //       user's role (often "user"). The handler verifies state.impersonatedBy is set before doing
+  //       anything, so this gate just lets the message reach the handler.
   "admin:impersonate:start": { send: "superadmin", receive: "superadmin" },
-  "admin:impersonate:stop": { send: "superadmin", receive: "superadmin" },
-  "admin:impersonate:started": { receive: "user", notes: "active session is the impersonated user → user-level receive" },
-  "admin:impersonate:stopped": { receive: "user", notes: "same — confirmation that impersonation ended" },
+  "admin:impersonate:stop": { send: "user", receive: "user" },
+  "admin:impersonate:started": { receive: "user" },
+  "admin:impersonate:stopped": { receive: "user" },
+
+  // VM deletion lock: anyone with cloud-panel access (tazcloud+) can SET a lock,
+  // but only a superadmin can clear it. The delete handlers re-check the lock at
+  // runtime so a lower role can't unlock-then-delete in one round-trip.
+  "admin:droplets:unlock": { send: "superadmin", receive: "tazcloud" },
+  "admin:tazcloud:unlock": { send: "superadmin", receive: "tazcloud" },
 };
 
 /** Look up the effective ACL entry for a message type. Returns null when nothing matches and policy is deny-unknown. */

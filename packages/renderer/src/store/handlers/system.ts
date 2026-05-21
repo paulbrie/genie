@@ -50,6 +50,6 @@ export const handlers: HandlerMap = {
   },
 
   error: (payload) => {
-    console.error("Manager error:", payload.message);
+    console.warn("Manager error:", payload.message);
   },
 };

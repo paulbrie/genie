@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2 } from "lucide-react";
 import type { AdminDroplet } from "@/store/types";
 import { $admin, $auth, $projects } from "@/store/subjects";
-import { addSshTerminalTab, adminDropletExec, createAdminDroplet, loadAdminDropletStats, loadAdminDroplets, renameAdminDroplet, switchNav, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, adminDropletExec, createAdminDroplet, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { VpsFirewall } from "@/components/project-detail";
 import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
 import { AdminSystemPanel } from "@/components/admin-system-panel";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
+import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
 
 // Confirmation type for the inline delete UI on each row.
 type PendingDeleteId = number | null;
@@ -25,6 +26,9 @@ type PendingDeleteId = number | null;
 const REGIONS = ["nyc1", "nyc3", "sfo2", "sfo3", "ams3", "fra1", "lon1", "sgp1", "tor1", "blr1", "syd1"];
 const SIZES = ["s-1vcpu-1gb", "s-1vcpu-2gb", "s-2vcpu-2gb", "s-2vcpu-4gb", "s-4vcpu-8gb"];
 const IMAGES = ["ubuntu-22-04-x64", "ubuntu-24-04-x64", "debian-12-x64", "almalinux-9-x64"];
+// Slugs offered in the per-row resize form. DO rejects cross-family moves
+// (s-* ↔ c-* ↔ m-*) so we stick to the s-* tier here.
+const RESIZE_SIZES = ["s-1vcpu-1gb", "s-1vcpu-2gb", "s-2vcpu-2gb", "s-2vcpu-4gb", "s-4vcpu-8gb", "s-8vcpu-16gb"];
 
 function defaultDropletName(): string {
   const d = new Date();
@@ -60,6 +64,11 @@ export function DigitalOceanPanel() {
   const [dropletRegion, setDropletRegion] = useState("nyc1");
   const [dropletSize, setDropletSize] = useState("s-1vcpu-1gb");
   const [dropletImage, setDropletImage] = useState("ubuntu-22-04-x64");
+  // Per-row resize form state: dropletId → draft. `null` means the form is closed
+  // for that row. Disk-grow is opt-in (the default is reversible CPU/RAM only).
+  const [resizeDraftFor, setResizeDraftFor] = useState<number | null>(null);
+  const [resizeSize, setResizeSize] = useState<string>("");
+  const [resizeDisk, setResizeDisk] = useState(false);
 
   // Walk projects to find DO instances that have been hibernated. These don't
   // appear in DO's droplet list (no live droplet) — only in our DB as a snapshot ref.
@@ -237,6 +246,9 @@ export function DigitalOceanPanel() {
               const isPending = pendingDelete === d.id;
               const isRenaming = renamingId === d.id;
               const stats = dropletStats[d.id];
+              const resizeState = admin.dropletResize[d.id];
+              const resizing = !!resizeState && !resizeState.done && !resizeState.error;
+              const resizeFormOpen = resizeDraftFor === d.id;
               return (
                 <div key={d.id} className="bg-mantle rounded-lg px-3 py-2 border border-overlay0/10">
                   {isRenaming ? (
@@ -285,6 +297,14 @@ export function DigitalOceanPanel() {
                       )}
                     </span>
                     <span>ID: <span className="text-subtext0 font-mono">{String(d.id).slice(0, 8)}</span></span>
+                    {d.locked && (
+                      <span
+                        className="inline-flex items-center gap-1 text-red"
+                        title="Locked: typed-name confirmation required to delete; click the unlock icon to clear"
+                      >
+                        <Lock size={11} /> locked
+                      </span>
+                    )}
                     <div className="flex-1" />
                     {!isRenaming && (
                       <button
@@ -295,6 +315,50 @@ export function DigitalOceanPanel() {
                         <Pencil size={13} />
                       </button>
                     )}
+                    {d.locked ? (
+                      <button
+                        onClick={() => unlockAdminDroplet(d.id)}
+                        className="p-1 text-red hover:text-red/70 transition-colors"
+                        title="Unlock (allow deletion)"
+                      >
+                        <Unlock size={13} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => lockAdminDroplet(d.id)}
+                        className="p-1 text-overlay0 hover:text-red transition-colors"
+                        title="Lock this droplet to prevent accidental deletion"
+                      >
+                        <Lock size={13} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { if (d.ip) { startSecurityScan(d.ip); switchNav("security"); } }}
+                      disabled={!isActive || !d.ip}
+                      className="p-1 text-overlay0 hover:text-mauve transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={isActive && d.ip ? `Run security scan against ${d.ip}` : "Droplet is not active"}
+                    >
+                      <Shield size={13} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (resizeFormOpen) {
+                          setResizeDraftFor(null);
+                        } else {
+                          setResizeDraftFor(d.id);
+                          setResizeSize(d.size);
+                          setResizeDisk(false);
+                        }
+                      }}
+                      disabled={resizing}
+                      className={cn(
+                        "p-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                        resizeFormOpen ? "text-blue" : "text-overlay0 hover:text-blue",
+                      )}
+                      title={resizing ? "Resize in progress…" : "Resize droplet (powers off briefly)"}
+                    >
+                      <Maximize2 size={13} />
+                    </button>
                     <button
                       onClick={() => setManageExpanded(manageExpanded === d.id ? null : d.id)}
                       disabled={!isActive}
@@ -307,14 +371,72 @@ export function DigitalOceanPanel() {
                       <SettingsIcon size={13} />
                     </button>
                   </div>
-                  {isPending && (
-                    <div className="flex items-center gap-1.5 mt-2 px-2 py-1.5 rounded bg-red/10">
-                      <span className="text-md text-red">Delete this droplet?</span>
-                      <Button size="sm" variant="danger" onClick={() => { wsDeleteDroplet(d.id); setPendingDelete(null); }}>
-                        Confirm
-                      </Button>
-                      <Button size="sm" onClick={() => setPendingDelete(null)}>Cancel</Button>
+                  {resizeFormOpen && !resizing && (
+                    <div className="mt-2 border border-blue/30 rounded-md bg-mantle/60 px-3 py-2">
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-overlay0">New size</label>
+                          <Select value={resizeSize} onChange={(e) => setResizeSize(e.target.value)} className="py-1 text-md font-mono">
+                            {RESIZE_SIZES.map((s) => (
+                              <option key={s} value={s}>{s}{s === d.size ? " (current)" : ""}</option>
+                            ))}
+                          </Select>
+                        </div>
+                        <label className="flex items-center gap-1.5 text-md text-overlay1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={resizeDisk}
+                            onChange={(e) => setResizeDisk(e.target.checked)}
+                          />
+                          Grow disk (permanent)
+                        </label>
+                        <div className="flex-1" />
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          disabled={!resizeSize || resizeSize === d.size}
+                          onClick={() => {
+                            resizeAdminDroplet(d.id, resizeSize, resizeDisk);
+                            setResizeDraftFor(null);
+                          }}
+                        >
+                          Resize
+                        </Button>
+                        <Button size="sm" onClick={() => setResizeDraftFor(null)}>Cancel</Button>
+                      </div>
+                      <p className="mt-1.5 text-xs text-overlay0 italic">
+                        The droplet will be powered off, resized, and powered back on. CPU/RAM-only resizes are reversible; disk growth is permanent. Typically 2–5 minutes.
+                      </p>
                     </div>
+                  )}
+                  {resizeState && (
+                    <div className={cn(
+                      "mt-2 px-3 py-2 rounded-md text-md font-mono whitespace-pre-wrap",
+                      resizeState.error ? "bg-red/10 text-red border border-red/30"
+                        : resizeState.done ? "bg-green/10 text-green border border-green/30"
+                        : "bg-blue/10 text-blue border border-blue/30",
+                    )}>
+                      <div className="flex items-center gap-2 mb-1">
+                        {!resizeState.done && !resizeState.error && <Loader2 size={12} className="animate-spin" />}
+                        <span className="font-semibold">
+                          {resizeState.error ? `Resize failed: ${resizeState.error}`
+                            : resizeState.done ? `Resize complete → ${resizeState.targetSize}`
+                            : `Resizing → ${resizeState.targetSize}`}
+                        </span>
+                      </div>
+                      {resizeState.messages.slice(-4).map((m, i) => (
+                        <div key={i} className="text-overlay1 text-xs">{m}</div>
+                      ))}
+                    </div>
+                  )}
+                  {isPending && (
+                    <ServerDeleteConfirm
+                      name={d.name}
+                      locked={d.locked}
+                      canDeleteLocked={isSuperAdmin}
+                      onConfirm={() => { wsDeleteDroplet(d.id); setPendingDelete(null); }}
+                      onCancel={() => setPendingDelete(null)}
+                    />
                   )}
                   {manageExpanded === d.id && isActive && (
                     <div className="mt-3 border-t border-overlay0/10 pt-3">
@@ -387,8 +509,8 @@ export function DigitalOceanPanel() {
 }
 
 function ManageDropletInline({ droplet }: { droplet: AdminDroplet }) {
-  const exec = (command: string, onChunk?: (chunk: string) => void) =>
-    adminDropletExec(droplet.id, command, onChunk);
+  const exec = (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
+    adminDropletExec(droplet.id, command, onChunk, signal);
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-overlay0">

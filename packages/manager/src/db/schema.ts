@@ -382,3 +382,23 @@ export const cloudVmAliases = pgTable(
     index("idx_cloud_vm_aliases_lookup").on(table.provider, table.vmId),
   ]
 );
+
+/**
+ * Per-VM "deletion lock" — when a row exists for (provider, vmId), the VM is
+ * locked: only a superadmin may delete it, and the UI requires typed-name
+ * confirmation. Anyone with delete access can set a lock; only a superadmin can
+ * clear it. Default state is unlocked (no row).
+ */
+export const cloudVmLocks = pgTable(
+  "cloud_vm_locks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    provider: text("provider", { enum: ["digitalocean", "tazcloud"] }).notNull(),
+    vmId: text("vm_id").notNull(),
+    lockedBy: text("locked_by"),                    // user id of whoever set the lock; null if unknown
+    lockedAt: timestamp("locked_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_cloud_vm_locks_lookup").on(table.provider, table.vmId),
+  ]
+);

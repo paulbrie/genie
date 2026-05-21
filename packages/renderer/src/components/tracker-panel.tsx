@@ -6,7 +6,7 @@ import {
   Circle, CircleDot, CheckCircle2, XCircle,
   AlertTriangle, ChevronUp, Equal, ChevronDown, Minus,
   LayoutGrid, List, Plus, X, Filter, Search, Trash2, Tag,
-  GripVertical, Loader2, Send, MessageSquare,
+  GripVertical, Loader2, Send, MessageSquare, FolderKanban,
 } from "lucide-react";
 import type { ChatUser, ProjectDef, TrackerComment, TrackerFilters, TrackerGroupBy as TGroupBy, TrackerIssue, TrackerLabel, TrackerPriority, TrackerState, TrackerStatus, TrackerViewMode as TViewMode } from "@/store/types";
 import { $conversationChat, $projects, $tracker } from "@/store/subjects";
@@ -1160,17 +1160,23 @@ function TrackerToolbar({ tracker, projects }: { tracker: TrackerState; projects
         />
       </div>
       <div className="flex items-center gap-2 px-3 py-2 border-b border-surface0 shrink-0">
-        {/* Project selector */}
-        <InlineSelect
-          value={tracker.selectedProjectId || "__all__"}
-          options={["__all__", ...projects.map((p) => p.id)]}
-          onChange={(v) => setTrackerProject(v === "__all__" ? null : v)}
-          renderOption={(v) => {
-            if (v === "__all__") return <span className="text-text">All projects</span>;
-            const p = projects.find((pr) => pr.id === v);
-            return <span className="text-text">{p?.name || "Unknown"}</span>;
-          }}
-        />
+        {/* Project selector — only projects the user has rights to are shown ($projects is server-scoped) */}
+        <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface0/50">
+          <FolderKanban size={12} className="text-overlay0" />
+          <span className="text-md text-overlay0">Project:</span>
+          <InlineSelect
+            value={tracker.selectedProjectId || "__all__"}
+            options={["__all__", ...projects.map((p) => p.id)]}
+            onChange={(v) => setTrackerProject(v === "__all__" ? null : v)}
+            renderOption={(v) => {
+              if (v === "__all__") {
+                return <span className="text-text font-medium">All projects ({projects.length})</span>;
+              }
+              const p = projects.find((pr) => pr.id === v);
+              return <span className="text-text font-medium">{p?.name || "Unknown"}</span>;
+            }}
+          />
+        </div>
 
         {/* Group by */}
         <InlineSelect

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Database, Loader2, RefreshCw, Play, Save, Table2, SearchCode, File, X, Download, Trash2, HardDrive, Plus } from "lucide-react";
-import { wsRequest } from "@/lib/ws";
+import { wsRequest, wsSend } from "@/lib/ws";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 
@@ -104,6 +104,7 @@ export function DbExplorer({ project }: { project: DbExplorerProject }) {
           if (connRes.ok) {
             setTables(connRes.tables);
             setDbConnected(true);
+            if (url !== (project.dbUrl || "")) wsSend("project:dbUrl:set", { id: project.id, dbUrl: url });
             // Load database list in background
             wsRequest("vps:db:databases", { projectId: project.id, instanceId: inst.id, dbUrl: url }, 15000)
               .then((dbRes: any) => { if (dbRes.ok) setDatabases(dbRes.databases || []); })
@@ -133,12 +134,14 @@ export function DbExplorer({ project }: { project: DbExplorerProject }) {
     setConnectLoading(true);
     setConnectError(null);
     try {
-      const res = await wsRequest("vps:db:tables", { projectId: project.id, instanceId: inst.id, dbUrl: dbUrl.trim() }, 15000);
+      const trimmed = dbUrl.trim();
+      const res = await wsRequest("vps:db:tables", { projectId: project.id, instanceId: inst.id, dbUrl: trimmed }, 15000);
       if (res.ok) {
         setTables(res.tables);
         setDbConnected(true);
         setConnectError(null);
-        loadDatabases(dbUrl.trim());
+        if (trimmed !== (project.dbUrl || "")) wsSend("project:dbUrl:set", { id: project.id, dbUrl: trimmed });
+        loadDatabases(trimmed);
       } else {
         setConnectError(res.error);
       }
@@ -146,7 +149,7 @@ export function DbExplorer({ project }: { project: DbExplorerProject }) {
       setConnectError(err.message);
     }
     setConnectLoading(false);
-  }, [project.id, inst?.id, dbUrl, loadDatabases]);
+  }, [project.id, project.dbUrl, inst?.id, dbUrl, loadDatabases]);
 
   const dbUrlRef = useRef(dbUrl);
   dbUrlRef.current = dbUrl;

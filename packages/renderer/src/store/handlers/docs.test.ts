@@ -256,14 +256,14 @@ describe("docs:download:item", () => {
 
 describe("docs:error", () => {
   it("logs + clears both loading flags", () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     $docs.next({ ...FRESH, loading: true, downloadingZip: true });
 
     handlers["docs:error"]({ message: "permission denied" });
 
-    expect(errSpy).toHaveBeenCalledWith("Docs error:", "permission denied");
+    expect(warnSpy).toHaveBeenCalledWith("Docs error:", "permission denied");
     expect($docs.getValue().loading).toBe(false);
     expect($docs.getValue().downloadingZip).toBe(false);
-    errSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });

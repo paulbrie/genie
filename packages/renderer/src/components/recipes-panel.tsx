@@ -68,15 +68,16 @@ export function RecipesPanel() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [tab, setTab] = useState<"install" | "uninstall" | "check" | "setup">("install");
 
-  const isSuperAdmin = auth.user?.role === "superadmin";
+  const role = auth.user?.role;
+  const canAccess = role === "superadmin" || role === "tazcloud";
 
-  useEffect(() => { if (isSuperAdmin) loadRecipes(); }, [isSuperAdmin]);
+  useEffect(() => { if (canAccess) loadRecipes(); }, [canAccess]);
 
-  if (!isSuperAdmin) {
+  if (!canAccess) {
     return (
       <div className="flex-1 flex items-center justify-center text-overlay0">
         <div className="text-center">
-          <p className="text-base">Recipes admin is restricted to super admin users.</p>
+          <p className="text-base">Recipes admin is restricted to super admin and tazcloud users.</p>
           <button onClick={() => switchNav("projects")} className="mt-3 text-blue hover:underline text-md">Back to Projects</button>
         </div>
       </div>

@@ -135,14 +135,14 @@ describe("admin:sql", () => {
 
 describe("admin:error", () => {
   it("logs + clears loading", () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     $admin.getValue().loading = true;
 
     handlers["admin:error"]({ message: "table not found" });
 
-    expect(errSpy).toHaveBeenCalledWith("Admin error:", "table not found");
+    expect(warnSpy).toHaveBeenCalledWith("Admin error:", "table not found");
     expect($admin.getValue().loading).toBe(false);
-    errSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });
 

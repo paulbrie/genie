@@ -53,6 +53,16 @@ export async function deleteLabel(userId: string, labelId: string) {
 
 // --- Issues ---
 
+export async function getIssueProjectId(issueId: string): Promise<string | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ projectId: trackerIssues.projectId })
+    .from(trackerIssues)
+    .where(eq(trackerIssues.id, issueId))
+    .limit(1);
+  return row?.projectId ?? null;
+}
+
 async function getNextIdentifier(): Promise<number> {
   const db = getDb();
   const [row] = await db
@@ -153,9 +163,13 @@ function formatIssue(
   };
 }
 
-export async function listIssues() {
+export async function listIssues(allowedProjectIds?: string[]) {
+  // Caller passes the set of projects the user is allowed to see.
+  // Undefined = no scoping (admin / internal callers); [] = no access → no issues.
+  if (allowedProjectIds && allowedProjectIds.length === 0) return [];
+
   const db = getDb();
-  const rows = await db
+  const baseQuery = db
     .select({
       id: trackerIssues.id,
       projectId: trackerIssues.projectId,
@@ -173,8 +187,12 @@ export async function listIssues() {
       updatedAt: trackerIssues.updatedAt,
     })
     .from(trackerIssues)
-    .leftJoin(users, eq(trackerIssues.assigneeId, users.id))
-    .orderBy(desc(trackerIssues.createdAt));
+    .leftJoin(users, eq(trackerIssues.assigneeId, users.id));
+
+  const rows = await (allowedProjectIds
+    ? baseQuery.where(inArray(trackerIssues.projectId, allowedProjectIds))
+    : baseQuery
+  ).orderBy(desc(trackerIssues.createdAt));
 
   const issueIds = rows.map((r) => r.id);
   const [labelsMap, commentStatsMap] = await Promise.all([

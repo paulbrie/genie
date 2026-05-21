@@ -131,6 +131,46 @@ describe("adminTazcloudExec — concurrent execs", () => {
   });
 });
 
+describe("adminTazcloudExec — cancellation via AbortSignal", () => {
+  it("sends admin:exec:cancel when the signal aborts while in flight", async () => {
+    const controller = new AbortController();
+    const promise = adminTazcloudExec("vm-1", "ubuntu", "long-install", undefined, undefined, controller.signal);
+
+    // The initial exec call.
+    expect(wsSend).toHaveBeenNthCalledWith(1, "admin:tazcloud:exec", expect.objectContaining({ execId: "exec-1" }));
+
+    controller.abort();
+    expect(wsSend).toHaveBeenNthCalledWith(2, "admin:exec:cancel", { execId: "exec-1" });
+
+    // Manager replies with a cancellation result, which still resolves the promise.
+    handlers["admin:tazcloud:exec:result"]({ execId: "exec-1", output: "Cancelled", error: true });
+    await expect(promise).resolves.toEqual({ output: "Cancelled", error: true });
+  });
+
+  it("does not send a cancel after the result has already arrived", async () => {
+    const controller = new AbortController();
+    const promise = adminTazcloudExec("vm-1", "ubuntu", "fast", undefined, undefined, controller.signal);
+
+    handlers["admin:tazcloud:exec:result"]({ execId: "exec-1", output: "done", error: false });
+    await promise;
+
+    // Aborting after :result has arrived should be a no-op — the pending entry
+    // is already gone, so we mustn't send a stray cancel.
+    const beforeAbort = (wsSend as ReturnType<typeof vi.fn>).mock.calls.length;
+    controller.abort();
+    expect((wsSend as ReturnType<typeof vi.fn>).mock.calls.length).toBe(beforeAbort);
+  });
+
+  it("sends cancel immediately if the signal is already aborted at call time", () => {
+    const controller = new AbortController();
+    controller.abort();
+    adminTazcloudExec("vm-1", "ubuntu", "noop", undefined, undefined, controller.signal);
+
+    expect(wsSend).toHaveBeenCalledTimes(2);
+    expect(wsSend).toHaveBeenNthCalledWith(2, "admin:exec:cancel", { execId: "exec-1" });
+  });
+});
+
 describe("adminDropletExec — same flow, different message type", () => {
   it("sends admin:droplets:exec and resolves on the matching :result", async () => {
     const promise = adminDropletExec(42, "ls /");

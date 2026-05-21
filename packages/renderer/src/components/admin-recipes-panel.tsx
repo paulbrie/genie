@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { Package, Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers } from "lucide-react";
+import { Package, Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Square, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { VPS_RECIPES, BASH_HELPERS, type VpsRecipeDef } from "@/components/project-detail";
 import type { UserRecipe } from "@/store/types";
@@ -44,13 +44,15 @@ function useAllRecipes(): VpsRecipeDef[] {
   return [...builtins, ...userDefs];
 }
 
-/** Function-shaped SSH exec contract — same as VpsFirewall's. The optional
- *  `onChunk` callback receives stdout/stderr as the command runs so long-running
- *  installs (e.g. Postgres apt-install) can show live progress instead of an
- *  indefinite spinner. */
+/** Function-shaped SSH exec contract. `onChunk` streams stdout/stderr so long-
+ *  running installs show live progress. `signal` lets the caller abort an
+ *  in-flight command — the manager closes the SSH session and the promise
+ *  resolves with `error: true`. (VpsFirewall passes a simpler wrapper that
+ *  doesn't supply signal — it's optional here so both call shapes type-check.) */
 type ExecFn = (
   command: string,
   onChunk?: (chunk: string) => void,
+  signal?: AbortSignal,
 ) => Promise<{ output: string; error?: boolean }>;
 
 interface RecipeRuntimeState {
@@ -133,6 +135,10 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
   const limitedExec = limitedExecRef.current;
   const [states, setStates] = useState<Record<string, RecipeRuntimeState>>({});
   const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set());
+  // Per-recipe AbortController for in-flight install/runCmd. Kept in a ref so
+  // calling abort() from anywhere doesn't require a re-render — we only need
+  // the controller's identity, not React reactivity.
+  const abortersRef = useRef<Map<string, AbortController>>(new Map());
 
   // Per-recipe option selections (e.g. { postgres: { PG_VERSION: "16" } }).
   const [optionValues, setOptionValues] = useState<Record<string, Record<string, string>>>({});
@@ -201,6 +207,8 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
 
   async function install(recipe: VpsRecipeDef) {
     update(recipe.id, { running: true, error: null, output: "" });
+    const controller = new AbortController();
+    abortersRef.current.set(recipe.id, controller);
     const onChunk = (chunk: string) => {
       // Functional update so each chunk is appended to the latest state — using
       // the closure's `state` would lose chunks under bursty streams.
@@ -209,25 +217,44 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
         return { ...s, [recipe.id]: { ...prev, output: prev.output + chunk } };
       });
     };
-    const res = await limitedExec(buildInstallCommand(recipe), onChunk);
+    const res = await limitedExec(buildInstallCommand(recipe), onChunk, controller.signal);
+    abortersRef.current.delete(recipe.id);
+    const aborted = controller.signal.aborted;
     update(recipe.id, {
       running: false,
-      installed: !res.error,
+      // Don't claim "installed" on cancel — leave it unknown so the next Re-check
+      // can determine the real state (the install may have partly succeeded).
+      installed: aborted ? null : !res.error,
       output: res.output,
-      error: res.error ? res.output : null,
+      error: aborted ? "Cancelled" : (res.error ? res.output : null),
     });
   }
 
   async function runCmd(recipe: VpsRecipeDef, cmd: string) {
     update(recipe.id, { running: true, output: "" });
+    const controller = new AbortController();
+    abortersRef.current.set(recipe.id, controller);
     const onChunk = (chunk: string) => {
       setStates((s) => {
         const prev = s[recipe.id] ?? INIT;
         return { ...s, [recipe.id]: { ...prev, output: prev.output + chunk } };
       });
     };
-    const res = await limitedExec(cmd, onChunk);
-    update(recipe.id, { running: false, output: res.output, error: res.error ? res.output : null });
+    const res = await limitedExec(cmd, onChunk, controller.signal);
+    abortersRef.current.delete(recipe.id);
+    const aborted = controller.signal.aborted;
+    update(recipe.id, {
+      running: false,
+      output: res.output,
+      error: aborted ? "Cancelled" : (res.error ? res.output : null),
+    });
+  }
+
+  /** Stop an in-flight install / runCmd for one recipe. The promise still
+   *  resolves (with error: true) after the manager closes the SSH session,
+   *  which clears the running flag and shows the partial output. */
+  function stop(recipeId: string) {
+    abortersRef.current.get(recipeId)?.abort();
   }
 
   /** Trigger check on any recipe with unknown status, then fire installs for everything not installed. */
@@ -327,6 +354,15 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
                 </button>
                 <span className="text-md font-medium text-text">{recipe.label}</span>
                 {state.running && <Loader2 size={11} className="animate-spin text-blue" />}
+                {state.running && (
+                  <button
+                    onClick={() => stop(recipe.id)}
+                    className="text-md text-overlay0 hover:text-red transition-colors ml-2 flex items-center gap-1"
+                    title="Cancel this add-on operation"
+                  >
+                    <Square size={10} /> Stop
+                  </button>
+                )}
                 {state.installed && !state.running && (
                   <button
                     onClick={() => check(recipe)}

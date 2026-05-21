@@ -119,12 +119,12 @@ describe("tracker comments (event dispatch)", () => {
 
 describe("tracker:error", () => {
   it("logs + clears loading flag", () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     $tracker.getValue().loading = true as never;
     handlers["tracker:error"]({ message: "permission denied" });
 
-    expect(errSpy).toHaveBeenCalledWith("Tracker error:", "permission denied");
+    expect(warnSpy).toHaveBeenCalledWith("Tracker error:", "permission denied");
     expect($tracker.getValue().loading).toBe(false);
-    errSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });

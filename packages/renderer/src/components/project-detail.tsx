@@ -48,6 +48,7 @@ import {
   Sun,
   Cloud,
   Container,
+  Bug,
 } from "lucide-react";
 import { ChatView } from "@/components/chat-view";
 import { DbExplorer } from "@/components/db-explorer";
@@ -725,6 +726,17 @@ export interface VpsRecipeDef {
  *  must be escaped as `\${...}` here.
  */
 export const BASH_HELPERS = `log() { printf '[%s] %s\\n' "$(date '+%H:%M:%S')" "$*"; }
+# Make glibc prefer IPv4 over IPv6 for DNS resolution, plus export NODE_OPTIONS
+# for the current shell. TazCloud VMs have broken v6 routing to Cloudflare/Fastly
+# CDNs (registry.npmjs.org, apt.postgresql.org, etc.) — see taz-ipv6-quirk.
+# The gai.conf rule persists across the system; the env var covers the current
+# script (which runs in a non-login shell, so /etc/profile.d isn't sourced).
+force_ipv4_dns() {
+  if ! grep -qE "^precedence ::ffff:0:0/96\\s+100" /etc/gai.conf 2>/dev/null; then
+    echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf > /dev/null
+  fi
+  export NODE_OPTIONS="\${NODE_OPTIONS:+\$NODE_OPTIONS }--dns-result-order=ipv4first"
+}
 wait_apt() {
   local i=0
   local LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock"
@@ -770,15 +782,17 @@ export const VPS_RECIPES: VpsRecipeDef[] = [
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
 log "Installing Chrome dependencies..."
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq wget curl gnupg2 > /dev/null
+# ForceIPv4: apt iterates ALL configured sources during update; on Taz VMs the
+# v6 path to Fastly-fronted repos (apt.postgresql.org) stalls — see taz-ipv6-quirk.
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq wget curl gnupg2 > /dev/null
 log "Adding Chrome repository..."
-curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg 2>/dev/null
+curl -4 -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg 2>/dev/null
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null
 log "Refreshing package list (with new Chrome repo)..."
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
 log "Installing google-chrome-stable (download ~80MB, takes 1-2 min)..."
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq google-chrome-stable > /dev/null
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq google-chrome-stable > /dev/null
 log "Verifying..."
 google-chrome-stable --version
 log "Chrome installed successfully."`,
@@ -786,18 +800,18 @@ log "Chrome installed successfully."`,
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
 log "Removing Chrome..."
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 remove -y -qq google-chrome-stable > /dev/null 2>&1 || true
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq google-chrome-stable > /dev/null 2>&1 || true
 sudo rm -f /etc/apt/sources.list.d/google-chrome.list
 sudo rm -f /usr/share/keyrings/google-chrome.gpg
 log "Autoremove..."
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
 log "Chrome removed."`,
     setupShSnippet: `# Install Chrome
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq && apt-get install -y -qq wget gnupg2 > /dev/null
+apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq wget gnupg2 > /dev/null
 wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-apt-get update -qq && apt-get install -y -qq google-chrome-stable > /dev/null`,
+apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq google-chrome-stable > /dev/null`,
     commands: [
       { name: "Check version", command: "google-chrome-stable --version" },
       { name: "Launch headless", command: "google-chrome-stable --headless --no-sandbox --disable-gpu --remote-debugging-port=9222 &" },
@@ -821,23 +835,25 @@ PG_VERSION="\${PG_VERSION:-default}"
 log "Installing PostgreSQL (version: $PG_VERSION)..."
 if [ "$PG_VERSION" = "default" ]; then
   log "apt-get update..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
   log "apt-get install postgresql (this can take 1-2 min)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq postgresql postgresql-contrib > /dev/null
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq postgresql postgresql-contrib > /dev/null
   log "apt-get install done."
 else
   # Add PGDG repository to get specific PG versions (Ubuntu/Debian only).
+  # apt.postgresql.org and www.postgresql.org are Fastly-fronted; v6 egress to
+  # Fastly hangs from some VMs (e.g. TazCloud), so force IPv4 for these fetches.
   log "Installing prereqs (curl, ca-certificates, lsb-release)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates lsb-release > /dev/null
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates lsb-release > /dev/null
   log "Adding PGDG repository key + source..."
   sudo install -d /etc/apt/keyrings
-  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/keyrings/postgresql.asc > /dev/null
+  curl -4 -fsSL --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/keyrings/postgresql.asc > /dev/null
   CODENAME=$(lsb_release -cs)
   echo "deb [signed-by=/etc/apt/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt $CODENAME-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
   log "Codename: $CODENAME — apt-get update (refresh PGDG)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
   log "apt-get install postgresql-$PG_VERSION (can take 1-3 min)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq postgresql-$PG_VERSION postgresql-contrib-$PG_VERSION > /dev/null
+  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq postgresql-$PG_VERSION postgresql-contrib-$PG_VERSION > /dev/null
   log "apt-get install done."
 fi
 log "Starting PostgreSQL..."
@@ -890,13 +906,13 @@ ${BASH_HELPERS}
 log "Stopping PostgreSQL..."
 sudo service postgresql stop 2>/dev/null || true
 log "Removing PostgreSQL packages..."
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 remove -y -qq postgresql postgresql-contrib > /dev/null
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq postgresql postgresql-contrib > /dev/null
 log "Autoremove..."
-wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
 log "PostgreSQL removed."`,
     setupShSnippet: `# Install and start PostgreSQL
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq && apt-get install -y -qq postgresql postgresql-contrib > /dev/null
+apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq postgresql postgresql-contrib > /dev/null
 service postgresql start
 cd / && su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
     commands: [
@@ -1005,8 +1021,8 @@ ${BASH_HELPERS}
 if ! command -v docker >/dev/null 2>&1; then
   log "Docker not found — installing first..."
   if command -v apt-get >/dev/null 2>&1; then
-    wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
-    wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
   elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y -q docker docker-compose-plugin > /dev/null 2>&1 || sudo dnf install -y -q docker > /dev/null
   else
@@ -1092,9 +1108,9 @@ ${BASH_HELPERS}
 if command -v apt-get > /dev/null 2>&1; then
   log "Installing Docker via apt..."
   log "apt-get update..."
-  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
   log "apt-get install docker.io docker-compose-v2 (~250MB, 1-2 min)..."
-  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
 elif command -v dnf > /dev/null 2>&1; then
   log "Installing Docker via dnf..."
   sudo dnf install -y -q docker docker-compose-plugin > /dev/null 2>&1 || sudo dnf install -y -q docker > /dev/null
@@ -1113,9 +1129,9 @@ sudo systemctl stop docker > /dev/null 2>&1 || true
 sudo systemctl disable docker > /dev/null 2>&1 || true
 if command -v apt-get > /dev/null 2>&1; then
   log "apt-get remove docker.io docker-compose-v2..."
-  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 remove -y -qq docker.io docker-compose-v2 > /dev/null 2>&1 || true
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq docker.io docker-compose-v2 > /dev/null 2>&1 || true
   log "Autoremove..."
-  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
 elif command -v dnf > /dev/null 2>&1; then
   log "dnf remove docker docker-compose-plugin..."
   sudo dnf remove -y -q docker docker-compose-plugin > /dev/null 2>&1 || true
@@ -1124,7 +1140,7 @@ log "Docker removed."`,
     setupShSnippet: `# Install Docker
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get > /dev/null 2>&1; then
-  apt-get update -qq && apt-get install -y -qq docker.io docker-compose-v2 > /dev/null
+  apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io docker-compose-v2 > /dev/null
 elif command -v dnf > /dev/null 2>&1; then
   dnf install -y -q docker docker-compose-plugin > /dev/null
 fi
@@ -1143,6 +1159,64 @@ systemctl enable --now docker`,
       { name: "Compose: down", command: "cd /opt/project && sudo docker compose down" },
       { name: "Compose: ps", command: "cd /opt/project && sudo docker compose ps" },
       { name: "Compose: logs (tail 100)", command: "cd /opt/project && sudo docker compose logs --tail 100" },
+    ],
+  },
+  {
+    id: "rkhunter",
+    label: "rkhunter",
+    icon: Bug,
+    description: "Rootkit Hunter — scan for rootkits, backdoors, local exploits",
+    checkScript: `command -v rkhunter > /dev/null 2>&1 && echo "INSTALLED" || echo "NOT_INSTALLED"`,
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+if command -v apt-get > /dev/null 2>&1; then
+  log "Installing rkhunter via apt..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq rkhunter > /dev/null
+elif command -v dnf > /dev/null 2>&1; then
+  log "Installing rkhunter via dnf (requires EPEL on AlmaLinux/RHEL)..."
+  sudo dnf install -y -q epel-release > /dev/null 2>&1 || true
+  sudo dnf install -y -q rkhunter > /dev/null
+else
+  log "Unsupported package manager (need apt-get or dnf)"; exit 1
+fi
+log "Updating rkhunter signature database..."
+# --update fetches new rules; non-zero exit just means "no updates available", not failure.
+sudo rkhunter --update --nocolors 2>&1 | tail -20 || true
+log "Baselining file properties (rkhunter --propupd)..."
+# Without a baseline, every subsequent --check reports thousands of "file properties
+# changed" warnings. Running this once after install is the standard post-install step.
+sudo rkhunter --propupd --nocolors > /dev/null
+log "rkhunter installed: $(rkhunter --version 2>&1 | head -1)"`,
+    uninstallScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+if command -v apt-get > /dev/null 2>&1; then
+  log "apt-get remove rkhunter..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq rkhunter > /dev/null 2>&1 || true
+  log "Autoremove..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+elif command -v dnf > /dev/null 2>&1; then
+  log "dnf remove rkhunter..."
+  sudo dnf remove -y -q rkhunter > /dev/null 2>&1 || true
+fi
+log "Removing rkhunter data dirs..."
+sudo rm -rf /var/lib/rkhunter /var/log/rkhunter.log /etc/rkhunter.conf 2>/dev/null || true
+log "rkhunter removed."`,
+    setupShSnippet: `# Install rkhunter
+export DEBIAN_FRONTEND=noninteractive
+apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq rkhunter > /dev/null
+rkhunter --update --nocolors 2>&1 | tail -5 || true
+rkhunter --propupd --nocolors > /dev/null`,
+    commands: [
+      { name: "Version", command: "rkhunter --version | head -1" },
+      { name: "Full check (skip keypress prompts)", command: "sudo rkhunter --check --sk" },
+      { name: "Rootkits only", command: "sudo rkhunter --check --sk --enable rootkits" },
+      { name: "Update signatures", command: "sudo rkhunter --update --nocolors" },
+      { name: "Re-baseline file properties", command: "sudo rkhunter --propupd --nocolors" },
+      { name: "Show last warnings", command: "sudo grep -E 'Warning|Found' /var/log/rkhunter.log | tail -50" },
+      { name: "List installed tests", command: "rkhunter --list tests" },
     ],
   },
 ];
@@ -1599,7 +1673,8 @@ type VpsExecFn = (command: string) => Promise<{ output: string; error?: boolean 
 export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
   const [rules, setRules] = useState<UfwRule[]>([]);
   const [active, setActive] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addForm, setAddForm] = useState<RuleForm>(EMPTY_RULE_FORM);
@@ -1607,19 +1682,18 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
   const [editForm, setEditForm] = useState<RuleForm>(EMPTY_RULE_FORM);
 
   const fetchStatus = useCallback(async () => {
-    setLoading(true);
+    setRefreshing(true);
     setError(null);
     try {
       const res = await exec("sudo ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
       if (res.error || res.output.includes("UFW_NOT_INSTALLED")) {
         setActive(false);
         setRules([]);
-        setLoading(false);
         return;
       }
       const lines = res.output.split("\n");
       const statusLine = lines.find((l) => l.startsWith("Status:"));
-      setActive(statusLine?.includes("active") ?? false);
+      setActive(/\bactive\b/.test(statusLine ?? ""));
 
       const parsed: UfwRule[] = [];
       for (const line of lines) {
@@ -1631,8 +1705,10 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
       setRules(parsed);
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setRefreshing(false);
+      setInitialLoading(false);
     }
-    setLoading(false);
   }, [exec]);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
@@ -1719,13 +1795,13 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
           "text-[11px] px-1.5 py-0.5 rounded font-medium",
           active ? "bg-green/15 text-green" : "bg-overlay0/15 text-overlay0"
         )}>
-          {loading ? "..." : active ? "Active" : "Inactive"}
+          {initialLoading ? "..." : active ? "Active" : "Inactive"}
         </span>
         <div className="flex-1" />
-        {!loading && (
+        {!initialLoading && (
           <button
             onClick={active ? disableFirewall : enableFirewall}
-            disabled={actionLoading}
+            disabled={actionLoading || refreshing}
             className={cn(
               "text-md px-2 py-0.5 rounded transition-colors",
               active ? "text-red hover:bg-red/10" : "text-green hover:bg-green/10"
@@ -1734,8 +1810,8 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
             {actionLoading ? "..." : active ? "Disable" : "Enable"}
           </button>
         )}
-        <button onClick={fetchStatus} disabled={loading} className="text-overlay0 hover:text-text transition-colors p-0.5">
-          <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+        <button onClick={fetchStatus} disabled={refreshing} className="text-overlay0 hover:text-text transition-colors p-0.5">
+          <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
         </button>
       </div>
 
@@ -1785,7 +1861,7 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
         </div>
       )}
 
-      {active && rules.length === 0 && !loading && (
+      {active && rules.length === 0 && !initialLoading && (
         <div className="text-md text-overlay0 mb-2">No rules — all incoming connections denied.</div>
       )}
 

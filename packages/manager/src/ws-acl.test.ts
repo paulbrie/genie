@@ -134,6 +134,31 @@ describe("ws-acl", () => {
       expect(canSend("admin", "admin:impersonate:start")).toBe(false);
       expect(canSend("superadmin", "admin:impersonate:start")).toBe(true);
     });
+
+    it("admin:impersonate:stop is sendable by any role (handler verifies impersonation state)", () => {
+      // While impersonating, the active state.role is the *impersonated* user's role.
+      // Often "user". The ACL must allow the stop message through so the user can exit.
+      expect(canSend("user", "admin:impersonate:stop")).toBe(true);
+      expect(canSend("tazcloud", "admin:impersonate:stop")).toBe(true);
+      expect(canSend("admin", "admin:impersonate:stop")).toBe(true);
+      expect(canSend("superadmin", "admin:impersonate:stop")).toBe(true);
+    });
+
+    it("lock can be set by tazcloud+; unlock requires superadmin", () => {
+      // SET lock — tazcloud and above (namespace default)
+      expect(canSend("user", "admin:droplets:lock")).toBe(false);
+      expect(canSend("tazcloud", "admin:droplets:lock")).toBe(true);
+      expect(canSend("tazcloud", "admin:tazcloud:lock")).toBe(true);
+      // CLEAR lock — superadmin only
+      expect(canSend("tazcloud", "admin:droplets:unlock")).toBe(false);
+      expect(canSend("admin", "admin:droplets:unlock")).toBe(false);
+      expect(canSend("superadmin", "admin:droplets:unlock")).toBe(true);
+      expect(canSend("tazcloud", "admin:tazcloud:unlock")).toBe(false);
+      expect(canSend("superadmin", "admin:tazcloud:unlock")).toBe(true);
+      // Lock-state broadcasts still reach the tazcloud-role recipients that see the panels
+      expect(canReceive("tazcloud", "admin:droplets:locked")).toBe(true);
+      expect(canReceive("tazcloud", "admin:tazcloud:locked")).toBe(true);
+    });
   });
 
   describe("filterRecipients-like usage", () => {

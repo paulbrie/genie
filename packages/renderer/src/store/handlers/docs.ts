@@ -144,7 +144,7 @@ export const handlers: HandlerMap = {
   },
 
   "docs:error": (payload) => {
-    console.error("Docs error:", payload.message);
+    console.warn("Docs error:", payload.message);
     $docs.nextAssign({ loading: false, downloadingZip: false });
   },
 };

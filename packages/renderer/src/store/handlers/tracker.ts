@@ -45,7 +45,7 @@ export const handlers: HandlerMap = {
   },
 
   "tracker:error": (payload) => {
-    console.error("Tracker error:", payload.message);
+    console.warn("Tracker error:", payload.message);
     $tracker.nextAssign({ loading: false });
   },
 };

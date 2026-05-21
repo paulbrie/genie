@@ -107,7 +107,12 @@ function makeSession(conn: Client): SshSession {
           stream.on("close", (code: number) => {
             settle(() => {
               if (code !== 0) {
-                rej(new Error(`Command exited with code ${code}: ${output.slice(0, 500)}`));
+                // Tail rather than head — for install scripts, the actionable error
+                // (npm ERR!, apt failure, "complete log can be found in: …") lives at
+                // the bottom of the output, not the top. 8 KiB is enough to capture
+                // a multi-line npm error block plus the log-file path.
+                const tail = output.length > 8192 ? "…[truncated]…\n" + output.slice(-8192) : output;
+                rej(new Error(`Command exited with code ${code}:\n${tail}`));
               } else {
                 res(output);
               }

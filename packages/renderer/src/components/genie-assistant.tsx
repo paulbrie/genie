@@ -7,9 +7,11 @@ import { Bot, Send, Square, X, Minus, Maximize2, Minimize2, Pin, PinOff, Chevron
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AuthUser, ChatMessage, FloatingWindowState, NavKey, PinnedAssistantVm, ProjectDef, StreamingStep, ToolUse } from "@/store/types";
-import { $activeNav, $auth, $chat, $fileEditor, $pinnedAssistantVm, $projects, $selectedProjectId, $terminal, $windowManager } from "@/store/subjects";
+import { $activeNav, $admin, $auth, $chat, $fileEditor, $pinnedAssistantVm, $projects, $selectedProjectId, $terminal, $windowManager } from "@/store/subjects";
+import { useDeepSubjectAll } from "@/lib/hooks";
+import type { AdminTazVm } from "@/store/types";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, closeWindow, focusWindow, minimizeWindow, openWindow, registerWindow, resetChat, sendChatMessage, setChatModel, setPinnedAssistantVm, stopChat, updateWindowPosition } from "@/store/actions";
+import { CHAT_MODELS, closeWindow, focusWindow, loadAdminTazVms, minimizeWindow, openWindow, registerWindow, resetChat, sendChatMessage, setChatModel, setPinnedAssistantVm, stopChat, updateWindowPosition } from "@/store/actions";
 import { wsSend } from "@/lib/ws";
 import { Play } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -199,10 +201,23 @@ const assistantMarkdownComponents = {
 
 // --- Pin VM picker ---
 
-/** Flatten all projects' VPS instances into a pickable list. Cloud VMs that
- *  aren't attached to any project can't be ssh_exec'd by the assistant (the
- *  tool requires a projectId), so we only list project-attached instances. */
-function getPinCandidates(projects: ProjectDef[]): PinnedAssistantVm[] {
+/** TazCloud's per-image default user (matches imageDefaultUser in tazcloud-panel.tsx).
+ *  Used for bare-VM pins where there's no project.vpsInstance carrying a username. */
+function tazImageDefaultUser(image?: string): string {
+  switch (image) {
+    case "ubuntu-22":
+    case "ubuntu-24": return "ubuntu";
+    case "debian-12": return "debian";
+    case "almalinux-9": return "almalinux";
+    default: return "ubuntu";
+  }
+}
+
+/** Flatten all projects' VPS instances into a pickable list, then append any
+ *  admin-only TazCloud VMs that aren't attached to a project. For tazcloud
+ *  admins this surfaces bare VMs ("databases", etc.) that would otherwise be
+ *  invisible to the assistant; the manager routes those via TAZCLOUD_SSH_PRIVATE_KEY. */
+function getPinCandidates(projects: ProjectDef[], adminTazVms: AdminTazVm[]): PinnedAssistantVm[] {
   const out: PinnedAssistantVm[] = [];
   for (const p of projects) {
     for (const inst of p.vpsInstances ?? []) {
@@ -221,14 +236,42 @@ function getPinCandidates(projects: ProjectDef[]): PinnedAssistantVm[] {
       });
     }
   }
+  // Append bare admin TazCloud VMs (no project link). Skipped silently when the
+  // user isn't a tazcloud admin — $admin.tazcloud.vms is empty in that case.
+  for (const vm of adminTazVms) {
+    if (vm.projectId) continue;  // already represented above via the project
+    if (!vm.ipv6) continue;       // can't connect without a host
+    out.push({
+      projectId: null,
+      projectName: null,
+      instanceId: vm.id,
+      label: vm.name,
+      host: vm.ipv6,
+      provider: "tazcloud",
+      sshUser: tazImageDefaultUser(vm.image),
+    });
+  }
   return out;
 }
 
 function PinPicker() {
   const [pin] = useSubject($pinnedAssistantVm);
   const [projects] = useSubject($projects);
+  const [auth] = useSubject($auth);
+  const admin = useDeepSubjectAll($admin);
   const [open, setOpen] = useState(false);
-  const candidates = getPinCandidates(projects);
+  const candidates = getPinCandidates(projects, admin.tazcloud.vms);
+
+  // Lazy-load the admin TazCloud VM list when the picker opens. Bare cloud VMs
+  // ("databases" et al.) only appear here once that list is populated, and the
+  // tazcloud panel may not have been visited this session. Non-admins get an
+  // empty list back (the server gates it) so this is safe to fire for anyone.
+  const canSeeAdminTaz = auth.user?.role === "superadmin" || auth.user?.role === "tazcloud";
+  useEffect(() => {
+    if (open && canSeeAdminTaz && admin.tazcloud.vms.length === 0 && !admin.tazcloud.loading) {
+      loadAdminTazVms();
+    }
+  }, [open, canSeeAdminTaz, admin.tazcloud.vms.length, admin.tazcloud.loading]);
 
   return (
     <div className="relative">

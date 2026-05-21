@@ -167,3 +167,32 @@ describe("admin:droplets:list:stale", () => {
     expect(loadAdminDroplets).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("admin:droplets:locked", () => {
+  it("toggles the locked flag in place when the droplet is known", () => {
+    $admin.getValue().droplets = [
+      { id: 1, name: "a", locked: false } as never,
+      { id: 2, name: "b", locked: true } as never,
+    ];
+
+    handlers["admin:droplets:locked"]({ dropletId: 1, locked: true });
+    expect($admin.getValue().droplets[0].locked).toBe(true);
+
+    handlers["admin:droplets:locked"]({ dropletId: 2, locked: false });
+    expect($admin.getValue().droplets[1].locked).toBe(false);
+  });
+
+  it("is a no-op when the dropletId is not present", () => {
+    $admin.getValue().droplets = [{ id: 1, name: "a", locked: false } as never];
+    handlers["admin:droplets:locked"]({ dropletId: 999, locked: true });
+    expect($admin.getValue().droplets[0].locked).toBe(false);
+  });
+
+  it("list response carries the locked flag through", () => {
+    handlers["admin:droplets:list"]({
+      droplets: [{ id: 7, name: "L", status: "active", networks: { v4: [] }, locked: true }],
+      projectMap: {},
+    });
+    expect($admin.getValue().droplets[0].locked).toBe(true);
+  });
+});

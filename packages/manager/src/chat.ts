@@ -4,20 +4,23 @@ import { createFireworks } from "@ai-sdk/fireworks";
 import { z } from "zod";
 import { getCachedProcesses, getCachedDockerInfo } from "./monitor.js";
 import { tools } from "./tools/index.js";
-import { executeSshExec } from "./tools/ssh-exec.js";
+import { executeSshExec, executeBareTazSshExec } from "./tools/ssh-exec.js";
 import type { DomAction, DomActionExecutor } from "./types.js";
 
 /** Set by the renderer's pin selector. When present, all assistant ssh_exec
- *  calls are forced onto this (projectId, instanceId) pair — the LLM cannot
- *  pick a different VM, and the tool description hides the instance/project
- *  args entirely so it never even tries. */
+ *  calls are forced onto this VM — the LLM cannot pick a different VM, and
+ *  the tool description hides the instance/project args entirely so it never
+ *  even tries. `projectId === null` means a bare cloud VM (TazCloud admin pin):
+ *  ssh_exec is routed via TAZCLOUD_SSH_PRIVATE_KEY instead of project lookup. */
 export interface PinnedAssistantVm {
-  projectId: string;
-  projectName: string;
+  projectId: string | null;
+  projectName: string | null;
   instanceId: string;
   label: string;
   host: string;
   provider: "digitalocean" | "tazcloud" | "other";
+  /** SSH user for bare pins (ignored when projectId is set). */
+  sshUser?: string;
 }
 
 export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "kimi-k2" | "kimi-k2.6";
@@ -204,10 +207,11 @@ export async function handleChat(
     // in here so the LLM cannot route to a different VM even if its context
     // suggests otherwise.
     if (pinnedVm) {
+      const bare = pinnedVm.projectId === null;
       allTools.ssh_exec = tool({
         description:
           `Run a shell command on the pinned VPS instance "${pinnedVm.label}" `
-          + `(host ${pinnedVm.host}, project "${pinnedVm.projectName}"). `
+          + `(host ${pinnedVm.host}${bare ? "" : `, project "${pinnedVm.projectName}"`}). `
           + `The target is fixed — you only choose the command. `
           + `For long-running tasks (>10 min), suggest nohup or screen/tmux.`,
         inputSchema: z.object({
@@ -216,7 +220,14 @@ export async function handleChat(
         }),
         execute: async ({ command, timeoutSeconds }) => {
           const timeout = Math.min(Math.max((timeoutSeconds ?? 120), 5), 600) * 1000;
-          return executeSshExec(pinnedVm.projectId, pinnedVm.instanceId, command, timeout);
+          if (bare) {
+            // Project-less pin → must be a tazcloud admin pin; route via TAZCLOUD_SSH_PRIVATE_KEY.
+            if (pinnedVm.provider !== "tazcloud") {
+              return `Error: bare ssh_exec pins are only supported for tazcloud VMs (got provider="${pinnedVm.provider}").`;
+            }
+            return executeBareTazSshExec(pinnedVm.host, pinnedVm.sshUser || "ubuntu", command, timeout);
+          }
+          return executeSshExec(pinnedVm.projectId!, pinnedVm.instanceId, command, timeout);
         },
       });
     }

@@ -83,17 +83,27 @@ export interface ChatState {
 }
 
 /** A VM the assistant should pin its `ssh_exec` tool calls to. Selected from
- *  the renderer's project list (only project-attached VMs are pickable —
- *  ssh_exec requires a projectId). Persists across reloads via localStorage. */
+ *  the renderer's project list (project-attached VMs) or — for tazcloud admins —
+ *  from the bare admin TazCloud VM list. `projectId` is null in the bare case;
+ *  the manager then routes ssh_exec via TAZCLOUD_SSH_PRIVATE_KEY directly
+ *  instead of looking up an instance in projectService. Persists across reloads
+ *  via localStorage. */
 export interface PinnedAssistantVm {
-  projectId: string;
-  projectName: string;
+  /** Null when this pin points at a bare cloud VM not attached to any project. */
+  projectId: string | null;
+  projectName: string | null;
+  /** Project-instance id when projectId is set; otherwise the cloud VM id (e.g. TazCloud vmId). */
   instanceId: string;
-  /** Human display label (typically `${project.name} / ${instance.label}`). */
+  /** Human display label (typically `${project.name} / ${instance.label}` for attached VMs,
+   *  or just the VM name for bare admin pins). */
   label: string;
   /** Connection host — IPv4 for DO, IPv6 for TazCloud. Surfaced in the banner. */
   host: string;
   provider: "digitalocean" | "tazcloud" | "other";
+  /** SSH user the manager should connect as for bare pins (where there's no
+   *  project instance carrying a `connection.username`). Ignored when projectId
+   *  is set. */
+  sshUser?: string;
 }
 
 // --- Conversation chat types ---
