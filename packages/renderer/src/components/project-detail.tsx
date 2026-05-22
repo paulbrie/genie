@@ -49,6 +49,8 @@ import {
   Cloud,
   Container,
   Bug,
+  KeyRound,
+  Sparkles,
 } from "lucide-react";
 import { ChatView } from "@/components/chat-view";
 import { DbExplorer } from "@/components/db-explorer";
@@ -772,6 +774,108 @@ wait_apt() {
 
 export const VPS_RECIPES: VpsRecipeDef[] = [
   {
+    id: "genie-standard",
+    label: "Genie Standard Setup",
+    icon: Sparkles,
+    description: "Baseline Genie expects on every VPS: Docker + compose, Node.js 20, Claude Code, /opt/project owned by current user, docker group membership.",
+    // NOTE: we intentionally do NOT verify docker-group membership here.
+    // `usermod -aG docker` only takes effect on the user's NEXT login, and
+    // even a fresh SSH session can hold a stale group list (NSS cache,
+    // systemd-logind, sshd PAM session reuse). That made the button report
+    // NOT_INSTALLED for the first page load after a successful install,
+    // which is exactly the bug "Genie button not active even though Genie
+    // Standard Setup has been done". The docker group is a UX nicety (run
+    // `docker` without sudo), not a marker of "is the recipe installed".
+    checkScript: `if command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "$(whoami)" ]; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+log "Applying Genie standard setup (Docker, Node 20, Claude Code, /opt/project)..."
+if command -v apt-get > /dev/null 2>&1; then
+  log "apt-get update..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+  log "apt-get install docker.io git curl ca-certificates..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates > /dev/null
+  if ! command -v node > /dev/null 2>&1; then
+    log "Adding NodeSource repo and installing Node.js 20..."
+    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null
+  fi
+elif command -v dnf > /dev/null 2>&1; then
+  log "dnf install docker git curl..."
+  sudo dnf install -y -q docker git curl > /dev/null
+  if ! command -v node > /dev/null 2>&1; then
+    log "Adding NodeSource repo and installing Node.js 20..."
+    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1
+    sudo dnf install -y -q nodejs > /dev/null
+  fi
+else
+  log "Unsupported package manager (need apt-get or dnf)"; exit 1
+fi
+log "Enabling and starting docker..."
+sudo systemctl enable --now docker > /dev/null 2>&1 || true
+# Docker Compose v2 is shipped by Ubuntu only on 24.04+, and the package name
+# varies across distros (docker-compose-v2 / docker-compose-plugin / absent).
+# Drop the CLI plugin binary directly from the official GitHub release — works
+# on any apt or dnf distro and any arch we'd realistically see. Force IPv4 for
+# Taz VMs (Fastly-fronted CDN is v6-flaky).
+if ! docker compose version > /dev/null 2>&1; then
+  COMPOSE_VER=v2.29.7
+  ARCH=$(uname -m)
+  log "Installing Docker Compose $COMPOSE_VER for $ARCH from GitHub..."
+  sudo mkdir -p /usr/local/lib/docker/cli-plugins
+  sudo curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \\
+    "https://github.com/docker/compose/releases/download/$\{COMPOSE_VER}/docker-compose-linux-$\{ARCH}"
+  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+fi
+# Same v4 + retry workaround as the standalone claude-code recipe — registry.npmjs.org
+# is Fastly-fronted and v6-broken from some Taz VMs.
+log "Installing Claude Code globally (npm install -g @anthropic-ai/claude-code)..."
+sudo -E NODE_OPTIONS="--dns-result-order=ipv4first" \\
+  npm install -g \\
+    --no-audit --no-fund \\
+    --fetch-retries=2 --fetch-retry-mintimeout=5000 \\
+    @anthropic-ai/claude-code 2>&1 | tail -10
+log "Ensuring /opt/project exists and is owned by current user..."
+sudo mkdir -p /opt/project
+sudo chown -R "$(id -un):$(id -gn)" /opt/project
+log "Adding $(whoami) to docker group (no-op if already there)..."
+sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
+log "Versions:"
+log "  Docker:  $(docker --version 2>/dev/null || echo MISSING)"
+log "  Node:    $(node --version 2>/dev/null || echo MISSING)"
+log "  Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"
+log "Genie standard setup complete."
+log "Note: @genie/vps-agent is uploaded on-demand by the manager — not installed here."`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Removing Claude Code (user-facing global)..."
+sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
+rm -rf "$HOME/.claude" 2>/dev/null || true
+log "Note: Docker, Node.js, and /opt/project are left in place — uninstall those individually if needed."
+log "Done."`,
+    setupShSnippet: `# Genie standard setup: Docker, Node 20, Claude Code, /opt/project
+export DEBIAN_FRONTEND=noninteractive
+apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io git curl ca-certificates > /dev/null
+# Docker Compose v2 from GitHub release (apt has no consistent package across distros)
+COMPOSE_VER=v2.29.7; ARCH=$(uname -m); mkdir -p /usr/local/lib/docker/cli-plugins
+curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose "https://github.com/docker/compose/releases/download/$\{COMPOSE_VER}/docker-compose-linux-$\{ARCH}"
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+curl -4 -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
+apt-get -o Acquire::ForceIPv4=true install -y -qq nodejs > /dev/null
+systemctl enable --now docker
+NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g --no-audit --no-fund @anthropic-ai/claude-code
+mkdir -p /opt/project && chown -R "$(id -un):$(id -gn)" /opt/project
+usermod -aG docker "$(id -un)" || true`,
+    commands: [
+      { name: "Versions (all)", command: `echo "Docker:  $(docker --version 2>/dev/null || echo MISSING)"; echo "Node:    $(node --version 2>/dev/null || echo MISSING)"; echo "npm:     $(npm --version 2>/dev/null || echo MISSING)"; echo "Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"; echo "Agent:   $(command -v genie-agent 2>/dev/null || echo MISSING)"` },
+      { name: "Verify /opt/project ownership", command: "ls -ld /opt/project" },
+      { name: "Verify user in docker group", command: `id -nG | tr ' ' '\\n' | grep -qx docker && echo "OK: $(whoami) is in docker group" || echo "NOT in docker group — log out + back in after install"` },
+      { name: "Re-run setup (idempotent)", command: `sudo -E NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g --no-audit --no-fund @anthropic-ai/claude-code 2>&1 | tail -5` },
+      { name: "Docker info", command: "docker info 2>&1 | head -20" },
+    ],
+  },
+  {
     id: "chrome",
     label: "Chrome",
     icon: Globe,
@@ -1022,14 +1126,22 @@ if ! command -v docker >/dev/null 2>&1; then
   log "Docker not found — installing first..."
   if command -v apt-get >/dev/null 2>&1; then
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
-    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io curl ca-certificates > /dev/null
   elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y -q docker docker-compose-plugin > /dev/null 2>&1 || sudo dnf install -y -q docker > /dev/null
+    sudo dnf install -y -q docker curl > /dev/null
   else
     log "Unsupported package manager (need apt-get or dnf)"; exit 1
   fi
   sudo systemctl enable --now docker > /dev/null 2>&1
   sudo usermod -aG docker "$USER" 2>/dev/null || true
+  # Cross-distro Compose v2 from official GitHub release.
+  if ! docker compose version >/dev/null 2>&1; then
+    COMPOSE_VER=v2.29.7; ARCH=$(uname -m)
+    sudo mkdir -p /usr/local/lib/docker/cli-plugins
+    sudo curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \\
+      "https://github.com/docker/compose/releases/download/$\{COMPOSE_VER}/docker-compose-linux-$\{ARCH}"
+    sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+  fi
   log "Docker installed: $(docker --version)"
 fi
 log "Pulling Business Central image — ~5GB, takes several minutes..."
@@ -1109,18 +1221,32 @@ if command -v apt-get > /dev/null 2>&1; then
   log "Installing Docker via apt..."
   log "apt-get update..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
-  log "apt-get install docker.io docker-compose-v2 (~250MB, 1-2 min)..."
-  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 > /dev/null
+  log "apt-get install docker.io (~250MB, 1-2 min)..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io curl ca-certificates > /dev/null
 elif command -v dnf > /dev/null 2>&1; then
   log "Installing Docker via dnf..."
-  sudo dnf install -y -q docker docker-compose-plugin > /dev/null 2>&1 || sudo dnf install -y -q docker > /dev/null
+  sudo dnf install -y -q docker curl > /dev/null
 else
   log "Unsupported package manager (need apt-get or dnf)"; exit 1
 fi
 log "Enabling and starting docker service..."
 sudo systemctl enable --now docker > /dev/null 2>&1
 sudo usermod -aG docker "$USER" 2>/dev/null || true
-log "Docker installed: $(docker --version)"`,
+# Docker Compose v2 from GitHub release — package name is inconsistent across
+# distros (docker-compose-v2 on Ubuntu 24.04+, docker-compose-plugin on
+# docker-ce repos, absent on stock Ubuntu 22.04 / Debian 12). The plugin
+# binary works on any distro and survives apt-get upgrades.
+if ! docker compose version > /dev/null 2>&1; then
+  COMPOSE_VER=v2.29.7
+  ARCH=$(uname -m)
+  log "Installing Docker Compose $COMPOSE_VER for $ARCH from GitHub..."
+  sudo mkdir -p /usr/local/lib/docker/cli-plugins
+  sudo curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \\
+    "https://github.com/docker/compose/releases/download/$\{COMPOSE_VER}/docker-compose-linux-$\{ARCH}"
+  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+fi
+log "Docker installed: $(docker --version)"
+log "Compose:          $(docker compose version 2>/dev/null || echo MISSING)"`,
     uninstallScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
@@ -1128,23 +1254,30 @@ log "Stopping Docker..."
 sudo systemctl stop docker > /dev/null 2>&1 || true
 sudo systemctl disable docker > /dev/null 2>&1 || true
 if command -v apt-get > /dev/null 2>&1; then
-  log "apt-get remove docker.io docker-compose-v2..."
-  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq docker.io docker-compose-v2 > /dev/null 2>&1 || true
+  log "apt-get remove docker.io..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq docker.io > /dev/null 2>&1 || true
   log "Autoremove..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
 elif command -v dnf > /dev/null 2>&1; then
-  log "dnf remove docker docker-compose-plugin..."
-  sudo dnf remove -y -q docker docker-compose-plugin > /dev/null 2>&1 || true
+  log "dnf remove docker..."
+  sudo dnf remove -y -q docker > /dev/null 2>&1 || true
 fi
+log "Removing Compose CLI plugin..."
+sudo rm -f /usr/local/lib/docker/cli-plugins/docker-compose
 log "Docker removed."`,
-    setupShSnippet: `# Install Docker
+    setupShSnippet: `# Install Docker + Compose v2 (Compose binary from GitHub release for distro-independent install)
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get > /dev/null 2>&1; then
-  apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io docker-compose-v2 > /dev/null
+  apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io curl ca-certificates > /dev/null
 elif command -v dnf > /dev/null 2>&1; then
-  dnf install -y -q docker docker-compose-plugin > /dev/null
+  dnf install -y -q docker curl > /dev/null
 fi
-systemctl enable --now docker`,
+systemctl enable --now docker
+if ! docker compose version > /dev/null 2>&1; then
+  COMPOSE_VER=v2.29.7; ARCH=$(uname -m); mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose "https://github.com/docker/compose/releases/download/$\{COMPOSE_VER}/docker-compose-linux-$\{ARCH}"
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+fi`,
     commands: [
       { name: "Version", command: "docker --version && docker compose version 2>/dev/null || true" },
       { name: "List running containers", command: "docker ps" },
@@ -1217,6 +1350,181 @@ rkhunter --propupd --nocolors > /dev/null`,
       { name: "Re-baseline file properties", command: "sudo rkhunter --propupd --nocolors" },
       { name: "Show last warnings", command: "sudo grep -E 'Warning|Found' /var/log/rkhunter.log | tail -50" },
       { name: "List installed tests", command: "rkhunter --list tests" },
+    ],
+  },
+  {
+    id: "git-credentials",
+    label: "Git Credentials",
+    icon: KeyRound,
+    description: "Configure git to clone private repos from github.com and gitlab.com using the logged-in user's tokens",
+    checkScript: `set -e
+# Treat the recipe as "installed" only if BOTH the credential.helper is set AND
+# the .git-credentials file has at least one entry. That way removing the file
+# (or wiping the helper) flips the check back to NOT_INSTALLED.
+helper=$(git config --global --get credential.helper 2>/dev/null || true)
+if [ "$helper" = "store" ] && [ -s "$HOME/.git-credentials" ]; then
+  echo "INSTALLED"
+else
+  echo "NOT_INSTALLED"
+fi`,
+    installScript: `set -e
+${BASH_HELPERS}
+# Tokens are injected by the recipe runner from the calling user's settings
+# (Settings → Git Access Token / GitLab Access Token). At least one is required.
+if [ -z "$\{GIT_TOKEN:-}" ] && [ -z "$\{GITLAB_TOKEN:-}" ]; then
+  log "ERROR: no GIT_TOKEN or GITLAB_TOKEN set in your Genie settings — open Settings and save at least one."
+  exit 1
+fi
+
+# Write credential helper config + ~/.git-credentials for one target user.
+# Uses sudo when the target isn't the current user so the admin-panel install
+# path (which runs as ubuntu/debian/almalinux) can still configure the genie
+# deploy account.
+write_creds_for_user() {
+  local target="$1"
+  local home_dir
+  home_dir=$(getent passwd "$target" | cut -d: -f6)
+  if [ -z "$home_dir" ] || [ ! -d "$home_dir" ]; then
+    log "  skip $target: no home directory"
+    return 0
+  fi
+
+  local creds="$home_dir/.git-credentials"
+  local run
+  # -H resets $HOME to the target's home dir. Without it, 'git config --global'
+  # writes credential.helper into the CALLER's ~/.gitconfig instead of the
+  # target's — silently breaking the mirror.
+  if [ "$target" = "$(id -un)" ]; then run=""; else run="sudo -H -u $target"; fi
+
+  $run git config --global credential.helper store
+  $run touch "$creds"
+  $run chmod 600 "$creds"
+
+  # Dedup-then-append per host so re-running with new tokens updates in place
+  # rather than accumulating duplicates.
+  if [ -n "$\{GIT_TOKEN:-}" ]; then
+    $run bash -c "grep -v 'https://[^@]*@github\\.com' '$creds' > '$creds.tmp' || true; echo 'https://x-access-token:$\{GIT_TOKEN}@github.com' >> '$creds.tmp'; mv '$creds.tmp' '$creds'; chmod 600 '$creds'"
+  fi
+  if [ -n "$\{GITLAB_TOKEN:-}" ]; then
+    $run bash -c "grep -v 'https://[^@]*@gitlab\\.com' '$creds' > '$creds.tmp' || true; echo 'https://oauth2:$\{GITLAB_TOKEN}@gitlab.com' >> '$creds.tmp'; mv '$creds.tmp' '$creds'; chmod 600 '$creds'"
+  fi
+  log "  $target → $creds"
+}
+
+current_user=$(id -un)
+log "Configuring git credentials for $current_user..."
+write_creds_for_user "$current_user"
+
+# Mirror to the 'genie' deploy account so private clones inside setup.sh /
+# project containers / per-project recipes also work. The admin "Manage VM"
+# panel runs recipes as the image-default user (ubuntu/debian/almalinux), so
+# without this mirror, a clone-as-genie later would still prompt.
+if [ "$current_user" != "genie" ] && id genie >/dev/null 2>&1; then
+  log "Mirroring credentials to the 'genie' deploy account..."
+  write_creds_for_user "genie"
+fi
+
+log "Done. Try: git clone https://github.com/<org>/<private-repo>.git"`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Removing stored git credentials for $(id -un)..."
+rm -f "$HOME/.git-credentials"
+git config --global --unset credential.helper 2>/dev/null || true
+
+# Also clean up the mirror on the genie account if we created it.
+if [ "$(id -un)" != "genie" ] && id genie >/dev/null 2>&1; then
+  log "Removing mirrored credentials for genie..."
+  sudo rm -f /home/genie/.git-credentials
+  sudo -H -u genie git config --global --unset credential.helper 2>/dev/null || true
+fi
+log "Removed."`,
+    setupShSnippet: `# Git Credentials — adds GIT_TOKEN / GITLAB_TOKEN entries to ~/.git-credentials
+# so private repos can be cloned over HTTPS. The runner injects the tokens; you
+# don't need to put them in setup.sh in plaintext.
+git config --global credential.helper store
+: "$\{GIT_TOKEN:?GIT_TOKEN env var is required for this snippet}"
+echo "https://x-access-token:$\{GIT_TOKEN}@github.com" >> "$HOME/.git-credentials"
+if [ -n "$\{GITLAB_TOKEN:-}" ]; then
+  echo "https://oauth2:$\{GITLAB_TOKEN}@gitlab.com" >> "$HOME/.git-credentials"
+fi
+chmod 600 "$HOME/.git-credentials"`,
+    commands: [
+      { name: "Show configured hosts (masked)", command: "sed 's#https://[^@]*@#https://***@#' $HOME/.git-credentials 2>/dev/null || echo '(no .git-credentials yet)'" },
+      { name: "Show credential helper", command: "git config --global --get credential.helper" },
+      { name: "Show genie mirror (masked)", command: "sudo -H -u genie sed 's#https://[^@]*@#https://***@#' /home/genie/.git-credentials 2>/dev/null || echo '(no /home/genie/.git-credentials yet)'" },
+      { name: "Show genie credential.helper", command: "sudo -H -u genie git config --global --get credential.helper || echo '(not set for genie)'" },
+      { name: "Test github clone", command: "git ls-remote https://github.com/anthropics/anthropic-sdk-typescript.git HEAD" },
+      { name: "Test github clone (as genie)", command: "sudo -H -u genie git ls-remote https://github.com/anthropics/anthropic-sdk-typescript.git HEAD" },
+    ],
+  },
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    icon: Sparkles,
+    description: "Install the Claude Code CLI (Anthropic) — installs Node.js 20 first if missing",
+    checkScript: `if command -v claude > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+${BASH_HELPERS}
+
+# 1. Ensure Node.js (the CLI is npm-distributed). Anything ≥18 works.
+if ! command -v node > /dev/null 2>&1; then
+  log "Node.js not found — installing Node 20 via NodeSource..."
+  if command -v apt-get > /dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    # Same v4-forcing pattern as the bootstrap — Fastly-fronted nodesource is
+    # v6-flaky from some Taz VMs.
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates > /dev/null
+    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null
+  elif command -v dnf > /dev/null 2>&1; then
+    sudo dnf install -y -q curl > /dev/null
+    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1
+    sudo dnf install -y -q nodejs > /dev/null
+  else
+    log "ERROR: no supported package manager (need apt-get or dnf) and Node.js is missing."
+    exit 1
+  fi
+fi
+log "Node: $(node --version), npm: $(npm --version)"
+
+# 2. Install Claude Code globally via npm. Two Taz-specific workarounds:
+#    - NODE_OPTIONS=--dns-result-order=ipv4first forces Node's resolver to try
+#      IPv4 first; registry.npmjs.org is Fastly-fronted and v6-broken from
+#      Taz VMs, so without this npm hangs ~30s per package fetch.
+#    - --fetch-retries=2 --fetch-retry-mintimeout=5000 keeps a single failed
+#      tarball download from stalling the install for minutes.
+#    Dropped --silent so the progress is visible (the tail -3 hid the hang).
+log "Installing @anthropic-ai/claude-code (npm install -g)..."
+sudo -E NODE_OPTIONS="--dns-result-order=ipv4first" \
+  npm install -g \
+    --no-audit --no-fund \
+    --fetch-retries=2 --fetch-retry-mintimeout=5000 \
+    @anthropic-ai/claude-code 2>&1 | tail -20
+
+# 3. Verify.
+if command -v claude > /dev/null 2>&1; then
+  log "Installed: $(claude --version 2>&1 | head -1)"
+else
+  log "ERROR: 'claude' is not on PATH after install — check 'npm root -g' and ensure it's in PATH."
+  exit 1
+fi
+
+log "Claude Code installed. Run 'claude' on the VM to authenticate (interactive)."`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Uninstalling Claude Code..."
+sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
+# Defensive cleanup of the user-local config (only this user's; doesn't touch others).
+rm -rf "$HOME/.claude" 2>/dev/null || true
+log "Removed."`,
+    setupShSnippet: `# Install Claude Code CLI (assumes Node.js already present from Genie bootstrap)
+sudo -E NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g @anthropic-ai/claude-code 2>&1 | tail -3`,
+    commands: [
+      { name: "Version", command: "claude --version" },
+      { name: "Help", command: "claude --help | head -40" },
+      { name: "Where installed", command: "command -v claude && ls -la $(command -v claude)" },
+      { name: "Update", command: "sudo -E NODE_OPTIONS=--dns-result-order=ipv4first npm install -g @anthropic-ai/claude-code 2>&1 | tail -5" },
     ],
   },
 ];
