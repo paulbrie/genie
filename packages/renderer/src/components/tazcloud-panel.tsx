@@ -411,7 +411,24 @@ export function TazCloudPanel() {
               const isRenaming = renamingId === vm.id;
               const stats = admin.tazcloud.vmStats[vm.id];
               return (
-                <div key={vm.id} className="bg-mantle rounded-lg px-3 py-2 border border-overlay0/10">
+                <div
+                  key={vm.id}
+                  onClick={(e) => {
+                    // Cards-mode only: clicking the card opens the manage modal. Skip
+                    // when the click landed on an interactive descendant (button, link,
+                    // input, etc.), or when the row is mid-rename / mid-delete.
+                    if (vmViewMode !== "cards") return;
+                    if (!isActive || isRenaming || isPending || isDeleting) return;
+                    const target = e.target as HTMLElement;
+                    if (target.closest("button, a, input, select, textarea, label")) return;
+                    setManageExpanded(vm.id);
+                  }}
+                  className={cn(
+                    "bg-mantle rounded-lg px-3 py-2 border border-overlay0/10",
+                    vmViewMode === "cards" && isActive && !isRenaming && !isPending && !isDeleting
+                      && "cursor-pointer hover:border-blue/30 transition-colors",
+                  )}
+                >
                   {isRenaming ? (
                     <div className="flex items-center gap-1 mb-1">
                       <span className="text-md text-overlay0">Rename:</span>
