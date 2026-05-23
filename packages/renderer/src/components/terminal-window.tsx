@@ -64,13 +64,7 @@ function SingleTerminalWindow({
   const initial = useMemo(() => {
     if (storedPos.x >= 0 && storedPos.y >= 0) return storedPos;
     const takenPositions = Object.values(allWindows)
-      .filter(
-        (w) =>
-          w.id !== windowId &&
-          w.id.startsWith(WINDOW_PREFIX) &&
-          w.status === "open" &&
-          w.position.x >= 0
-      )
+      .filter((w) => w.id !== windowId && w.status === "open" && w.position.x >= 0)
       .map((w) => w.position);
     let pos = {
       x: Math.max(window.innerWidth / 2 - DEFAULT_W / 2, 20),
@@ -84,6 +78,12 @@ function SingleTerminalWindow({
       pos = { x: pos.x + CASCADE_OFFSET, y: pos.y + CASCADE_OFFSET };
     }
     return pos;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist the cascaded initial position so subsequently-opened windows can see it and cascade past it
+  useEffect(() => {
+    if (storedPos.x < 0 || storedPos.y < 0) updateWindowPosition(windowId, initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

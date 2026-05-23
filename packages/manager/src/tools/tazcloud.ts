@@ -20,9 +20,45 @@ export async function executeTazListVms(): Promise<string> {
       ];
       if (vm.image) parts.push(`image=${vm.image}`);
       if (vm.size) parts.push(`size=${vm.size}`);
+      if (vm.ingress) {
+        parts.push(`domain=${vm.ingress.domain}`);
+        parts.push(`url=${vm.ingress.url}`);
+        if (vm.ingress.status) parts.push(`ingress_status=${vm.ingress.status}`);
+      }
       return `- ${parts.join(" ")}`;
     });
     return `${vms.length} VM(s):\n${lines.join("\n")}`;
+  } catch (err: unknown) {
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+export async function executeTazGetVm(vmId: string): Promise<string> {
+  const c = getClient();
+  if ("error" in c) return c.error;
+  try {
+    const vm = await c.client.getVm(vmId);
+    const lines = [
+      `VM ${vm.name} (${vm.id})`,
+      `Status: ${vm.status}`,
+      `IPv6: ${vm.ipv6}`,
+      `SSH: ssh ${vm.image ? sshUserForImage(vm.image) : "<user>"}@${vm.ssh_host} -p ${vm.ssh_port}`,
+    ];
+    if (vm.image) lines.push(`Image: ${vm.image}`);
+    if (vm.snapshot_id) lines.push(`Booted from snapshot: ${vm.snapshot_id}`);
+    if (vm.size) lines.push(`Size: ${vm.size}`);
+    if (vm.ingress) {
+      lines.push("");
+      lines.push("Ingress:");
+      lines.push(`  Domain: ${vm.ingress.domain}`);
+      lines.push(`  Public URL: ${vm.ingress.url}`);
+      lines.push(`  Status: ${vm.ingress.status}`);
+      lines.push(`  Ingress IP: ${vm.ingress.ip}`);
+      lines.push(`  DNS action: ${vm.ingress.dns_action}`);
+    } else {
+      lines.push("Ingress: not registered (no custom domain attached)");
+    }
+    return lines.join("\n");
   } catch (err: unknown) {
     return `Error: ${err instanceof Error ? err.message : String(err)}`;
   }

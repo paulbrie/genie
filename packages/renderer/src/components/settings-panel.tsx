@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { $admin, $doTokenValid, $railwayTestResult, $settings } from "@/store/subjects";
+import { $admin, $auth, $doTokenValid, $railwayTestResult, $settings } from "@/store/subjects";
 import { deleteSshKey, loadSettings, loadSshKey, regenerateSshKey, saveSettingsField, testRailwayToken, validateDoToken } from "@/store/actions";
 import { useDeepSubject } from "subjecto/react";
 import { type AppSettings } from "@/lib/genie-api";
@@ -89,7 +89,12 @@ const DEPLOY_STEPS = [
 
 export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsTab }) {
   const router = useRouter();
-  const tab = activeTab;
+  const [auth] = useSubject($auth);
+  const role = auth.user?.role;
+  const isAdmin = role === "admin" || role === "superadmin";
+  // Non-admins land on (and are locked to) the general tab — the Deploy tab is
+  // the SSH-key / provisioning surface and only makes sense for operators.
+  const tab = isAdmin ? activeTab : "general";
   const [settings] = useSubject($settings);
   const [doTokenValid] = useSubject($doTokenValid);
   const [railwayTestResult] = useSubject($railwayTestResult);
@@ -100,9 +105,6 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
   const [showGitlabKey, setShowGitlabKey] = useState(false);
   const [gitlabKeyInput, setGitlabKeyInput] = useState("");
   const [gitlabKeyDirty, setGitlabKeyDirty] = useState(false);
-  const [showGitToken, setShowGitToken] = useState(false);
-  const [gitTokenInput, setGitTokenInput] = useState("");
-  const [gitTokenDirty, setGitTokenDirty] = useState(false);
   const [showRailwayToken, setShowRailwayToken] = useState(false);
   const [railwayTokenInput, setRailwayTokenInput] = useState("");
   const [railwayTokenDirty, setRailwayTokenDirty] = useState(false);
@@ -126,11 +128,6 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
     setGitlabKeyInput(settings.gitlabDeployKey || "");
     setGitlabKeyDirty(false);
   }, [settings.gitlabDeployKey]);
-
-  useEffect(() => {
-    setGitTokenInput(settings.gitToken || "");
-    setGitTokenDirty(false);
-  }, [settings.gitToken]);
 
   useEffect(() => {
     setRailwayTokenInput(settings.railwayToken || "");
@@ -162,11 +159,6 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
     setGitlabKeyDirty(false);
   }
 
-  function handleSaveGitToken() {
-    saveSettingsField("gitToken", gitTokenInput);
-    setGitTokenDirty(false);
-  }
-
   function handleSaveRailwayToken() {
     saveSettingsField("railwayToken", railwayTokenInput);
     setRailwayTokenDirty(false);
@@ -181,10 +173,14 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
     <div className="flex-1 flex flex-col overflow-y-auto px-5 pb-5">
       <ViewHeader title="Settings" />
       <ViewTabs
-        tabs={[
-          { key: "general" as const, label: "General" },
-          { key: "deploy" as const, label: "Deploy" },
-        ]}
+        tabs={isAdmin
+          ? [
+              { key: "general" as const, label: "General" },
+              { key: "deploy" as const, label: "Deploy" },
+            ]
+          : [
+              { key: "general" as const, label: "General" },
+            ]}
         activeTab={tab}
         onTabChange={(t) => router.push(buildSettingsPath(t))}
       />
@@ -212,6 +208,8 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
             </p>
           </div>
 
+          {isAdmin && (
+          <>
           <div className="bg-mantle rounded-lg p-4">
             <label className="block text-md font-medium text-subtext0 mb-2">
               DigitalOcean API Token
@@ -331,53 +329,11 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
               Can be overridden per project.
             </p>
           </div>
+          </>
+          )}
 
-          <div className="bg-mantle rounded-lg p-4 mt-4">
-            <label className="block text-md font-medium text-subtext0 mb-2">
-              Git Access Token
-              <span className="ml-2 text-md text-overlay0 font-normal">Per user</span>
-            </label>
-            <div className="flex items-center gap-2 max-w-md">
-              <div className="relative flex-1">
-                <input
-                  type={showGitToken ? "text" : "password"}
-                  value={gitTokenInput}
-                  onChange={(e) => {
-                    setGitTokenInput(e.target.value);
-                    setGitTokenDirty(true);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && gitTokenDirty) handleSaveGitToken();
-                  }}
-                  placeholder="glpat-..."
-                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowGitToken(!showGitToken)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
-                >
-                  {showGitToken ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-              {gitTokenDirty && (
-                <button
-                  onClick={handleSaveGitToken}
-                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
-                >
-                  Save
-                </button>
-              )}
-            </div>
-            {!gitTokenDirty && gitTokenInput && (
-              <p className="text-md text-green mt-2">Saved</p>
-            )}
-            <p className="text-md text-overlay0 mt-2">
-              GitLab/GitHub personal access token injected as <code className="text-text">GIT_TOKEN</code> in <code className="text-text">.env</code> on provisioned droplets.
-              Used by Dockerfiles to clone private repos during build.
-            </p>
-          </div>
-
+          {isAdmin && (
+          <>
           <div className="bg-mantle rounded-lg p-4 mt-4">
             <label className="block text-md font-medium text-subtext0 mb-2">
               Railway API Token
@@ -477,6 +433,8 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
                 )}
               </div>
             </div>
+          )}
+          </>
           )}
         </div>
       ) : (

@@ -151,10 +151,6 @@ export async function getGlobalDoToken(): Promise<string> {
   return (await getGlobalSetting<string>("digitaloceanApiToken")) || "";
 }
 
-export async function getGlobalGitToken(): Promise<string> {
-  return (await getGlobalSetting<string>("gitToken")) || "";
-}
-
 export async function getGlobalGitlabDeployKey(): Promise<string> {
   return (await getGlobalSetting<string>("gitlabDeployKey")) || "";
 }
@@ -318,13 +314,6 @@ export async function resolveGitlabDeployKey(projectId: string): Promise<string>
   return getGlobalGitlabDeployKey();
 }
 
-export async function resolveGitToken(userId: string): Promise<string> {
-  const db = getDb();
-  const [row] = await db.select({ gitToken: users.gitToken }).from(users).where(eq(users.id, userId)).limit(1);
-  if (row?.gitToken) return row.gitToken;
-  return getGlobalGitToken();
-}
-
 // --- Resolve base image ID via templates ---
 
 export async function resolveBaseImageId(project: { vpsBaseImageConfigName?: string; vpsBaseImageId?: number }): Promise<number | undefined> {
@@ -340,48 +329,75 @@ export async function resolveBaseImageId(project: { vpsBaseImageConfigName?: str
 
 // --- Composed settings (for settings:get handler) ---
 
-export async function getComposedSettings(userId: string): Promise<Record<string, unknown>> {
+// Role enum lives in ws-acl; we accept the same string shape here without
+// importing it, since settings-service is consumed by both server and tools.
+type SettingsRole = "user" | "tazcloud" | "admin" | "superadmin" | null | undefined;
+
+function isAdminRole(role: SettingsRole): boolean {
+  return role === "admin" || role === "superadmin";
+}
+
+export async function getComposedSettings(userId: string, role?: SettingsRole): Promise<Record<string, unknown>> {
   const db = getDb();
-  const [user] = await db.select({ gitToken: users.gitToken, defaultEditor: users.defaultEditor }).from(users).where(eq(users.id, userId)).limit(1);
+  const [user] = await db.select({ defaultEditor: users.defaultEditor }).from(users).where(eq(users.id, userId)).limit(1);
+  const globalDefaultEditor = await getGlobalDefaultEditor();
+
+  // Per-user fields — always returned, including for non-admins.
+  const base = {
+    defaultEditor: user?.defaultEditor || globalDefaultEditor || "",
+  };
+
+  // Global / shared fields — only returned to admins. Non-admins still get
+  // empty placeholders so the renderer's typed AppSettings shape is satisfied.
+  if (!isAdminRole(role)) {
+    return {
+      ...base,
+      digitaloceanApiToken: "",
+      gitlabDeployKey: "",
+      railwayToken: "",
+      railwayProjectId: "",
+    };
+  }
 
   const globalDoToken = await getGlobalDoToken();
   const globalGitlabDeployKey = await getGlobalGitlabDeployKey();
-  const globalGitToken = await getGlobalGitToken();
-  const globalDefaultEditor = await getGlobalDefaultEditor();
   const railwayToken = await getGlobalRailwayToken();
   const railwayProjectId = await getGlobalRailwayProjectId();
 
   return {
-    defaultEditor: user?.defaultEditor || globalDefaultEditor || "",
+    ...base,
     digitaloceanApiToken: globalDoToken || "",
     gitlabDeployKey: globalGitlabDeployKey || "",
-    gitToken: user?.gitToken || globalGitToken || "",
     railwayToken: railwayToken || "",
     railwayProjectId: railwayProjectId || "",
   };
 }
 
 // --- Routed save (for settings:save handler) ---
-
-const USER_FIELDS = new Set(["gitToken", "defaultEditor"]);
+//
+// Per-user fields (every authenticated user) vs global fields (admins only).
+// Non-admin attempts to set global fields are silently dropped — the renderer
+// gates this in the UI, but the server enforces it too so a hand-rolled WS
+// message can't sneak admin-only writes.
 const GLOBAL_FIELDS = new Set(["digitaloceanApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId"]);
 
-export async function saveRoutedSettings(userId: string, fields: Record<string, unknown>): Promise<void> {
+export async function saveRoutedSettings(userId: string, fields: Record<string, unknown>, role?: SettingsRole): Promise<void> {
   const db = getDb();
 
   // Per-user fields
   const userUpdates: Record<string, unknown> = {};
-  if ("gitToken" in fields) userUpdates.gitToken = fields.gitToken || null;
   if ("defaultEditor" in fields) userUpdates.defaultEditor = fields.defaultEditor || null;
 
   if (Object.keys(userUpdates).length > 0) {
     await db.update(users).set(userUpdates).where(eq(users.id, userId));
   }
 
-  // Global fields
-  for (const key of GLOBAL_FIELDS) {
-    if (key in fields) {
-      await setGlobalSetting(key, fields[key] || "");
+  // Global fields — admins only.
+  if (isAdminRole(role)) {
+    for (const key of GLOBAL_FIELDS) {
+      if (key in fields) {
+        await setGlobalSetting(key, fields[key] || "");
+      }
     }
   }
 }

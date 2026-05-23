@@ -40,11 +40,16 @@ async function tazFetch(token: string, path: string, init?: TazRequestInit): Pro
 
   if (res.status === 204) return null;
 
+  // Read body as text first so non-JSON error responses (FastAPI's plain
+  // "no such route" 404, HTML error pages) still surface a useful message.
+  const rawBody = await res.text();
   let json: Record<string, unknown> | null = null;
-  try { json = await res.json() as Record<string, unknown>; } catch { /* non-JSON response */ }
+  if (rawBody) {
+    try { json = JSON.parse(rawBody) as Record<string, unknown>; } catch { /* non-JSON */ }
+  }
 
   if (!res.ok) {
-    throw new Error(`TazCloud API error (${res.status}): ${formatTazDetail(json)}`);
+    throw new Error(`TazCloud API error (${res.status}): ${formatTazDetail(json) || rawBody || "no body"}`);
   }
 
   return json;

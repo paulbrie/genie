@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -229,10 +229,29 @@ export function BuildLogWindow() {
     setTimeout(() => setCopied(false), 1500);
   }
 
+  const allWindows = windowManager.windows;
   const storedPos = windowState.position;
-  const initial = storedPos.x >= 0 && storedPos.y >= 0
-    ? storedPos
-    : { x: Math.max(window.innerWidth - DEFAULT_W - 24, 20), y: Math.max(window.innerHeight - DEFAULT_H - 40, 20) };
+  const initial = useMemo(() => {
+    if (storedPos.x >= 0 && storedPos.y >= 0) return storedPos;
+    const CASCADE_OFFSET = 30;
+    const takenPositions = Object.values(allWindows)
+      .filter((w) => w.id !== WINDOW_ID && w.status === "open" && w.position.x >= 0)
+      .map((w) => w.position);
+    let pos = { x: Math.max(window.innerWidth - DEFAULT_W - 24, 20), y: Math.max(window.innerHeight - DEFAULT_H - 40, 20) };
+    while (takenPositions.some((p) => Math.abs(p.x - pos.x) < 20 && Math.abs(p.y - pos.y) < 20)) {
+      pos = { x: pos.x - CASCADE_OFFSET, y: pos.y - CASCADE_OFFSET };
+      if (pos.x < 20) pos.x = 20 + CASCADE_OFFSET * Math.floor(Math.random() * 5);
+      if (pos.y < 20) pos.y = 20 + CASCADE_OFFSET * Math.floor(Math.random() * 5);
+    }
+    return pos;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist the cascaded initial position so subsequently-opened windows can see it and cascade past it
+  useEffect(() => {
+    if (storedPos.x < 0 || storedPos.y < 0) updateWindowPosition(WINDOW_ID, initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleDragEnd = (pos: { x: number; y: number }) => {
     updateWindowPosition(WINDOW_ID, pos);

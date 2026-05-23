@@ -101,9 +101,9 @@ function FloatingDeployWindow({
   const storedPos = windowState.position;
   const initial = useMemo(() => {
     if (storedPos.x >= 0 && storedPos.y >= 0) return storedPos;
-    // Collect positions of other open deploy windows to avoid overlap
+    // Collect positions of all other open windows to avoid overlap
     const takenPositions = Object.values(allWindows)
-      .filter((w) => w.id !== windowId && w.id.startsWith(WINDOW_PREFIX) && w.status === "open" && w.position.x >= 0)
+      .filter((w) => w.id !== windowId && w.status === "open" && w.position.x >= 0)
       .map((w) => w.position);
     let pos = { x: Math.max(window.innerWidth - 440, 20), y: Math.max(window.innerHeight - DEFAULT_H - 40, 20) };
     while (takenPositions.some((p) => Math.abs(p.x - pos.x) < 20 && Math.abs(p.y - pos.y) < 20)) {
@@ -112,6 +112,12 @@ function FloatingDeployWindow({
       if (pos.y < 20) pos.y = 20 + CASCADE_OFFSET * Math.floor(Math.random() * 5);
     }
     return pos;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist the cascaded initial position so subsequently-opened windows can see it and cascade past it
+  useEffect(() => {
+    if (storedPos.x < 0 || storedPos.y < 0) updateWindowPosition(windowId, initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

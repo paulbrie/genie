@@ -3185,7 +3185,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       send(ws, { type: "vps:deploy:progress", payload: { projectId: doProjectId, instanceId: newDoInstanceId, message: doFirstMsg } });
 
       const gitlabKey = await settingsService.resolveGitlabDeployKey(doProjectId);
-      const gitTokenValue = await settingsService.resolveGitToken(userId);
 
       void doProvisionAndDeploy(
         {
@@ -3195,7 +3194,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           size: doProject.vpsSize || undefined,
           signal: abortController.signal,
           gitlabDeployKey: gitlabKey || undefined,
-          gitToken: gitTokenValue || undefined,
           envVars: doProject.secrets?.reduce((acc, s) => { if (s.key) acc[s.key] = s.value; return acc; }, {} as Record<string, string>),
           baseImageId: await settingsService.resolveBaseImageId(doProject),
           setupFiles: doProject.setupFiles,
@@ -3371,7 +3369,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       send(ws, { type: "vps:deploy:progress", payload: { projectId: tazProjectId, instanceId: newTazInstanceId, message: tazFirstMsg } });
 
       const gitlabKey = await settingsService.resolveGitlabDeployKey(tazProjectId);
-      const gitTokenValue = await settingsService.resolveGitToken(userId);
 
       void tazcloudProvisionAndDeploy(
         {
@@ -3382,7 +3379,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           size: tazProject.vpsSize || undefined,
           signal: abortController.signal,
           gitlabDeployKey: gitlabKey || undefined,
-          gitToken: gitTokenValue || undefined,
           envVars: tazProject.secrets?.reduce((acc, s) => { if (s.key) acc[s.key] = s.value; return acc; }, {} as Record<string, string>),
           setupFiles: tazProject.setupFiles,
         },
@@ -3985,6 +3981,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       try {
+        // Recipes that need secrets (GIT_TOKEN etc.) now bake them into the
+        // install script itself as `export NAME=...` lines, set by the renderer
+        // from a per-apply modal. No env injection here — settings no longer
+        // store these tokens. See admin-recipes-panel.tsx → buildInstallCommand.
         const session = await connectSsh(vpsInst.connection);
         try {
           await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, (chunk) => {
@@ -4810,11 +4810,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           username: sshUser || "ubuntu",
           privateKeyPath: keyPath,
         });
+        // Secrets (GIT_TOKEN etc.) are baked into the script by the renderer
+        // per-apply — see admin-recipes-panel.tsx → buildInstallCommand. We no
+        // longer inject them from settings here.
+        const shQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
         try {
           // Generous timeouts — recipe installs (apt + downloads) can take several
           // minutes. idleTimeoutMs is bumped to 10 minutes since recipe scripts
           // often redirect apt output to /dev/null and may go silent for a while.
-          const output = await session.exec(`${command} 2>&1`, (chunk) => {
+          const output = await session.exec(`bash -c ${shQuote(`${command} 2>&1`)}`, (chunk) => {
             send(ws, { type: "admin:tazcloud:exec:progress", payload: { execId, chunk } });
           }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
           send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output } });
@@ -4885,8 +4889,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           username: VPS_SSH_USERNAME,
           privateKeyPath: keyPath,
         });
+        // Secrets baked into the script per-apply; no settings-based injection.
+        const shQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
         try {
-          const output = await session.exec(`${command} 2>&1`, (chunk) => {
+          const output = await session.exec(`bash -c ${shQuote(`${command} 2>&1`)}`, (chunk) => {
             send(ws, { type: "admin:droplets:exec:progress", payload: { execId, chunk } });
           }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
           send(ws, { type: "admin:droplets:exec:result", payload: { execId, output } });
@@ -4981,6 +4987,55 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "admin:tazcloud:snapshot:list": {
+      try {
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) {
+          send(ws, { type: "admin:tazcloud:snapshot:list", payload: { snapshots: [], error: "TAZCLOUD_API_TOKEN not configured" } });
+          break;
+        }
+        const tazClient = createTazClient(tazToken);
+        const snapshots = await tazClient.listSnapshots();
+        send(ws, { type: "admin:tazcloud:snapshot:list", payload: { snapshots } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:snapshot:list", payload: { snapshots: [], error: err instanceof Error ? err.message : String(err) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:snapshot:create": {
+      try {
+        const { vmId, name, stopFirst } = msg.payload as { vmId: string; name: string; stopFirst?: boolean };
+        if (!vmId || !name) throw new Error("vmId and name are required");
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        // API returns 202 with status=pending; the renderer polls list until active.
+        const snapshot = await tazClient.createSnapshot(vmId, { name, stop_first: stopFirst });
+        send(ws, { type: "admin:tazcloud:snapshot:created", payload: { snapshot } });
+        broadcast({ type: "admin:tazcloud:snapshot:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:snapshot:error", payload: { message: err instanceof Error ? err.message : String(err) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:snapshot:delete": {
+      try {
+        const { snapshotId } = msg.payload as { snapshotId: string };
+        if (!snapshotId) throw new Error("snapshotId is required");
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        await tazClient.deleteSnapshot(snapshotId);
+        send(ws, { type: "admin:tazcloud:snapshot:deleted", payload: { snapshotId } });
+        broadcast({ type: "admin:tazcloud:snapshot:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:snapshot:error", payload: { message: err instanceof Error ? err.message : String(err) } });
+      }
+      break;
+    }
+
     case "admin:tazcloud:ingress:register": {
       // Attach a custom-domain HTTPS ingress to a TazCloud VM. All ingresses
       // resolve to TazCloud's shared anycast IP (188.213.48.229); the user must
@@ -4995,6 +5050,17 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const tazToken = process.env.TAZCLOUD_API_TOKEN;
         if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
         const tazClient = createTazClient(tazToken);
+
+        // Sanity-check: is this VM visible to our token? Surfaces "wrong token"
+        // and "VM was deleted" cases with a clearer error than the bare 404
+        // that POST /ingress would otherwise return.
+        try {
+          await tazClient.getVm(vmId);
+        } catch (probeErr: unknown) {
+          const m = probeErr instanceof Error ? probeErr.message : String(probeErr);
+          throw new Error(`VM ${vmId} is not visible to this TazCloud token (${m}). Re-check TAZCLOUD_API_TOKEN or refresh the VM list.`);
+        }
+
         const ingress = await tazClient.registerIngress(vmId, {
           domain: domain.trim(),
           app_port: appPort,
@@ -5817,7 +5883,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "settings:get": {
       const reqId = msg.payload?.reqId;
       try {
-        const data = await settingsService.getComposedSettings(userId);
+        const data = await settingsService.getComposedSettings(userId, state.role);
         send(ws, { type: "settings:result", payload: { ...data, reqId } });
       } catch {
         send(ws, { type: "settings:result", payload: { reqId } });
@@ -5829,7 +5895,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const reqId = msg.payload?.reqId;
       try {
         const { reqId: _, ...fields } = msg.payload;
-        await settingsService.saveRoutedSettings(userId, fields);
+        await settingsService.saveRoutedSettings(userId, fields, state.role);
         send(ws, { type: "settings:result", payload: { ok: true, reqId } });
       } catch (err: unknown) {
         send(ws, { type: "settings:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });

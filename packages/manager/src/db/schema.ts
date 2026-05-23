@@ -10,6 +10,7 @@ export const users = pgTable("users", {
   validated: boolean("validated").default(false).notNull(),
   role: text("role", { enum: ["user", "tazcloud", "admin", "superadmin"] }).default("user").notNull(),
   gitToken: text("git_token"),
+  gitlabToken: text("gitlab_token"),
   defaultEditor: text("default_editor"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });

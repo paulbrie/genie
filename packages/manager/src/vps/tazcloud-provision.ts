@@ -37,7 +37,6 @@ export interface TazProvisionOpts {
   size?: string;               // small / medium / large / xlarge (default: small)
   signal?: AbortSignal;
   gitlabDeployKey?: string;
-  gitToken?: string;
   envVars?: Record<string, string>;
   setupFiles?: Record<string, string>;
 }
@@ -73,7 +72,6 @@ export async function tazcloudProvisionAndDeploy(
     size = "small",
     signal,
     gitlabDeployKey,
-    gitToken,
     envVars: optsEnvVars,
     setupFiles,
   } = opts;
@@ -203,7 +201,7 @@ export async function tazcloudProvisionAndDeploy(
       "wait_apt() { local i=0; while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do i=$((i+1)); [ \"$i\" -gt 600 ] && { echo 'Timeout waiting for apt lock'; exit 1; }; sleep 1; done; }",
       "if command -v apt-get >/dev/null 2>&1; then",
       "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq",
-      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io docker-compose-v2 git curl ca-certificates > /dev/null",
+      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates > /dev/null",
       "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1",
       "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null",
       "elif command -v dnf >/dev/null 2>&1; then",
@@ -214,6 +212,14 @@ export async function tazcloudProvisionAndDeploy(
       "  echo 'No supported package manager (need apt-get or dnf)'; exit 1",
       "fi",
       "sudo systemctl enable --now docker > /dev/null 2>&1",
+      // Docker Compose v2 — no consistent apt/dnf package across distros.
+      // GitHub-release CLI plugin is the portable answer.
+      "if ! docker compose version >/dev/null 2>&1; then",
+      "  COMPOSE_VER=v2.29.7; ARCH=$(uname -m)",
+      "  sudo mkdir -p /usr/local/lib/docker/cli-plugins",
+      "  sudo curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \"https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-linux-${ARCH}\"",
+      "  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose",
+      "fi",
       "sudo npm install -g --silent @anthropic-ai/claude-code @genie/vps-agent 2>&1 | tail -3",
     ].join("\n");
 
@@ -290,7 +296,8 @@ chmod 600 ~/.ssh/config`);
     // 8. Standard deploy via the shared pipeline.
     onProgress("Starting deployment...");
     const envVars: Record<string, string> = { ...optsEnvVars };
-    if (gitToken) envVars.GIT_TOKEN = gitToken;
+    // GIT_TOKEN is no longer auto-injected from settings — apply the
+    // Git Credentials add-on after deploy if private clones are needed.
     await vpsDeploy(projectName, genieConn, onProgress, envVars, setupFiles);
 
     return {

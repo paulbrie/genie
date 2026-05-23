@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { Package, Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Square, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers } from "lucide-react";
+import { Package, Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Square, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { VPS_RECIPES, BASH_HELPERS, type VpsRecipeDef } from "@/components/project-detail";
 import type { UserRecipe } from "@/store/types";
@@ -143,6 +143,13 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
   // Per-recipe option selections (e.g. { postgres: { PG_VERSION: "16" } }).
   const [optionValues, setOptionValues] = useState<Record<string, Record<string, string>>>({});
 
+  // Secrets modal state. Held only here in component state — never persisted to
+  // settings, storage, or the DB. Cleared on submit/cancel/recipe-change so a
+  // pasted token doesn't outlive the action that consumed it.
+  const [secretsPromptFor, setSecretsPromptFor] = useState<string | null>(null);
+  const [secretValuesDraft, setSecretValuesDraft] = useState<Record<string, string>>({});
+  const [secretError, setSecretError] = useState<string | null>(null);
+
   function getOptionValues(recipe: VpsRecipeDef): Record<string, string> {
     const stored = optionValues[recipe.id] ?? {};
     const result: Record<string, string> = {};
@@ -156,14 +163,41 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
     setOptionValues((prev) => ({ ...prev, [recipeId]: { ...(prev[recipeId] ?? {}), [name]: value } }));
   }
 
-  function buildInstallCommand(recipe: VpsRecipeDef): string {
+  function buildInstallCommand(recipe: VpsRecipeDef, secrets?: Record<string, string>): string {
     const opts = getOptionValues(recipe);
-    const exports = Object.entries(opts)
+    // Options + secrets both reach the install script via `export NAME=VALUE`.
+    // Secrets are only present for this single command — they live in the bash
+    // process env, not in the user's shell rc / persistent settings.
+    const optExports = Object.entries(opts)
       .map(([k, v]) => `export ${k}=${JSON.stringify(v)}; `)
       .join("");
+    const secretExports = secrets
+      ? Object.entries(secrets)
+          .filter(([, v]) => v !== "")
+          .map(([k, v]) => `export ${k}=${JSON.stringify(v)}; `)
+          .join("")
+      : "";
     // Auto-inject log() / wait_apt for user recipes. Built-ins already inline
     // them, so the duplicate function defs are harmless (bash just overwrites).
-    return `${BASH_HELPERS}\n${exports}${recipe.installScript}`;
+    return `${BASH_HELPERS}\n${optExports}${secretExports}${recipe.installScript}`;
+  }
+
+  /** Entry point for any "kick off install" action. If the recipe declares
+   *  secrets, opens the modal instead of running immediately. The modal's
+   *  submit handler calls install() with the collected values. */
+  function requestInstall(recipe: VpsRecipeDef) {
+    if (recipe.secrets && recipe.secrets.length > 0) {
+      setSecretError(null);
+      // Empty draft — we deliberately do NOT pre-fill from a previous apply.
+      // Each install is a fresh prompt.
+      setSecretValuesDraft({});
+      setSecretsPromptFor(recipe.id);
+      // Make sure the expansion is open so post-install output is visible.
+      setExpandedSet((p) => new Set(p).add(recipe.id));
+      return;
+    }
+    void install(recipe);
+    setExpandedSet((p) => new Set(p).add(recipe.id));
   }
 
   function update(id: string, patch: Partial<RecipeRuntimeState>) {
@@ -205,7 +239,7 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ALL_RECIPES.length]);
 
-  async function install(recipe: VpsRecipeDef) {
+  async function install(recipe: VpsRecipeDef, secrets?: Record<string, string>) {
     update(recipe.id, { running: true, error: null, output: "" });
     const controller = new AbortController();
     abortersRef.current.set(recipe.id, controller);
@@ -217,7 +251,7 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
         return { ...s, [recipe.id]: { ...prev, output: prev.output + chunk } };
       });
     };
-    const res = await limitedExec(buildInstallCommand(recipe), onChunk, controller.signal);
+    const res = await limitedExec(buildInstallCommand(recipe, secrets), onChunk, controller.signal);
     abortersRef.current.delete(recipe.id);
     const aborted = controller.signal.aborted;
     update(recipe.id, {
@@ -257,14 +291,16 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
     abortersRef.current.get(recipeId)?.abort();
   }
 
-  /** Trigger check on any recipe with unknown status, then fire installs for everything not installed. */
+  /** Trigger check on any recipe with unknown status, then fire installs for everything not installed.
+   *  Recipes that declare secrets are skipped — they need explicit per-apply
+   *  user input that "Install all missing" can't supply silently. */
   async function installAll() {
     const unknown = ALL_RECIPES.filter((r) => (states[r.id] ?? INIT).installed === null);
     await Promise.all(unknown.map((r) => check(r)));
-    // After checks resolve, read the latest state from the setter callback to avoid stale closure.
     setStates((current) => {
       const toInstall = ALL_RECIPES.filter((r) => {
         const s = current[r.id] ?? INIT;
+        if (r.secrets && r.secrets.length > 0) return false;
         return s.installed === false && !s.running && !s.checking;
       });
       if (toInstall.length === 0) return current;
@@ -276,6 +312,36 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
       toInstall.forEach((r) => { void install(r); });
       return current;
     });
+  }
+
+  /** Modal submit: validate, fire install with the typed secrets, then wipe
+   *  the draft so the values don't sit in memory longer than necessary. */
+  function submitSecrets() {
+    const recipe = ALL_RECIPES.find((r) => r.id === secretsPromptFor);
+    if (!recipe || !recipe.secrets) return;
+    // Per-field required check.
+    for (const s of recipe.secrets) {
+      if (s.required && !secretValuesDraft[s.name]?.trim()) {
+        setSecretError(`${s.label} is required.`);
+        return;
+      }
+    }
+    // Optional cross-field check (e.g. "at least one of X, Y").
+    if (recipe.validateSecrets) {
+      const err = recipe.validateSecrets(secretValuesDraft);
+      if (err) { setSecretError(err); return; }
+    }
+    const values = { ...secretValuesDraft };
+    setSecretsPromptFor(null);
+    setSecretValuesDraft({});
+    setSecretError(null);
+    void install(recipe, values);
+  }
+
+  function cancelSecrets() {
+    setSecretsPromptFor(null);
+    setSecretValuesDraft({});
+    setSecretError(null);
   }
 
   return (
@@ -316,8 +382,7 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
                   // Options to pick — open the panel so the user can choose first.
                   setExpandedSet((p) => new Set(p).add(recipe.id));
                 } else {
-                  install(recipe);
-                  setExpandedSet((p) => new Set(p).add(recipe.id));
+                  requestInstall(recipe);
                 }
               }}
               className={cn(
@@ -364,13 +429,25 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
                   </button>
                 )}
                 {state.installed && !state.running && (
-                  <button
-                    onClick={() => check(recipe)}
-                    disabled={state.checking}
-                    className="text-md text-overlay0 hover:text-blue transition-colors ml-2"
-                  >
-                    Re-check
-                  </button>
+                  <>
+                    <button
+                      onClick={() => check(recipe)}
+                      disabled={state.checking}
+                      className="text-md text-overlay0 hover:text-blue transition-colors ml-2"
+                    >
+                      Re-check
+                    </button>
+                    <button
+                      onClick={() => requestInstall(recipe)}
+                      disabled={state.checking}
+                      className="text-md text-overlay0 hover:text-blue transition-colors inline-flex items-center gap-1"
+                      title={recipe.secrets && recipe.secrets.length > 0
+                        ? "Re-run the install script — prompts again for the secrets it needs"
+                        : "Re-run the install script — picks up updated options"}
+                    >
+                      <Play size={10} /> Re-apply
+                    </button>
+                  </>
                 )}
               </div>
               {state.installed && !state.running && recipe.commands.length > 0 && (
@@ -410,7 +487,7 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
                   })}
                   <span className="text-md text-overlay1">
                     Not installed.{" "}
-                    <button onClick={() => install(recipe)} className="text-blue hover:underline inline-flex items-center gap-1">
+                    <button onClick={() => requestInstall(recipe)} className="text-blue hover:underline inline-flex items-center gap-1">
                       <Play size={10} /> Install
                     </button>
                   </span>
@@ -432,6 +509,107 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
           );
         })}
       </div>
+      {/* Secrets modal — appears when requestInstall fires on a recipe with
+       *  declared secrets. Values are kept ONLY in component state and wiped
+       *  on submit/cancel; nothing is persisted to settings, storage, or DB. */}
+      <RecipeSecretsModal
+        recipe={ALL_RECIPES.find((r) => r.id === secretsPromptFor) ?? null}
+        values={secretValuesDraft}
+        onChange={(name, value) => setSecretValuesDraft((prev) => ({ ...prev, [name]: value }))}
+        error={secretError}
+        onSubmit={submitSecrets}
+        onCancel={cancelSecrets}
+      />
     </div>
+  );
+}
+
+/** Modal dialog for one-shot secrets (typically PATs). Inputs are type=password
+ *  so they're masked, and we suppress autocomplete + 1Password by setting
+ *  data-1p-ignore + autoComplete="off" — important so a leaked autofill never
+ *  silently writes a token into the wrong field across recipes. */
+function RecipeSecretsModal({
+  recipe,
+  values,
+  onChange,
+  error,
+  onSubmit,
+  onCancel,
+}: {
+  recipe: VpsRecipeDef | null;
+  values: Record<string, string>;
+  onChange: (name: string, value: string) => void;
+  error: string | null;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    if (!recipe) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onSubmit();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [recipe, onCancel, onSubmit]);
+
+  if (!recipe || !recipe.secrets) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-[60]" onClick={onCancel} />
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] max-w-[95vw] bg-mantle border border-surface0 rounded-lg shadow-xl z-[61] flex flex-col">
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-surface0 shrink-0">
+          <KeyRound size={14} className="text-blue" />
+          <span className="text-text font-medium text-md">{recipe.label}</span>
+          <span className="text-overlay0 text-xs">— one-time secrets, not stored</span>
+          <div className="flex-1" />
+          <button onClick={onCancel} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer" title="Close (Esc)">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="px-4 py-3 flex flex-col gap-3">
+          {recipe.secrets.map((s) => (
+            <div key={s.name} className="flex flex-col gap-1">
+              <label className="text-md text-text font-medium">
+                {s.label}
+                {s.required && <span className="text-red ml-1">*</span>}
+              </label>
+              <input
+                type="password"
+                value={values[s.name] ?? ""}
+                onChange={(e) => onChange(s.name, e.target.value)}
+                placeholder={s.placeholder}
+                autoComplete="off"
+                data-1p-ignore="true"
+                spellCheck={false}
+                className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text font-mono outline-none focus:border-blue"
+              />
+              {s.description && (
+                <p className="text-xs text-overlay0 leading-snug">{s.description}</p>
+              )}
+            </div>
+          ))}
+          {error && (
+            <p className="text-xs text-red">{error}</p>
+          )}
+          <div className="flex items-center justify-end gap-2 mt-2">
+            <button
+              onClick={onCancel}
+              className="text-md text-overlay1 hover:text-text px-3 py-1 rounded border border-overlay0/30 bg-transparent cursor-pointer transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onSubmit}
+              className="text-md text-blue hover:bg-blue/10 px-3 py-1 rounded border border-blue/40 bg-transparent cursor-pointer transition-colors inline-flex items-center gap-1.5"
+              title="Apply (⌘/Ctrl+Enter)"
+            >
+              <Play size={11} /> Apply
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }

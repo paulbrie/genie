@@ -155,7 +155,6 @@ export interface DoProvisionOpts {
   size?: string;
   signal?: AbortSignal;
   gitlabDeployKey?: string;
-  gitToken?: string;
   envVars?: Record<string, string>;
   baseImageId?: number;
   setupFiles?: Record<string, string>;
@@ -179,7 +178,6 @@ export async function doProvisionAndDeploy(
     size = "s-2vcpu-4gb",
     signal,
     gitlabDeployKey,
-    gitToken,
     envVars: optsEnvVars,
     baseImageId,
     setupFiles,
@@ -469,7 +467,8 @@ chmod 600 ~/.ssh/config`);
     // 7. Deploy via existing vpsDeploy (as genie user)
     onProgress("Starting deployment...");
     const envVars: Record<string, string> = { ...optsEnvVars };
-    if (gitToken) envVars.GIT_TOKEN = gitToken;
+    // GIT_TOKEN is no longer auto-injected from settings — apply the
+    // Git Credentials add-on after deploy if private clones are needed.
     await vpsDeploy(projectName, genieConnConfig, onProgress, envVars, setupFiles);
 
     return { dropletId, ipAddress, region, size };

@@ -11,7 +11,7 @@ export type SettingsTab = "general" | "deploy";
 // a regular user on the admin shell with empty data, instead of bouncing them.
 type NavRole = "user" | "tazcloud" | "admin" | "superadmin" | undefined | null;
 
-const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat"]);
+const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "settings"]);
 const TAZCLOUD_EXTRA_NAVS = new Set<NavKey>(["recipes", "clouds"]);
 const ADMIN_NAVS = new Set<NavKey>([
   "projects", "processes", "docker", "docs", "logs", "chat", "tracker",

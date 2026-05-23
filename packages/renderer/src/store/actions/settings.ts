@@ -9,7 +9,6 @@ export async function loadSettings(): Promise<void> {
     defaultEditor: result.defaultEditor || "",
     digitaloceanApiToken: result.digitaloceanApiToken || "",
     gitlabDeployKey: result.gitlabDeployKey || "",
-    gitToken: result.gitToken || "",
     railwayToken: result.railwayToken || "",
     railwayProjectId: result.railwayProjectId || "",
   });

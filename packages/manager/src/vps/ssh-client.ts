@@ -241,7 +241,6 @@ export function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: num
       try {
         const keyPath = resolveHome(config.privateKeyPath);
         privateKey = fs.readFileSync(keyPath);
-        console.log(`[ssh] Loaded key from ${keyPath} (${privateKey.length} bytes)`);
       } catch (err) {
         console.error(`[ssh] Failed to read key from ${config.privateKeyPath}:`, (err as Error).message);
         // Key file not readable — will try agent auth

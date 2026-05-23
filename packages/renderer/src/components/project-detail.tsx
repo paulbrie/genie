@@ -704,6 +704,21 @@ export interface RecipeOption {
   defaultValue: string;
 }
 
+/** A secret value the install script needs (e.g. a PAT). Collected from the
+ *  user at apply-time via a modal — NOT stored anywhere (settings, DB, or local
+ *  storage). Each Install / Re-apply requires the user to paste it again. */
+export interface RecipeSecret {
+  /** Env var name set in the install script's environment (e.g. `GIT_TOKEN`). */
+  name: string;
+  label: string;
+  /** Placeholder text shown in the input. */
+  placeholder?: string;
+  /** Short description rendered under the field. May include hints/links. */
+  description?: string;
+  /** When true, the recipe will refuse to install with this field empty. */
+  required?: boolean;
+}
+
 export interface VpsRecipeDef {
   id: string;
   label: string;
@@ -717,6 +732,17 @@ export interface VpsRecipeDef {
   commands: RecipeCommand[];
   /** Optional pre-install options shown as a small form in the admin panel. */
   options?: RecipeOption[];
+  /** Optional secrets prompted via modal on every Install / Re-apply. Required
+   *  for recipes that consume sensitive values not safe to persist (PATs).
+   *  Distinct from `options` in two ways:
+   *    1. Modal-driven UX (not inline form) so the user can't mistakenly leave
+   *       a token sitting in the page state across other actions.
+   *    2. Each apply re-prompts — no auto-fill, no saved values.
+   */
+  secrets?: RecipeSecret[];
+  /** Custom validation message for secrets — returned non-null to block submit.
+   *  Use when at-least-one-of-several is required rather than per-field. */
+  validateSecrets?: (values: Record<string, string>) => string | null;
 }
 
 /** Shared bash helpers for every Add-on install/uninstall script.
@@ -777,7 +803,7 @@ export const VPS_RECIPES: VpsRecipeDef[] = [
     id: "genie-standard",
     label: "Genie Standard Setup",
     icon: Sparkles,
-    description: "Baseline Genie expects on every VPS: Docker + compose, Node.js 20, Claude Code, /opt/project owned by current user, docker group membership.",
+    description: "Baseline Genie expects on every VPS: the 'genie' deploy user (passwordless sudo, same SSH key), Docker + compose, Node.js 20, Claude Code, /opt/project owned by genie.",
     // NOTE: we intentionally do NOT verify docker-group membership here.
     // `usermod -aG docker` only takes effect on the user's NEXT login, and
     // even a fresh SSH session can hold a stale group list (NSS cache,
@@ -786,28 +812,46 @@ export const VPS_RECIPES: VpsRecipeDef[] = [
     // which is exactly the bug "Genie button not active even though Genie
     // Standard Setup has been done". The docker group is a UX nicety (run
     // `docker` without sudo), not a marker of "is the recipe installed".
-    checkScript: `if command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "$(whoami)" ]; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: `if id genie >/dev/null 2>&1 && [ -s /home/genie/.ssh/authorized_keys ] && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ]; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
+# Prefer IPv4 globally for the rest of this script. The NodeSource setup_20.x
+# script runs its own apt-get update against deb.nodesource.com (Cloudflare-
+# fronted), which stalls over IPv6 on Taz VMs — see taz-ipv6-quirk. The outer
+# curl -4 only fixes the initial download, not what the script does internally,
+# so we patch /etc/gai.conf to make all subsequent DNS prefer v4.
+force_ipv4_dns
 log "Applying Genie standard setup (Docker, Node 20, Claude Code, /opt/project)..."
 if command -v apt-get > /dev/null 2>&1; then
   log "apt-get update..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
   log "apt-get install docker.io git curl ca-certificates..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates > /dev/null
-  if ! command -v node > /dev/null 2>&1; then
-    log "Adding NodeSource repo and installing Node.js 20..."
-    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1
-    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null
+  # Always run NodeSource's setup — Ubuntu 22.04 ships nodejs 12 without npm,
+  # so even when 'command -v node' succeeds we can't trust the version. NodeSource
+  # installs a higher-priority apt pin so the subsequent 'apt install nodejs'
+  # *replaces* Ubuntu's old package with v20 (which bundles npm).
+  node_major=$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\\1/' || echo 0)
+  if [ "$node_major" -lt 20 ] || ! command -v npm > /dev/null 2>&1; then
+    log "Adding NodeSource repo (apt update inside — usually 30–60 s)..."
+    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>&1 | sed 's/^/  /'
+    log "Installing Node.js 20 (bundles npm)..."
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs 2>&1 | sed 's/^/  /'
+  else
+    log "Node.js \${node_major}.x with npm already present, skipping NodeSource."
   fi
 elif command -v dnf > /dev/null 2>&1; then
   log "dnf install docker git curl..."
   sudo dnf install -y -q docker git curl > /dev/null
-  if ! command -v node > /dev/null 2>&1; then
-    log "Adding NodeSource repo and installing Node.js 20..."
-    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1
-    sudo dnf install -y -q nodejs > /dev/null
+  node_major=$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\\1/' || echo 0)
+  if [ "$node_major" -lt 20 ] || ! command -v npm > /dev/null 2>&1; then
+    log "Adding NodeSource repo (dnf install inside)..."
+    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>&1 | sed 's/^/  /'
+    log "Installing Node.js 20 (bundles npm)..."
+    sudo dnf install -y -q nodejs 2>&1 | sed 's/^/  /'
+  else
+    log "Node.js \${node_major}.x with npm already present, skipping NodeSource."
   fi
 else
   log "Unsupported package manager (need apt-get or dnf)"; exit 1
@@ -836,16 +880,41 @@ sudo -E NODE_OPTIONS="--dns-result-order=ipv4first" \\
     --no-audit --no-fund \\
     --fetch-retries=2 --fetch-retry-mintimeout=5000 \\
     @anthropic-ai/claude-code 2>&1 | tail -10
-log "Ensuring /opt/project exists and is owned by current user..."
+# Create the 'genie' deploy user. We do this last so npm install of Claude
+# Code (which can be flaky on Taz VMs) doesn't block the user creation step —
+# but before the /opt/project chown so we can hand it to genie directly.
+log "Creating 'genie' deploy user (idempotent)..."
+sudo useradd -m -s /bin/bash genie 2>/dev/null || true
+echo 'genie ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/genie > /dev/null
+sudo chmod 440 /etc/sudoers.d/genie
+
+# Copy the *calling* user's authorized_keys so the same SSH key (the one Genie
+# uses to reach this VM) also lets us SSH in as 'genie' afterwards. /root may
+# not have keys when the recipe runs as ubuntu/debian/almalinux, so source from
+# $HOME and fail loudly if it's missing — silently skipping would create a user
+# nobody can log into.
+src_keys="$HOME/.ssh/authorized_keys"
+if [ ! -s "$src_keys" ]; then
+  log "ERROR: no $src_keys to copy from — cannot grant SSH access to the genie user."
+  exit 1
+fi
+sudo mkdir -p /home/genie/.ssh
+sudo cp "$src_keys" /home/genie/.ssh/authorized_keys
+sudo chown -R genie:genie /home/genie/.ssh
+sudo chmod 700 /home/genie/.ssh
+sudo chmod 600 /home/genie/.ssh/authorized_keys
+
+log "Ensuring /opt/project exists and is owned by genie..."
 sudo mkdir -p /opt/project
-sudo chown -R "$(id -un):$(id -gn)" /opt/project
-log "Adding $(whoami) to docker group (no-op if already there)..."
+sudo chown -R genie:genie /opt/project
+log "Adding $(whoami) and genie to docker group (no-op if already there)..."
 sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
+sudo usermod -aG docker genie 2>/dev/null || true
 log "Versions:"
 log "  Docker:  $(docker --version 2>/dev/null || echo MISSING)"
 log "  Node:    $(node --version 2>/dev/null || echo MISSING)"
 log "  Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"
-log "Genie standard setup complete."
+log "Genie standard setup complete. SSH in as: ssh genie@$(hostname -I 2>/dev/null | awk '{print $1}')"
 log "Note: @genie/vps-agent is uploaded on-demand by the manager — not installed here."`,
     uninstallScript: `set -e
 ${BASH_HELPERS}
@@ -854,7 +923,7 @@ sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
 rm -rf "$HOME/.claude" 2>/dev/null || true
 log "Note: Docker, Node.js, and /opt/project are left in place — uninstall those individually if needed."
 log "Done."`,
-    setupShSnippet: `# Genie standard setup: Docker, Node 20, Claude Code, /opt/project
+    setupShSnippet: `# Genie standard setup: 'genie' user, Docker, Node 20, Claude Code, /opt/project
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io git curl ca-certificates > /dev/null
 # Docker Compose v2 from GitHub release (apt has no consistent package across distros)
@@ -865,11 +934,23 @@ curl -4 -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
 apt-get -o Acquire::ForceIPv4=true install -y -qq nodejs > /dev/null
 systemctl enable --now docker
 NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g --no-audit --no-fund @anthropic-ai/claude-code
-mkdir -p /opt/project && chown -R "$(id -un):$(id -gn)" /opt/project
-usermod -aG docker "$(id -un)" || true`,
+# 'genie' deploy user: passwordless sudo, same SSH key as root, owns /opt/project.
+useradd -m -s /bin/bash genie 2>/dev/null || true
+echo 'genie ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/genie
+chmod 440 /etc/sudoers.d/genie
+mkdir -p /home/genie/.ssh
+cp /root/.ssh/authorized_keys /home/genie/.ssh/authorized_keys
+chown -R genie:genie /home/genie/.ssh
+chmod 700 /home/genie/.ssh && chmod 600 /home/genie/.ssh/authorized_keys
+mkdir -p /opt/project && chown -R genie:genie /opt/project
+usermod -aG docker genie 2>/dev/null || true`,
     commands: [
       { name: "Versions (all)", command: `echo "Docker:  $(docker --version 2>/dev/null || echo MISSING)"; echo "Node:    $(node --version 2>/dev/null || echo MISSING)"; echo "npm:     $(npm --version 2>/dev/null || echo MISSING)"; echo "Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"; echo "Agent:   $(command -v genie-agent 2>/dev/null || echo MISSING)"` },
+      { name: "Show genie user", command: "id genie 2>/dev/null || echo '(no genie user)'" },
       { name: "Verify /opt/project ownership", command: "ls -ld /opt/project" },
+      { name: "Test login as genie (whoami)", command: "sudo -H -u genie whoami" },
+      { name: "Test sudo as genie (NOPASSWD)", command: "sudo -H -u genie sudo -n true && echo 'OK: genie has passwordless sudo' || echo 'FAIL: genie missing NOPASSWD sudo'" },
+      { name: "Show genie authorized keys (fingerprints)", command: "sudo ssh-keygen -l -f /home/genie/.ssh/authorized_keys 2>/dev/null || echo '(no authorized_keys)'" },
       { name: "Verify user in docker group", command: `id -nG | tr ' ' '\\n' | grep -qx docker && echo "OK: $(whoami) is in docker group" || echo "NOT in docker group — log out + back in after install"` },
       { name: "Re-run setup (idempotent)", command: `sudo -E NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g --no-audit --no-fund @anthropic-ai/claude-code 2>&1 | tail -5` },
       { name: "Docker info", command: "docker info 2>&1 | head -20" },
@@ -1356,7 +1437,25 @@ rkhunter --propupd --nocolors > /dev/null`,
     id: "git-credentials",
     label: "Git Credentials",
     icon: KeyRound,
-    description: "Configure git to clone private repos from github.com and gitlab.com using the logged-in user's tokens",
+    description: "Configure git to clone private repos from github.com and/or gitlab.com. Tokens are prompted each apply — never stored.",
+    secrets: [
+      {
+        name: "GIT_TOKEN",
+        label: "GitHub token",
+        placeholder: "ghp_… or github_pat_…",
+        description: "Classic PAT with 'repo' scope (works for org repos), or a fine-grained PAT with read access. Pasted token is used once and discarded.",
+      },
+      {
+        name: "GITLAB_TOKEN",
+        label: "GitLab token",
+        placeholder: "glpat-…",
+        description: "GitLab personal access token with 'read_repository' (or broader) scope. Leave empty if you only use GitHub.",
+      },
+    ],
+    validateSecrets: (v) =>
+      (v.GIT_TOKEN?.trim() || v.GITLAB_TOKEN?.trim())
+        ? null
+        : "Provide at least one token (GitHub or GitLab).",
     checkScript: `set -e
 # Treat the recipe as "installed" only if BOTH the credential.helper is set AND
 # the .git-credentials file has at least one entry. That way removing the file
@@ -1369,10 +1468,11 @@ else
 fi`,
     installScript: `set -e
 ${BASH_HELPERS}
-# Tokens are injected by the recipe runner from the calling user's settings
-# (Settings → Git Access Token / GitLab Access Token). At least one is required.
+# Tokens are prompted via the Install / Re-apply modal in the admin panel, then
+# passed as env vars for this one exec call. They are NOT stored anywhere — the
+# user re-enters them each time.
 if [ -z "$\{GIT_TOKEN:-}" ] && [ -z "$\{GITLAB_TOKEN:-}" ]; then
-  log "ERROR: no GIT_TOKEN or GITLAB_TOKEN set in your Genie settings — open Settings and save at least one."
+  log "ERROR: no token supplied. Click Install or Re-apply and paste at least one token in the dialog."
   exit 1
 fi
 

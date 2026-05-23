@@ -30,7 +30,6 @@ export interface AppSettings {
   defaultEditor: string;
   digitaloceanApiToken: string;
   gitlabDeployKey: string;
-  gitToken: string;
   railwayToken: string;
   railwayProjectId: string;
 }
@@ -58,7 +57,6 @@ export const genie = {
       defaultEditor: "",
       digitaloceanApiToken: "",
       gitlabDeployKey: "",
-      gitToken: "",
       railwayToken: "",
       railwayProjectId: "",
       ...rest,

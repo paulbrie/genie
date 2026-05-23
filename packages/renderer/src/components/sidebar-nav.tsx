@@ -36,7 +36,7 @@ export function SidebarNav() {
   const isAdmin = role === "admin" || isSuperAdmin;
   const isTazcloud = role === "tazcloud";
 
-  const standardUserKeys = new Set<NavKey>(["projects", "tracker", "chat"]);
+  const standardUserKeys = new Set<NavKey>(["projects", "tracker", "chat", "settings"]);
   const items = isAdmin
     ? (isSuperAdmin
         ? [
