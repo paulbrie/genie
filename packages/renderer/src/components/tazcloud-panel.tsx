@@ -8,7 +8,7 @@ import { $admin, $auth, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState } from "@/store/types";
 import { addSshTerminalTab, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, focusWindow, loadAdminTazVms, loadAdminTazcloudStats, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
 import { useDraggable, useResizable } from "@/components/use-draggable";
-import { VpsFirewall } from "@/components/project-detail";
+import { ClaudeLogo, VpsFirewall } from "@/components/project-detail";
 import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
 import { AdminSystemPanel } from "@/components/admin-system-panel";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
@@ -16,7 +16,7 @@ import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { CopyableIp } from "@/components/ui/copyable-ip";
-import { useDeepSubjectAll } from "@/lib/hooks";
+import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -1021,6 +1021,54 @@ function openManageVmWindow(vm: { id: string; name: string }) {
 
 type ManageVm = { id: string; name: string; ipv6: string; image?: string; projectId: string | null };
 
+/** Claude Terminal button for the Manage popup header. Runs a one-shot SSH
+ *  probe to see if the VM has the Genie standard setup (genie user with SSH
+ *  key + claude binary). If yes → launches as `genie`; otherwise → launches
+ *  as the image-default user (which only works if claude was installed under
+ *  that user). Disabled with a spinner while the probe is in flight so the
+ *  wrong user isn't picked on a too-early click. */
+function ClaudeManageButton({ vm }: { vm: ManageVm }) {
+  const [genieReady, setGenieReady] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const probeUser = imageDefaultUser(vm.image);
+    // -n: non-interactive sudo so it fails fast if a password is required.
+    // The /home/genie/.ssh dir is mode 700, hence the sudo.
+    const script = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v claude >/dev/null 2>&1; then echo "GENIE_READY"; else echo "NO_GENIE"; fi`;
+    adminTazcloudExec(vm.id, probeUser, script, vm.ipv6).then((res) => {
+      if (cancelled) return;
+      const last = res.output.trim().split("\n").pop()?.trim();
+      setGenieReady(last === "GENIE_READY");
+    });
+    return () => { cancelled = true; };
+  }, [vm.id, vm.image, vm.ipv6]);
+
+  const pending = genieReady === null;
+  const sshUser = genieReady ? "genie" : imageDefaultUser(vm.image);
+
+  const launch = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (pending) return;
+    addSshTerminalTab(
+      { host: vm.ipv6, port: 22, username: sshUser, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+      `Claude ${sshUser}@${vm.name}`,
+      "claude --dangerously-skip-permissions",
+    );
+  };
+
+  return (
+    <button
+      onClick={launch}
+      disabled={pending}
+      className="text-overlay1 hover:text-peach transition-colors bg-transparent border-none cursor-pointer p-1 disabled:opacity-40 disabled:cursor-wait"
+      title={pending ? "Checking Genie Setup…" : `Launch Claude Terminal — ${sshUser}@${vm.ipv6}`}
+    >
+      {pending ? <Loader2 size={14} className="animate-spin" /> : <ClaudeLogo size={14} />}
+    </button>
+  );
+}
+
 /** Draggable popup wrapper around ManageVmInline. Replaces the modal so admins
  *  can keep multiple manage panels open side-by-side and still see the VM list
  *  beneath them. Uses the shared window-manager so it cascades against other
@@ -1068,10 +1116,21 @@ function ManageVmPopup({ vm, windowId, windowState }: {
     ? { left: 0, top: 0, width: "100vw", height: "100vh", zIndex: windowState.zIndex }
     : { left: initial.x, top: initial.y, width: MANAGE_VM_DEFAULT_W, height: MANAGE_VM_DEFAULT_H, zIndex: windowState.zIndex };
 
+  // Focus is implicit: the open window with the highest zIndex is on top.
+  // Visually highlight it so the user can tell which popup their keystrokes
+  // and actions target when several popups are stacked.
+  const isFocused = useIsWindowFocused(windowState);
+
   return createPortal(
     <div
       ref={elRef}
-      className={`fixed bg-mantle border border-surface0 shadow-2xl shadow-black/50 flex flex-col ${maximized ? "rounded-none" : "rounded-lg"}`}
+      className={cn(
+        "fixed bg-mantle border flex flex-col transition-[border-color,box-shadow] duration-150 overflow-hidden",
+        maximized ? "rounded-none" : "rounded-lg",
+        isFocused
+          ? "border-blue/60 shadow-2xl shadow-blue/20"
+          : "border-surface0 shadow-2xl shadow-black/50",
+      )}
       style={containerStyle}
       onPointerDown={() => focusWindow(windowId)}
     >
@@ -1089,19 +1148,22 @@ function ManageVmPopup({ vm, windowId, windowState }: {
           // already runs, so what you see in the modal == what you type into.
           const sshUser = imageDefaultUser(vm.image);
           return (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                addSshTerminalTab(
-                  { host: vm.ipv6, port: 22, username: sshUser, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
-                  `SSH ${sshUser}@${vm.name}`,
-                );
-              }}
-              className="text-overlay1 hover:text-blue transition-colors bg-transparent border-none cursor-pointer p-1"
-              title={`Open SSH terminal — ${sshUser}@${vm.ipv6}`}
-            >
-              <Terminal size={14} />
-            </button>
+            <>
+              <ClaudeManageButton vm={vm} />
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  addSshTerminalTab(
+                    { host: vm.ipv6, port: 22, username: sshUser, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+                    `SSH ${sshUser}@${vm.name}`,
+                  );
+                }}
+                className="text-overlay1 hover:text-blue transition-colors bg-transparent border-none cursor-pointer p-1"
+                title={`Open SSH terminal — ${sshUser}@${vm.ipv6}`}
+              >
+                <Terminal size={14} />
+              </button>
+            </>
           );
         })()}
         <button onClick={() => minimizeWindow(windowId)} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1" title="Minimize">

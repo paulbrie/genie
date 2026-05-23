@@ -2,47 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { Package, Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Square, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers, KeyRound } from "lucide-react";
+import { Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Square, KeyRound, Package } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { VPS_RECIPES, BASH_HELPERS, type VpsRecipeDef } from "@/components/project-detail";
-import type { UserRecipe } from "@/store/types";
-import { $recipes } from "@/store/subjects";
+import { BASH_HELPERS, type VpsRecipeDef } from "@/components/project-detail";
+import { useAllRecipes } from "@/components/use-all-recipes";
 import { loadRecipes } from "@/store/actions";
-// Lucide icon names → components. Used to resolve `UserRecipe.icon` (string) into
-// a renderable component. Keep this list short — anything not here falls back to Package.
-const ICON_MAP: Record<string, typeof Package> = {
-  Package, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers,
-};
-
-/** Convert a DB-stored UserRecipe into the in-code VpsRecipeDef shape so the
- *  rest of the panel doesn't need to care which source it came from. */
-function userRecipeToDef(r: UserRecipe): VpsRecipeDef {
-  return {
-    id: r.slug,
-    label: r.label,
-    icon: ICON_MAP[r.icon] ?? Package,
-    description: r.description,
-    port: r.port ?? undefined,
-    checkScript: r.checkScript,
-    installScript: r.installScript,
-    uninstallScript: r.uninstallScript,
-    setupShSnippet: r.setupShSnippet,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    commands: (r.commands as any[]) ?? [],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    options: (r.options as any[]) ?? [],
-  };
-}
-
-/** Hook that returns built-in + user recipes merged. User recipes with the same
- *  slug as a built-in override the built-in (so users can tweak Chrome's apt step). */
-function useAllRecipes(): VpsRecipeDef[] {
-  const recipes = useDeepSubjectAll($recipes);
-  const userDefs = recipes.list.map(userRecipeToDef);
-  const userSlugs = new Set(userDefs.map((d: VpsRecipeDef) => d.id));
-  const builtins = VPS_RECIPES.filter((b) => !userSlugs.has(b.id));
-  return [...builtins, ...userDefs];
-}
 
 /** Function-shaped SSH exec contract. `onChunk` streams stdout/stderr so long-
  *  running installs show live progress. `signal` lets the caller abort an

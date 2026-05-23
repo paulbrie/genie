@@ -18,6 +18,8 @@ import {
 } from "@/lib/terminal-bridge";
 import { wsSend } from "@/lib/ws";
 import { useDraggable, useResizable } from "@/components/use-draggable";
+import { useIsWindowFocused } from "@/lib/hooks";
+import { cn } from "@/lib/utils";
 
 const WINDOW_PREFIX = "terminal-";
 const DEFAULT_W = 600;
@@ -189,10 +191,18 @@ function SingleTerminalWindow({
         zIndex: windowState.zIndex,
       };
 
+  const isFocused = useIsWindowFocused(windowState);
+
   return createPortal(
     <div
       ref={elRef}
-      className={`fixed bg-mantle border border-surface0 shadow-2xl shadow-black/50 flex flex-col ${maximized ? "rounded-none" : "rounded-xl"}`}
+      className={cn(
+        "fixed bg-mantle border flex flex-col transition-[border-color,box-shadow] duration-150 overflow-hidden",
+        maximized ? "rounded-none" : "rounded-xl",
+        isFocused
+          ? "border-blue/60 shadow-2xl shadow-blue/20"
+          : "border-surface0 shadow-2xl shadow-black/50",
+      )}
       style={containerStyle}
       onPointerDown={() => focusWindow(windowId)}
     >
