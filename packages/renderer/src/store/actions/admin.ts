@@ -186,8 +186,10 @@ export function loadAdminTazcloudStats(): void {
   wsSend("admin:tazcloud:stats", {});
 }
 
-/** Create a bare TazCloud VM. Mirrors `createAdminDroplet`. */
-export function createAdminTazVm(opts: { name: string; image: string; size: string }): void {
+/** Create a bare TazCloud VM. Mirrors `createAdminDroplet`. Pass `snapshot_id`
+ *  (mutually exclusive with `image`) to boot from an existing snapshot instead
+ *  of a base image. */
+export function createAdminTazVm(opts: { name: string; size: string; image?: string; snapshot_id?: string }): void {
   batch(() => {
     const v = $admin.getValue();
     v.tazcloud.creating = true;

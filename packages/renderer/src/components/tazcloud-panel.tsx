@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2 } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket } from "lucide-react";
 import { $admin, $auth, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState } from "@/store/types";
 import { addSshTerminalTab, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, focusWindow, loadAdminTazVms, loadAdminTazcloudStats, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
@@ -1154,8 +1154,41 @@ function ManageVmWindows({ vms }: { vms: AdminTazVm[] }) {
  *  list when possible (snapshot's source VM may have been deleted). */
 function TazSnapshotsSection({ vms }: { vms: AdminTazVm[] }) {
   const admin = useDeepSubjectAll($admin);
-  const { snapshots, snapshotsLoading, snapshotsError, snapshotCreateError } = admin.tazcloud;
+  const { snapshots, snapshotsLoading, snapshotsError, snapshotCreateError, creating, createError } = admin.tazcloud;
   const vmNameById = new Map(vms.map((v) => [v.id, v.name]));
+
+  // Per-row "boot from snapshot" form state.
+  const [bootFormFor, setBootFormFor] = useState<string | null>(null);
+  const [bootVmName, setBootVmName] = useState("");
+  const [bootVmSize, setBootVmSize] = useState("small");
+  const submittingRef = useRef(false);
+
+  // Auto-close the boot form when the create completes successfully.
+  // `creating` is shared with the deploy form at the top of the page, so we
+  // gate on `submittingRef` to only react when *this* form initiated it.
+  const prevCreatingRef = useRef(false);
+  useEffect(() => {
+    if (prevCreatingRef.current && !creating && submittingRef.current) {
+      submittingRef.current = false;
+      if (!createError) {
+        setBootFormFor(null);
+      }
+    }
+    prevCreatingRef.current = creating;
+  }, [creating, createError]);
+
+  function openBootForm(snapshotId: string) {
+    setBootVmName(defaultVmName());
+    setBootVmSize("small");
+    setBootFormFor(snapshotId);
+  }
+
+  function submitBoot(snapshotId: string) {
+    const trimmed = bootVmName.trim();
+    if (validateTazVmName(trimmed)) return;
+    submittingRef.current = true;
+    createAdminTazVm({ name: trimmed, size: bootVmSize, snapshot_id: snapshotId });
+  }
 
   if (snapshots.length === 0 && !snapshotsLoading && !snapshotsError && !snapshotCreateError) {
     return null;  // nothing to show — keep the page clean until the user creates one
@@ -1195,36 +1228,91 @@ function TazSnapshotsSection({ vms }: { vms: AdminTazVm[] }) {
             <tbody>
               {snapshots.map((s) => {
                 const sourceName = vmNameById.get(s.sourceVmId);
+                const bootOpen = bootFormFor === s.id;
+                const bootNameErr = validateTazVmName(bootVmName.trim());
                 return (
-                  <tr key={s.id} className="border-t border-overlay0/10">
-                    <td className="px-3 py-2 font-mono text-text">{s.name}</td>
-                    <td className="px-3 py-2 text-overlay1 font-mono text-xs">
-                      {sourceName ? <span>{sourceName}</span> : <span title={s.sourceVmId} className="text-overlay0">(deleted: {s.sourceVmId.slice(0, 8)}…)</span>}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className={cn(
-                        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium",
-                        s.status === "active" && "bg-green/15 text-green",
-                        s.status === "pending" && "bg-yellow/15 text-yellow",
-                        s.status === "error" && "bg-red/15 text-red",
-                      )}>
-                        {s.status === "pending" && <Loader2 size={10} className="animate-spin" />}
-                        {s.status}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-overlay1">{s.sizeGb} GB</td>
-                    <td className="px-3 py-2 text-overlay1 text-xs">{new Date(s.created).toLocaleString()}</td>
-                    <td className="px-3 py-2">
-                      <button
-                        onClick={() => { if (confirm(`Delete snapshot "${s.name}"? VMs already booted from it are unaffected.`)) deleteTazSnapshot(s.id); }}
-                        disabled={s.status === "pending"}
-                        className="p-1 text-overlay0 hover:text-red transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={s.status === "pending" ? "Cannot delete a pending snapshot" : "Delete snapshot"}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </td>
-                  </tr>
+                  <Fragment key={s.id}>
+                    <tr className="border-t border-overlay0/10">
+                      <td className="px-3 py-2 font-mono text-text">{s.name}</td>
+                      <td className="px-3 py-2 text-overlay1 font-mono text-xs">
+                        {sourceName ? <span>{sourceName}</span> : s.sourceVmId ? <span title={s.sourceVmId} className="text-overlay0">(deleted: {s.sourceVmId.slice(0, 8)}…)</span> : <span className="text-overlay0">—</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={cn(
+                          "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium",
+                          s.status === "active" && "bg-green/15 text-green",
+                          s.status === "pending" && "bg-yellow/15 text-yellow",
+                          s.status === "error" && "bg-red/15 text-red",
+                        )}>
+                          {s.status === "pending" && <Loader2 size={10} className="animate-spin" />}
+                          {s.status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-overlay1">{s.sizeGb} GB</td>
+                      <td className="px-3 py-2 text-overlay1 text-xs">{new Date(s.created).toLocaleString()}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-1 justify-end">
+                          <button
+                            onClick={() => bootOpen ? setBootFormFor(null) : openBootForm(s.id)}
+                            disabled={s.status !== "active"}
+                            className={cn(
+                              "p-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                              bootOpen ? "text-blue" : "text-overlay0 hover:text-blue",
+                            )}
+                            title={s.status !== "active" ? "Snapshot must be active to boot a VM" : "Boot a new VM from this snapshot"}
+                          >
+                            <Rocket size={13} />
+                          </button>
+                          <button
+                            onClick={() => { if (confirm(`Delete snapshot "${s.name}"? VMs already booted from it are unaffected.`)) deleteTazSnapshot(s.id); }}
+                            disabled={s.status === "pending"}
+                            className="p-1 text-overlay0 hover:text-red transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={s.status === "pending" ? "Cannot delete a pending snapshot" : "Delete snapshot"}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {bootOpen && (
+                      <tr className="border-t border-overlay0/10 bg-surface0/20">
+                        <td colSpan={6} className="px-3 py-3">
+                          <div className="flex items-end gap-2 flex-wrap">
+                            <div className="flex flex-col gap-1 flex-1 min-w-[240px]">
+                              <label className="text-md text-overlay0">New VM name</label>
+                              <input
+                                type="text"
+                                value={bootVmName}
+                                onChange={(e) => setBootVmName(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") submitBoot(s.id); if (e.key === "Escape") setBootFormFor(null); }}
+                                spellCheck={false}
+                                autoFocus
+                                disabled={creating}
+                                className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue disabled:opacity-50"
+                              />
+                              {bootNameErr && <span className="text-xs text-red italic">{bootNameErr}</span>}
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-md text-overlay0">Size</label>
+                              <Select value={bootVmSize} onChange={(e) => setBootVmSize(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
+                                {SIZES.map((sz) => <option key={sz} value={sz}>{sz}</option>)}
+                              </Select>
+                            </div>
+                            <Button size="sm" variant="primary" onClick={() => submitBoot(s.id)} disabled={creating || bootNameErr !== null}>
+                              {creating && submittingRef.current ? <Loader2 size={14} className="animate-spin mr-1" /> : <Rocket size={14} className="mr-1" />}
+                              {creating && submittingRef.current ? "Booting…" : "Boot VM"}
+                            </Button>
+                            <Button size="sm" onClick={() => setBootFormFor(null)} disabled={creating && submittingRef.current}>
+                              Cancel
+                            </Button>
+                            <p className="basis-full text-xs text-overlay0 italic">
+                              Boots a new VM from snapshot <span className="font-mono">{s.name}</span>. SSH user matches the snapshot's source image. Firewall preset is not applied — the snapshot keeps its existing rules.
+                            </p>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

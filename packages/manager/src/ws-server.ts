@@ -4905,19 +4905,23 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "admin:tazcloud:create": {
       try {
-        const { name, image, size } = msg.payload;
+        const { name, image, size, snapshot_id } = msg.payload;
         if (!name || typeof name !== "string") throw new Error("name is required");
+        if (image && snapshot_id) throw new Error("`image` and `snapshot_id` are mutually exclusive");
         const tazToken = process.env.TAZCLOUD_API_TOKEN;
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
         const tazClient = createTazClient(tazToken);
-        const vm = await tazClient.createVm({ name, image, size });
+        const vm = await tazClient.createVm({ name, image, size, snapshot_id });
         send(ws, { type: "admin:tazcloud:created", payload: { vm } });
 
         // Async firewall preset: wait for SSH, then apply default-deny + allow 22/3000.
         // Fire-and-forget so the UI can show the VM immediately; the firewall card
         // will reflect the new rules on next refresh.
-        if (tazPrivateKey && vm.ssh_host) {
+        // Skipped for snapshot-booted VMs: SSH user depends on the snapshot's source
+        // image (which may be deleted), and the snapshot already carries its own
+        // firewall config.
+        if (tazPrivateKey && vm.ssh_host && !snapshot_id) {
           void (async () => {
             const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
             const sshUser = sshUserForImage(image || "ubuntu-22");
