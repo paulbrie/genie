@@ -68,6 +68,17 @@ function ClaudeLogo({ size = 16 }: { size?: number }) {
 function ClaudeTerminalButton({ projectId, instance }: { projectId: string; instance: { id: string; label?: string; connection: { username: string; host: string; port: number; privateKeyPath: string } } }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const vpsDeployState = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
+  const recipeState = vpsDeployState.instances[instance.id]?.recipes?.["genie-standard"];
+  // Genie Standard Setup installs `claude` globally + creates the `genie` user.
+  // When it's installed, launch the terminal as `genie` so claude has its own
+  // home/config/scope, even if the saved connection still uses the image-default
+  // user (almalinux/ubuntu/debian) from a bare VM deploy.
+  const genieInstalled = recipeState?.installed === true;
+  // Gate the button until the genie-standard check has resolved (true|false).
+  // Without this, clicking too early would launch as the saved (non-genie) user
+  // even on a VM where genie *is* installed — wrong SSH user → no $HOME/.claude.
+  const checkPending = typeof recipeState?.installed !== "boolean";
 
   useEffect(() => {
     if (!open) return;
@@ -79,32 +90,40 @@ function ClaudeTerminalButton({ projectId, instance }: { projectId: string; inst
   }, [open]);
 
   const launch = (resume: boolean) => {
+    if (checkPending) return;
     setOpen(false);
-    const { username, host, port, privateKeyPath } = instance.connection;
+    const { host, port, privateKeyPath } = instance.connection;
+    const username = genieInstalled ? "genie" : instance.connection.username;
     startMcpTunnel(projectId, instance.id);
     const cmd = resume ? "claude --dangerously-skip-permissions --resume" : "claude --dangerously-skip-permissions";
     const label = resume ? `Claude (resume) @ ${instance.label || host}` : `Claude @ ${instance.label || host}`;
     addSshTerminalTab({ host, port, username, privateKeyPath }, label, cmd);
   };
 
+  const disabledTitle = checkPending ? "Checking Genie Standard Setup… terminal will launch as the correct user once the check resolves." : undefined;
+
   return (
     <div className="relative" ref={ref}>
       <div className="flex items-center">
         <button
           onClick={() => launch(false)}
-          className="text-md text-peach hover:underline flex items-center gap-1"
+          disabled={checkPending}
+          title={disabledTitle}
+          className="text-md text-peach hover:underline flex items-center gap-1 disabled:opacity-40 disabled:cursor-wait disabled:no-underline"
         >
-          <ClaudeLogo size={12} />
+          {checkPending ? <Loader2 size={12} className="animate-spin" /> : <ClaudeLogo size={12} />}
           Claude Terminal
         </button>
         <button
           onClick={() => setOpen(!open)}
-          className="text-peach hover:text-peach/80 bg-transparent border-none cursor-pointer p-0 ml-0.5"
+          disabled={checkPending}
+          title={disabledTitle}
+          className="text-peach hover:text-peach/80 bg-transparent border-none cursor-pointer p-0 ml-0.5 disabled:opacity-40 disabled:cursor-wait"
         >
           <ChevronDown size={11} />
         </button>
       </div>
-      {open && (
+      {open && !checkPending && (
         <div className="absolute top-full left-0 mt-1 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[140px] z-50">
           <button
             onClick={() => launch(false)}
@@ -812,7 +831,15 @@ export const VPS_RECIPES: VpsRecipeDef[] = [
     // which is exactly the bug "Genie button not active even though Genie
     // Standard Setup has been done". The docker group is a UX nicety (run
     // `docker` without sudo), not a marker of "is the recipe installed".
-    checkScript: `if id genie >/dev/null 2>&1 && [ -s /home/genie/.ssh/authorized_keys ] && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ]; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    // The authorized_keys check uses `sudo -n` because /home/genie/.ssh is mode
+    // 700 (owned by genie); when the saved SSH connection user is the image
+    // default (almalinux/ubuntu/debian) — typical when Standard Setup is run
+    // after a bare VM deploy — a direct `[ -s ... ]` test silently fails on
+    // the unreadable parent dir and reports NOT_INSTALLED on every refresh,
+    // exactly the bug "Genie button not green after refresh". -n is safe: the
+    // install script itself relies on passwordless sudo, so if install
+    // succeeded, `sudo -n` works.
+    checkScript: `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ]; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
