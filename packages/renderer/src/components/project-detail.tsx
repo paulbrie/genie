@@ -154,6 +154,7 @@ import type { ProcessInfo } from "@/store/types";
 import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
 import { openManageVmWindow } from "@/components/tazcloud-panel";
+import { openManageDropletWindow } from "@/components/digitalocean-panel";
 
 
 const BASE_PROJECT_TABS: { key: ProjectTab; label: string }[] = [
@@ -256,27 +257,32 @@ function ServersBar({
           const isDeploying = state?.deploying;
           const isFailed = !!instance.deployFailed;
           const dotColor = isFailed ? "bg-red" : isDeploying ? "bg-yellow" : "bg-green";
-          // Only TazCloud instances open the floating Manage popup; DigitalOcean
-          // doesn't have an equivalent popup yet (the existing Manage UI is
-          // inline). We disable the button for DO with a hint until that lands.
+          // Both TazCloud VMs and DigitalOcean droplets open the floating
+          // Manage popup — they go through different open* helpers (and
+          // therefore different window-id prefixes) but render via the same
+          // generic ManageVmPopup machinery.
           const tazVmId = instance.tazcloud?.vmId;
+          const doDropletId = instance.digitalocean?.dropletId;
+          const canManage = !!tazVmId || !!doDropletId;
           return (
             <button
               key={instance.id}
               onClick={() => {
                 if (tazVmId) {
                   openManageVmWindow({ id: tazVmId, name: instance.label });
+                } else if (doDropletId) {
+                  openManageDropletWindow({ id: doDropletId, name: instance.label });
                 }
               }}
-              disabled={!tazVmId}
+              disabled={!canManage}
               className={cn(
                 "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-md transition-colors border",
                 "bg-mantle text-subtext0 border-surface0 hover:bg-surface0 hover:text-text",
-                !tazVmId && "opacity-50 cursor-not-allowed hover:bg-mantle hover:text-subtext0",
+                !canManage && "opacity-50 cursor-not-allowed hover:bg-mantle hover:text-subtext0",
               )}
-              title={tazVmId
+              title={canManage
                 ? "Open Manage popup"
-                : "Manage popup is currently only available for TazCloud VMs"}
+                : "This instance is not linked to a supported provider"}
             >
               <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dotColor)} />
               {instance.label}

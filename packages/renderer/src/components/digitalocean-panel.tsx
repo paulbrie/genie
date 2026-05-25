@@ -1,23 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink } from "lucide-react";
 import type { AdminDroplet } from "@/store/types";
-import { $admin, $auth, $projects } from "@/store/subjects";
-import { addSshTerminalTab, adminDropletExec, createAdminDroplet, disconnectVps, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { $admin, $auth, $projects, $windowManager } from "@/store/subjects";
+import { addSshTerminalTab, createAdminDroplet, disconnectVps, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
-import { VpsFirewall } from "@/components/project-detail";
-import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
-import { AdminSystemPanel } from "@/components/admin-system-panel";
-import { VpsResourceGauges } from "@/components/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
+import { ManageVmPopup, type ManageVm } from "@/components/tazcloud-panel";
 
 // Confirmation type for the inline delete UI on each row.
 type PendingDeleteId = number | null;
@@ -57,7 +54,6 @@ export function DigitalOceanPanel() {
   const [auth] = useSubject($auth);
   const [projects] = useSubject($projects);
   const [pendingDelete, setPendingDelete] = useState<PendingDeleteId>(null);
-  const [manageExpanded, setManageExpanded] = useState<number | null>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deployOpen, setDeployOpen] = useState(false);
@@ -386,13 +382,10 @@ export function DigitalOceanPanel() {
                       <Maximize2 size={13} />
                     </button>
                     <button
-                      onClick={() => setManageExpanded(manageExpanded === d.id ? null : d.id)}
+                      onClick={() => openManageDropletWindow(d)}
                       disabled={!isActive}
-                      className={cn(
-                        "p-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
-                        manageExpanded === d.id ? "text-blue" : "text-overlay0 hover:text-blue",
-                      )}
-                      title="Manage firewall & add-ons"
+                      className="p-1 text-overlay0 hover:text-blue transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Open Manage popup"
                     >
                       <SettingsIcon size={13} />
                     </button>
@@ -464,11 +457,6 @@ export function DigitalOceanPanel() {
                       onCancel={() => setPendingDelete(null)}
                     />
                   )}
-                  {manageExpanded === d.id && isActive && (
-                    <div className="mt-3 border-t border-overlay0/10 pt-3">
-                      <ManageDropletInline droplet={d} />
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -534,24 +522,108 @@ export function DigitalOceanPanel() {
   );
 }
 
-function ManageDropletInline({ droplet }: { droplet: AdminDroplet }) {
-  const exec = (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
-    adminDropletExec(droplet.id, command, onChunk, signal);
-  return (
-    <div className="flex flex-col gap-3">
-      <p className="text-xs text-overlay0">
-        Operations run via SSH as <span className="font-mono text-overlay1">genie@{droplet.ip}</span>
-      </p>
-      {droplet.ip && <VpsResourceGauges exec={exec} host={droplet.ip} />}
-      <AdminSystemPanel exec={exec} />
-      <AdminRecipesPanel exec={exec} />
-      <VpsFirewall exec={exec} />
-    </div>
-  );
-}
-
 // Local helper to dispatch droplet deletion via the existing admin:droplets:delete handler.
 function wsDeleteDroplet(dropletId: number) {
   // Use the renderer's wsSend directly to avoid coupling to a new store action.
   import("@/lib/ws").then(({ wsSend }) => wsSend("admin:droplets:delete", { dropletId }));
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Floating Manage popup for DigitalOcean droplets.
+//
+// Reuses the generic ManageVmPopup (tabs, drag/resize, recipes, firewall,
+// ports, sessions, files, db) from tazcloud-panel.tsx. A distinct window-id
+// prefix keeps DO popups separate from Taz popups in the window manager and
+// lets each panel mount its own resolver below.
+// ──────────────────────────────────────────────────────────────────────────
+
+const MANAGE_DROPLET_WINDOW_PREFIX = "manage-droplet-";
+
+/** Open the floating Manage popup for a DigitalOcean droplet. Cascades against
+ *  other open popups via the window-manager (same UX as TazCloud). */
+export function openManageDropletWindow(d: { id: number; name: string }) {
+  const wid = MANAGE_DROPLET_WINDOW_PREFIX + d.id;
+  registerWindow(wid, `Manage ${d.name}`, "settings");
+  openWindow(wid);
+  focusWindow(wid);
+}
+
+function ManageDropletWindowInstance({ windowId }: { windowId: string }) {
+  const [windowManager] = useSubject($windowManager);
+  const adminDroplets = useDeepSubjectAll($admin).droplets;
+  const [projects] = useSubject($projects);
+  const windowState = windowManager.windows[windowId];
+  const dropletIdStr = windowId.slice(MANAGE_DROPLET_WINDOW_PREFIX.length);
+  const dropletId = Number(dropletIdStr);
+
+  // Primary source: the admin droplets list (when the user is on the Clouds
+  // panel). Fallback: a project-attached droplet — lets the popup open from a
+  // project page without needing the admin list to be loaded.
+  const adminDroplet = adminDroplets.find((d) => d.id === dropletId) ?? null;
+  const adminName = adminDroplet?.name ?? "";
+  const adminIp = adminDroplet?.ip ?? "";
+  const adminProjectId = adminDroplet?.projectId ?? null;
+
+  let projInst: { label: string; ip: string; projectId: string } | null = null;
+  if (!adminDroplet) {
+    for (const p of projects) {
+      const inst = p.vpsInstances.find((i) => i.digitalocean?.dropletId === dropletId);
+      if (inst && inst.digitalocean) {
+        projInst = {
+          label: inst.label,
+          ip: inst.digitalocean.ipAddress || inst.connection.host,
+          projectId: p.id,
+        };
+        break;
+      }
+    }
+  }
+  const projLabel = projInst?.label ?? "";
+  const projIp = projInst?.ip ?? "";
+  const projProjectId = projInst?.projectId ?? null;
+
+  // Stable identity — see the parallel comment in ManageVmWindowInstance about
+  // depending on primitives, not arrays, to avoid resetting child effects on
+  // every WS broadcast.
+  const vm = useMemo<ManageVm | null>(() => {
+    if (adminDroplet) {
+      return {
+        id: dropletIdStr,
+        name: adminName,
+        host: adminIp,
+        projectId: adminProjectId,
+        provider: "do",
+      };
+    }
+    if (projInst) {
+      return {
+        id: dropletIdStr,
+        name: projLabel,
+        host: projIp,
+        projectId: projProjectId,
+        provider: "do",
+      };
+    }
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dropletIdStr, !!adminDroplet, adminName, adminIp, adminProjectId, !!projInst, projLabel, projIp, projProjectId]);
+
+  const lastVmRef = useRef<ManageVm | null>(null);
+  if (vm) lastVmRef.current = vm;
+  const renderVm = vm ?? lastVmRef.current;
+
+  if (!windowState || windowState.status !== "open" || !renderVm) return null;
+  return <ManageVmPopup vm={renderVm} windowId={windowId} windowState={windowState} />;
+}
+
+export function ManageDropletWindows() {
+  const [windowManager] = useSubject($windowManager);
+  const windowIds = Object.keys(windowManager.windows).filter((id) => id.startsWith(MANAGE_DROPLET_WINDOW_PREFIX));
+  return (
+    <>
+      {windowIds.map((id) => (
+        <ManageDropletWindowInstance key={id} windowId={id} />
+      ))}
+    </>
+  );
 }

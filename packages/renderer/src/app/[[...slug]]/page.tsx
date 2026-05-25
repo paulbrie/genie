@@ -15,6 +15,7 @@ import { SettingsPanel } from "@/components/settings-panel";
 import { ChatView } from "@/components/chat-view";
 import { ChatNotificationToasts } from "@/components/chat-notification-toasts";
 import { ManageVmWindows } from "@/components/tazcloud-panel";
+import { ManageDropletWindows } from "@/components/digitalocean-panel";
 import { TrackerPanel } from "@/components/tracker-panel";
 import { AdminPanel } from "@/components/admin-panel";
 import { CloudsPanel } from "@/components/clouds-panel";
@@ -249,9 +250,11 @@ export default function Home() {
     <>
       <MainPanel activeTab={activeTab} settingsTab={settingsTab} />
       <ChatNotificationToasts />
-      {/* Global mount so the TazCloud Manage popup can be opened from any page
-          (TazCloud admin panel, project detail, etc.) and survives navigation. */}
+      {/* Global mounts so both Manage popups (TazCloud + DigitalOcean) can be
+          opened from any page and survive navigation. Separate window-id
+          prefixes keep them independent. */}
       <ManageVmWindows />
+      <ManageDropletWindows />
     </>
   );
 }

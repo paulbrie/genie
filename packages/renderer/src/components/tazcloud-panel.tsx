@@ -6,7 +6,7 @@ import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug } from "lucide-react";
 import { $admin, $auth, $persistedTerminals, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession } from "@/store/types";
-import { addSshTerminalTab, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, disconnectVps, focusWindow, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
+import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, disconnectVps, focusWindow, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
 import { useDraggable, useResizable } from "@/components/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project-detail";
 import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
@@ -1044,9 +1044,11 @@ export function TazCloudPanel() {
 }
 
 const MANAGE_VM_WINDOW_PREFIX = "manage-vm-";
-const MANAGE_VM_DEFAULT_W = 900;
-const MANAGE_VM_DEFAULT_H = 600;
-const MANAGE_VM_CASCADE_OFFSET = 30;
+/** Default size + cascade offset for any Manage popup variant. Exported so the
+ *  DO panel (and any future provider) can keep its popup consistent with Taz. */
+export const MANAGE_VM_DEFAULT_W = 900;
+export const MANAGE_VM_DEFAULT_H = 600;
+export const MANAGE_VM_CASCADE_OFFSET = 30;
 
 /** Open the Manage popup for a TazCloud VM. Exported so project pages can
  *  trigger the same popup with data derived from a project's VpsInstance —
@@ -1059,30 +1061,69 @@ export function openManageVmWindow(vm: { id: string; name: string }) {
   focusWindow(wid);
 }
 
-type ManageVm = { id: string; name: string; ipv6: string; image?: string; projectId: string | null; ingress?: { domain: string; url?: string } | null };
+export type ManageVmProvider = "tazcloud" | "do";
 
-/** Claude Terminal button for the Manage tab. Runs a one-shot SSH probe to see
- *  if the VM has the Genie standard setup (genie user with SSH key + claude
- *  binary). If yes → launches as `genie`; otherwise → launches as the
- *  image-default user (which only works if claude was installed under that
- *  user). Disabled with a spinner while the probe is in flight so the wrong
- *  user isn't picked on a too-early click. */
+/** Provider-agnostic shape consumed by ManageVmInline + the floating popup.
+ *  `host` is whatever address SSH should target — IPv6 for TazCloud VMs, IPv4
+ *  for DigitalOcean droplets. */
+export interface ManageVm {
+  id: string;
+  name: string;
+  host: string;
+  image?: string;
+  projectId: string | null;
+  provider: ManageVmProvider;
+  ingress?: { domain: string; url?: string } | null;
+}
+
+/** SSH key file used to log in to a provider's VMs. The manager rolls a
+ *  separate key per provider so a TazCloud key compromise doesn't trample DO. */
+function sshKeyPathFor(provider: ManageVmProvider): string {
+  return provider === "tazcloud" ? "~/.genie/ssh/tazcloud_ed25519" : "~/.genie/ssh/genie_ed25519";
+}
+
+/** Default SSH user candidates shown in the SSH split-button dropdown. */
+function sshUserChoicesFor(vm: ManageVm): string[] {
+  if (vm.provider === "do") return ["genie", "root"];
+  return ["genie", "ubuntu", "debian", "almalinux", "root"];
+}
+
+/** Bind an exec function to this VM. Hides the provider-specific WS call shape
+ *  so child panels (recipes, system, firewall) can just call `exec(cmd)`. */
+function makeVmExec(vm: ManageVm, sshUser: string) {
+  if (vm.provider === "tazcloud") {
+    return (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
+      adminTazcloudExec(vm.id, sshUser, command, vm.host, onChunk, signal);
+  }
+  // DigitalOcean: exec runs as `genie` server-side; the username is fixed and
+  // the dropletId is a number, so we ignore sshUser and stringify back to int.
+  return (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
+    adminDropletExec(Number(vm.id), command, onChunk, signal);
+}
+
+/** Claude Terminal button for the Manage tab. For TazCloud VMs we probe whether
+ *  the genie deploy user is set up before deciding which SSH user to run as —
+ *  on a fresh VM, only the image-default user exists. DigitalOcean droplets are
+ *  provisioned by Genie itself with the genie user, so no probe is needed there. */
 function ClaudeManageButton({ vm }: { vm: ManageVm }) {
-  const [genieReady, setGenieReady] = useState<boolean | null>(null);
+  // `null` while probing; `true` if genie is ready; `false` otherwise. For DO,
+  // we know the user is provisioned so we skip the probe entirely.
+  const [genieReady, setGenieReady] = useState<boolean | null>(vm.provider === "do" ? true : null);
 
   useEffect(() => {
+    if (vm.provider === "do") { setGenieReady(true); return; }
     let cancelled = false;
     const probeUser = imageDefaultUser(vm.image);
     // -n: non-interactive sudo so it fails fast if a password is required.
     // The /home/genie/.ssh dir is mode 700, hence the sudo.
     const script = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v claude >/dev/null 2>&1; then echo "GENIE_READY"; else echo "NO_GENIE"; fi`;
-    adminTazcloudExec(vm.id, probeUser, script, vm.ipv6).then((res) => {
+    adminTazcloudExec(vm.id, probeUser, script, vm.host).then((res) => {
       if (cancelled) return;
       const last = res.output.trim().split("\n").pop()?.trim();
       setGenieReady(last === "GENIE_READY");
     });
     return () => { cancelled = true; };
-  }, [vm.id, vm.image, vm.ipv6]);
+  }, [vm.id, vm.image, vm.host, vm.provider]);
 
   const pending = genieReady === null;
   const sshUser = genieReady ? "genie" : imageDefaultUser(vm.image);
@@ -1090,7 +1131,7 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   const launch = () => {
     if (pending) return;
     addSshTerminalTab(
-      { host: vm.ipv6, port: 22, username: sshUser, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+      { host: vm.host, port: 22, username: sshUser, privateKeyPath: sshKeyPathFor(vm.provider) },
       `Claude ${sshUser}@${vm.name}`,
       // Start in /opt/project — that's the canonical project root that
       // Genie Standard Setup chowns to genie and that every recipe (Next.js
@@ -1106,7 +1147,7 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
       onClick={launch}
       disabled={pending}
       className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors disabled:opacity-40 disabled:cursor-wait"
-      title={pending ? "Checking Genie Setup…" : `Launch Claude Terminal — ${sshUser}@${vm.ipv6}`}
+      title={pending ? "Checking Genie Setup…" : `Launch Claude Terminal — ${sshUser}@${vm.host}`}
     >
       {pending ? <Loader2 size={11} className="animate-spin" /> : <ClaudeLogo size={11} />}
       Claude
@@ -1118,21 +1159,22 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
  *  as `genie` (the deploy user); click the chevron → pick a different login. */
 function SshLaunchButton({ vm }: { vm: ManageVm }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  if (!vm.ipv6) return null;
+  if (!vm.host) return null;
   const openSsh = (user: string) => {
     addSshTerminalTab(
-      { host: vm.ipv6, port: 22, username: user, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+      { host: vm.host, port: 22, username: user, privateKeyPath: sshKeyPathFor(vm.provider) },
       `SSH ${user}@${vm.name}`,
     );
   };
   const defaultUser = "genie";
   const imageDefault = imageDefaultUser(vm.image);
+  const userChoices = sshUserChoicesFor(vm);
   return (
     <div className="relative inline-flex items-stretch">
       <button
         onClick={() => openSsh(defaultUser)}
         className="flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 rounded-l border border-r-0 border-blue/30 text-md text-blue hover:bg-blue/10 transition-colors"
-        title={`Open SSH terminal — ${defaultUser}@${vm.ipv6}`}
+        title={`Open SSH terminal — ${defaultUser}@${vm.host}`}
       >
         <Terminal size={11} />
         SSH
@@ -1148,7 +1190,7 @@ function SshLaunchButton({ vm }: { vm: ManageVm }) {
         <>
           <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
           <div className="absolute right-0 top-full mt-1 z-20 bg-mantle border border-overlay0/30 rounded-md shadow-lg py-1 min-w-[160px]">
-            {["genie", "ubuntu", "debian", "almalinux", "root"].map((u) => {
+            {userChoices.map((u) => {
               const isDefault = u === defaultUser;
               const isImage = u === imageDefault;
               return (
@@ -1174,7 +1216,7 @@ function SshLaunchButton({ vm }: { vm: ManageVm }) {
  *  can keep multiple manage panels open side-by-side and still see the VM list
  *  beneath them. Uses the shared window-manager so it cascades against other
  *  popups and shows up in the window toolbar. */
-function ManageVmPopup({ vm, windowId, windowState }: {
+export function ManageVmPopup({ vm, windowId, windowState }: {
   vm: ManageVm;
   windowId: string;
   windowState: FloatingWindowState;
@@ -1317,16 +1359,17 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
       return {
         id: vmId,
         name: adminName,
-        ipv6: adminIpv6,
+        host: adminIpv6,
         image: adminImage,
         projectId: adminProjectId,
+        provider: "tazcloud",
         ingress: adminIngressDomain
           ? { domain: adminIngressDomain, url: adminIngressUrl ?? undefined }
           : null,
       };
     }
     if (projInst) {
-      return { id: vmId, name: projLabel, ipv6: projIpv6, image: projImage, projectId: projProjectId };
+      return { id: vmId, name: projLabel, host: projIpv6, image: projImage, projectId: projProjectId, provider: "tazcloud" };
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1534,7 +1577,7 @@ function TazSnapshotsSection({ vms }: { vms: AdminTazVm[] }) {
 }
 
 interface ManageVmInlineProps {
-  vm: { id: string; name: string; ipv6: string; image?: string; projectId: string | null; ingress?: { domain: string; url?: string } | null };
+  vm: ManageVm;
 }
 
 type ManageTab = "manage" | "firewall" | "ports" | "sessions" | "files" | "db" | "commands";
@@ -1553,14 +1596,16 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   // like "Next.js (latest)" write to /opt/project, which Genie Standard Setup
   // chowns to genie — running them as `ubuntu` then `sudo -u genie` is fragile
   // (login-shell quirks, npm cache paths, etc). Same probe + fallback pattern
-  // ClaudeManageButton uses.
+  // ClaudeManageButton uses. DigitalOcean droplets are provisioned with genie
+  // from the start, so we skip the probe and pin the user there.
   const imageDefault = imageDefaultUser(vm.image);
-  const [resolvedUser, setResolvedUser] = useState<string | null>(null);
+  const [resolvedUser, setResolvedUser] = useState<string | null>(vm.provider === "do" ? "genie" : null);
 
   useEffect(() => {
+    if (vm.provider === "do") { setResolvedUser("genie"); return; }
     let cancelled = false;
     const probe = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys; then echo "GENIE"; else echo "DEFAULT"; fi`;
-    adminTazcloudExec(vm.id, imageDefault, probe, vm.ipv6).then((res) => {
+    adminTazcloudExec(vm.id, imageDefault, probe, vm.host).then((res) => {
       if (cancelled) return;
       const last = res.output.trim().split("\n").pop()?.trim();
       setResolvedUser(last === "GENIE" ? "genie" : imageDefault);
@@ -1568,11 +1613,10 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
       if (!cancelled) setResolvedUser(imageDefault);
     });
     return () => { cancelled = true; };
-  }, [vm.id, vm.ipv6, imageDefault]);
+  }, [vm.id, vm.host, vm.provider, imageDefault]);
 
   const user = resolvedUser ?? imageDefault;
-  const exec = (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
-    adminTazcloudExec(vm.id, user, command, vm.ipv6, onChunk, signal);
+  const exec = makeVmExec(vm, user);
 
   const [tab, setTab] = useState<ManageTab>("manage");
   const [projects] = useSubject($projects);
@@ -1583,10 +1627,14 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     if (!vm.projectId) return null;
     const project = projects.find((p) => p.id === vm.projectId);
     if (!project) return null;
-    const instance = project.vpsInstances.find((i) => i.tazcloud?.vmId === vm.id);
+    const instance = project.vpsInstances.find((i) =>
+      vm.provider === "tazcloud"
+        ? i.tazcloud?.vmId === vm.id
+        : i.digitalocean?.dropletId === Number(vm.id),
+    );
     if (!instance) return null;
     return { project, instance };
-  }, [projects, vm.projectId, vm.id]);
+  }, [projects, vm.projectId, vm.id, vm.provider]);
 
   const hasProject = !!linked;
 
@@ -1635,7 +1683,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs text-overlay0">
-                  Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.ipv6}</span>
+                  Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.host}</span>
                 </p>
                 <div className="flex items-center gap-2 shrink-0">
                   <ClaudeManageButton vm={vm} />
@@ -1644,7 +1692,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
               </div>
               <VpsResourceGauges
                 exec={exec}
-                host={vm.ipv6}
+                host={vm.host}
                 domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
               />
               <AdminRecipesPanel exec={exec} />
@@ -1661,7 +1709,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
           )}
 
           {tab === "sessions" && (
-            <VmSessionsTab vmHost={vm.ipv6} />
+            <VmSessionsTab vmHost={vm.host} />
           )}
         </>
       )}
