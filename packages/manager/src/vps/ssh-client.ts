@@ -1,5 +1,6 @@
 import { Client } from "ssh2";
 import type { ClientChannel } from "ssh2";
+import type { Readable as NodeReadable } from "node:stream";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,18 @@ export interface SshConnectionConfig {
   username: string;
   privateKeyPath: string;
   privateKey?: string | Buffer;  // raw key content — takes precedence over privateKeyPath
+  /** Optional ProxyJump-style bastion. When set, connectSsh first opens a
+   *  session to the bastion, then forwardOut's a TCP channel to (host, port)
+   *  through it, and connects the real ssh2 client over that channel. Lets
+   *  the manager reach Taz VMs that only have a private 10.128/24 IP and are
+   *  accessible solely via almalinux@188.213.48.230. */
+  bastion?: {
+    host: string;
+    port?: number;          // default 22
+    username: string;
+    privateKeyPath: string;
+    privateKey?: string | Buffer;
+  };
 }
 
 export interface SshSession {
@@ -229,43 +242,87 @@ function makeSession(conn: Client): SshSession {
   };
 }
 
-export function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: number }): Promise<SshSession> {
+function loadPrivateKey(privateKey: SshConnectionConfig["privateKey"], privateKeyPath: string): Buffer | undefined {
+  if (privateKey) {
+    return Buffer.isBuffer(privateKey) ? privateKey : Buffer.from(privateKey);
+  }
+  try {
+    return fs.readFileSync(resolveHome(privateKeyPath));
+  } catch (err) {
+    console.error(`[ssh] Failed to read key from ${privateKeyPath}:`, (err as Error).message);
+    return undefined;
+  }
+}
+
+export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: number }): Promise<SshSession> {
+  const timeout = opts?.timeoutMs ?? 30_000;
+
+  // If a bastion is configured, open it first and tunnel TCP to the inner host.
+  // ssh2's `sock` option on connect() accepts a net.Socket-shaped duplex stream;
+  // ssh2's forwardOut channel implements that interface.
+  let bastionConn: Client | null = null;
+  // ssh2's ConnectConfig.sock is typed as Readable but accepts any duplex
+  // stream — its forwardOut channel is a Duplex that satisfies the runtime
+  // contract. Cast at the .connect() call instead of fighting the type here.
+  let sock: NodeReadable | undefined;
+  if (config.bastion) {
+    const b = config.bastion;
+    bastionConn = await new Promise<Client>((resolve, reject) => {
+      const c = new Client();
+      const bKey = loadPrivateKey(b.privateKey, b.privateKeyPath);
+      c.on("ready", () => resolve(c))
+        .on("error", (err) => reject(new Error(`SSH bastion ${b.username}@${b.host}:${b.port ?? 22} failed: ${err.message}`)))
+        .connect({
+          host: b.host,
+          port: b.port ?? 22,
+          username: b.username,
+          ...(bKey ? { privateKey: bKey } : process.env.SSH_AUTH_SOCK ? { agent: process.env.SSH_AUTH_SOCK } : {}),
+          readyTimeout: timeout,
+        });
+    });
+
+    sock = await new Promise<NodeReadable>((resolve, reject) => {
+      // srcIP/srcPort are arbitrary — the bastion doesn't actually open a
+      // listener; they're only used for logging on the bastion's sshd.
+      bastionConn!.forwardOut("127.0.0.1", 0, config.host, config.port, (err, stream) => {
+        if (err) return reject(new Error(`Bastion forwardOut to ${config.host}:${config.port} failed: ${err.message}`));
+        resolve(stream as unknown as NodeReadable);
+      });
+    });
+  }
+
   return new Promise((resolve, reject) => {
     const conn = new Client();
-    let privateKey: Buffer | undefined;
-    if (config.privateKey) {
-      privateKey = Buffer.isBuffer(config.privateKey)
-        ? config.privateKey
-        : Buffer.from(config.privateKey);
-    } else {
-      try {
-        const keyPath = resolveHome(config.privateKeyPath);
-        privateKey = fs.readFileSync(keyPath);
-      } catch (err) {
-        console.error(`[ssh] Failed to read key from ${config.privateKeyPath}:`, (err as Error).message);
-        // Key file not readable — will try agent auth
-      }
-    }
+    const privateKey = loadPrivateKey(config.privateKey, config.privateKeyPath);
 
     conn
       .on("ready", () => {
-        resolve(makeSession(conn));
+        const session = makeSession(conn);
+        // Wrap close() so it also tears down the bastion when present —
+        // otherwise we'd leak one bastion socket per call.
+        const origClose = session.close;
+        session.close = () => {
+          origClose();
+          if (bastionConn) try { bastionConn.end(); } catch { /* ignore */ }
+        };
+        resolve(session);
       })
       .on("error", (err) => {
-        console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
+        if (bastionConn) try { bastionConn.end(); } catch { /* ignore */ }
+        console.error(`[ssh] Connection to ${config.host}:${config.port}${config.bastion ? ` via ${config.bastion.username}@${config.bastion.host}` : ""} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));
       })
       .connect({
         host: config.host,
         port: config.port,
         username: config.username,
-        // Use raw key when available; fall back to SSH agent for passphrase-protected keys
         ...(privateKey
           ? { privateKey }
           : process.env.SSH_AUTH_SOCK
             ? { agent: process.env.SSH_AUTH_SOCK }
             : {}),
-        readyTimeout: opts?.timeoutMs ?? 30_000,
+        ...(sock ? { sock } : {}),
+        readyTimeout: timeout,
       });
   });
 }

@@ -166,7 +166,17 @@ export const handlers: HandlerMap = {
           id: vm.id,
           name: vm.name,
           status: vm.status,
+          // `ipv6` is kept as the display+SSH host for legacy v6 VMs; for the
+          // new vxlan-bastion mode it's null on the API and we fall back to
+          // ssh_host (a private 10.x IP). Callers that need to know the host
+          // is private should look at `sshBastion`.
           ipv6: vm.ipv6 || vm.ssh_host || "",
+          /** Private/internal address vs the bastion — RFC1918 means the user
+           *  can't hit it from their browser. */
+          isPrivateHost: typeof vm.ssh_host === "string" && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(vm.ssh_host),
+          /** "user@host" string from Taz when the VM is reachable only via
+           *  ProxyJump (vxlan-bastion tenants). null on legacy v6-only VMs. */
+          sshBastion: typeof vm.ssh_bastion === "string" ? vm.ssh_bastion : null,
           image: vm.image,
           size: vm.size,
           projectId: pm?.projectId || null,

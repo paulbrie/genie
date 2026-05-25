@@ -1064,8 +1064,10 @@ export function openManageVmWindow(vm: { id: string; name: string }) {
 export type ManageVmProvider = "tazcloud" | "do";
 
 /** Provider-agnostic shape consumed by ManageVmInline + the floating popup.
- *  `host` is whatever address SSH should target — IPv6 for TazCloud VMs, IPv4
- *  for DigitalOcean droplets. */
+ *  `host` is whatever address SSH should target — IPv6 for legacy TazCloud
+ *  VMs, IPv4 for DigitalOcean droplets, and a private 10.x for Taz vxlan-
+ *  bastion VMs (in which case `sshBastion` is set and the manager opens the
+ *  SSH session via ProxyJump). */
 export interface ManageVm {
   id: string;
   name: string;
@@ -1074,6 +1076,12 @@ export interface ManageVm {
   projectId: string | null;
   provider: ManageVmProvider;
   ingress?: { domain: string; url?: string } | null;
+  /** True when `host` is an RFC1918 address — UI suppresses the unreachable
+   *  http://host:port link in that case. */
+  isPrivateHost?: boolean;
+  /** "user@host" form of the ProxyJump bastion. Present on Taz vxlan-bastion
+   *  VMs. Required for the manager to reach the VM at all. */
+  sshBastion?: string | null;
 }
 
 /** SSH key file used to log in to a provider's VMs. The manager rolls a
@@ -1131,7 +1139,13 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   const launch = () => {
     if (pending) return;
     addSshTerminalTab(
-      { host: vm.host, port: 22, username: sshUser, privateKeyPath: sshKeyPathFor(vm.provider) },
+      {
+        host: vm.host,
+        port: 22,
+        username: sshUser,
+        privateKeyPath: sshKeyPathFor(vm.provider),
+        ...(vm.sshBastion ? { bastion: parseBastion(vm.sshBastion) } : {}),
+      },
       `Claude ${sshUser}@${vm.name}`,
       // Start in /opt/project — that's the canonical project root that
       // Genie Standard Setup chowns to genie and that every recipe (Next.js
@@ -1155,6 +1169,13 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   );
 }
 
+/** Parse Taz's "user@host" bastion string into the SshConfig.bastion shape. */
+function parseBastion(b: string): { host: string; port?: number; username: string } | undefined {
+  const m = b.match(/^([^@]+)@(.+)$/);
+  if (!m) return undefined;
+  return { username: m[1], host: m[2], port: 22 };
+}
+
 /** SSH-launch split-button for the Manage tab. Click the body → open a terminal
  *  as `genie` (the deploy user); click the chevron → pick a different login. */
 function SshLaunchButton({ vm }: { vm: ManageVm }) {
@@ -1162,7 +1183,13 @@ function SshLaunchButton({ vm }: { vm: ManageVm }) {
   if (!vm.host) return null;
   const openSsh = (user: string) => {
     addSshTerminalTab(
-      { host: vm.host, port: 22, username: user, privateKeyPath: sshKeyPathFor(vm.provider) },
+      {
+        host: vm.host,
+        port: 22,
+        username: user,
+        privateKeyPath: sshKeyPathFor(vm.provider),
+        ...(vm.sshBastion ? { bastion: parseBastion(vm.sshBastion) } : {}),
+      },
       `SSH ${user}@${vm.name}`,
     );
   };
@@ -1333,6 +1360,8 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
   const adminProjectId = adminVm?.projectId ?? null;
   const adminIngressDomain = adminVm?.ingress?.domain ?? null;
   const adminIngressUrl = adminVm?.ingress?.url ?? null;
+  const adminIsPrivateHost = adminVm?.isPrivateHost === true;
+  const adminSshBastion = adminVm?.sshBastion ?? null;
 
   let projInst: { label: string; ipv6: string; image?: string; projectId: string } | null = null;
   if (!adminVm) {
@@ -1366,6 +1395,8 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
         ingress: adminIngressDomain
           ? { domain: adminIngressDomain, url: adminIngressUrl ?? undefined }
           : null,
+        isPrivateHost: adminIsPrivateHost,
+        sshBastion: adminSshBastion,
       };
     }
     if (projInst) {
@@ -1373,7 +1404,7 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vmId, !!adminVm, adminName, adminIpv6, adminImage, adminProjectId, adminIngressDomain, adminIngressUrl, !!projInst, projLabel, projIpv6, projImage, projProjectId]);
+  }, [vmId, !!adminVm, adminName, adminIpv6, adminImage, adminProjectId, adminIngressDomain, adminIngressUrl, adminIsPrivateHost, adminSshBastion, !!projInst, projLabel, projIpv6, projImage, projProjectId]);
 
   // Defensive cache: if `vm` momentarily resolves to null (e.g. while the admin
   // VM list is being refreshed after a stale broadcast on navigation), keep the
@@ -1684,16 +1715,29 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs text-overlay0">
                   Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.host}</span>
+                  {vm.sshBastion && (
+                    <span className="ml-1">via <span className="font-mono text-overlay1">{vm.sshBastion}</span></span>
+                  )}
                 </p>
                 <div className="flex items-center gap-2 shrink-0">
                   <ClaudeManageButton vm={vm} />
                   <SshLaunchButton vm={vm} />
                 </div>
               </div>
+              {vm.sshBastion && (
+                <div className="text-xs text-yellow bg-yellow/10 border border-yellow/30 rounded px-3 py-2">
+                  This VM is on a vxlan-bastion tenant — the manager reaches it via{" "}
+                  <span className="font-mono">{vm.sshBastion}</span>. If recipes time out with
+                  &ldquo;SSH connection failed&rdquo;, the bastion isn&rsquo;t accepting the manager&rsquo;s
+                  key — set <span className="font-mono">TAZCLOUD_BASTION_PRIVATE_KEY</span> in the
+                  manager env (or have your Tazcloud account upload the existing key to the bastion).
+                </div>
+              )}
               <VpsResourceGauges
                 exec={exec}
                 host={vm.host}
                 domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
+                isPrivateHost={vm.isPrivateHost}
               />
               <AdminRecipesPanel exec={exec} />
               <AdminSystemPanel exec={exec} view="services" />

@@ -145,6 +145,7 @@ export function TerminalBottomPanel() {
             privateKeyPath: tab.ssh.privateKeyPath,
             title: tab.title,
             command: tab.command,
+            ...(tab.ssh.bastion ? { bastion: tab.ssh.bastion } : {}),
           });
           if (tab.command) {
             const cmdToSend = tab.command;

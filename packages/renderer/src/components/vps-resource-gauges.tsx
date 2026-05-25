@@ -201,11 +201,15 @@ interface VpsResourceGaugesProps {
   /** Optional custom domain (e.g. a TazCloud ingress). When provided, shown
    *  above the raw IP URL since it's the user-friendly address. */
   domain?: { name: string; url?: string } | null;
+  /** True when `host` is a private RFC1918 address — the link to it would be
+   *  unreachable from the user's browser, so we render the host as plain text
+   *  instead of a clickable URL. */
+  isPrivateHost?: boolean;
 }
 
 /** CPU / Memory / Disk gauges + the public connect URL for a VPS. Polls every
  *  ~5 s while mounted; the probe is a single SSH command so it's cheap. */
-export function VpsResourceGauges({ exec, host, appPort = 3000, domain }: VpsResourceGaugesProps) {
+export function VpsResourceGauges({ exec, host, appPort = 3000, domain, isPrivateHost = false }: VpsResourceGaugesProps) {
   const [sample, setSample] = useState<Sample | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -265,11 +269,20 @@ export function VpsResourceGauges({ exec, host, appPort = 3000, domain }: VpsRes
             <span className="italic">no domain attached</span>
           </div>
         )}
-        <UrlRow
-          icon={<ExternalLink size={12} className="text-blue shrink-0" />}
-          label="IP"
-          url={ipUrl}
-        />
+        {isPrivateHost ? (
+          <div className="flex items-center gap-1.5 text-[11px] text-overlay0 min-w-0">
+            <ExternalLink size={12} className="shrink-0" />
+            <span className="uppercase tracking-wide shrink-0">IP</span>
+            <span className="font-mono truncate text-overlay1" title={host}>{host}</span>
+            <span className="italic text-overlay0">private — reachable only via bastion / ingress</span>
+          </div>
+        ) : (
+          <UrlRow
+            icon={<ExternalLink size={12} className="text-blue shrink-0" />}
+            label="IP"
+            url={ipUrl}
+          />
+        )}
         {sample?.externalPorts && sample.externalPorts.length > 0 && (
           <div className="flex items-center gap-1 flex-wrap">
             <span className="text-[10px] uppercase tracking-wide text-overlay0 shrink-0">Ports</span>

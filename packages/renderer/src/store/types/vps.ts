@@ -186,6 +186,16 @@ export interface SshConfig {
   port?: number;
   username?: string;
   privateKeyPath?: string;
+  /** ProxyJump-style bastion. Set on Taz vxlan-bastion VMs whose `host` is a
+   *  private 10.x address — the manager opens an SSH session to the bastion,
+   *  then tunnels the real connection through it. Format mirrors `ssh -J`:
+   *  username + host (the same private key is reused for the bastion unless
+   *  explicitly overridden via TAZCLOUD_BASTION_PRIVATE_KEY on the manager). */
+  bastion?: {
+    host: string;
+    port?: number;
+    username: string;
+  };
 }
 
 export interface TerminalTab {

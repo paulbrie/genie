@@ -68,6 +68,10 @@ export interface TazCapabilities {
     public_ip: string;
     tls: boolean;
   };
+  /** Tenants with multi-project support require `project_id` on createVm. */
+  projects?: {
+    available: boolean;
+  };
 }
 
 export interface TazIngress {
@@ -82,13 +86,20 @@ export interface TazVm {
   id: string;
   name: string;
   status: string;            // e.g. "ACTIVE"
-  ip?: string;               // private IPv4 (10.x)
-  ipv6: string;              // public IPv6
-  ssh_host: string;          // same as ipv6
+  ip?: string | null;        // private IPv4 (10.x) for vxlan-bastion VMs; absent on legacy v6-only
+  ipv6?: string | null;      // public IPv6 (legacy v6-only mode); null on vxlan-bastion
+  ssh_host: string;          // address to ssh to — equals ipv6 (legacy) or ip (bastion)
   ssh_port: number;
+  /** Present on tenants with `vm_access.mode === "vxlan-bastion"`. Format:
+   *  "<user>@<host>" (e.g. "almalinux@188.213.48.230"). When set, ssh_host
+   *  is a private IP only reachable via this bastion. */
+  ssh_bastion?: string | null;
+  /** Human-readable command, e.g. "ssh -J almalinux@188.213.48.230 …". */
+  ssh_command?: string;
   image?: string | null;     // null when booted from snapshot
   snapshot_id?: string;      // present when booted from snapshot
   size?: string;
+  project_id?: string;
   networks: {
     v4: { ip_address: string; type: string }[];
     v6: { ip_address: string; type: string }[];
@@ -141,6 +152,19 @@ export interface TazCreateVmOpts {
   size?: string;
   /** Boot from an existing active snapshot instead of a base image. */
   snapshot_id?: string;
+  /** Taz tenant project the VM belongs to. Required by the API on tenants
+   *  where `/v1/capabilities.projects.available === true`. When omitted and
+   *  exactly one project exists, createVm auto-fills it; otherwise throws
+   *  asking the caller to specify. */
+  project_id?: string;
+}
+
+export interface TazProject {
+  id: string;
+  name: string;
+  subnet_cidr: string;
+  vm_count: number;
+  created: string;
 }
 
 export interface TazCreateSnapshotOpts {
@@ -157,6 +181,7 @@ export interface TazRegisterIngressOpts {
 
 export interface TazApiClient {
   getCapabilities(): Promise<TazCapabilities>;
+  listProjects(): Promise<TazProject[]>;
   createVm(opts: TazCreateVmOpts): Promise<TazVm>;
   getVm(id: string): Promise<TazVm>;
   listVms(): Promise<TazVm[]>;
@@ -178,6 +203,11 @@ export function createTazClient(token: string): TazApiClient {
       return data as unknown as TazCapabilities;
     },
 
+    async listProjects() {
+      const data = await tazFetch(token, "/v1/project");
+      return ((data?.projects as TazProject[] | undefined) ?? []);
+    },
+
     async createVm(opts) {
       if (opts.image && opts.snapshot_id) {
         throw new Error("createVm: `image` and `snapshot_id` are mutually exclusive");
@@ -186,6 +216,27 @@ export function createTazClient(token: string): TazApiClient {
       if (opts.image) body.image = opts.image;
       if (opts.size) body.size = opts.size;
       if (opts.snapshot_id) body.snapshot_id = opts.snapshot_id;
+
+      // Resolve project_id. Caller can pass it explicitly (override the env);
+      // otherwise prefer TAZCLOUD_PROJECT_ID, then auto-pick if exactly one
+      // project exists on the tenant. Multi-project tenants without an env or
+      // explicit value throw with the available IDs so the caller knows what
+      // to set.
+      let projectId = opts.project_id ?? process.env.TAZCLOUD_PROJECT_ID ?? null;
+      if (!projectId) {
+        const projects = await this.listProjects();
+        if (projects.length === 1) {
+          projectId = projects[0].id;
+        } else if (projects.length > 1) {
+          const list = projects.map((p) => `  ${p.id}  ${p.name}`).join("\n");
+          throw new Error(
+            `createVm: tenant has multiple Taz projects — pass project_id explicitly or set TAZCLOUD_PROJECT_ID. Available:\n${list}`,
+          );
+        }
+        // projects.length === 0 → omit; legacy tenants without projects-mode still accept.
+      }
+      if (projectId) body.project_id = projectId;
+
       const data = await tazFetch(token, "/v1/vm", { method: "POST", body });
       return data as unknown as TazVm;
     },

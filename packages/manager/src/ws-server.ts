@@ -5246,21 +5246,49 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazPrivateKey) throw new Error("TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager");
         let host = hostFromClient;
-        if (!host) {
-          // Fallback: ask the API (used only when the renderer doesn't know the host yet).
-          const tazToken = process.env.TAZCLOUD_API_TOKEN;
-          if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured on the manager");
-          const tazClient = createTazClient(tazToken);
-          const vm = await tazClient.getVm(vmId);
-          host = vm?.ssh_host;
-          if (!host) throw new Error(`VM ${vmId} has no ssh_host`);
+        // The renderer doesn't currently know about ssh_bastion, so we always
+        // fetch the VM record server-side to discover it. Cheap (~100ms) and
+        // gets us the freshest hostname for vxlan-bastion VMs that only have
+        // a private IP. If the API is flaky and a host is provided, fall back.
+        let bastion: { user: string; host: string } | null = null;
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (tazToken) {
+          try {
+            const tazClient = createTazClient(tazToken);
+            const vm = await tazClient.getVm(vmId);
+            if (!host) host = vm?.ssh_host;
+            if (vm?.ssh_bastion) {
+              const m = vm.ssh_bastion.match(/^([^@]+)@(.+)$/);
+              if (m) bastion = { user: m[1], host: m[2] };
+            }
+          } catch (err) {
+            if (!host) throw err;
+            // host known + API flaky → proceed without bastion (works for legacy v6 VMs).
+          }
         }
+        if (!host) throw new Error(`VM ${vmId} has no ssh_host`);
         const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
+        // Bastion may use a different key from the per-VM key; allow override
+        // via TAZCLOUD_BASTION_PRIVATE_KEY (raw PEM/OpenSSH string). Falls back
+        // to the VM key, which works on tenants where the bastion is configured
+        // to accept the same Tazcloud-managed key.
+        const bastionKey = process.env.TAZCLOUD_BASTION_PRIVATE_KEY
+          ? Buffer.from(process.env.TAZCLOUD_BASTION_PRIVATE_KEY)
+          : undefined;
         const session = await connectSsh({
           host,
           port: 22,
           username: sshUser || "ubuntu",
           privateKeyPath: keyPath,
+          ...(bastion ? {
+            bastion: {
+              host: bastion.host,
+              port: 22,
+              username: bastion.user,
+              privateKeyPath: keyPath,
+              ...(bastionKey ? { privateKey: bastionKey } : {}),
+            },
+          } : {}),
         });
         // Secrets (GIT_TOKEN etc.) are baked into the script by the renderer
         // per-apply — see admin-recipes-panel.tsx → buildInstallCommand. We no
@@ -7017,13 +7045,28 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "terminal:ssh:spawn": {
-      const { id, host, port, username, privateKeyPath, cols, rows, title, command } = msg.payload as {
+      const { id, host, port, username, privateKeyPath, cols, rows, title, command, bastion } = msg.payload as {
         id: string; host: string; port?: number; username?: string; privateKeyPath?: string;
         cols?: number; rows?: number; title?: string; command?: string;
+        bastion?: { host: string; port?: number; username: string };
       };
       const resolvedUser = username || VPS_SSH_USERNAME;
       const resolvedKey = privateKeyPath || "~/.genie/ssh/genie_ed25519";
       const resolvedPort = port || 22;
+      // Bastion key precedence mirrors admin:tazcloud:exec: explicit
+      // TAZCLOUD_BASTION_PRIVATE_KEY env wins; otherwise reuse the per-VM key
+      // (works on tenants where the bastion accepts the same Tazcloud-managed key).
+      const bastionConfig = bastion
+        ? {
+            host: bastion.host,
+            port: bastion.port ?? 22,
+            username: bastion.username,
+            privateKeyPath: resolvedKey,
+            ...(process.env.TAZCLOUD_BASTION_PRIVATE_KEY
+              ? { privateKey: Buffer.from(process.env.TAZCLOUD_BASTION_PRIVATE_KEY) }
+              : {}),
+          }
+        : undefined;
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: resolvedPort,
@@ -7031,6 +7074,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         privateKeyPath: resolvedKey,
         initialCommand: command,
         tmuxSessionName: id,
+        ...(bastionConfig ? { bastion: bastionConfig } : {}),
       }, userId);
       // Persist for the History/Terminals tab. Direct SSH carries its own
       // connection details since there's no project/instance to look them up from.

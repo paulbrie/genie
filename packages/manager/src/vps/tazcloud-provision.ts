@@ -301,8 +301,11 @@ chmod 600 ~/.ssh/config`);
     await vpsDeploy(projectName, genieConn, onProgress, envVars, setupFiles);
 
     return {
+      // ipv6 is null on tenants with vm_access.mode === "vxlan-bastion"; fall
+      // back to the resolved ssh_host (private IPv4) so downstream code that
+      // stores this for display has something non-empty.
       vmId: vm.id,
-      ipv6: vm.ipv6,
+      ipv6: vm.ipv6 ?? vm.ssh_host ?? "",
       image,
       size,
       sshUser: VPS_SSH_USERNAME,
