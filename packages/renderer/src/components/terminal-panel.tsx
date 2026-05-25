@@ -65,7 +65,10 @@ export function TerminalPanel() {
 
       mountedIds.current.add(tab.id);
       const term = createTerminal(container, tab.id);
-      if (tab.ssh) {
+      if (tab.reattach) {
+        // Persisted server-side session: ask the manager to reattach by id.
+        wsSend("terminal:reattach", { id: tab.id, cols: term.cols, rows: term.rows });
+      } else if (tab.ssh) {
         wsSend("terminal:ssh:spawn", {
           id: tab.id,
           cols: term.cols,

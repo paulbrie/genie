@@ -5,7 +5,7 @@ import {
   $selectedProjectId,
   $showAddProjectForm,
 } from "../subjects/vps";
-import { saveUiState } from "./ui";
+import { saveUiState, sendPresenceProject } from "./ui";
 
 // --- Project actions ---
 
@@ -13,16 +13,19 @@ export function selectProject(id: string): void {
   $selectedProjectId.next(id);
   $activeNav.next("projects");
   $showAddProjectForm.next(false);
+  sendPresenceProject(id);
   saveUiState();
 }
 
 export function deselectProject(): void {
   $selectedProjectId.next(null);
+  sendPresenceProject(null);
   saveUiState();
 }
 
 export function showAddProjectForm(): void {
   $selectedProjectId.next(null);
+  sendPresenceProject(null);
   $activeNav.next("projects");
   $showAddProjectForm.next(true);
 }

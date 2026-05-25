@@ -130,7 +130,11 @@ export function TerminalBottomPanel() {
       // Only spawn for fresh (non-shared, non-restored) tabs
       const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
       if (!tab.shared && !isRestored) {
-        if (tab.ssh) {
+        if (tab.reattach) {
+          // Persisted server-side session: ask the manager to reattach by id.
+          // The manager looks up the row and spawns SSH+tmux against the right host.
+          wsSend("terminal:reattach", { id: tab.id, cols: term.cols, rows: term.rows });
+        } else if (tab.ssh) {
           wsSend("terminal:ssh:spawn", {
             id: tab.id,
             cols: term.cols,

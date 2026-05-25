@@ -90,7 +90,7 @@ function parseServices(output: string): SystemdService[] {
   return services;
 }
 
-export function AdminSystemPanel({ exec }: { exec: ExecFn }) {
+export function AdminSystemPanel({ exec, view = "both" }: { exec: ExecFn; view?: "both" | "services" | "ports" }) {
   const [ports, setPorts] = useState<ListeningPort[] | null>(null);
   const [services, setServices] = useState<SystemdService[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -129,9 +129,16 @@ export function AdminSystemPanel({ exec }: { exec: ExecFn }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Toggle full-width when only one half is rendered so the chosen card uses
+  // the available space instead of squishing into the half-width grid column.
+  const showServices = view === "both" || view === "services";
+  const showPorts = view === "both" || view === "ports";
+  const gridCols = view === "both" ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1";
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-      {/* Services */}
+    <div className={cn("grid gap-3", gridCols)}>
+      {showServices && (
+      /* Services */
       <div className="bg-mantle rounded-lg p-3 border border-overlay0/20">
         <div className="flex items-center gap-2 mb-2">
           <Activity size={12} className="text-green" />
@@ -232,8 +239,10 @@ export function AdminSystemPanel({ exec }: { exec: ExecFn }) {
           <p className="text-overlay0 text-md py-2">No active services.</p>
         )}
       </div>
+      )}
 
-      {/* Open Ports */}
+      {showPorts && (
+      /* Open Ports */
       <div className="bg-mantle rounded-lg p-3 border border-overlay0/20">
         <div className="flex items-center gap-2 mb-2">
           <Network size={12} className="text-blue" />
@@ -301,6 +310,7 @@ export function AdminSystemPanel({ exec }: { exec: ExecFn }) {
           <p className="text-overlay0 text-md py-2">No listening ports.</p>
         )}
       </div>
+      )}
 
       {error && <div className="col-span-full text-xs text-red font-mono">{error}</div>}
     </div>

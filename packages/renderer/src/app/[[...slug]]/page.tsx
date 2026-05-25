@@ -14,14 +14,17 @@ import { LogsPanel } from "@/components/logs-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { ChatView } from "@/components/chat-view";
 import { ChatNotificationToasts } from "@/components/chat-notification-toasts";
+import { ManageVmWindows } from "@/components/tazcloud-panel";
 import { TrackerPanel } from "@/components/tracker-panel";
 import { AdminPanel } from "@/components/admin-panel";
 import { CloudsPanel } from "@/components/clouds-panel";
 import { RecipesPanel } from "@/components/recipes-panel";
 import { ArchitecturePanel } from "@/components/architecture-panel";
+import { TopologyGraph3D } from "@/components/topology-graph-3d";
 import { ConnectedUsersPanel } from "@/components/connected-users-panel";
 import { SecurityPanel } from "@/components/security-panel";
 import { HelpPanel } from "@/components/help-panel";
+import { HistoryPanel } from "@/components/history-panel";
 import { ProjectsGrid } from "@/components/projects-grid";
 import { defaultNavForRole, navAllowedForRole, parseRoute, type ProjectTab, type SettingsTab } from "@/lib/routes";
 import { findBySlug } from "@/lib/utils";
@@ -71,7 +74,7 @@ function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab } {
         const project = findBySlug(projects, parsed.entitySlug);
         if (project) {
           selectProject(project.id);
-          setActiveTab(parsed.tab ?? "files");
+          setActiveTab(parsed.tab ?? "deploy-history");
           syncedRef.current = urlKey;
         } else if (projects.length > 0) {
           router.replace(buildNavPath("projects"));
@@ -157,6 +160,10 @@ function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; setting
     return <ChatView />;
   }
 
+  if (activeNav === "history") {
+    return <HistoryPanel />;
+  }
+
   if (activeNav === "processes") {
     return <ProcessesPanel />;
   }
@@ -197,6 +204,23 @@ function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; setting
     return <ArchitecturePanel />;
   }
 
+  if (activeNav === "topology") {
+    return (
+      <div className="flex-1 flex flex-col h-full">
+        <div className="px-6 py-4 border-b border-surface0">
+          <h1 className="text-xl font-semibold text-text">Topology</h1>
+          <p className="text-md text-subtext0 mt-1">
+            Live 3D view of Genie, your projects, their servers, and the users
+            currently connected to the Manager. Drag to orbit, scroll to zoom.
+          </p>
+        </div>
+        <div className="flex-1 relative" style={{ minHeight: 500 }}>
+          <TopologyGraph3D />
+        </div>
+      </div>
+    );
+  }
+
   if (activeNav === "users") {
     return <ConnectedUsersPanel />;
   }
@@ -225,6 +249,9 @@ export default function Home() {
     <>
       <MainPanel activeTab={activeTab} settingsTab={settingsTab} />
       <ChatNotificationToasts />
+      {/* Global mount so the TazCloud Manage popup can be opened from any page
+          (TazCloud admin panel, project detail, etc.) and survives navigation. */}
+      <ManageVmWindows />
     </>
   );
 }

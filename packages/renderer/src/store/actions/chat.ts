@@ -17,7 +17,7 @@ export const CHAT_MODELS: Record<ChatModelId, string> = {
 export function setChatModel(modelId: ChatModelId): void {
   const c = $chat.getValue();
   if (c.modelId !== modelId) {
-    $chat.next({ messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [], statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null, sessions: [], sessionsLoading: false, activeSessionId: null });
+    $chat.next({ messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [], statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null, sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null });
   }
 }
 
@@ -66,7 +66,7 @@ export function stopChat(): void {
 
 export function resetChat(): void {
   const modelId = $chat.getValue().modelId;
-  $chat.next({ messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [], statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null, sessions: [], sessionsLoading: false, activeSessionId: null });
+  $chat.next({ messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [], statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null, sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null });
 }
 
 export function loadChatSessions(): void {
@@ -82,7 +82,7 @@ export function loadChatSession(sessionId: string): void {
 export function newChat(): void {
   $chat.nextAssign({
     messages: [], loading: false, streamingContent: "", streamingSteps: [],
-    toolUses: [], statusText: "", activeSessionId: null,
+    toolUses: [], statusText: "", activeSessionId: null, resumedFrom: null,
   });
 }
 

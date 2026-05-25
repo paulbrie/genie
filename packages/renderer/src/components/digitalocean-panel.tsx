@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2 } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink } from "lucide-react";
 import type { AdminDroplet } from "@/store/types";
 import { $admin, $auth, $projects } from "@/store/subjects";
-import { addSshTerminalTab, adminDropletExec, createAdminDroplet, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, adminDropletExec, createAdminDroplet, disconnectVps, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { VpsFirewall } from "@/components/project-detail";
 import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
 import { AdminSystemPanel } from "@/components/admin-system-panel";
+import { VpsResourceGauges } from "@/components/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
 
@@ -288,10 +289,35 @@ export function DigitalOceanPanel() {
                     />
                   )}
                   <div className="flex items-center gap-3 mt-1 text-md text-overlay0">
-                    <span>
+                    <span className="inline-flex items-center gap-1.5">
                       Project:{" "}
                       {d.projectName ? (
-                        <span className="text-blue">{d.projectName}</span>
+                        <>
+                          <span className="text-blue">{d.projectName}</span>
+                          {d.projectId && (
+                            <button
+                              onClick={() => {
+                                // Resolve the project's internal vpsInstance id from $projects —
+                                // the server's vps:disconnect handler needs (projectId, instanceId),
+                                // not the DigitalOcean droplet id.
+                                const project = projects.find((p) => p.id === d.projectId);
+                                const instance = project?.vpsInstances.find((i) => i.digitalocean?.dropletId === d.id);
+                                if (!instance) {
+                                  window.alert(`Could not find a matching vpsInstance on project "${d.projectName}". The project list may be stale — refresh and try again.`);
+                                  return;
+                                }
+                                if (!window.confirm(`Detach "${d.name}" from project "${d.projectName}"?\n\nThe droplet keeps running and its files are untouched — only the project↔droplet link in Genie is removed.`)) {
+                                  return;
+                                }
+                                disconnectVps(d.projectId!, instance.id);
+                              }}
+                              className="text-overlay0 hover:text-red transition-colors p-0.5"
+                              title={`Detach from "${d.projectName}" without touching the droplet`}
+                            >
+                              <Unlink size={11} />
+                            </button>
+                          )}
+                        </>
                       ) : (
                         <AttachVmToProject provider="digitalocean" vmId={d.id} />
                       )}
@@ -516,6 +542,7 @@ function ManageDropletInline({ droplet }: { droplet: AdminDroplet }) {
       <p className="text-xs text-overlay0">
         Operations run via SSH as <span className="font-mono text-overlay1">genie@{droplet.ip}</span>
       </p>
+      {droplet.ip && <VpsResourceGauges exec={exec} host={droplet.ip} />}
       <AdminSystemPanel exec={exec} />
       <AdminRecipesPanel exec={exec} />
       <VpsFirewall exec={exec} />

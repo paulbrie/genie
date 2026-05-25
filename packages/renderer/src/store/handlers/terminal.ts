@@ -1,5 +1,5 @@
-import { $terminal } from "../subjects/vps";
-import type { TerminalTab } from "../types/vps";
+import { $persistedTerminals, $terminal } from "../subjects/vps";
+import type { PersistedTerminalSession, TerminalTab } from "../types/vps";
 import { removeTerminalTab } from "../actions/terminal";
 import type { HandlerMap } from "./types";
 
@@ -137,5 +137,18 @@ export const handlers: HandlerMap = {
 
   "terminal:share:sent": (payload) => {
     window.dispatchEvent(new CustomEvent("genie:terminal:share:sent", { detail: payload }));
+  },
+
+  // --- Persisted terminal sessions (Terminals tab in History) ---
+
+  "terminal:list": (payload) => {
+    const { sessions } = payload as { sessions: PersistedTerminalSession[] };
+    $persistedTerminals.nextAssign({ sessions: sessions || [], loading: false });
+  },
+
+  "terminal:forgotten": (payload) => {
+    const { id } = payload as { id: string };
+    const state = $persistedTerminals.getValue();
+    $persistedTerminals.nextAssign({ sessions: state.sessions.filter((s) => s.id !== id) });
   },
 };

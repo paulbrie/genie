@@ -26,6 +26,18 @@ const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ),
 });
 
+function relativeTimeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 0) return "just now";
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 function ClaudeLogo({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 -.01 39.5 39.53" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -3003,6 +3015,7 @@ export default function ExtensionPage() {
   const chatSessions = chat.sessions;
   const sessionsLoading = chat.sessionsLoading;
   const activeSessionId = chat.activeSessionId;
+  const resumedFrom = chat.resumedFrom;
 
   const [showHistory, setShowHistory] = useState(false);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
@@ -3584,6 +3597,18 @@ export default function ExtensionPage() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Resumed-session banner */}
+          {resumedFrom && !showHistory && (
+            <div
+              className="flex items-center gap-2 px-4 py-1.5 bg-surface0/60 border-b border-surface0 text-overlay1"
+              style={{ fontSize: 11 }}
+              title={`Claude Code session ${resumedFrom.sessionId}`}
+            >
+              <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><polyline points="3 4 3 10 9 10"/></svg>
+              <span>Continuing session · last active {relativeTimeAgo(resumedFrom.lastActivity)}</span>
             </div>
           )}
 

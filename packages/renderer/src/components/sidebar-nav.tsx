@@ -1,7 +1,7 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, Cloud, ChefHat, HelpCircle } from "lucide-react";
+import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, Cloud, ChefHat, HelpCircle, Boxes, Clock } from "lucide-react";
 import type { DockerInfo, NavKey } from "@/store/types";
 import { $activeNav, $auth, $docker, $presenceSessions } from "@/store/subjects";
 import { cn } from "@/lib/utils";
@@ -15,10 +15,12 @@ const baseNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = 
   { key: "docs", label: "Docs", icon: FileText },
   { key: "logs", label: "Logs", icon: ScrollText },
   { key: "chat", label: "Chat", icon: MessageCircle },
+  { key: "history", label: "History", icon: Clock },
   { key: "tracker", label: "Tracker", icon: SquareKanban },
   { key: "settings", label: "Settings", icon: Settings },
   { key: "admin", label: "Admin", icon: Database },
   { key: "architecture", label: "Architecture", icon: Network },
+  { key: "topology", label: "Topology", icon: Boxes },
   { key: "users", label: "Connected Users", icon: Users },
   { key: "security", label: "Security", icon: Shield },
   { key: "help", label: "Help", icon: HelpCircle },
@@ -36,7 +38,7 @@ export function SidebarNav() {
   const isAdmin = role === "admin" || isSuperAdmin;
   const isTazcloud = role === "tazcloud";
 
-  const standardUserKeys = new Set<NavKey>(["projects", "tracker", "chat", "settings"]);
+  const standardUserKeys = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings"]);
   const items = isAdmin
     ? (isSuperAdmin
         ? [

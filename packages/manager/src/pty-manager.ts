@@ -159,6 +159,55 @@ export interface SshPtyConfig {
   username: string;
   privateKeyPath: string;
   initialCommand?: string;
+  /** When set, the remote command is wrapped in
+   *  `tmux attach -t ${tmuxSessionName} || tmux new -s ${tmuxSessionName} '<cmd>'`
+   *  so the underlying process survives SSH channel drops + Manager restarts.
+   *  A subsequent spawn with the same name will reattach instead of starting
+   *  a fresh shell. Requires `tmux` on the VPS. */
+  tmuxSessionName?: string;
+}
+
+/** Quote a string for safe use inside POSIX-shell single-quotes. */
+function shSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/** Compose the remote command we send to ssh.exec(). When tmuxSessionName is
+ *  set the inner command is wrapped so process state outlives the SSH channel. */
+function buildRemoteCommand(config: SshPtyConfig): string {
+  const inner = config.initialCommand || 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
+  if (!config.tmuxSessionName) return inner;
+  const name = config.tmuxSessionName;
+  // Genie-defined tmux defaults. `set-option -g` is the new-session default;
+  // existing sessions keep their own copy, so we also `-t ${name}` when the
+  // session already exists. Idempotent; starts the tmux server if needed.
+  //
+  //   focus-events on   — Claude Code + other TUIs use it to detect focus
+  //                       changes; without it they print a startup notice.
+  //   status off        — hide the tmux status bar so the TUI gets the full
+  //                       pane height. The Genie History panel already shows
+  //                       session name + last-active info, so the tmux status
+  //                       line is redundant inside Genie's window chrome.
+  //   history-limit     — generous scrollback so reattaches show useful context.
+  const setGlobal = [
+    'tmux set-option -g focus-events on 2>/dev/null || true',
+    'tmux set-option -g status off 2>/dev/null || true',
+    'tmux set-option -g history-limit 50000 2>/dev/null || true',
+  ].join('; ');
+  const setForExisting = [
+    `tmux set-option -t ${name} focus-events on 2>/dev/null || true`,
+    `tmux set-option -t ${name} status off 2>/dev/null || true`,
+  ].join('; ');
+  // Bash script: apply globals, then either attach (with per-session overrides
+  // for already-running sessions) or create fresh.
+  return [
+    setGlobal,
+    `if tmux has-session -t ${name} 2>/dev/null; then`,
+    `  ${setForExisting};`,
+    `  exec tmux attach -t ${name};`,
+    `fi`,
+    `exec tmux new -s ${name} ${shSingleQuote(inner)}`,
+  ].join('\n');
 }
 
 function resolveHome(p: string): string {
@@ -328,7 +377,7 @@ export function spawnSshPty(
     conn
       .on("ready", () => {
         if (cancelled) { conn.end(); return; }
-        const shellCmd = config.initialCommand || 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
+        const shellCmd = buildRemoteCommand(config);
         conn.exec(shellCmd, { pty: { cols: currentCols, rows: currentRows, term: "xterm-256color" } }, (err, stream) => {
           if (err) {
             eventCallback?.({ type: "terminal:error", payload: { id, message: `SSH shell failed: ${err.message}` } });

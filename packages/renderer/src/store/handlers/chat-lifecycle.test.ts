@@ -20,6 +20,7 @@ const FRESH: ChatState = {
   sessions: [],
   sessionsLoading: false,
   activeSessionId: null,
+  resumedFrom: null,
 };
 
 beforeEach(() => {

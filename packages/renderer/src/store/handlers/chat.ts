@@ -147,6 +147,15 @@ export const handlers: HandlerMap = {
     });
   },
 
+  "chat:resumed": (payload) => {
+    $chat.nextAssign({
+      resumedFrom: {
+        sessionId: payload.sessionId,
+        lastActivity: payload.lastActivity,
+      },
+    });
+  },
+
   "chat:sessions:list": (payload) => {
     $chat.nextAssign({
       sessions: payload.sessions || [],

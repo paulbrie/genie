@@ -68,6 +68,7 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   tracker: { send: "user", receive: "user", scope: "team" },
   settings: { send: "user", receive: "user", scope: "self" },
   feedback: { send: "user", receive: "user", scope: "self" },
+  updates: { send: "user", receive: "user", scope: "self" },
   vps: { send: "user", receive: "user", scope: "self" },
   extension: { send: "user", receive: "user", scope: "self" },
   error: { receive: "user", scope: "self" },

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
 import type { MemoryInfo } from "@/store/types";
 import { $system } from "@/store/subjects";
@@ -10,60 +10,73 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 
-/** Real-time main-thread busyness estimate, derived from the Long Tasks API.
+/** Real-time main-thread busyness estimate based on setTimeout drift.
  *
- *  Sums the duration of all `longtask` entries (>50 ms) that landed in the last
- *  ~1 s window and reports it as a percentage of that window. A reading of 30
- *  means the JS thread was blocked by long tasks for 300 ms in the last 1 s —
- *  i.e. visible jank.
+ *  Schedules a tick every `TICK_MS` and measures how late each one actually
+ *  fires. When the event loop is idle a tick fires on time and drift ≈ 0; when
+ *  the main thread is busy synchronously, the tick is delayed and the extra
+ *  delay equals "time spent blocked". We sum drift over a rolling ~1 s window
+ *  and report it as a percentage of that window.
  *
- *  Returns `null` on browsers without `PerformanceObserver` longtask support
- *  (Firefox, Safari today). Callers should hide the indicator when null —
- *  there's no useful fallback signal that's comparable across browsers.
+ *  Why not the Long Tasks API? It only fires for tasks > 50 ms (Chromium-only,
+ *  no Firefox/Safari) so the indicator looks frozen at 0 under normal use.
+ *  setTimeout drift catches sub-50 ms work and works in every browser.
  */
 function useUiCpu(): number | null {
   const [pct, setPct] = useState<number | null>(null);
+  const lastPctRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (typeof PerformanceObserver === "undefined") return;
-    const supported = PerformanceObserver.supportedEntryTypes?.includes("longtask");
-    if (!supported) return;
 
     setPct(0);
-    const tasks: { start: number; duration: number }[] = [];
-    let observer: PerformanceObserver | null = null;
-    try {
-      observer = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          tasks.push({ start: entry.startTime, duration: entry.duration });
-        }
-      });
-      observer.observe({ entryTypes: ["longtask"] });
-    } catch {
-      // Supported list lied (rare); bail out and keep the indicator hidden.
-      return;
-    }
+    lastPctRef.current = 0;
 
+    // Sample drift frequently (200 ms) so we don't miss short blocking work,
+    // but only re-publish the displayed value every PUBLISH_MS — and even
+    // then, only when the integer % actually changes. This keeps the sidebar
+    // SystemStats component from re-rendering on every tick, which was
+    // measurably stealing time from xterm keystroke handling.
+    const TICK_MS = 200;
+    const PUBLISH_MS = 500;
     const WINDOW_MS = 1000;
-    const tick = window.setInterval(() => {
+    const drifts: { t: number; busy: number }[] = [];
+    let lastScheduled = performance.now();
+    let lastPublished = 0;
+    let timeoutId: number;
+    let stopped = false;
+
+    const tick = () => {
+      if (stopped) return;
       const now = performance.now();
+      const expected = lastScheduled + TICK_MS;
+      const drift = Math.max(0, now - expected);
+      drifts.push({ t: now, busy: drift });
+
       const windowStart = now - WINDOW_MS;
-      while (tasks.length > 0 && tasks[0].start + tasks[0].duration < windowStart) {
-        tasks.shift();
+      while (drifts.length > 0 && drifts[0].t < windowStart) {
+        drifts.shift();
       }
-      let busyMs = 0;
-      for (const t of tasks) {
-        const a = Math.max(t.start, windowStart);
-        const b = Math.min(t.start + t.duration, now);
-        if (b > a) busyMs += b - a;
+
+      if (now - lastPublished >= PUBLISH_MS) {
+        let busyMs = 0;
+        for (const d of drifts) busyMs += d.busy;
+        const next = Math.min(100, Math.round((busyMs / WINDOW_MS) * 100));
+        if (next !== lastPctRef.current) {
+          lastPctRef.current = next;
+          setPct(next);
+        }
+        lastPublished = now;
       }
-      setPct(Math.min(100, Math.round((busyMs / WINDOW_MS) * 100)));
-    }, 500);
+
+      lastScheduled = now;
+      timeoutId = window.setTimeout(tick, TICK_MS);
+    };
+    timeoutId = window.setTimeout(tick, TICK_MS);
 
     return () => {
-      observer?.disconnect();
-      window.clearInterval(tick);
+      stopped = true;
+      window.clearTimeout(timeoutId);
     };
   }, []);
 
@@ -110,7 +123,8 @@ export function SystemStats() {
             <div className="flex flex-col gap-0.5 text-md max-w-[220px]">
               <span>Browser main-thread busyness (last 1 s).</span>
               <span className="text-overlay0">
-                Sum of long-task durations &gt; 50 ms, expressed as % of the window.
+                Measured via setTimeout drift — % of time the event loop was
+                blocked by synchronous work.
                 Green &lt; 20 · Yellow &lt; 50 · Red ≥ 50.
               </span>
             </div>

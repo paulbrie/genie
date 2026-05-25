@@ -52,6 +52,7 @@ import {
   Bug,
   KeyRound,
   Sparkles,
+  Layers,
 } from "lucide-react";
 import { ChatView } from "@/components/chat-view";
 import { DbExplorer } from "@/components/db-explorer";
@@ -152,29 +153,20 @@ import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
 import type { ProcessInfo } from "@/store/types";
 import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
+import { openManageVmWindow } from "@/components/tazcloud-panel";
 
 
 const BASE_PROJECT_TABS: { key: ProjectTab; label: string }[] = [
-  { key: "files", label: "Files" },
-  { key: "commands", label: "Commands" },
-  { key: "cloud", label: "Cloud" },
   { key: "deploy-history", label: "Deploy History" },
   { key: "settings", label: "Settings" },
 ];
 
 const badgeCls = "ml-1 text-md bg-surface0 text-overlay1 px-1 py-0.5 rounded-full tabular-nums";
 
-function buildProjectTabs(project: ProjectDef, vpsDeploy: VpsDeployState): { key: ProjectTab; label: ReactNode }[] {
-  const instanceCount = project.vpsInstances.length;
+function buildProjectTabs(_project: ProjectDef, vpsDeploy: VpsDeployState): { key: ProjectTab; label: ReactNode }[] {
   const deployCount = vpsDeploy.deployLogs.length;
 
   return BASE_PROJECT_TABS.map((tab) => {
-    if (tab.key === "commands" && project.commands.length > 0) {
-      return { ...tab, label: <>{tab.label}<span className={badgeCls}>{project.commands.length}</span></> };
-    }
-    if (tab.key === "cloud" && instanceCount > 0) {
-      return { ...tab, label: <>{tab.label}<span className={badgeCls}>{instanceCount}</span></> };
-    }
     if (tab.key === "deploy-history" && deployCount > 0) {
       return { ...tab, label: <>{tab.label}<span className={badgeCls}>{deployCount}</span></> };
     }
@@ -182,7 +174,7 @@ function buildProjectTabs(project: ProjectDef, vpsDeploy: VpsDeployState): { key
   });
 }
 
-export function ProjectDetail({ activeTab = "files" }: { activeTab?: ProjectTab }) {
+export function ProjectDetail({ activeTab = "deploy-history" }: { activeTab?: ProjectTab }) {
   const { navigateToNav, navigateToProjectTab } = useNavigate();
   const [projects] = useSubject($projects);
   const [selectedProjectId] = useSubject($selectedProjectId);
@@ -218,27 +210,17 @@ export function ProjectDetail({ activeTab = "files" }: { activeTab?: ProjectTab 
         }
       />
 
+      <ServersBar project={project} vpsDeploy={vpsDeploy} />
+
       <ViewTabs
         tabs={buildProjectTabs(project, vpsDeploy)}
         activeTab={activeTab}
         onTabChange={navigateToProjectTab}
       />
 
-      {/* Tab content */}
-      {activeTab === "files" && (
-        <div className="py-4">
-          <ProjectFilesEditor projectId={project.id} />
-        </div>
-      )}
-
-      {activeTab === "commands" && (
-        <CommandsTab project={project} />
-      )}
-
-      {activeTab === "cloud" && (
-        <CloudSection project={project} vpsDeploy={vpsDeploy} />
-      )}
-
+      {/* Tab content. Files were moved into the Manage popup's Files tab.
+          Commands were moved into the Manage popup's Commands tab (so they
+          can be run against a specific instance from one place). */}
       {activeTab === "deploy-history" && (
         <DeployHistoryTab project={project} vpsDeploy={vpsDeploy} />
       )}
@@ -246,6 +228,86 @@ export function ProjectDetail({ activeTab = "files" }: { activeTab?: ProjectTab 
       {activeTab === "settings" && (
         <ProjectSettingsTab project={project} />
       )}
+    </div>
+  );
+}
+
+/** Replaces the old "Cloud" tab. Renders a slim deploy + per-instance button row
+ *  at the top of every project page. Clicking a TazCloud instance button opens
+ *  the floating Manage popup (Manage / Files / DB tabs), the same one used by
+ *  the TazCloud admin panel. */
+function ServersBar({
+  project,
+  vpsDeploy,
+}: {
+  project: ProjectDef;
+  vpsDeploy: VpsDeployState;
+}) {
+  const [deployLabel, setDeployLabel] = useState("");
+  return (
+    <div className="flex flex-col gap-2 mb-3 py-3 border-y border-surface0">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-md text-overlay0 font-medium">Servers:</span>
+        {project.vpsInstances.length === 0 && (
+          <span className="text-md text-overlay0 italic">none yet</span>
+        )}
+        {project.vpsInstances.map((instance) => {
+          const state = vpsDeploy.instances[instance.id];
+          const isDeploying = state?.deploying;
+          const isFailed = !!instance.deployFailed;
+          const dotColor = isFailed ? "bg-red" : isDeploying ? "bg-yellow" : "bg-green";
+          // Only TazCloud instances open the floating Manage popup; DigitalOcean
+          // doesn't have an equivalent popup yet (the existing Manage UI is
+          // inline). We disable the button for DO with a hint until that lands.
+          const tazVmId = instance.tazcloud?.vmId;
+          return (
+            <button
+              key={instance.id}
+              onClick={() => {
+                if (tazVmId) {
+                  openManageVmWindow({ id: tazVmId, name: instance.label });
+                }
+              }}
+              disabled={!tazVmId}
+              className={cn(
+                "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-md transition-colors border",
+                "bg-mantle text-subtext0 border-surface0 hover:bg-surface0 hover:text-text",
+                !tazVmId && "opacity-50 cursor-not-allowed hover:bg-mantle hover:text-subtext0",
+              )}
+              title={tazVmId
+                ? "Open Manage popup"
+                : "Manage popup is currently only available for TazCloud VMs"}
+            >
+              <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dotColor)} />
+              {instance.label}
+              <span className="text-overlay0 text-xs">
+                {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : ""}
+              </span>
+            </button>
+          );
+        })}
+        <div className="flex-1" />
+        <input
+          value={deployLabel}
+          onChange={(e) => setDeployLabel(e.target.value)}
+          placeholder="Label"
+          className="bg-mantle text-text text-md rounded px-2 py-1 border border-surface0 focus:border-blue focus:outline-none font-mono w-32"
+        />
+        <Button
+          size="sm"
+          onClick={() => { deployToProvider(project.id, "digitalocean", deployLabel || undefined); setDeployLabel(""); }}
+          title="Deploy a new DigitalOcean droplet for this project"
+        >
+          <Server size={12} className="mr-1 text-blue" /> + DO
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => { deployToProvider(project.id, "tazcloud", deployLabel || undefined); setDeployLabel(""); }}
+          title="Deploy a new TazCloud VM for this project"
+        >
+          <Cloud size={12} className="mr-1 text-blue" /> + Taz
+        </Button>
+      </div>
     </div>
   );
 }
@@ -302,22 +364,6 @@ function DeployLog({ progress, error, deploying }: { progress: string[]; error: 
         </div>
       )}
     </div>
-  );
-}
-
-function CloudSection({
-  project,
-  vpsDeploy,
-}: {
-  project: ProjectDef;
-  vpsDeploy: VpsDeployState;
-}) {
-  // Show only the current project's cloud details
-  return (
-    <ProjectCloudDetail
-      project={project}
-      vpsDeploy={vpsDeploy}
-    />
   );
 }
 
@@ -549,86 +595,6 @@ function NewDeployCard({
           Cancel
         </button>
       </div>
-    </div>
-  );
-}
-
-function ProjectCloudDetail({
-  project,
-  vpsDeploy,
-  onBack,
-}: {
-  project: ProjectDef;
-  vpsDeploy: VpsDeployState;
-  onBack?: () => void;
-}) {
-  const [deployLabel, setDeployLabel] = useState("");
-
-  return (
-    <div className="py-4 flex flex-col gap-2 flex-1 min-h-0">
-      {onBack && (
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 text-md text-overlay0 hover:text-text transition-colors mb-1 self-start"
-        >
-          <ArrowLeft size={14} />
-          All Deployments
-        </button>
-      )}
-
-      <span className="text-base font-semibold text-text mb-1">{project.name}</span>
-
-      {/* Deploy controls — both providers always available; per-button explicit. */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <input
-          value={deployLabel}
-          onChange={(e) => setDeployLabel(e.target.value)}
-          placeholder="Label (e.g. production, staging)"
-          className="bg-mantle text-text text-md rounded px-2.5 py-1.5 border border-surface0 focus:border-blue focus:outline-none font-mono w-64"
-        />
-        <button
-          onClick={() => {
-            deployToProvider(project.id, "digitalocean", deployLabel || undefined);
-            setDeployLabel("");
-          }}
-          className="flex items-center gap-2 px-3 py-1.5 bg-mantle rounded-lg hover:bg-surface0 transition-colors text-left"
-        >
-          <Server size={16} className="text-blue" />
-          <span className="text-md font-medium text-text">
-            Deploy DigitalOcean Droplet
-            {project.vpsSize && project.vpsRegion && (
-              <span className="text-overlay0 font-normal ml-1">
-                ({project.vpsSize} / {project.vpsRegion})
-              </span>
-            )}
-          </span>
-        </button>
-        <button
-          onClick={() => {
-            deployToProvider(project.id, "tazcloud", deployLabel || undefined);
-            setDeployLabel("");
-          }}
-          className="flex items-center gap-2 px-3 py-1.5 bg-mantle rounded-lg hover:bg-surface0 transition-colors text-left"
-        >
-          <Cloud size={16} className="text-blue" />
-          <span className="text-md font-medium text-text">
-            Deploy TazCloud VM
-            <span className="text-overlay0 font-normal ml-1">
-              ({project.vpsImage || "ubuntu-22"} / {project.vpsSize && ["small","medium","large","xlarge"].includes(project.vpsSize) ? project.vpsSize : "small"})
-            </span>
-          </span>
-        </button>
-      </div>
-
-      {/* Deployed instances */}
-      {project.vpsInstances.map((instance) => (
-        <VpsInstanceCard
-          key={instance.id}
-          project={project}
-          instance={instance}
-          instanceState={vpsDeploy.instances[instance.id] || null}
-        />
-      ))}
     </div>
   );
 }
@@ -1664,6 +1630,170 @@ sudo -E NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g @anthropic-ai
       { name: "Help", command: "claude --help | head -40" },
       { name: "Where installed", command: "command -v claude && ls -la $(command -v claude)" },
       { name: "Update", command: "sudo -E NODE_OPTIONS=--dns-result-order=ipv4first npm install -g @anthropic-ai/claude-code 2>&1 | tail -5" },
+    ],
+  },
+  {
+    id: "nextjs",
+    label: "Next.js (latest)",
+    icon: Layers,
+    description: "Scaffold a default Next.js (latest) app at /opt/project and run 'npm run dev' as the 'nextjs-dev' systemd service. Logs append to /var/log/nextjs-dev.log (see CLAUDE.md → VPS Service Logs).",
+    port: 3000,
+    checkScript: `if [ -f /opt/project/package.json ] && grep -q '"next"' /opt/project/package.json && systemctl is-enabled --quiet nextjs-dev 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+${BASH_HELPERS}
+# Log path is the convention in CLAUDE.md → VPS Service Logs. Keep these in sync.
+LOG_FILE=/var/log/nextjs-dev.log
+force_ipv4_dns
+
+# Prereqs (provided by 'Genie Standard Setup'): node, npm, the 'genie' user, /opt/project.
+if ! command -v node > /dev/null 2>&1 || ! command -v npm > /dev/null 2>&1; then
+  log "ERROR: node/npm missing — install 'Genie Standard Setup' first."; exit 1
+fi
+if ! id genie > /dev/null 2>&1; then
+  log "ERROR: 'genie' user missing — install 'Genie Standard Setup' first."; exit 1
+fi
+if [ ! -d /opt/project ]; then
+  sudo mkdir -p /opt/project && sudo chown -R genie:genie /opt/project
+fi
+log "Node: $(node --version), npm: $(npm --version)"
+
+# Scaffold only when /opt/project isn't already a Next.js app. create-next-app
+# refuses to write into a non-empty dir, so bail loudly rather than clobber.
+if [ -f /opt/project/package.json ] && grep -q '"next"' /opt/project/package.json; then
+  log "Next.js already initialized at /opt/project — skipping create-next-app."
+else
+  if [ -n "$(ls -A /opt/project 2>/dev/null)" ]; then
+    log "ERROR: /opt/project not empty and not a Next.js app — refusing to overwrite."; exit 1
+  fi
+  log "Scaffolding Next.js (latest) at /opt/project (1-3 min)..."
+  sudo -H -u genie bash -lc 'cd /opt/project && NODE_OPTIONS="--dns-result-order=ipv4first" npx --yes create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm --yes' 2>&1 | sed 's/^/  /'
+fi
+
+# systemd 'append:' requires the file to be writable by the service User. genie
+# can't create files in /var/log, so we pre-create + chown here.
+log "Preparing log file $LOG_FILE..."
+sudo touch "$LOG_FILE"
+sudo chown genie:genie "$LOG_FILE"
+sudo chmod 644 "$LOG_FILE"
+
+# Resolve npm path now (systemd units don't inherit interactive PATH).
+NPM_PATH=$(command -v npm)
+log "Writing /etc/systemd/system/nextjs-dev.service (ExecStart=$NPM_PATH run dev)..."
+sudo tee /etc/systemd/system/nextjs-dev.service > /dev/null <<UNIT
+[Unit]
+Description=Next.js dev server (Genie)
+After=network.target
+
+[Service]
+Type=simple
+User=genie
+WorkingDirectory=/opt/project
+Environment=NODE_OPTIONS=--dns-result-order=ipv4first
+Environment=PORT=3000
+ExecStart=$NPM_PATH run dev
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+log "Reloading systemd and starting nextjs-dev..."
+sudo systemctl daemon-reload
+# 'restart' (not 'start') so a re-run picks up unit-file changes; --now on enable
+# is intentionally left off so we control the wait/poll below.
+sudo systemctl enable nextjs-dev > /dev/null 2>&1 || true
+sudo systemctl restart nextjs-dev
+
+# 1. Wait for systemd to report the service active. 'next dev' takes a few
+#    seconds to fork before systemd marks it active (Type=simple).
+log "Waiting for nextjs-dev to become active..."
+for i in $(seq 1 30); do
+  if sudo systemctl is-active --quiet nextjs-dev; then
+    log "  systemd: active after \${i}s."
+    break
+  fi
+  sleep 1
+done
+if ! sudo systemctl is-active --quiet nextjs-dev; then
+  log "ERROR: nextjs-dev failed to reach active state. Recent status:"
+  sudo systemctl status nextjs-dev --no-pager 2>&1 | head -30 || true
+  log "Recent log lines ($LOG_FILE):"
+  sudo tail -n 50 "$LOG_FILE" 2>/dev/null || true
+  exit 1
+fi
+
+# 2. Wait for port 3000 to actually serve HTTP. First request triggers Next's
+#    on-demand compile (5-30 s on a small VM), so this poll is the real
+#    confirmation the user can hit the app — not just that npm spawned.
+log "Waiting for HTTP on port 3000 (Next.js first-request compile can take 30s)..."
+ready=0
+for i in $(seq 1 60); do
+  code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:3000/ 2>/dev/null || echo 000)
+  if [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ]; then
+    log "  HTTP \${code} from http://127.0.0.1:3000/ after \${i}s — server is up."
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$ready" != "1" ]; then
+  log "WARNING: service is active but port 3000 did not respond in 60s. Recent log lines:"
+  sudo tail -n 50 "$LOG_FILE" 2>/dev/null || true
+  log "Check 'sudo journalctl -u nextjs-dev -n 100' and $LOG_FILE for compile errors."
+  exit 1
+fi
+
+sudo systemctl status nextjs-dev --no-pager 2>&1 | head -10 || true
+log "Done. Service: nextjs-dev   Port: 3000 (responding)   Logs: $LOG_FILE"`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Stopping and disabling nextjs-dev.service..."
+sudo systemctl disable --now nextjs-dev 2>/dev/null || true
+sudo rm -f /etc/systemd/system/nextjs-dev.service
+sudo systemctl daemon-reload
+log "Note: /opt/project source and /var/log/nextjs-dev.log are left in place — remove manually if desired."
+log "Done."`,
+    setupShSnippet: `# Next.js (latest) at /opt/project + nextjs-dev systemd service (logs → /var/log/nextjs-dev.log)
+LOG_FILE=/var/log/nextjs-dev.log
+if [ ! -f /opt/project/package.json ] || ! grep -q '"next"' /opt/project/package.json; then
+  sudo -H -u genie bash -lc 'cd /opt/project && NODE_OPTIONS="--dns-result-order=ipv4first" npx --yes create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm --yes' 2>&1 | tail -10
+fi
+touch "$LOG_FILE" && chown genie:genie "$LOG_FILE" && chmod 644 "$LOG_FILE"
+NPM_PATH=$(command -v npm)
+cat > /etc/systemd/system/nextjs-dev.service <<UNIT
+[Unit]
+Description=Next.js dev server (Genie)
+After=network.target
+[Service]
+Type=simple
+User=genie
+WorkingDirectory=/opt/project
+Environment=NODE_OPTIONS=--dns-result-order=ipv4first
+Environment=PORT=3000
+ExecStart=$NPM_PATH run dev
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload && systemctl enable --now nextjs-dev`,
+    commands: [
+      { name: "Service status", command: "sudo systemctl status nextjs-dev --no-pager 2>&1 | head -25" },
+      { name: "Tail logs (last 80)", command: "sudo tail -n 80 /var/log/nextjs-dev.log" },
+      { name: "Follow logs (5s)", command: "sudo timeout 5 tail -n 30 -f /var/log/nextjs-dev.log || true" },
+      { name: "Restart service", command: "sudo systemctl restart nextjs-dev && sleep 2 && sudo systemctl status nextjs-dev --no-pager 2>&1 | head -10" },
+      { name: "Stop service", command: "sudo systemctl stop nextjs-dev" },
+      { name: "Start service", command: "sudo systemctl start nextjs-dev" },
+      { name: "Next.js version", command: "cd /opt/project && node -e 'console.log(require(\"./package.json\").dependencies.next)'" },
+      { name: "Clear log file", command: "sudo truncate -s 0 /var/log/nextjs-dev.log && echo 'cleared'" },
+      { name: "Hit local URL", command: "curl -fsS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\\n' http://127.0.0.1:3000/ || echo 'not reachable yet'" },
     ],
   },
 ];
@@ -3014,7 +3144,7 @@ function VpsProcessTable({
   );
 }
 
-function CommandsTab({ project }: { project: ProjectDef }) {
+export function CommandsTab({ project }: { project: ProjectDef }) {
   const [commandRunOutputs] = useSubject($commandRunOutputs);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -3117,7 +3247,7 @@ function CommandsTab({ project }: { project: ProjectDef }) {
 
       {noInstances && (
         <div className="text-md text-overlay0 bg-surface0 rounded-md px-3 py-2">
-          No VPS instances deployed. Deploy an instance from the Cloud tab to run commands.
+          No VPS instances deployed. Use the "+ DO" or "+ Taz" buttons in the Servers bar above to deploy one.
         </div>
       )}
 

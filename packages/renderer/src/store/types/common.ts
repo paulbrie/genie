@@ -4,7 +4,7 @@ import type { DirEntry } from "@/lib/genie-api";
 
 export type ProcessStatus = "running" | "stopped" | "crashed";
 
-export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "tracker" | "settings" | "admin" | "architecture" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help";
+export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "history" | "tracker" | "settings" | "admin" | "architecture" | "topology" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help";
 
 /** Sub-tab for the `/clouds/*` route group (the unified DigitalOcean / TazCloud
  *  admin panel). The URL segment after `/clouds/` is one of these literals. */
@@ -148,6 +148,15 @@ export interface PresenceSession {
   avatarUrl: string | null;
   clientType: string;
   currentNav: string | null;
+  /** Project currently selected by this session, if any. Updated by the
+   *  renderer whenever `$selectedProjectId` changes; used by the 3D topology
+   *  to draw real user → server lines. */
+  selectedProjectId: string | null;
+  /** Servers this user currently has live PTY sessions attached to. The
+   *  topology graph draws an edge from the user to each entry, resolving the
+   *  target by `instanceId` when present and falling back to `host` for
+   *  direct-SSH sessions (which carry no instance id). */
+  attachedServers: { instanceId: string | null; host: string }[];
   recentActions: { type: string; ts: number }[];
   ip: string | null;
   userAgent: string | null;

@@ -15,6 +15,8 @@ import {
   applyNodeChanges,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { TopologyGraph3D } from "./topology-graph-3d";
+import { Boxes, Network as NetworkIcon } from "lucide-react";
 
 // --- Custom Node ---
 
@@ -28,14 +30,19 @@ interface GroupNodeData {
   [key: string]: unknown;
 }
 
-function ArchNode({ data }: { data: GroupNodeData }) {
+function ArchNode({ data, selected }: { data: GroupNodeData; selected?: boolean }) {
+  const glow = selected
+    ? `0 0 0 1px ${data.color}, 0 0 24px 4px ${data.color}80, 0 0 48px 8px ${data.color}40`
+    : "0 1px 3px rgba(0,0,0,0.2)";
   return (
     <div
-      className="rounded-lg border px-5 py-4 shadow-md min-w-[220px] max-w-[300px]"
+      className="rounded-lg border px-5 py-4 min-w-[220px] max-w-[300px]"
       style={{
         background: "var(--ctp-mantle)",
         borderColor: data.color,
         borderWidth: 2,
+        boxShadow: glow,
+        transition: "box-shadow 120ms ease-out",
       }}
     >
       <Handle type="target" position={Position.Top} style={{ background: data.color }} />
@@ -398,8 +405,11 @@ const initialEdges: Edge[] = [
 
 // --- Panel ---
 
+type ViewMode = "diagram" | "topology";
+
 export function ArchitecturePanel() {
   const [nodes, setNodes] = useState<Node[]>(initialNodes);
+  const [view, setView] = useState<ViewMode>("topology");
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -408,35 +418,78 @@ export function ArchitecturePanel() {
 
   return (
     <div className="flex-1 flex flex-col h-full">
-      <div className="px-6 py-4 border-b border-surface0">
-        <h1 className="text-xl font-semibold text-text">System Architecture</h1>
-        <p className="text-md text-subtext0 mt-1">
-          How the Genie Manager, web dashboard, Chrome extension, VPS providers, and the
-          on-VPS agent fit together. Drag nodes to rearrange.
-        </p>
+      <div className="px-6 py-4 border-b border-surface0 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold text-text">System Architecture</h1>
+          <p className="text-md text-subtext0 mt-1">
+            {view === "topology"
+              ? "Live 3D topology — Genie at the center, projects on the ring, their servers orbiting, connected users floating around the Manager. Drag to orbit, scroll to zoom."
+              : "How the Genie Manager, web dashboard, Chrome extension, VPS providers, and the on-VPS agent fit together. Drag nodes to rearrange."}
+          </p>
+        </div>
+
+        <div className="flex rounded-md border border-surface0 overflow-hidden shrink-0 mt-0.5">
+          <button
+            onClick={() => setView("topology")}
+            className={
+              "flex items-center gap-1.5 px-3 py-1.5 text-md transition-colors border-none cursor-pointer " +
+              (view === "topology"
+                ? "bg-surface0 text-text"
+                : "bg-transparent text-overlay0 hover:text-subtext0 hover:bg-mantle")
+            }
+          >
+            <Boxes size={14} />
+            3D Topology
+          </button>
+          <button
+            onClick={() => setView("diagram")}
+            className={
+              "flex items-center gap-1.5 px-3 py-1.5 text-md transition-colors border-none cursor-pointer border-l border-surface0 " +
+              (view === "diagram"
+                ? "bg-surface0 text-text"
+                : "bg-transparent text-overlay0 hover:text-subtext0 hover:bg-mantle")
+            }
+          >
+            <NetworkIcon size={14} />
+            Diagram
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 relative" style={{ minHeight: 500 }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={initialEdges}
-          onNodesChange={onNodesChange}
-          nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          proOptions={{ hideAttribution: true }}
-          nodesConnectable={false}
-          zoomOnScroll
-          panOnScroll
-          minZoom={0.2}
-          maxZoom={2}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--ctp-surface0)" />
-          <Controls
-            showInteractive={false}
-            style={{ background: "var(--ctp-mantle)", borderColor: "var(--ctp-surface0)" }}
-          />
-        </ReactFlow>
+        {view === "topology" ? (
+          <TopologyGraph3D />
+        ) : (
+          <>
+            <style>{`
+              .arch-flow .react-flow__node { outline: none !important; }
+              .arch-flow .react-flow__node.selected { outline: none !important; box-shadow: none !important; }
+              .arch-flow .react-flow__node:focus,
+              .arch-flow .react-flow__node:focus-visible { outline: none !important; box-shadow: none !important; }
+            `}</style>
+            <ReactFlow
+              className="arch-flow"
+            nodes={nodes}
+            edges={initialEdges}
+            onNodesChange={onNodesChange}
+            nodeTypes={nodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            proOptions={{ hideAttribution: true }}
+            nodesConnectable={false}
+            zoomOnScroll
+            panOnScroll
+            minZoom={0.2}
+            maxZoom={2}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--ctp-surface0)" />
+            <Controls
+              showInteractive={false}
+              style={{ background: "var(--ctp-mantle)", borderColor: "var(--ctp-surface0)" }}
+            />
+            </ReactFlow>
+          </>
+        )}
       </div>
     </div>
   );

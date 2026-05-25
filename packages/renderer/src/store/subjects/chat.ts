@@ -5,6 +5,7 @@ export const $chat = new Subject<ChatState>({
   messages: [], loading: false, streamingContent: "", streamingSteps: [],
   toolUses: [], statusText: "", modelId: "claude-code", maxToolRounds: 0, toolRoundsUsed: 0,
   claudeInfo: null, sessions: [], sessionsLoading: false, activeSessionId: null,
+  resumedFrom: null,
 });
 
 export const $conversationChat = new Subject<ConversationChatState>({

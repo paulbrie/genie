@@ -7,6 +7,10 @@ export interface AuthUser {
   avatarUrl: string | null;
   isAdmin?: boolean;
   role: "user" | "tazcloud" | "admin" | "superadmin";
+  /** Most recent changelog version this user has acknowledged. Used by the
+   *  "What's new" modal to decide whether to pop on next login. Null for
+   *  users who have never seen it. */
+  lastSeenUpdateVersion?: string | null;
 }
 
 /** When a superadmin starts an impersonation session, the server keeps a record

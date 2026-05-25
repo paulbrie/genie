@@ -1,16 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSubject } from "subjecto/react";
 import { TerminalSquare, LogOut, Radio, MessageSquarePlus } from "lucide-react";
 import type { AuthUser } from "@/store/types";
 import { $auth, $manager } from "@/store/subjects";
-import { addTerminalTab } from "@/store/actions";
+import { addTerminalTab, markUpdatesSeen } from "@/store/actions";
 import { logout } from "@/lib/ws";
 import { SystemStats } from "@/components/system-stats";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { FileExplorerToggle } from "@/components/file-explorer-toggle";
 import { FeedbackModal } from "@/components/feedback-modal";
+import { UpdateLogModal } from "@/components/update-log-modal";
+import { unseenChangelogEntries, latestChangelogVersion } from "@/lib/changelog";
 import { cn } from "@/lib/utils";
 import { useWsLogCount } from "@/components/ws-log-drawer";
 
@@ -27,6 +29,38 @@ export function Sidebar({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const role = auth.user?.role;
   const isAdmin = role === "admin" || role === "superadmin";
+
+  // "What's new" modal: opens automatically when the authenticated user has
+  // unacknowledged changelog entries. We freeze the entries the moment we
+  // open so dismissing doesn't yank items out from under the render, and we
+  // track shown-state per user id so re-auth as a different user re-checks.
+  const userId = auth.user?.id ?? null;
+  const lastSeen = auth.user?.lastSeenUpdateVersion ?? null;
+  const [updateModalState, setUpdateModalState] = useState<{
+    open: boolean;
+    entries: ReturnType<typeof unseenChangelogEntries>;
+    shownForUser: string | null;
+  }>({ open: false, entries: [], shownForUser: null });
+
+  useEffect(() => {
+    if (auth.status !== "authenticated" || !userId) return;
+    if (updateModalState.shownForUser === userId) return;
+    const entries = unseenChangelogEntries(lastSeen);
+    if (entries.length === 0) {
+      setUpdateModalState({ open: false, entries: [], shownForUser: userId });
+      return;
+    }
+    setUpdateModalState({ open: true, entries, shownForUser: userId });
+  }, [auth.status, userId, lastSeen, updateModalState.shownForUser]);
+
+  const closeUpdateModal = useMemo(
+    () => () => {
+      const latest = latestChangelogVersion();
+      if (latest) markUpdatesSeen(latest);
+      setUpdateModalState((s) => ({ ...s, open: false }));
+    },
+    [],
+  );
 
   return (
     <aside className="w-60 min-w-60 bg-mantle border-r border-surface0 flex flex-col gap-2.5 px-3 pb-3 pt-3 overflow-hidden">
@@ -59,6 +93,11 @@ export function Sidebar({
         <UserBadge />
       </div>
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+      <UpdateLogModal
+        open={updateModalState.open}
+        entries={updateModalState.entries}
+        onClose={closeUpdateModal}
+      />
     </aside>
   );
 }

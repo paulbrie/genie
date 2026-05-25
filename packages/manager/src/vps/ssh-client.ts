@@ -269,3 +269,25 @@ export function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: num
       });
   });
 }
+
+/** Try each candidate username in order and return the first one whose SSH
+ *  login succeeds with the given key. Used at VPS-attach time so that a VM
+ *  which has had the Genie recipe installed gets the `genie` user picked over
+ *  the image-default user (e.g. `ubuntu`), avoiding Permission-denied surprises
+ *  on `/opt/project` writes later. Returns null if no candidate connects. */
+export async function pickWorkingSshUser(
+  base: Omit<SshConnectionConfig, "username">,
+  candidates: string[],
+): Promise<string | null> {
+  for (const username of candidates) {
+    let session;
+    try {
+      session = await connectSsh({ ...base, username }, { timeoutMs: 8_000 });
+    } catch {
+      continue;
+    }
+    session.close();
+    return username;
+  }
+  return null;
+}

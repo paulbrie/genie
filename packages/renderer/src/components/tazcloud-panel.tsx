@@ -3,17 +3,23 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink } from "lucide-react";
 import { $admin, $auth, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState } from "@/store/types";
-import { addSshTerminalTab, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, focusWindow, loadAdminTazVms, loadAdminTazcloudStats, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
+import { addSshTerminalTab, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, disconnectVps, focusWindow, loadAdminTazVms, loadAdminTazcloudStats, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
 import { useDraggable, useResizable } from "@/components/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project-detail";
 import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
 import { AdminSystemPanel } from "@/components/admin-system-panel";
+import { VpsResourceGauges } from "@/components/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
+import { FileExplorer } from "@/components/vps-file-explorer";
+import { DbExplorer } from "@/components/db-explorer";
+import { CommandsTab } from "@/components/project-detail";
+import { $projects } from "@/store/subjects";
+import { FolderTree, Database as DatabaseIcon, PlayCircle, Network } from "lucide-react";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { CopyableIp } from "@/components/ui/copyable-ip";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
@@ -109,6 +115,10 @@ function validateTazVmName(name: string): string | null {
 export function TazCloudPanel() {
   const admin = useDeepSubjectAll($admin);
   const [auth] = useSubject($auth);
+  // Used by the per-row "Detach from project" action to resolve the project's
+  // internal vpsInstance id (which the server's `vps:disconnect` handler needs)
+  // from the admin-view `vm.id` (which is the TazCloud-side VM id).
+  const [projects] = useSubject($projects);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
   const [deployOpen, setDeployOpen] = useState(false);
@@ -576,6 +586,31 @@ export function TazCloudPanel() {
                         Attach domain…
                       </button>
                     )}
+                    {vm.projectId && vm.projectName && (
+                      <button
+                        onClick={() => {
+                          setActionMenuOpenFor(null);
+                          // Resolve the project's vpsInstance id from the client-cached
+                          // $projects state — the server's vps:disconnect handler needs
+                          // (projectId, instanceId), not the tazcloud-side vm.id.
+                          const project = projects.find((p) => p.id === vm.projectId);
+                          const instance = project?.vpsInstances.find((i) => i.tazcloud?.vmId === vm.id);
+                          if (!instance) {
+                            window.alert(`Could not find a matching vpsInstance on project "${vm.projectName}". The project list may be stale — refresh and try again.`);
+                            return;
+                          }
+                          if (!window.confirm(`Detach "${vm.name}" from project "${vm.projectName}"?\n\nThe VM keeps running and its files (including /opt/project) are untouched — only the project↔VM link in Genie is removed.`)) {
+                            return;
+                          }
+                          disconnectVps(vm.projectId!, instance.id);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                        title={`Remove the link to "${vm.projectName}" without touching the VM`}
+                      >
+                        <Unlink size={12} className="text-overlay0" />
+                        Detach from {vm.projectName}
+                      </button>
+                    )}
                     <div className="my-1 border-t border-overlay0/15" />
                     <button
                       onClick={() => { setActionMenuOpenFor(null); confirmDelete(vm.id); }}
@@ -1002,7 +1037,8 @@ export function TazCloudPanel() {
 
       <TazSnapshotsSection vms={vms} />
 
-      <ManageVmWindows vms={vms} />
+      {/* ManageVmWindows is mounted globally in app/[[...slug]]/page.tsx so the
+          popup persists across navigation and can be opened from project pages. */}
     </div>
   );
 }
@@ -1012,14 +1048,18 @@ const MANAGE_VM_DEFAULT_W = 900;
 const MANAGE_VM_DEFAULT_H = 600;
 const MANAGE_VM_CASCADE_OFFSET = 30;
 
-function openManageVmWindow(vm: { id: string; name: string }) {
+/** Open the Manage popup for a TazCloud VM. Exported so project pages can
+ *  trigger the same popup with data derived from a project's VpsInstance —
+ *  the popup itself looks up vm details from `$admin.tazcloud.vms` first and
+ *  falls back to `$projects` (see ManageVmWindowInstance). */
+export function openManageVmWindow(vm: { id: string; name: string }) {
   const wid = MANAGE_VM_WINDOW_PREFIX + vm.id;
   registerWindow(wid, `Manage ${vm.name}`, "settings");
   openWindow(wid);
   focusWindow(wid);
 }
 
-type ManageVm = { id: string; name: string; ipv6: string; image?: string; projectId: string | null };
+type ManageVm = { id: string; name: string; ipv6: string; image?: string; projectId: string | null; ingress?: { domain: string; url?: string } | null };
 
 /** Claude Terminal button for the Manage popup header. Runs a one-shot SSH
  *  probe to see if the VM has the Genie standard setup (genie user with SSH
@@ -1190,26 +1230,97 @@ function ManageVmPopup({ vm, windowId, windowState }: {
   );
 }
 
-function ManageVmWindowInstance({ windowId, vms }: { windowId: string; vms: AdminTazVm[] }) {
+function ManageVmWindowInstance({ windowId }: { windowId: string }) {
   const [windowManager] = useSubject($windowManager);
+  const adminVms = useDeepSubjectAll($admin).tazcloud.vms;
+  const [projects] = useSubject($projects);
   const windowState = windowManager.windows[windowId];
   const vmId = windowId.slice(MANAGE_VM_WINDOW_PREFIX.length);
-  const vm = vms.find((v) => v.id === vmId);
-  if (!windowState || windowState.status !== "open" || !vm) return null;
-  return <ManageVmPopup vm={vm} windowId={windowId} windowState={windowState} />;
+
+  // Try admin source first (TazCloud panel context). If not found there, derive
+  // a ManageVm shape from a project-attached instance — lets the same popup
+  // open from project pages without re-implementing the window machinery.
+  //
+  // CAREFUL: dep on primitive fields, NOT on the source arrays. The $projects
+  // / $admin subjects emit new array references on every WS broadcast (stats
+  // pings every few seconds), so depending on the arrays would mint a new `vm`
+  // each tick, which propagates as a prop change to ManageVmInline and resets
+  // its child effects (re-running recipe checks, etc.). The primitive deps
+  // ensure a stable identity until the actual data changes.
+  const adminVm = adminVms.find((v) => v.id === vmId) ?? null;
+  const adminName = adminVm?.name ?? "";
+  const adminIpv6 = adminVm?.ipv6 ?? "";
+  const adminImage = adminVm?.image;
+  const adminProjectId = adminVm?.projectId ?? null;
+  const adminIngressDomain = adminVm?.ingress?.domain ?? null;
+  const adminIngressUrl = adminVm?.ingress?.url ?? null;
+
+  let projInst: { label: string; ipv6: string; image?: string; projectId: string } | null = null;
+  if (!adminVm) {
+    for (const p of projects) {
+      const inst = p.vpsInstances.find((i) => i.tazcloud?.vmId === vmId);
+      if (inst && inst.tazcloud) {
+        projInst = {
+          label: inst.label,
+          ipv6: inst.tazcloud.ipv6 || inst.connection.host,
+          image: inst.tazcloud.image,
+          projectId: p.id,
+        };
+        break;
+      }
+    }
+  }
+  const projLabel = projInst?.label ?? "";
+  const projIpv6 = projInst?.ipv6 ?? "";
+  const projImage = projInst?.image;
+  const projProjectId = projInst?.projectId ?? null;
+
+  const vm = useMemo<ManageVm | null>(() => {
+    if (adminVm) {
+      return {
+        id: vmId,
+        name: adminName,
+        ipv6: adminIpv6,
+        image: adminImage,
+        projectId: adminProjectId,
+        ingress: adminIngressDomain
+          ? { domain: adminIngressDomain, url: adminIngressUrl ?? undefined }
+          : null,
+      };
+    }
+    if (projInst) {
+      return { id: vmId, name: projLabel, ipv6: projIpv6, image: projImage, projectId: projProjectId };
+    }
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vmId, !!adminVm, adminName, adminIpv6, adminImage, adminProjectId, adminIngressDomain, adminIngressUrl, !!projInst, projLabel, projIpv6, projImage, projProjectId]);
+
+  // Defensive cache: if `vm` momentarily resolves to null (e.g. while the admin
+  // VM list is being refreshed after a stale broadcast on navigation), keep the
+  // last known shape so the popup doesn't unmount its children. Unmount/remount
+  // would reset all per-mount state inside ManageVmInline — recipe auto-checks,
+  // VpsResourceGauges polling, etc. — which the user perceives as the popup
+  // being "reset" every time the URL changes.
+  const lastVmRef = useRef<ManageVm | null>(null);
+  if (vm) lastVmRef.current = vm;
+  const renderVm = vm ?? lastVmRef.current;
+
+  if (!windowState || windowState.status !== "open" || !renderVm) return null;
+  return <ManageVmPopup vm={renderVm} windowId={windowId} windowState={windowState} />;
 }
 
-function ManageVmWindows({ vms }: { vms: AdminTazVm[] }) {
+export function ManageVmWindows() {
   const [windowManager] = useSubject($windowManager);
   const windowIds = Object.keys(windowManager.windows).filter((id) => id.startsWith(MANAGE_VM_WINDOW_PREFIX));
   return (
     <>
       {windowIds.map((id) => (
-        <ManageVmWindowInstance key={id} windowId={id} vms={vms} />
+        <ManageVmWindowInstance key={id} windowId={id} />
       ))}
     </>
   );
 }
+
 
 /** List of all TazCloud snapshots — across every VM, since the API doesn't
  *  scope listSnapshots() per VM. Source VM names resolved from the current VM
@@ -1386,11 +1497,19 @@ function TazSnapshotsSection({ vms }: { vms: AdminTazVm[] }) {
 }
 
 interface ManageVmInlineProps {
-  vm: { id: string; name: string; ipv6: string; image?: string; projectId: string | null };
+  vm: { id: string; name: string; ipv6: string; image?: string; projectId: string | null; ingress?: { domain: string; url?: string } | null };
 }
 
-/** Inline "Manage" panel rendered under a VM row: shows firewall + services components
- *  bound to the admin-scoped exec helper (no project linkage required). */
+type ManageTab = "manage" | "firewall" | "ports" | "files" | "db" | "commands";
+
+/** Inline "Manage" panel rendered under a VM row. Tabs:
+ *  - Manage:   recipes + system (always available, runs as image-default sudo user)
+ *  - Firewall: ufw rules editor (always available)
+ *  - Files:    full file explorer (requires the VM to be linked to a project)
+ *  - DB:       postgres browser (same project-linkage requirement)
+ *  - Commands: project commands list, can be run against this VM (requires
+ *              project linkage). Lives here so users have one place to drive
+ *              a server; the project page no longer has a Commands tab. */
 function ManageVmInline({ vm }: ManageVmInlineProps) {
   // Use the image-default user for Manage operations. The `genie` user may not
   // exist (VMs created via the bare "Deploy VM" admin button skip the Genie
@@ -1399,14 +1518,95 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   const user = imageDefaultUser(vm.image);
   const exec = (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
     adminTazcloudExec(vm.id, user, command, vm.ipv6, onChunk, signal);
+
+  const [tab, setTab] = useState<ManageTab>("manage");
+  const [projects] = useSubject($projects);
+  // Find the project + VPS instance this VM is attached to, if any. The Files
+  // and DB panels delegate to server-side `vps:fs:*` / `vps:db:*` handlers that
+  // require a real (projectId, instanceId) pair to resolve an SSH connection.
+  const linked = useMemo(() => {
+    if (!vm.projectId) return null;
+    const project = projects.find((p) => p.id === vm.projectId);
+    if (!project) return null;
+    const instance = project.vpsInstances.find((i) => i.tazcloud?.vmId === vm.id);
+    if (!instance) return null;
+    return { project, instance };
+  }, [projects, vm.projectId, vm.id]);
+
+  const hasProject = !!linked;
+
+  const tabs: { key: ManageTab; label: string; icon: typeof SettingsIcon; enabled: boolean; reason?: string }[] = [
+    { key: "manage", label: "Manage", icon: SettingsIcon, enabled: true },
+    { key: "firewall", label: "Firewall", icon: Shield, enabled: true },
+    { key: "ports", label: "Ports", icon: Network, enabled: true },
+    { key: "commands", label: "Commands", icon: PlayCircle, enabled: hasProject, reason: "Attach this VM to a project to manage commands" },
+    { key: "files", label: "Files", icon: FolderTree, enabled: hasProject, reason: "Attach this VM to a project to browse files" },
+    { key: "db", label: "DB", icon: DatabaseIcon, enabled: hasProject, reason: "Attach this VM to a project to browse the database" },
+  ];
+
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-xs text-overlay0">
-        Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.ipv6}</span>
-      </p>
-      <AdminRecipesPanel exec={exec} />
-      <VpsFirewall exec={exec} />
-      <AdminSystemPanel exec={exec} />
+      <div className="flex items-center gap-1 border-b border-surface0 pb-2">
+        {tabs.map((t) => {
+          const Icon = t.icon;
+          const isActive = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              onClick={() => t.enabled && setTab(t.key)}
+              disabled={!t.enabled}
+              title={t.enabled ? undefined : t.reason}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-md rounded-md border-none cursor-pointer transition-colors",
+                isActive ? "bg-surface0 text-text" : "bg-transparent text-overlay0 hover:text-subtext0 hover:bg-mantle",
+                !t.enabled && "opacity-40 cursor-not-allowed hover:bg-transparent hover:text-overlay0",
+              )}
+            >
+              <Icon size={14} />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === "manage" && (
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-overlay0">
+            Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.ipv6}</span>
+          </p>
+          <VpsResourceGauges
+            exec={exec}
+            host={vm.ipv6}
+            domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
+          />
+          <AdminRecipesPanel exec={exec} />
+          <AdminSystemPanel exec={exec} view="services" />
+        </div>
+      )}
+
+      {tab === "firewall" && (
+        <VpsFirewall exec={exec} />
+      )}
+
+      {tab === "ports" && (
+        <AdminSystemPanel exec={exec} view="ports" />
+      )}
+
+      {tab === "commands" && linked && (
+        <CommandsTab project={linked.project} />
+      )}
+
+      {tab === "files" && linked && (
+        <div className="h-[600px]">
+          <FileExplorer project={linked.project} />
+        </div>
+      )}
+
+      {tab === "db" && linked && (
+        <div className="h-[600px]">
+          <DbExplorer project={linked.project} />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey } from "@/store/types";
-export type ProjectTab = "files" | "commands" | "cloud" | "deploy-history" | "settings";
+export type ProjectTab = "deploy-history" | "settings";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs";
 export type SettingsTab = "general" | "deploy";
 
@@ -11,11 +11,11 @@ export type SettingsTab = "general" | "deploy";
 // a regular user on the admin shell with empty data, instead of bouncing them.
 type NavRole = "user" | "tazcloud" | "admin" | "superadmin" | undefined | null;
 
-const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "settings"]);
+const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings"]);
 const TAZCLOUD_EXTRA_NAVS = new Set<NavKey>(["recipes", "clouds"]);
 const ADMIN_NAVS = new Set<NavKey>([
-  "projects", "processes", "docker", "docs", "logs", "chat", "tracker",
-  "settings", "admin", "architecture", "users", "security", "help",
+  "projects", "processes", "docker", "docs", "logs", "chat", "history", "tracker",
+  "settings", "admin", "architecture", "topology", "users", "security", "help",
 ]);
 
 export function navAllowedForRole(nav: NavKey, role: NavRole): boolean {
@@ -42,10 +42,12 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   logs: "logs",
   terminal: "terminal",
   chat: "chat",
+  history: "history",
   tracker: "tracker",
   settings: "settings",
   admin: "admin",
   architecture: "architecture",
+  topology: "topology",
   users: "users",
   security: "security",
   // tazcloud kept as a legacy alias for the standalone TazCloud admin panel.
@@ -64,9 +66,6 @@ const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
 ) as Record<string, NavKey>;
 
 const VALID_PROJECT_TABS = new Set<ProjectTab>([
-  "files",
-  "commands",
-  "cloud",
   "deploy-history",
   "settings",
 ]);
@@ -101,7 +100,7 @@ export function buildSettingsPath(tab: SettingsTab): string {
 }
 
 export function buildProjectPath(slug: string, tab?: ProjectTab): string {
-  const t = tab || "files";
+  const t = tab || "deploy-history";
   return `/projects/${slug}/${t}`;
 }
 
@@ -178,12 +177,12 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
     return { nav };
   }
 
-  // Projects entity + optional tab (default to "files")
+  // Projects entity + optional tab (default to "deploy-history")
   if (nav === "projects") {
     const tab =
       slugSegments.length >= 3 && VALID_PROJECT_TABS.has(slugSegments[2] as ProjectTab)
         ? (slugSegments[2] as ProjectTab)
-        : "files";
+        : "deploy-history";
     return { nav, entitySlug, tab };
   }
 

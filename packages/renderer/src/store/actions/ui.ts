@@ -18,6 +18,13 @@ export function switchNav(nav: NavKey): void {
   if (nav !== "apps") $showAddForm.next(false);
   if (nav !== "projects") $showAddProjectForm.next(false);
   sendPresenceNav(nav);
+  // The project context only counts when the user is actually on a project
+  // page — clear it otherwise so the topology doesn't show a stale link.
+  if (nav === "projects") {
+    sendPresenceProject($selectedProjectId.getValue());
+  } else {
+    sendPresenceProject(null);
+  }
   saveUiState();
 }
 
@@ -51,12 +58,23 @@ export function sendPresenceNav(nav: string): void {
   wsSend("presence:nav", { nav });
 }
 
+export function sendPresenceProject(projectId: string | null): void {
+  wsSend("presence:project", { projectId });
+}
+
 export function requestPresenceDetail(): void {
   wsSend("presence:detail", {});
 }
 
 export function submitFeedback(title: string, description: string): void {
   wsSend("feedback:submit", { title, description });
+}
+
+/** Tell the manager the user has acknowledged updates up to `version`. The
+ *  manager persists it on the users row so the "What's new" modal won't pop
+ *  again until a newer entry is added to the changelog. */
+export function markUpdatesSeen(version: string): void {
+  wsSend("updates:mark-seen", { version });
 }
 
 // --- UI state persistence ---

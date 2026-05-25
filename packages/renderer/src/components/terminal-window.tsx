@@ -21,7 +21,7 @@ import { useDraggable, useResizable } from "@/components/use-draggable";
 import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
-const WINDOW_PREFIX = "terminal-";
+export const WINDOW_PREFIX = "terminal-";
 const DEFAULT_W = 600;
 const DEFAULT_H = 400;
 const CASCADE_OFFSET = 30;
@@ -111,7 +111,14 @@ function SingleTerminalWindow({
       const term = createTerminal(containerRef.current, tab.id);
       const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
       if (!tab.shared && !isRestored) {
-        if (tab.ssh) {
+        if (tab.reattach) {
+          // Persisted server-side session: ask the manager to reattach by id.
+          // The manager looks up the row and spawns SSH+tmux against the right host.
+          window.dispatchEvent(new CustomEvent("genie:terminal:data", {
+            detail: { id: tab.id, data: `\x1b[2mReattaching to ${tab.id}...\x1b[0m\r\n` },
+          }));
+          wsSend("terminal:reattach", { id: tab.id, cols: term.cols, rows: term.rows });
+        } else if (tab.ssh) {
           // Show feedback so the pane isn't blank during connect (especially over
           // slow links or when IPv6 is hanging at TCP timeout).
           window.dispatchEvent(new CustomEvent("genie:terminal:data", {

@@ -66,6 +66,13 @@ export interface ChatSessionSummary {
   updatedAt: string;
 }
 
+export interface ResumedFrom {
+  /** Claude Code session id being resumed (matches --resume flag). */
+  sessionId: string;
+  /** ISO timestamp of the previous activity on this session. */
+  lastActivity: string;
+}
+
 export interface ChatState {
   messages: ChatMessage[];
   loading: boolean;
@@ -80,6 +87,11 @@ export interface ChatState {
   sessions: ChatSessionSummary[];
   sessionsLoading: boolean;
   activeSessionId: string | null;
+  /** Non-null when the current chat is continuing a previously persisted Claude
+   *  Code session via `claude --resume`. Set by the `chat:resumed` event the
+   *  manager sends before each turn that uses a saved session id. Cleared on
+   *  newChat / resetChat / model switch. */
+  resumedFrom: ResumedFrom | null;
 }
 
 /** A VM the assistant should pin its `ssh_exec` tool calls to. Selected from

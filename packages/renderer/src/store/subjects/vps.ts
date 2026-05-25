@@ -2,6 +2,7 @@ import { Subject } from "subjecto/core";
 import { DeepSubject } from "subjecto";
 import type {
   DoSnapshot,
+  PersistedTerminalsState,
   ProjectDef,
   TerminalState,
   VpsDeployState,
@@ -10,6 +11,12 @@ import type { FileEditorState, FileTemplatesState } from "../types/common";
 
 export const $terminal = new Subject<TerminalState>({
   tabs: [], activeTabId: null, bottomPanelOpen: false, bottomPanelHeight: 200, shareInvites: [],
+});
+
+export const $persistedTerminals = new Subject<PersistedTerminalsState>({
+  sessions: [],
+  loading: false,
+  filters: { projectId: null, instanceId: null, vpsHost: null, ownerId: undefined },
 });
 
 export const $projects = new Subject<ProjectDef[]>([]);

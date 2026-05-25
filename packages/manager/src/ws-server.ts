@@ -16,8 +16,15 @@ import { startMonitoring, stopMonitoring, setMonitoringInterval, getDockerBin } 
 import { handleChat, type ChatModelId } from "./chat.js";
 import { startLogCapture, getLogBuffer, clearLogBuffer } from "./log-capture.js";
 import { setPtyEventCallback, spawnPty, spawnSshPty, writePty, resizePty, closePty, closeAllPtys, getSessionAccess, getScrollback, addCollaborator, removeCollaborator, isAuthorized, removeCollaboratorFromAll, getUserSessionDetails } from "./pty-manager.js";
+import { createPtySession, forgetPtySession, listPtySessions, touchPtySession } from "./pty-session-service.js";
+
+// Per-pty-session activity-write throttle so rapid keystrokes don't hammer the
+// DB. Bumped on each terminal:data; the actual UPDATE fires at most once per
+// minute per session.
+const ptyActivityLastWriteAt = new Map<string, number>();
 import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth.js";
 import * as assistantLogService from "./assistant-log-service.js";
+import { getResumeState, saveResumeSessionId, pruneStaleSessions } from "./assistant-session-state-service.js";
 import * as chatService from "./chat-service.js";
 import * as docsService from "./docs-service.js";
 import * as trackerService from "./tracker-service.js";
@@ -30,7 +37,7 @@ import { getDb } from "./db/index.js";
 import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers, fileTemplates } from "./db/schema.js";
 import { eq, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
-import { connectSsh, type SshSession } from "./vps/ssh-client.js";
+import { connectSsh, pickWorkingSshUser, type SshSession } from "./vps/ssh-client.js";
 import type { StreamingChannel, SftpWriteHandle } from "./vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from "./vps/deploy-service.js";
 import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
@@ -132,6 +139,67 @@ setInterval(() => {
     }
   }
 }, 60_000);
+
+// --- Assistant session-state janitor (Path A persistence) ---
+// Deletes `assistant_session_state` rows older than GENIE_SESSION_RETENTION_DAYS
+// (default 30; set to 0 to disable). For each deleted row we best-effort SSH to
+// the VPS and remove the corresponding Claude Code JSONL transcript at
+// ~/.claude/projects/-opt-project/<sessionId>.jsonl so disk doesn't accrete.
+const SESSION_RETENTION_DAYS = Number(process.env.GENIE_SESSION_RETENTION_DAYS ?? 30);
+const SESSION_PRUNE_INTERVAL_MIN = Number(process.env.GENIE_SESSION_PRUNE_INTERVAL_MIN ?? 60);
+
+async function runSessionJanitor(): Promise<void> {
+  if (SESSION_RETENTION_DAYS <= 0) return;
+  let removed: Awaited<ReturnType<typeof pruneStaleSessions>>;
+  try {
+    removed = await pruneStaleSessions(SESSION_RETENTION_DAYS);
+  } catch (err) {
+    console.error(`[session-janitor] DB prune failed:`, err instanceof Error ? err.message : String(err));
+    return;
+  }
+  if (removed.length === 0) return;
+  console.log(`[session-janitor] pruned ${removed.length} session row(s) older than ${SESSION_RETENTION_DAYS}d`);
+
+  // Group by VPS instance so we only open one SSH per instance, not per row.
+  const byInstance = new Map<string, { projectId: string; instanceId: string; sessionIds: string[] }>();
+  for (const r of removed) {
+    const k = `${r.projectId}:${r.instanceId}`;
+    let slot = byInstance.get(k);
+    if (!slot) {
+      slot = { projectId: r.projectId, instanceId: r.instanceId, sessionIds: [] };
+      byInstance.set(k, slot);
+    }
+    slot.sessionIds.push(r.claudeCodeSessionId);
+  }
+
+  for (const { projectId, instanceId, sessionIds } of byInstance.values()) {
+    try {
+      const project = await projectService.getById(projectId);
+      const inst = project?.vpsInstances.find((v) => v.id === instanceId);
+      if (!inst) continue; // Instance gone — DB row already pruned, nothing to delete remotely.
+      const ssh = await connectSsh(inst.connection, { timeoutMs: 15_000 });
+      try {
+        // `~` expands per the SSH login user. /opt/project is the fixed remoteDir
+        // for every Genie project, so the encoded Claude Code project name is
+        // always "-opt-project".
+        const args = sessionIds.map((id) => `~/.claude/projects/-opt-project/${id}.jsonl`).join(" ");
+        await ssh.exec(`rm -f ${args}`, undefined, { timeoutMs: 10_000 });
+      } finally {
+        ssh.close();
+      }
+    } catch (err) {
+      // Best-effort: VPS could be offline, unreachable, or have permission quirks.
+      // The DB row is already deleted, so the worst case is an orphan JSONL.
+      console.warn(`[session-janitor] JSONL cleanup failed for ${projectId}:${instanceId}:`, err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
+if (SESSION_RETENTION_DAYS > 0) {
+  // Stagger first run so it doesn't race with boot work.
+  setTimeout(() => void runSessionJanitor(), 30_000);
+  setInterval(() => void runSessionJanitor(), SESSION_PRUNE_INTERVAL_MIN * 60_000);
+}
 
 /** Resolve path to vps-agent dist directory (relative to this package) */
 function getVpsAgentDistDir(): string {
@@ -434,8 +502,10 @@ async function startVpsAgent(
   return session;
 }
 
-/** Track Claude Code conversation IDs for --resume (key: "projectId:instanceId") */
-const claudeCodeConversations = new Map<string, string>();
+// Resume mapping (sessionKey → Claude Code session id) is persisted in the
+// `assistant_session_state` table — see assistant-session-state-service.ts.
+// Survives Manager restarts; conversation content itself lives on the VPS in
+// ~/.claude/projects/...jsonl and is replayed by `claude --resume`.
 
 /** Route a chat to Claude Code on VPS. Returns true if handled, false if fallback needed. */
 async function routeChatToVpsAgent(
@@ -447,6 +517,7 @@ async function routeChatToVpsAgent(
   abortSignal: AbortSignal,
   onComplete?: (fullContent: string, toolUses: { name: string; input: unknown; result: string }[]) => void,
   projectIdHint?: string | null,
+  assistantSessionId?: string | null,
 ): Promise<boolean> {
   // Extract projectId from context string or use the hint from the caller
   let projectId: string | null = projectIdHint || null;
@@ -478,7 +549,14 @@ async function routeChatToVpsAgent(
   // Use the first VPS instance
   const instance = project.vpsInstances[0];
   const sessionKey = `${project.id}:${instance.id}`;
-  const existingSessionId = claudeCodeConversations.get(sessionKey);
+  const resumeState = await getResumeState(sessionKey);
+  const existingSessionId = resumeState?.sessionId ?? null;
+  if (resumeState) {
+    send(ws, { type: "chat:resumed", payload: {
+      sessionId: resumeState.sessionId,
+      lastActivity: resumeState.lastActivity.toISOString(),
+    }});
+  }
 
   // Get the last user message
   const lastUserMsg = messages[messages.length - 1];
@@ -899,9 +977,22 @@ async function routeChatToVpsAgent(
       });
     });
 
-    // Store session ID for conversation continuity
+    // Store session ID for conversation continuity (persisted across restarts).
+    // Also bind it to the Genie chat session so the History panel can reinstall
+    // the resume mapping on re-open.
     if (sessionId) {
-      claudeCodeConversations.set(sessionKey, sessionId);
+      try {
+        await saveResumeSessionId(sessionKey, sessionId, project.id, instance.id);
+        if (assistantSessionId) {
+          await assistantLogService.saveSessionResumeMeta(assistantSessionId, {
+            claudeCodeSessionId: sessionId,
+            projectId: project.id,
+            instanceId: instance.id,
+          });
+        }
+      } catch (err) {
+        console.error(`[claude-code] Failed to persist session id:`, err instanceof Error ? err.message : String(err));
+      }
     }
 
     // Send done
@@ -975,6 +1066,9 @@ interface ClientState {
   clientType: ClientType;
   assistantSessionId: string | null;
   currentNav: string | null;
+  /** The project the client currently has selected (or null on non-project navs).
+   *  Used by the 3D topology to draw real user → server lines. */
+  selectedProjectId: string | null;
   recentActions: ClientAction[];
   ip: string | null;
   userAgent: string | null;
@@ -988,9 +1082,31 @@ async function buildAuthPayload(
   impersonatedBy?: { id: string; name: string; email: string } | null,
 ) {
   const admin = await isAdmin(user.id);
+  // Pull the user's last-seen changelog version so the renderer can decide
+  // whether to pop the "What's new" modal. Best-effort: a DB hiccup just
+  // means the user might see the modal again next session.
+  let lastSeenUpdateVersion: string | null = null;
+  try {
+    const [row] = await getDb()
+      .select({ v: users.lastSeenUpdateVersion })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+    lastSeenUpdateVersion = row?.v ?? null;
+  } catch (err) {
+    console.warn("[auth] read lastSeenUpdateVersion failed:", err instanceof Error ? err.message : String(err));
+  }
   return {
     token,
-    user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl, isAdmin: admin, role: user.role },
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      avatarUrl: user.avatarUrl,
+      isAdmin: admin,
+      role: user.role,
+      lastSeenUpdateVersion,
+    },
     impersonatedBy: impersonatedBy ?? null,
   };
 }
@@ -1313,7 +1429,14 @@ const PRESENCE_SKIP_TYPES = new Set([
 function broadcastPresence(): void {
   const connectedUserIds = getConnectedUserIds();
   broadcast({ type: "chat:presence", payload: { connectedUserIds } });
-  broadcastPresenceDetail();
+  void broadcastPresenceDetail();
+}
+
+interface PresenceAttachedServer {
+  /** Null for direct-SSH terminals (terminal:ssh:spawn) — the renderer must
+   *  fall back to matching by host in that case. */
+  instanceId: string | null;
+  host: string;
 }
 
 interface PresenceSession {
@@ -1323,15 +1446,44 @@ interface PresenceSession {
   avatarUrl: string | null;
   clientType: string;
   currentNav: string | null;
+  selectedProjectId: string | null;
+  /** Servers this user currently has live PTY sessions attached to. Sourced
+   *  from the ptySessions table; the topology graph draws one user→server
+   *  edge per entry, matching either by instanceId or host. */
+  attachedServers: PresenceAttachedServer[];
   recentActions: ClientAction[];
   ip: string | null;
   userAgent: string | null;
 }
 
-function buildPresenceDetail(): PresenceSession[] {
+async function buildPresenceDetail(): Promise<PresenceSession[]> {
+  // Pull every persisted PTY session in one query, then group attachments by
+  // owner. Cheaper than N round-trips when many users are connected.
+  // Dedup per owner on `instanceId||host` so two terminals on the same box
+  // don't draw two stacked edges.
+  const ptyByOwner = new Map<string, Map<string, PresenceAttachedServer>>();
+  try {
+    const rows = await listPtySessions({});
+    for (const r of rows) {
+      if (!r.vpsHost) continue;
+      let map = ptyByOwner.get(r.ownerId);
+      if (!map) {
+        map = new Map();
+        ptyByOwner.set(r.ownerId, map);
+      }
+      const key = r.instanceId ?? `host:${r.vpsHost}`;
+      if (!map.has(key)) {
+        map.set(key, { instanceId: r.instanceId, host: r.vpsHost });
+      }
+    }
+  } catch (err) {
+    console.warn("[presence] listPtySessions failed:", err instanceof Error ? err.message : String(err));
+  }
+
   const result: PresenceSession[] = [];
   for (const [ws, state] of clients) {
     if (!state.userId || !state.user || ws.readyState !== ws.OPEN) continue;
+    const attached = ptyByOwner.get(state.userId);
     result.push({
       id: state.userId,
       name: state.user.name,
@@ -1339,6 +1491,8 @@ function buildPresenceDetail(): PresenceSession[] {
       avatarUrl: state.user.avatarUrl,
       clientType: state.clientType,
       currentNav: state.currentNav,
+      selectedProjectId: state.selectedProjectId,
+      attachedServers: attached ? [...attached.values()] : [],
       recentActions: state.recentActions.slice(-25),
       ip: state.ip,
       userAgent: state.userAgent,
@@ -1347,8 +1501,8 @@ function buildPresenceDetail(): PresenceSession[] {
   return result;
 }
 
-function broadcastPresenceDetail(): void {
-  const detail = buildPresenceDetail();
+async function broadcastPresenceDetail(): Promise<void> {
+  const detail = await buildPresenceDetail();
   broadcast({ type: "presence:detail", payload: { sessions: detail } });
 }
 
@@ -1546,12 +1700,34 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   // --- Presence handlers ---
   if (msg.type === "presence:nav") {
     state.currentNav = (msg.payload?.nav as string) || null;
-    broadcastPresenceDetail();
+    void broadcastPresenceDetail();
+    return;
+  }
+
+  if (msg.type === "presence:project") {
+    const id = msg.payload?.projectId;
+    state.selectedProjectId = typeof id === "string" && id ? id : null;
+    void broadcastPresenceDetail();
     return;
   }
 
   if (msg.type === "presence:detail") {
-    send(ws, { type: "presence:detail", payload: { sessions: buildPresenceDetail() } });
+    const sessions = await buildPresenceDetail();
+    send(ws, { type: "presence:detail", payload: { sessions } });
+    return;
+  }
+
+  if (msg.type === "updates:mark-seen") {
+    const version = msg.payload?.version;
+    if (typeof version !== "string" || !version) return;
+    try {
+      await getDb()
+        .update(users)
+        .set({ lastSeenUpdateVersion: version })
+        .where(eq(users.id, userId));
+    } catch (err) {
+      console.warn("[updates] mark-seen failed:", err instanceof Error ? err.message : String(err));
+    }
     return;
   }
 
@@ -1735,6 +1911,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
                 }
               },
               contextProjectId,
+              sessionId,
             );
             if (routed) return;
             // If routing failed (no VPS instance), fall back to local
@@ -1871,6 +2048,25 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           createdAt: r.createdAt,
         }));
         send(ws, { type: "chat:session:loaded", payload: { sessionId, messages } });
+
+        // Reinstall the Claude Code resume mapping for this session's VPS so
+        // the next chat:send picks up `--resume <id>`. Bind the ws-state's
+        // assistantSessionId to the loaded session so subsequent log writes
+        // attach to it rather than spawning a fresh session id.
+        const resumeMeta = await assistantLogService.getSessionResumeMeta(sessionId);
+        if (resumeMeta) {
+          const sessionKey = `${resumeMeta.projectId}:${resumeMeta.instanceId}`;
+          await saveResumeSessionId(sessionKey, resumeMeta.claudeCodeSessionId, resumeMeta.projectId, resumeMeta.instanceId);
+          const cs = clients.get(ws);
+          if (cs) cs.assistantSessionId = sessionId;
+          const state = await getResumeState(sessionKey);
+          if (state) {
+            send(ws, { type: "chat:resumed", payload: {
+              sessionId: state.sessionId,
+              lastActivity: state.lastActivity.toISOString(),
+            }});
+          }
+        }
       } catch (err: unknown) {
         console.error("[chat:session:load] error:", err);
       }
@@ -2172,6 +2368,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       writePty(id, data);
+      // Throttled activity bump for persisted (tmux-wrapped) sessions. At most
+      // one DB write per minute per session — irrelevant for the local PTY
+      // case where the row doesn't exist (UPDATE matches zero rows, no-op).
+      const now = Date.now();
+      const last = ptyActivityLastWriteAt.get(id) || 0;
+      if (now - last > 60_000) {
+        ptyActivityLastWriteAt.set(id, now);
+        void touchPtySession(id).catch(() => { /* row may not exist for local PTY */ });
+      }
       break;
     }
 
@@ -2179,6 +2384,125 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const { id, cols, rows } = msg.payload;
       if (!isAuthorized(id, userId)) break;
       resizePty(id, cols, rows);
+      break;
+    }
+
+    case "terminal:list": {
+      if (!userId) {
+        send(ws, { type: "terminal:list", payload: { sessions: [] } });
+        break;
+      }
+      try {
+        const isSuper = clients.get(ws)?.role === "superadmin";
+        const filters = msg.payload || {};
+        const { projectId: filterProject, instanceId: filterInstance, vpsHost: filterHost, ownerId: filterOwner } =
+          filters as { projectId?: string; instanceId?: string; vpsHost?: string; ownerId?: string | null };
+        // Non-superadmin callers can never see other users' sessions, even if
+        // they pass an ownerId filter — silently force it to their own id.
+        const effectiveOwner = isSuper ? (filterOwner === undefined ? null : filterOwner) : userId;
+        const sessions = await listPtySessions({
+          ownerId: effectiveOwner,
+          projectId: filterProject ?? null,
+          instanceId: filterInstance ?? null,
+          vpsHost: filterHost ?? null,
+        });
+        send(ws, { type: "terminal:list", payload: {
+          sessions: sessions.map((s) => ({
+            id: s.id,
+            ownerId: s.ownerId,
+            kind: s.kind,
+            projectId: s.projectId,
+            instanceId: s.instanceId,
+            vpsHost: s.vpsHost,
+            commandLabel: s.commandLabel,
+            // ssh_config intentionally omitted — may contain key paths; reattach
+            // happens server-side via terminal:ssh:spawn with the row's data.
+            hasSshConfig: !!s.sshConfig,
+            createdAt: s.createdAt.toISOString(),
+            lastActivity: s.lastActivity.toISOString(),
+          })),
+        }});
+      } catch (err: unknown) {
+        console.error("[terminal:list] error:", err);
+        send(ws, { type: "terminal:list", payload: { sessions: [] } });
+      }
+      break;
+    }
+
+    case "terminal:reattach": {
+      if (!userId) break;
+      const { id, cols, rows } = msg.payload as { id: string; cols?: number; rows?: number };
+      if (!id) break;
+      try {
+        const rows_ = await listPtySessions({ ownerId: null });
+        const row = rows_.find((r) => r.id === id);
+        if (!row) {
+          send(ws, { type: "terminal:error", payload: { id, message: "Session no longer exists in the registry" } });
+          break;
+        }
+        const isSuper = clients.get(ws)?.role === "superadmin";
+        if (!isSuper && row.ownerId !== userId) {
+          send(ws, { type: "terminal:error", payload: { id, message: "Not your terminal" } });
+          break;
+        }
+        // If a session for this id is still in the in-memory map (e.g. from an
+        // earlier broken attempt that spawned a local PTY for this same tab id,
+        // or a previous reattach we never properly tore down), spawnSshPty will
+        // bail with no-op. Clear it first so reattach is idempotent.
+        if (getSessionAccess(id)) {
+          closePty(id);
+        }
+        if (row.projectId && row.instanceId) {
+          const conn = await getVpsConnection(row.projectId, row.instanceId);
+          spawnSshPty(id, cols || 80, rows || 24, {
+            host: conn.host,
+            port: conn.port || 22,
+            username: conn.username,
+            privateKeyPath: conn.privateKeyPath,
+            initialCommand: row.commandLabel || undefined,
+            tmuxSessionName: id,
+          }, userId);
+        } else if (row.sshConfig) {
+          const cfg = row.sshConfig as { host: string; port?: number; username?: string; privateKeyPath?: string };
+          spawnSshPty(id, cols || 80, rows || 24, {
+            host: cfg.host,
+            port: cfg.port || 22,
+            username: cfg.username || VPS_SSH_USERNAME,
+            privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519",
+            initialCommand: row.commandLabel || undefined,
+            tmuxSessionName: id,
+          }, userId);
+        } else {
+          send(ws, { type: "terminal:error", payload: { id, message: "Session has no connection details" } });
+          break;
+        }
+        // Bump activity so a successful reattach refreshes the "last active" stamp.
+        await touchPtySession(id).catch(() => {});
+      } catch (err: unknown) {
+        send(ws, { type: "terminal:error", payload: { id, message: `Reattach failed: ${(err instanceof Error ? err.message : String(err))}` } });
+      }
+      break;
+    }
+
+    case "terminal:forget": {
+      if (!userId) break;
+      const { id } = msg.payload as { id: string };
+      if (!id) break;
+      try {
+        // Only the owner (or a superadmin) can forget a row.
+        const isSuper = clients.get(ws)?.role === "superadmin";
+        const existing = await listPtySessions({ ownerId: null });
+        const row = existing.find((r) => r.id === id);
+        if (!row) break;
+        if (!isSuper && row.ownerId !== userId) {
+          send(ws, { type: "error", payload: { message: "Not your terminal" } });
+          break;
+        }
+        await forgetPtySession(id);
+        send(ws, { type: "terminal:forgotten", payload: { id } });
+      } catch (err: unknown) {
+        console.error("[terminal:forget] error:", err);
+      }
       break;
     }
 
@@ -3541,7 +3865,16 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         }
 
-        let instance;
+        // Stream bootstrap progress to the caller so the attach UI can show what's
+        // happening when a fresh VM needs the full install run.
+        const onAttachProgress = (m: string) =>
+          send(ws, { type: "vps:attach-existing:progress", payload: { projectId, provider, vmId, message: m } });
+
+        let initialConnection: VpsConnectionConfig;
+        let providerMeta: Pick<import("./types.js").VpsInstance, "digitalocean" | "tazcloud">;
+        let resolvedLabel: string;
+        const newInstanceId = uuidv4();
+
         if (provider === "digitalocean") {
           const doToken = await settingsService.getGlobalDoToken();
           if (!doToken) throw new Error("DigitalOcean API token not configured");
@@ -3549,16 +3882,22 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           const droplet = await doClient.getDroplet(Number(vmId));
           const publicV4 = droplet.networks.v4.find((n) => n.type === "public")?.ip_address;
           if (!publicV4) throw new Error("Droplet has no public IPv4 yet");
-          instance = {
-            id: uuidv4(),
-            label: (label || droplet.name).slice(0, 64),
-            connection: {
-              host: publicV4,
-              port: 22,
-              username: VPS_SSH_USERNAME,
-              privateKeyPath: "~/.genie/ssh/genie_ed25519",
-            },
-            services: [],
+          // Probe whichever sudo-capable user we can SSH in as. `genie` if Genie
+          // already provisioned this droplet; `root` for externally-created ones.
+          const probed = await pickWorkingSshUser(
+            { host: publicV4, port: 22, privateKeyPath: "~/.genie/ssh/genie_ed25519" },
+            [VPS_SSH_USERNAME, "root"],
+          );
+          if (!probed) {
+            throw new Error(`Cannot SSH into droplet ${publicV4} as 'genie' or 'root' with the Genie key`);
+          }
+          initialConnection = {
+            host: publicV4,
+            port: 22,
+            username: probed,
+            privateKeyPath: "~/.genie/ssh/genie_ed25519",
+          };
+          providerMeta = {
             digitalocean: {
               dropletId: droplet.id,
               ipAddress: publicV4,
@@ -3566,33 +3905,56 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
               size: droplet.size_slug,
             },
           };
+          resolvedLabel = (label || droplet.name).slice(0, 64);
         } else {
           const tazToken = process.env.TAZCLOUD_API_TOKEN;
           if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
           const tazClient = createTazClient(tazToken);
           const vm = await tazClient.getVm(String(vmId));
           if (!vm.ipv6) throw new Error("VM has no IPv6 address yet");
-          // Image-default user — these VMs aren't Genie-provisioned so the `genie` user doesn't exist.
-          const sshUser = vm.image ? sshUserForImage(vm.image) : "ubuntu";
-          instance = {
-            id: uuidv4(),
-            label: (label || vm.name).slice(0, 64),
-            connection: {
-              host: vm.ipv6,
-              port: vm.ssh_port || 22,
-              username: sshUser,
-              privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
-            },
-            services: [],
+          const imageDefault = vm.image ? sshUserForImage(vm.image) : "ubuntu";
+          const probed = await pickWorkingSshUser(
+            { host: vm.ipv6, port: vm.ssh_port || 22, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+            [VPS_SSH_USERNAME, imageDefault],
+          );
+          if (!probed) {
+            throw new Error(`Cannot SSH into VM ${vm.ipv6} as 'genie' or '${imageDefault}' with the TazCloud key`);
+          }
+          initialConnection = {
+            host: vm.ipv6,
+            port: vm.ssh_port || 22,
+            username: probed,
+            privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
+          };
+          providerMeta = {
             tazcloud: {
               vmId: vm.id,
               ipv6: vm.ipv6,
               image: vm.image || "ubuntu-22",
               size: vm.size || "small",
-              sshUser,
+              sshUser: VPS_SSH_USERNAME, // ensureBootstrapped guarantees this below
             },
           };
+          resolvedLabel = (label || vm.name).slice(0, 64);
         }
+
+        // Ensure the `genie` user exists and owns /opt/project, regardless of how
+        // this VM was originally created. Idempotent — instant no-op for VMs
+        // already bootstrapped by Genie. Without this, an SSH user mismatch later
+        // causes `Permission denied` SFTP writes to /opt/project.
+        const effectiveConnection = await ensureBootstrapped(
+          initialConnection,
+          { gitlabDeployKey: project.gitlabDeployKey ?? undefined },
+          onAttachProgress,
+        );
+
+        const instance: import("./types.js").VpsInstance = {
+          id: newInstanceId,
+          label: resolvedLabel,
+          connection: effectiveConnection,
+          services: [],
+          ...providerMeta,
+        };
 
         await projectService.addVpsInstance(projectId, instance);
         await broadcastProjectList();
@@ -3994,6 +4356,33 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } finally {
           session.close();
         }
+
+        // Defensive: a recipe (notably Genie Standard Setup) may have just
+        // created the `genie` user and chowned /opt/project to it. If the stored
+        // connection is still using the image-default user, subsequent SFTP
+        // writes to /opt/project will hit Permission denied. Re-probe and
+        // promote to `genie` when it now works. Covers instances that were
+        // attached before bootstrap-on-attach existed.
+        if (vpsInst.connection.username !== VPS_SSH_USERNAME) {
+          try {
+            const probed = await pickWorkingSshUser(
+              {
+                host: vpsInst.connection.host,
+                port: vpsInst.connection.port,
+                privateKeyPath: vpsInst.connection.privateKeyPath,
+              },
+              [VPS_SSH_USERNAME],
+            );
+            if (probed === VPS_SSH_USERNAME) {
+              await projectService.updateVpsInstance(projectId, instanceId, {
+                connection: { ...vpsInst.connection, username: VPS_SSH_USERNAME },
+              });
+              await broadcastProjectList();
+              send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message: `Switched SSH user to '${VPS_SSH_USERNAME}'` } });
+            }
+          } catch { /* probe failure is non-fatal */ }
+        }
+
         send(ws, { type: "vps:recipe:done", payload: { projectId, instanceId, recipeId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: (err instanceof Error ? err.message : String(err)) } });
@@ -6529,7 +6918,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "vps:terminal:spawn": {
-      const { id, projectId, instanceId, cols, rows } = msg.payload;
+      const { id, projectId, instanceId, cols, rows, command, kind } = msg.payload as {
+        id: string; projectId: string; instanceId: string;
+        cols?: number; rows?: number;
+        command?: string; kind?: "shell" | "claude";
+      };
       try {
         const conn = await getVpsConnection(projectId, instanceId);
         spawnSshPty(id, cols || 80, rows || 24, {
@@ -6537,7 +6930,23 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           port: conn.port || 22,
           username: conn.username,
           privateKeyPath: conn.privateKeyPath,
+          initialCommand: command,
+          tmuxSessionName: id,
         }, userId);
+        // Persist for the History/Terminals tab so it survives Manager restart.
+        // Best-effort: a DB failure here shouldn't block the user opening a terminal.
+        if (userId) {
+          const inferredKind: "shell" | "claude" = kind || (command?.trim().startsWith("claude") ? "claude" : "shell");
+          await createPtySession({
+            id,
+            ownerId: userId,
+            kind: inferredKind,
+            projectId,
+            instanceId,
+            vpsHost: conn.host,
+            commandLabel: command || null,
+          }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
+        }
       } catch (err: unknown) {
         send(ws, { type: "error", payload: { message: `SSH terminal failed: ${(err instanceof Error ? err.message : String(err))}` } });
       }
@@ -6550,12 +6959,29 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         cols?: number; rows?: number; title?: string; command?: string;
       };
       const resolvedUser = username || VPS_SSH_USERNAME;
+      const resolvedKey = privateKeyPath || "~/.genie/ssh/genie_ed25519";
+      const resolvedPort = port || 22;
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
-        port: port || 22,
+        port: resolvedPort,
         username: resolvedUser,
-        privateKeyPath: privateKeyPath || "~/.genie/ssh/genie_ed25519",
+        privateKeyPath: resolvedKey,
+        initialCommand: command,
+        tmuxSessionName: id,
       }, userId);
+      // Persist for the History/Terminals tab. Direct SSH carries its own
+      // connection details since there's no project/instance to look them up from.
+      if (userId) {
+        const isClaudeKind = (command?.trim().startsWith("claude") ?? false) || (title?.toLowerCase().startsWith("claude") ?? false);
+        await createPtySession({
+          id,
+          ownerId: userId,
+          kind: isClaudeKind ? "claude" : "shell",
+          vpsHost: host,
+          commandLabel: command || title || null,
+          sshConfig: { host, port: resolvedPort, username: resolvedUser, privateKeyPath: resolvedKey, title },
+        }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
+      }
       // Notify the superadmin that someone opened a remote shell. Fire-and-forget;
       // a missing SENDGRID_API_KEY makes this a silent no-op.
       const actor = clients.get(ws)?.user;
@@ -6844,7 +7270,7 @@ export async function createServer(): Promise<WebSocketServer> {
   setInterval(() => void syncDropletStatuses(), 60_000);
 
   // Broadcast presence detail every 3s for real-time action updates
-  setInterval(() => broadcastPresenceDetail(), 3_000);
+  setInterval(() => void broadcastPresenceDetail(), 3_000);
 
   // Forward PTY events — filtered to authorized users
   setPtyEventCallback((event) => {
@@ -6862,7 +7288,7 @@ export async function createServer(): Promise<WebSocketServer> {
   wss.on("connection", (ws, req) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
     const userAgent = (req.headers["user-agent"] as string) || null;
-    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, recentActions: [], ip, userAgent });
+    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, selectedProjectId: null, recentActions: [], ip, userAgent });
     console.log(`Client connected (${clients.size} total)`);
 
     // Tell client auth is required

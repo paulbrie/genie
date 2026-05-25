@@ -200,6 +200,36 @@ export interface TerminalTab {
   ownerName?: string;
   viewerIds?: string[];
   ssh?: SshConfig;
+  /** True when this tab is reopening a persisted server-side session. The
+   *  bottom panel sends `terminal:reattach` instead of a fresh spawn so the
+   *  manager reuses the row + tmux session keyed by `id`. */
+  reattach?: boolean;
+}
+
+export interface PersistedTerminalSession {
+  id: string;
+  ownerId: string;
+  kind: "shell" | "claude";
+  projectId: string | null;
+  instanceId: string | null;
+  vpsHost: string;
+  commandLabel: string | null;
+  hasSshConfig: boolean;
+  createdAt: string;
+  lastActivity: string;
+}
+
+export interface PersistedTerminalsState {
+  sessions: PersistedTerminalSession[];
+  loading: boolean;
+  filters: {
+    projectId: string | null;
+    instanceId: string | null;
+    vpsHost: string | null;
+    /** Superadmin-only override. null = all users (server default for superadmin),
+     *  a user id = that user, undefined = scope to caller (default for non-super). */
+    ownerId: string | null | undefined;
+  };
 }
 
 export interface TerminalShareInvite {

@@ -119,3 +119,59 @@ export async function deleteSession(sessionId: string): Promise<void> {
       set: { deletedAt: new Date(), updatedAt: new Date() },
     });
 }
+
+export interface SessionResumeMeta {
+  claudeCodeSessionId: string;
+  projectId: string;
+  instanceId: string;
+}
+
+/** Upsert the Claude Code resume metadata for a Genie chat session. Called
+ *  whenever the agent's stream emits a session_id, so the History panel can
+ *  reinstall --resume when the session is re-opened later. */
+export async function saveSessionResumeMeta(
+  sessionId: string,
+  meta: SessionResumeMeta,
+): Promise<void> {
+  const db = getDb();
+  await db
+    .insert(chatSessionMeta)
+    .values({
+      sessionId,
+      claudeCodeSessionId: meta.claudeCodeSessionId,
+      projectId: meta.projectId,
+      instanceId: meta.instanceId,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: chatSessionMeta.sessionId,
+      set: {
+        claudeCodeSessionId: meta.claudeCodeSessionId,
+        projectId: meta.projectId,
+        instanceId: meta.instanceId,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+/** Returns resume metadata for a Genie chat session, or null if the session
+ *  was never bound to a Claude Code session (e.g. created before this
+ *  feature, or used a different model). */
+export async function getSessionResumeMeta(sessionId: string): Promise<SessionResumeMeta | null> {
+  const rows = await getDb()
+    .select({
+      claudeCodeSessionId: chatSessionMeta.claudeCodeSessionId,
+      projectId: chatSessionMeta.projectId,
+      instanceId: chatSessionMeta.instanceId,
+    })
+    .from(chatSessionMeta)
+    .where(eq(chatSessionMeta.sessionId, sessionId))
+    .limit(1);
+  const r = rows[0];
+  if (!r || !r.claudeCodeSessionId || !r.projectId || !r.instanceId) return null;
+  return {
+    claudeCodeSessionId: r.claudeCodeSessionId,
+    projectId: r.projectId,
+    instanceId: r.instanceId,
+  };
+}

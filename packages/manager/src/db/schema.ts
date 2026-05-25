@@ -12,6 +12,9 @@ export const users = pgTable("users", {
   gitToken: text("git_token"),
   gitlabToken: text("gitlab_token"),
   defaultEditor: text("default_editor"),
+  /** Most recent changelog version this user has acknowledged via the
+   *  "What's new" modal. Null for users who have never seen it. */
+  lastSeenUpdateVersion: text("last_seen_update_version"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -292,7 +295,30 @@ export const chatSessionMeta = pgTable("chat_session_meta", {
   name: text("name"),
   deletedAt: timestamp("deleted_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  // Resume metadata — populated when a chat turn observes the Claude Code
+  // session id streamed back from the `claude` CLI. Lets the History panel
+  // reinstall the right --resume mapping when the user re-opens the session.
+  claudeCodeSessionId: text("claude_code_session_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
 });
+
+/**
+ * Persisted mapping of `projectId:instanceId` → Claude Code session id, used to
+ * pass `--resume <id>` to the `claude` CLI across Manager restarts. Conversation
+ * content itself lives on the VPS in `~/.claude/projects/...jsonl`; this table
+ * just remembers which session id to resume.
+ */
+export const assistantSessionState = pgTable("assistant_session_state", {
+  sessionKey: text("session_key").primaryKey(),               // "projectId:instanceId"
+  claudeCodeSessionId: text("claude_code_session_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  lastActivity: timestamp("last_activity").defaultNow().notNull(),
+}, (t) => [
+  index("idx_ass_session_state_project").on(t.projectId),
+  index("idx_ass_session_state_last_activity").on(t.lastActivity),
+]);
 
 export const auditLog = pgTable("audit_log", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -383,6 +409,29 @@ export const cloudVmAliases = pgTable(
     index("idx_cloud_vm_aliases_lookup").on(table.provider, table.vmId),
   ]
 );
+
+/**
+ * Persistent terminal session metadata. The id matches the tmux session name on
+ * the VPS — tmux's `new -A -s ${id}` attaches if the session exists or creates
+ * it otherwise, so a reattach is just another spawn with the same id. The row
+ * survives Manager restart; the tmux session survives SSH channel drops. Pair.
+ */
+export const ptySessions = pgTable("pty_sessions", {
+  id: text("id").primaryKey(),                                // = tmux session name = renderer tab id
+  ownerId: text("owner_id").notNull(),
+  kind: text("kind", { enum: ["shell", "claude"] }).default("shell").notNull(),
+  projectId: text("project_id"),                              // nullable for direct-SSH terminals
+  instanceId: text("instance_id"),
+  vpsHost: text("vps_host").notNull(),                        // for display + filtering
+  commandLabel: text("command_label"),                        // e.g. "claude" or "bash -l"
+  sshConfig: jsonb("ssh_config"),                             // for direct-SSH reattach: {host,port,username,privateKeyPath,...}
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  lastActivity: timestamp("last_activity").defaultNow().notNull(),
+}, (t) => [
+  index("idx_pty_sessions_owner").on(t.ownerId),
+  index("idx_pty_sessions_project").on(t.projectId),
+  index("idx_pty_sessions_last_activity").on(t.lastActivity),
+]);
 
 /**
  * Per-VM "deletion lock" — when a row exists for (provider, vmId), the VM is
