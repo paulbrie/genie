@@ -3,12 +3,11 @@
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSubject } from "subjecto/react";
-import { ChefHat, RefreshCw, Plus, Trash2, Save, X, Loader2, Lock, Pencil } from "lucide-react";
+import { ChefHat, RefreshCw, Plus, Trash2, Save, X, Loader2, Pencil } from "lucide-react";
 import type { UserRecipe } from "@/store/types";
 import { $auth, $recipes } from "@/store/subjects";
 import { createRecipe, deleteRecipe, loadRecipes, switchNav, updateRecipe } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { VPS_RECIPES } from "@/components/project-detail";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/view-header";
 import { cn } from "@/lib/utils";
@@ -145,149 +144,52 @@ export function RecipesPanel() {
           <div className="mb-3 text-md text-red bg-red/10 border border-red/30 rounded px-3 py-2 font-mono">{recipes.error}</div>
         )}
 
-        {!draft && (() => {
-            // Build a unified row list. For each built-in we check whether a user
-            // recipe exists with the same slug (an "override"). Editing a built-in
-            // means upserting a user recipe with that slug; deleting it reverts to
-            // the built-in. User-only recipes have no built-in counterpart.
-            const userBySlug = new Map(recipes.list.map((r) => [r.slug, r]));
-            const builtInSlugs = new Set(VPS_RECIPES.map((b) => b.id));
-            type Row =
-              | { kind: "builtin-only"; slug: string; def: typeof VPS_RECIPES[0] }
-              | { kind: "builtin-overridden"; slug: string; def: typeof VPS_RECIPES[0]; override: UserRecipe }
-              | { kind: "user-only"; slug: string; user: UserRecipe };
-            const rows: Row[] = [];
-            for (const b of VPS_RECIPES) {
-              const u = userBySlug.get(b.id);
-              if (u) rows.push({ kind: "builtin-overridden", slug: b.id, def: b, override: u });
-              else rows.push({ kind: "builtin-only", slug: b.id, def: b });
-            }
-            for (const u of recipes.list) {
-              if (!builtInSlugs.has(u.slug)) rows.push({ kind: "user-only", slug: u.slug, user: u });
-            }
-
-            // Open the editor with the right starting values based on the row state.
-            function editRow(row: Row) {
-              if (row.kind === "user-only") setDraft(fromRecipe(row.user));
-              else if (row.kind === "builtin-overridden") setDraft(fromRecipe(row.override));
-              else {
-                // First-time edit of a built-in — seed the form from the in-code
-                // recipe but with NO `id`, so save() creates a new user recipe with
-                // the same slug. The override mechanism then takes effect.
-                setDraft({
-                  slug: row.def.id,
-                  label: row.def.label,
-                  description: row.def.description,
-                  icon: "Package",
-                  port: row.def.port?.toString() ?? "",
-                  checkScript: row.def.checkScript,
-                  installScript: row.def.installScript,
-                  uninstallScript: row.def.uninstallScript,
-                  setupShSnippet: row.def.setupShSnippet,
-                });
-              }
-              setTab("install");
-            }
-
-            function cloneRow(row: Row) {
-              const src = row.kind === "user-only" ? row.user
-                : row.kind === "builtin-overridden" ? row.override
-                : null;
-              if (src) {
-                setDraft({ ...fromRecipe(src), id: undefined, slug: `${src.slug}-copy`, label: `${src.label} (copy)` });
-              } else if (row.kind === "builtin-only") {
-                setDraft({
-                  slug: `${row.def.id}-copy`,
-                  label: `${row.def.label} (copy)`,
-                  description: row.def.description,
-                  icon: "Package",
-                  port: row.def.port?.toString() ?? "",
-                  checkScript: row.def.checkScript,
-                  installScript: row.def.installScript,
-                  uninstallScript: row.def.uninstallScript,
-                  setupShSnippet: row.def.setupShSnippet,
-                });
-              }
-              setTab("install");
-            }
-
-            return (
-              <div className="overflow-x-auto rounded-lg border border-overlay0/20 bg-mantle">
-                <table className="w-full text-md font-mono">
-                  <thead className="bg-surface0 text-overlay1 text-left">
-                    <tr>
-                      <th className="px-3 py-2 font-semibold">Slug</th>
-                      <th className="px-3 py-2 font-semibold">Label</th>
-                      <th className="px-3 py-2 font-semibold">Source</th>
-                      <th className="px-3 py-2 font-semibold">Description</th>
-                      <th className="px-3 py-2 font-semibold">Port</th>
-                      <th className="px-3 py-2 font-semibold w-0">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row) => {
-                      const label = row.kind === "user-only" ? row.user.label
-                        : row.kind === "builtin-overridden" ? row.override.label
-                        : row.def.label;
-                      const description = row.kind === "user-only" ? row.user.description
-                        : row.kind === "builtin-overridden" ? row.override.description
-                        : row.def.description;
-                      const port = row.kind === "user-only" ? row.user.port
-                        : row.kind === "builtin-overridden" ? row.override.port
-                        : (row.def.port ?? null);
-                      return (
-                        <tr key={`${row.kind}-${row.slug}`} className="border-t border-overlay0/10 hover:bg-surface0/40">
-                          <td className="px-3 py-2 text-text">{row.slug}</td>
-                          <td className="px-3 py-2 text-text">{label}</td>
-                          <td className="px-3 py-2">
-                            {row.kind === "builtin-only" && (
-                              <span className="inline-flex items-center gap-1 text-xs text-overlay0 bg-overlay0/10 px-1.5 py-0.5 rounded">
-                                <Lock size={10} /> built-in
-                              </span>
-                            )}
-                            {row.kind === "builtin-overridden" && (
-                              <span className="inline-flex items-center gap-1 text-xs text-peach bg-peach/10 px-1.5 py-0.5 rounded" title="A user version overrides the built-in">
-                                overridden
-                              </span>
-                            )}
-                            {row.kind === "user-only" && (
-                              <span className="inline-flex items-center gap-1 text-xs text-green bg-green/10 px-1.5 py-0.5 rounded">user</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-overlay1 truncate max-w-[420px]">{description}</td>
-                          <td className="px-3 py-2 text-overlay1">{port ?? "—"}</td>
-                          <td className="px-3 py-2">
-                            <div className="flex items-center gap-1">
-                              <button onClick={() => editRow(row)} className="text-overlay0 hover:text-blue p-1" title="Edit">
-                                <Pencil size={14} />
-                              </button>
-                              <button onClick={() => cloneRow(row)} className="text-overlay0 hover:text-blue text-md px-1" title="Duplicate into a new recipe">
-                                Clone
-                              </button>
-                              {row.kind === "builtin-overridden" && (
-                                <button
-                                  onClick={() => { if (confirm(`Reset "${row.slug}" to the built-in version? Your customisations will be deleted.`)) deleteRecipe(row.override.id); }}
-                                  className="text-overlay0 hover:text-red text-md px-1"
-                                  title="Delete user override, fall back to built-in"
-                                >
-                                  Reset
-                                </button>
-                              )}
-                              {row.kind === "user-only" && (
-                                <button onClick={() => { if (confirm(`Delete recipe "${row.slug}"?`)) deleteRecipe(row.user.id); }} className="text-overlay0 hover:text-red p-1" title="Delete">
-                                  <Trash2 size={14} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
+        {!draft && (
+          <div className="overflow-x-auto rounded-lg border border-overlay0/20 bg-mantle">
+            <table className="w-full text-md font-mono">
+              <thead className="bg-surface0 text-overlay1 text-left">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Slug</th>
+                  <th className="px-3 py-2 font-semibold">Label</th>
+                  <th className="px-3 py-2 font-semibold">Description</th>
+                  <th className="px-3 py-2 font-semibold">Port</th>
+                  <th className="px-3 py-2 font-semibold w-0">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recipes.list.map((r) => (
+                  <tr key={r.id} className="border-t border-overlay0/10 hover:bg-surface0/40">
+                    <td className="px-3 py-2 text-text">{r.slug}</td>
+                    <td className="px-3 py-2 text-text">{r.label}</td>
+                    <td className="px-3 py-2 text-overlay1 truncate max-w-[420px]">{r.description}</td>
+                    <td className="px-3 py-2 text-overlay1">{r.port ?? "—"}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => { setDraft(fromRecipe(r)); setTab("install"); }} className="text-overlay0 hover:text-blue p-1" title="Edit">
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          onClick={() => setDraft({ ...fromRecipe(r), id: undefined, slug: `${r.slug}-copy`, label: `${r.label} (copy)` })}
+                          className="text-overlay0 hover:text-blue text-md px-1"
+                          title="Duplicate into a new recipe"
+                        >
+                          Clone
+                        </button>
+                        <button
+                          onClick={() => { if (confirm(`Delete recipe "${r.slug}"?\n\nNote: built-in recipes are re-seeded on the next manager boot.`)) deleteRecipe(r.id); }}
+                          className="text-overlay0 hover:text-red p-1"
+                          title="Delete"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {draft && (
           <div className="flex flex-col gap-3 max-w-6xl">

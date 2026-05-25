@@ -3,10 +3,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink } from "lucide-react";
-import { $admin, $auth, $windowManager } from "@/store/subjects";
-import type { AdminTazVm, FloatingWindowState } from "@/store/types";
-import { addSshTerminalTab, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, disconnectVps, focusWindow, loadAdminTazVms, loadAdminTazcloudStats, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
+import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug } from "lucide-react";
+import { $admin, $auth, $persistedTerminals, $windowManager } from "@/store/subjects";
+import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession } from "@/store/types";
+import { addSshTerminalTab, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, disconnectVps, focusWindow, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
 import { useDraggable, useResizable } from "@/components/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project-detail";
 import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
@@ -1061,12 +1061,12 @@ export function openManageVmWindow(vm: { id: string; name: string }) {
 
 type ManageVm = { id: string; name: string; ipv6: string; image?: string; projectId: string | null; ingress?: { domain: string; url?: string } | null };
 
-/** Claude Terminal button for the Manage popup header. Runs a one-shot SSH
- *  probe to see if the VM has the Genie standard setup (genie user with SSH
- *  key + claude binary). If yes → launches as `genie`; otherwise → launches
- *  as the image-default user (which only works if claude was installed under
- *  that user). Disabled with a spinner while the probe is in flight so the
- *  wrong user isn't picked on a too-early click. */
+/** Claude Terminal button for the Manage tab. Runs a one-shot SSH probe to see
+ *  if the VM has the Genie standard setup (genie user with SSH key + claude
+ *  binary). If yes → launches as `genie`; otherwise → launches as the
+ *  image-default user (which only works if claude was installed under that
+ *  user). Disabled with a spinner while the probe is in flight so the wrong
+ *  user isn't picked on a too-early click. */
 function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   const [genieReady, setGenieReady] = useState<boolean | null>(null);
 
@@ -1087,13 +1087,17 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   const pending = genieReady === null;
   const sshUser = genieReady ? "genie" : imageDefaultUser(vm.image);
 
-  const launch = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const launch = () => {
     if (pending) return;
     addSshTerminalTab(
       { host: vm.ipv6, port: 22, username: sshUser, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
       `Claude ${sshUser}@${vm.name}`,
-      "claude --dangerously-skip-permissions",
+      // Start in /opt/project — that's the canonical project root that
+      // Genie Standard Setup chowns to genie and that every recipe (Next.js
+      // scaffold, MCP config, .git-credentials target) operates on. Without
+      // the cd, claude opens in the SSH user's home (/home/genie) and any
+      // /init produces a CLAUDE.md in the wrong place.
+      "cd /opt/project && claude --dangerously-skip-permissions",
     );
   };
 
@@ -1101,11 +1105,68 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
     <button
       onClick={launch}
       disabled={pending}
-      className="text-overlay1 hover:text-peach transition-colors bg-transparent border-none cursor-pointer p-1 disabled:opacity-40 disabled:cursor-wait"
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors disabled:opacity-40 disabled:cursor-wait"
       title={pending ? "Checking Genie Setup…" : `Launch Claude Terminal — ${sshUser}@${vm.ipv6}`}
     >
-      {pending ? <Loader2 size={14} className="animate-spin" /> : <ClaudeLogo size={14} />}
+      {pending ? <Loader2 size={11} className="animate-spin" /> : <ClaudeLogo size={11} />}
+      Claude
     </button>
+  );
+}
+
+/** SSH-launch split-button for the Manage tab. Click the body → open a terminal
+ *  as `genie` (the deploy user); click the chevron → pick a different login. */
+function SshLaunchButton({ vm }: { vm: ManageVm }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  if (!vm.ipv6) return null;
+  const openSsh = (user: string) => {
+    addSshTerminalTab(
+      { host: vm.ipv6, port: 22, username: user, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+      `SSH ${user}@${vm.name}`,
+    );
+  };
+  const defaultUser = "genie";
+  const imageDefault = imageDefaultUser(vm.image);
+  return (
+    <div className="relative inline-flex items-stretch">
+      <button
+        onClick={() => openSsh(defaultUser)}
+        className="flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 rounded-l border border-r-0 border-blue/30 text-md text-blue hover:bg-blue/10 transition-colors"
+        title={`Open SSH terminal — ${defaultUser}@${vm.ipv6}`}
+      >
+        <Terminal size={11} />
+        SSH
+      </button>
+      <button
+        onClick={() => setMenuOpen((v) => !v)}
+        className="flex items-center px-1 rounded-r border border-blue/30 text-blue hover:bg-blue/10 transition-colors"
+        title="Choose SSH user"
+      >
+        <ChevronDown size={11} />
+      </button>
+      {menuOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 z-20 bg-mantle border border-overlay0/30 rounded-md shadow-lg py-1 min-w-[160px]">
+            {["genie", "ubuntu", "debian", "almalinux", "root"].map((u) => {
+              const isDefault = u === defaultUser;
+              const isImage = u === imageDefault;
+              return (
+                <button
+                  key={u}
+                  onClick={() => { setMenuOpen(false); openSsh(u); }}
+                  className="w-full text-left px-3 py-1 text-md hover:bg-surface0 font-mono flex items-center gap-2"
+                >
+                  <span>{u}</span>
+                  {isDefault && <span className="text-overlay0 text-xs">default</span>}
+                  {!isDefault && isImage && <span className="text-overlay0 text-xs">image</span>}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1182,30 +1243,6 @@ function ManageVmPopup({ vm, windowId, windowState }: {
         <span className="text-text font-medium text-md">Manage</span>
         <span className="text-overlay0 text-md font-mono truncate">{vm.name}</span>
         <div className="flex-1" />
-        {vm.ipv6 && (() => {
-          // Open an interactive SSH tab as the image-default user — matches the
-          // user under which the "Operations run via SSH as …" exec helper below
-          // already runs, so what you see in the modal == what you type into.
-          const sshUser = imageDefaultUser(vm.image);
-          return (
-            <>
-              <ClaudeManageButton vm={vm} />
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  addSshTerminalTab(
-                    { host: vm.ipv6, port: 22, username: sshUser, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
-                    `SSH ${sshUser}@${vm.name}`,
-                  );
-                }}
-                className="text-overlay1 hover:text-blue transition-colors bg-transparent border-none cursor-pointer p-1"
-                title={`Open SSH terminal — ${sshUser}@${vm.ipv6}`}
-              >
-                <Terminal size={14} />
-              </button>
-            </>
-          );
-        })()}
         <button onClick={() => minimizeWindow(windowId)} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1" title="Minimize">
           <Minus size={14} />
         </button>
@@ -1500,7 +1537,7 @@ interface ManageVmInlineProps {
   vm: { id: string; name: string; ipv6: string; image?: string; projectId: string | null; ingress?: { domain: string; url?: string } | null };
 }
 
-type ManageTab = "manage" | "firewall" | "ports" | "files" | "db" | "commands";
+type ManageTab = "manage" | "firewall" | "ports" | "sessions" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -1511,11 +1548,29 @@ type ManageTab = "manage" | "firewall" | "ports" | "files" | "db" | "commands";
  *              project linkage). Lives here so users have one place to drive
  *              a server; the project page no longer has a Commands tab. */
 function ManageVmInline({ vm }: ManageVmInlineProps) {
-  // Use the image-default user for Manage operations. The `genie` user may not
-  // exist (VMs created via the bare "Deploy VM" admin button skip the Genie
-  // bootstrap), and image-default always exists + has sudo. The "Add genie user"
-  // card lets you create it explicitly if you want SSH-as-genie elsewhere.
-  const user = imageDefaultUser(vm.image);
+  // Probe whether the 'genie' deploy user is set up (created + SSH key + sudo)
+  // and prefer it over the image-default user. This matters because recipes
+  // like "Next.js (latest)" write to /opt/project, which Genie Standard Setup
+  // chowns to genie — running them as `ubuntu` then `sudo -u genie` is fragile
+  // (login-shell quirks, npm cache paths, etc). Same probe + fallback pattern
+  // ClaudeManageButton uses.
+  const imageDefault = imageDefaultUser(vm.image);
+  const [resolvedUser, setResolvedUser] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const probe = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys; then echo "GENIE"; else echo "DEFAULT"; fi`;
+    adminTazcloudExec(vm.id, imageDefault, probe, vm.ipv6).then((res) => {
+      if (cancelled) return;
+      const last = res.output.trim().split("\n").pop()?.trim();
+      setResolvedUser(last === "GENIE" ? "genie" : imageDefault);
+    }).catch(() => {
+      if (!cancelled) setResolvedUser(imageDefault);
+    });
+    return () => { cancelled = true; };
+  }, [vm.id, vm.ipv6, imageDefault]);
+
+  const user = resolvedUser ?? imageDefault;
   const exec = (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
     adminTazcloudExec(vm.id, user, command, vm.ipv6, onChunk, signal);
 
@@ -1539,6 +1594,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     { key: "manage", label: "Manage", icon: SettingsIcon, enabled: true },
     { key: "firewall", label: "Firewall", icon: Shield, enabled: true },
     { key: "ports", label: "Ports", icon: Network, enabled: true },
+    { key: "sessions", label: "Sessions", icon: Activity, enabled: true },
     { key: "commands", label: "Commands", icon: PlayCircle, enabled: hasProject, reason: "Attach this VM to a project to manage commands" },
     { key: "files", label: "Files", icon: FolderTree, enabled: hasProject, reason: "Attach this VM to a project to browse files" },
     { key: "db", label: "DB", icon: DatabaseIcon, enabled: hasProject, reason: "Attach this VM to a project to browse the database" },
@@ -1569,27 +1625,45 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         })}
       </div>
 
-      {tab === "manage" && (
-        <div className="flex flex-col gap-3">
-          <p className="text-xs text-overlay0">
-            Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.ipv6}</span>
-          </p>
-          <VpsResourceGauges
-            exec={exec}
-            host={vm.ipv6}
-            domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
-          />
-          <AdminRecipesPanel exec={exec} />
-          <AdminSystemPanel exec={exec} view="services" />
+      {resolvedUser === null ? (
+        <div className="flex items-center gap-2 text-overlay0 text-md py-4">
+          <Loader2 size={14} className="animate-spin" /> Detecting SSH user…
         </div>
-      )}
+      ) : (
+        <>
+          {tab === "manage" && (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-overlay0">
+                  Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.ipv6}</span>
+                </p>
+                <div className="flex items-center gap-2 shrink-0">
+                  <ClaudeManageButton vm={vm} />
+                  <SshLaunchButton vm={vm} />
+                </div>
+              </div>
+              <VpsResourceGauges
+                exec={exec}
+                host={vm.ipv6}
+                domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
+              />
+              <AdminRecipesPanel exec={exec} />
+              <AdminSystemPanel exec={exec} view="services" />
+            </div>
+          )}
 
-      {tab === "firewall" && (
-        <VpsFirewall exec={exec} />
-      )}
+          {tab === "firewall" && (
+            <VpsFirewall exec={exec} />
+          )}
 
-      {tab === "ports" && (
-        <AdminSystemPanel exec={exec} view="ports" />
+          {tab === "ports" && (
+            <AdminSystemPanel exec={exec} view="ports" />
+          )}
+
+          {tab === "sessions" && (
+            <VmSessionsTab vmHost={vm.ipv6} />
+          )}
+        </>
       )}
 
       {tab === "commands" && linked && (
@@ -1606,6 +1680,136 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         <div className="h-[600px]">
           <DbExplorer project={linked.project} />
         </div>
+      )}
+    </div>
+  );
+}
+
+const SESSION_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function formatLastActivity(iso: string): string {
+  const d = new Date(iso).getTime();
+  const diff = Date.now() - d;
+  if (diff < 60_000) return "just now";
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
+
+/** Lists persistent tmux/PTY sessions registered against this VM, and lets the
+ *  user kill stale ones. Kill ≠ forget: kill SSHs to the VM and runs
+ *  `tmux kill-session`, then drops the registry row. Superadmin sees every
+ *  user's sessions on the host; everyone else sees only their own. */
+function VmSessionsTab({ vmHost }: { vmHost: string }) {
+  const [auth] = useSubject($auth);
+  const [pt] = useSubject($persistedTerminals);
+  const isSuperAdmin = auth.user?.role === "superadmin";
+
+  const refresh = useCallback(() => {
+    loadPersistedTerminals({
+      vpsHost: vmHost,
+      // Reset other filters so a previous History-panel scope doesn't bleed in.
+      projectId: null,
+      instanceId: null,
+      // null = all users (superadmin); undefined = scoped to caller for others.
+      ownerId: isSuperAdmin ? null : undefined,
+    });
+  }, [vmHost, isSuperAdmin]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Client-side filter as well — the singleton subject is shared with the
+  // History panel, so its last load could have a different scope.
+  const sessions = useMemo<PersistedTerminalSession[]>(
+    () => pt.sessions.filter((s) => s.vpsHost === vmHost),
+    [pt.sessions, vmHost],
+  );
+
+  const now = Date.now();
+  const staleSessions = sessions.filter((s) => now - new Date(s.lastActivity).getTime() > SESSION_STALE_MS);
+
+  const clearStale = useCallback(() => {
+    for (const s of staleSessions) killPersistedTerminal(s.id);
+  }, [staleSessions]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs text-overlay0 max-w-2xl">
+          Persistent terminal sessions registered for <span className="font-mono text-overlay1">{vmHost}</span>.
+          Killing a session terminates the tmux process on the VM and removes the registry row.
+          {!isSuperAdmin && " You see only your own sessions."}
+        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          {staleSessions.length > 0 && (
+            <Button variant="ghost" size="sm" onClick={clearStale} title={`Kill ${staleSessions.length} session(s) inactive for >7d`}>
+              <Trash2 size={13} className="mr-1" />
+              Clear {staleSessions.length} stale
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={refresh} disabled={pt.loading} title="Refresh">
+            {pt.loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          </Button>
+        </div>
+      </div>
+
+      {pt.loading && sessions.length === 0 ? (
+        <div className="flex items-center gap-2 text-overlay0 text-md py-4">
+          <Loader2 size={14} className="animate-spin" /> Loading sessions…
+        </div>
+      ) : sessions.length === 0 ? (
+        <div className="text-overlay0 text-md py-6 text-center border border-surface0 rounded">
+          No registered sessions on this VM.
+        </div>
+      ) : (
+        <ul className="divide-y divide-surface0 border border-surface0 rounded overflow-hidden">
+          {sessions.map((s) => {
+            const age = now - new Date(s.lastActivity).getTime();
+            const stale = age > SESSION_STALE_MS;
+            const title = s.commandLabel || (s.kind === "claude" ? "Claude" : "Shell");
+            return (
+              <li key={s.id} className="flex items-center gap-3 px-3 py-2 hover:bg-surface0/40 transition-colors">
+                <Terminal size={14} className={cn("shrink-0", s.kind === "claude" ? "text-mauve" : "text-overlay1")} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-text font-medium truncate" style={{ fontSize: 13 }}>{title}</span>
+                    <span className="font-mono text-overlay0 shrink-0" style={{ fontSize: 11 }}>{s.id}</span>
+                    {stale && (
+                      <span className="px-1.5 py-0.5 rounded bg-peach/15 text-peach shrink-0" style={{ fontSize: 10 }}>
+                        stale
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 text-overlay0 mt-0.5 flex-wrap" style={{ fontSize: 11 }}>
+                    {isSuperAdmin && <span className="font-mono">user {s.ownerId.slice(0, 8)}</span>}
+                    <span>last active {formatLastActivity(s.lastActivity)}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => reattachPersistedTerminal(s)}
+                  title="Reattach to this terminal in the bottom panel"
+                  className="flex items-center gap-1 px-2 py-1 rounded bg-mauve/20 text-mauve hover:bg-mauve/30 transition-colors"
+                  style={{ fontSize: 11 }}
+                >
+                  <Plug size={11} />
+                  Resume
+                </button>
+                <button
+                  onClick={() => killPersistedTerminal(s.id)}
+                  title="Kill the tmux session on the VPS and remove from the registry"
+                  className="p-1.5 rounded hover:bg-red/20 text-overlay0 hover:text-red transition-colors"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );

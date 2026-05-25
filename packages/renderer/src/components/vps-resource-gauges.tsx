@@ -20,11 +20,14 @@ interface Sample {
   diskUsedKb: number | null;
   diskTotalKb: number | null;
   diskPct: number | null;
+  /** TCP ports bound to a non-loopback interface (0.0.0.0 / [::] / *). Null
+   *  until the first successful probe; empty array means "probed, none open". */
+  externalPorts: number[] | null;
 }
 
 // Single SSH round-trip that samples /proc/stat twice (400ms apart) so we can
-// compute an instantaneous CPU %, then captures /proc/meminfo and `df` in the
-// same shell — keeps the gauges in sync without 3 separate connections.
+// compute an instantaneous CPU %, then captures /proc/meminfo, `df`, and the
+// list of listening TCP ports — keeps the readings in sync without N connections.
 const PROBE_SCRIPT = `LC_ALL=C bash -c '
 S1=$(head -1 /proc/stat); sleep 0.4; S2=$(head -1 /proc/stat)
 echo "CPU1:$S1"
@@ -33,6 +36,8 @@ echo "---MEM---"
 grep -E "^(MemTotal|MemAvailable|MemFree):" /proc/meminfo
 echo "---DISK---"
 df -kP /
+echo "---PORTS---"
+ss -tlnH 2>/dev/null || true
 ' 2>/dev/null`;
 
 function parseCpu(line: string): { idle: number; total: number } | null {
@@ -55,6 +60,7 @@ function parseProbe(output: string): Sample {
     diskUsedKb: null,
     diskTotalKb: null,
     diskPct: null,
+    externalPorts: null,
   };
 
   let cpu1: { idle: number; total: number } | null = null;
@@ -63,16 +69,37 @@ function parseProbe(output: string): Sample {
   let memAvailKb: number | null = null;
   let memFreeKb: number | null = null;
   let inDisk = false;
+  let inPorts = false;
+  const externalPortSet = new Set<number>();
 
   for (const raw of output.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
+    if (line.startsWith("---PORTS---")) { inDisk = false; inPorts = true; continue; }
     if (line.startsWith("CPU1:")) cpu1 = parseCpu(line.slice(5).trim());
     else if (line.startsWith("CPU2:")) cpu2 = parseCpu(line.slice(5).trim());
     else if (line.startsWith("---DISK---")) inDisk = true;
     else if (line.startsWith("MemTotal:")) memTotalKb = parseInt(line.split(/\s+/)[1] ?? "", 10);
     else if (line.startsWith("MemAvailable:")) memAvailKb = parseInt(line.split(/\s+/)[1] ?? "", 10);
     else if (line.startsWith("MemFree:")) memFreeKb = parseInt(line.split(/\s+/)[1] ?? "", 10);
+    else if (inPorts) {
+      // `ss -tlnH` (no header) row: "State Recv-Q Send-Q Local-Address:Port Peer-Address:Port"
+      // Treat a bind as external when the address is 0.0.0.0 / * / [::] (not 127.x or [::1]).
+      const cols = line.split(/\s+/);
+      if (cols.length < 4) continue;
+      const localAddr = cols[3];
+      const portMatch = localAddr.match(/:(\d+)$/);
+      if (!portMatch) continue;
+      const isExternal =
+        localAddr.startsWith("0.0.0.0:") ||
+        localAddr.startsWith("*:") ||
+        localAddr.startsWith("[::]:") ||
+        localAddr.startsWith(":::");
+      if (isExternal) {
+        const port = parseInt(portMatch[1], 10);
+        if (!Number.isNaN(port)) externalPortSet.add(port);
+      }
+    }
     else if (inDisk && !line.startsWith("Filesystem")) {
       // df -kP / → second line: "Filesystem 1024-blocks Used Available Capacity Mounted-on"
       const parts = line.split(/\s+/);
@@ -86,6 +113,10 @@ function parseProbe(output: string): Sample {
         }
       }
     }
+  }
+
+  if (output.includes("---PORTS---")) {
+    result.externalPorts = [...externalPortSet].sort((a, b) => a - b);
   }
 
   if (cpu1 && cpu2) {
@@ -239,6 +270,26 @@ export function VpsResourceGauges({ exec, host, appPort = 3000, domain }: VpsRes
           label="IP"
           url={ipUrl}
         />
+        {sample?.externalPorts && sample.externalPorts.length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wide text-overlay0 shrink-0">Ports</span>
+            {sample.externalPorts.map((port) => {
+              const url = `http://${hostBracketed}:${port}`;
+              return (
+                <a
+                  key={port}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-peach/20 text-peach text-[11px] font-mono hover:bg-peach/30 transition-colors"
+                  title={`Open ${url}`}
+                >
+                  {port}<ExternalLink size={9} />
+                </a>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Circular gauges sit on the right edge */}

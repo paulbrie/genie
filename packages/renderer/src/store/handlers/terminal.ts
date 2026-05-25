@@ -151,4 +151,10 @@ export const handlers: HandlerMap = {
     const state = $persistedTerminals.getValue();
     $persistedTerminals.nextAssign({ sessions: state.sessions.filter((s) => s.id !== id) });
   },
+
+  "terminal:killed": (payload) => {
+    const { id } = payload as { id: string };
+    const state = $persistedTerminals.getValue();
+    $persistedTerminals.nextAssign({ sessions: state.sessions.filter((s) => s.id !== id) });
+  },
 };

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Square, KeyRound, Package } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { BASH_HELPERS, type VpsRecipeDef } from "@/components/project-detail";
+import type { VpsRecipeDef } from "@/components/project-detail";
 import { useAllRecipes } from "@/components/use-all-recipes";
 import { loadRecipes } from "@/store/actions";
 
@@ -141,9 +141,12 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
           .map(([k, v]) => `export ${k}=${JSON.stringify(v)}; `)
           .join("")
       : "";
-    // Auto-inject log() / wait_apt for user recipes. Built-ins already inline
-    // them, so the duplicate function defs are harmless (bash just overwrites).
-    return `${BASH_HELPERS}\n${optExports}${secretExports}${recipe.installScript}`;
+    // The install script comes straight from the DB — built-in recipes
+    // already have BASH_HELPERS resolved into the body at seed time
+    // (see manager/src/default-recipes.ts), and user recipes are
+    // responsible for inlining whatever helpers they need. We just
+    // prepend the per-apply env exports and run it.
+    return `${optExports}${secretExports}${recipe.installScript}`;
   }
 
   /** Entry point for any "kick off install" action. If the recipe declares
@@ -178,7 +181,8 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
 
   async function check(recipe: VpsRecipeDef) {
     update(recipe.id, { checking: true, error: null });
-    const res = await limitedExec(`${BASH_HELPERS}\n${recipe.checkScript}`);
+    // checkScripts are short one-liners that don't use BASH_HELPERS — run as-is.
+    const res = await limitedExec(recipe.checkScript);
     update(recipe.id, {
       checking: false,
       installed: res.output.includes("INSTALLED") && !res.output.includes("NOT_INSTALLED"),
@@ -284,16 +288,25 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
     const recipe = ALL_RECIPES.find((r) => r.id === secretsPromptFor);
     if (!recipe || !recipe.secrets) return;
     // Per-field required check.
+    let anyRequired = false;
     for (const s of recipe.secrets) {
-      if (s.required && !secretValuesDraft[s.name]?.trim()) {
-        setSecretError(`${s.label} is required.`);
-        return;
+      if (s.required) {
+        anyRequired = true;
+        if (!secretValuesDraft[s.name]?.trim()) {
+          setSecretError(`${s.label} is required.`);
+          return;
+        }
       }
     }
-    // Optional cross-field check (e.g. "at least one of X, Y").
-    if (recipe.validateSecrets) {
-      const err = recipe.validateSecrets(secretValuesDraft);
-      if (err) { setSecretError(err); return; }
+    // Default rule when no field is marked required: at least one must be
+    // non-empty. Mirrors the previous custom validateSecrets used by
+    // git-credentials ("provide at least one token").
+    if (!anyRequired) {
+      const anyFilled = recipe.secrets.some((s) => secretValuesDraft[s.name]?.trim());
+      if (!anyFilled) {
+        setSecretError("Provide a value for at least one field.");
+        return;
+      }
     }
     const values = { ...secretValuesDraft };
     setSecretsPromptFor(null);

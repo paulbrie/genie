@@ -1,18 +1,21 @@
-import { Package, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers } from "lucide-react";
+import { Package, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers, Bug, KeyRound, Sparkles } from "lucide-react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { VPS_RECIPES, type VpsRecipeDef } from "@/components/project-detail";
+import type { VpsRecipeDef } from "@/components/project-detail";
 import type { UserRecipe } from "@/store/types";
 import { $recipes } from "@/store/subjects";
 
 // Lucide icon names → components. Used to resolve `UserRecipe.icon` (string)
-// into a renderable component. Keep this list short — anything not here falls
-// back to Package.
+// into a renderable component. Built-in recipes (seeded by the manager from
+// default-recipes.ts) use Sparkles/Bug/KeyRound — they must be listed here.
+// Unknown names fall back to Package.
 const ICON_MAP: Record<string, typeof Package> = {
   Package, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers,
+  Bug, KeyRound, Sparkles,
 };
 
-/** Convert a DB-stored UserRecipe into the in-code VpsRecipeDef shape so call
- *  sites don't need to care which source it came from. */
+/** Convert a DB row into the in-code VpsRecipeDef shape so call sites that
+ *  expect a Lucide component for `icon` (and the typed RecipeCommand[] /
+ *  RecipeOption[] arrays) don't need to know it came from the DB. */
 export function userRecipeToDef(r: UserRecipe): VpsRecipeDef {
   return {
     id: r.slug,
@@ -28,15 +31,17 @@ export function userRecipeToDef(r: UserRecipe): VpsRecipeDef {
     commands: (r.commands as any[]) ?? [],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     options: (r.options as any[]) ?? [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    secrets: Array.isArray(r.secrets) && r.secrets.length > 0 ? (r.secrets as any[]) : undefined,
   };
 }
 
-/** Built-in + user recipes merged. A user recipe with the same slug as a
- *  built-in overrides the built-in (so users can tweak Chrome's apt step). */
+/** Every recipe shown in the Add-ons panel — there is no longer a separate
+ *  "built-in" source. The manager seeds default recipes into the `recipes`
+ *  table on boot (see packages/manager/src/default-recipes.ts), so what comes
+ *  back from `recipes:list` already contains both built-ins and any user
+ *  additions. */
 export function useAllRecipes(): VpsRecipeDef[] {
   const recipes = useDeepSubjectAll($recipes);
-  const userDefs = recipes.list.map(userRecipeToDef);
-  const userSlugs = new Set(userDefs.map((d: VpsRecipeDef) => d.id));
-  const builtins = VPS_RECIPES.filter((b) => !userSlugs.has(b.id));
-  return [...builtins, ...userDefs];
+  return recipes.list.map(userRecipeToDef);
 }

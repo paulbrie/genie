@@ -2506,6 +2506,69 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // Hard-kill a persisted session: closes any in-memory PTY, kills the tmux
+    // session on the VPS, then drops the DB row. Use when forget alone would
+    // leak a tmux process on the VPS that's no longer reachable from the UI.
+    case "terminal:kill": {
+      if (!userId) break;
+      const { id } = msg.payload as { id: string };
+      if (!id) break;
+      try {
+        const isSuper = clients.get(ws)?.role === "superadmin";
+        const existing = await listPtySessions({ ownerId: null });
+        const row = existing.find((r) => r.id === id);
+        if (!row) {
+          send(ws, { type: "terminal:killed", payload: { id } });
+          break;
+        }
+        if (!isSuper && row.ownerId !== userId) {
+          send(ws, { type: "error", payload: { message: "Not your terminal" } });
+          break;
+        }
+
+        // Drop any in-memory PTY first so an active reader doesn't keep tmux alive.
+        if (getSessionAccess(id)) {
+          try { closePty(id); } catch { /* ignore */ }
+        }
+
+        // Best-effort tmux kill on the VPS. Failure here (host gone, key rotated,
+        // tmux already dead) should not block dropping the registry row — that's
+        // the whole point of this action.
+        try {
+          let conn: VpsConnectionConfig | null = null;
+          if (row.projectId && row.instanceId) {
+            conn = await getVpsConnection(row.projectId, row.instanceId);
+          } else if (row.sshConfig) {
+            const cfg = row.sshConfig as { host: string; port?: number; username?: string; privateKeyPath?: string };
+            conn = {
+              host: cfg.host,
+              port: cfg.port || 22,
+              username: cfg.username || VPS_SSH_USERNAME,
+              privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519",
+            };
+          }
+          if (conn) {
+            const sshSession = await connectSsh(conn, { timeoutMs: 10_000 });
+            try {
+              const escaped = id.replace(/'/g, "'\\''");
+              await sshSession.exec(`tmux kill-session -t '${escaped}' 2>/dev/null; true`, undefined, { timeoutMs: 8_000 });
+            } finally {
+              try { sshSession.close(); } catch { /* ignore */ }
+            }
+          }
+        } catch (err: unknown) {
+          console.warn("[terminal:kill] tmux kill best-effort failed:", err instanceof Error ? err.message : String(err));
+        }
+
+        await forgetPtySession(id);
+        send(ws, { type: "terminal:killed", payload: { id } });
+      } catch (err: unknown) {
+        console.error("[terminal:kill] error:", err);
+        send(ws, { type: "error", payload: { message: `Kill failed: ${(err instanceof Error ? err.message : String(err))}` } });
+      }
+      break;
+    }
+
     case "terminal:close": {
       const { id } = msg.payload;
       const access = getSessionAccess(id);

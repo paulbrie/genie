@@ -1,5 +1,7 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
+import { seedDefaultRecipes } from "./recipes-service.js";
+import { DEFAULT_RECIPES } from "./default-recipes.js";
 import { createServer, shutdown } from "./ws-server.js";
 import { startSlackBot, stopSlackBot } from "./slack-bot.js";
 
@@ -30,8 +32,17 @@ async function probeEgress(): Promise<void> {
 }
 void probeEgress();
 
-// Seed the Claude agent user, then start the WS server
+// Seed the Claude agent user + upsert built-in recipes into the DB. The
+// renderer's Add-ons panel reads only from the DB, so this is what makes the
+// built-ins visible to the UI on every boot (also picks up any edits to
+// default-recipes.ts).
 await seedClaude();
+try {
+  const { inserted, updated } = await seedDefaultRecipes(DEFAULT_RECIPES);
+  console.log(`[recipes] Seeded ${DEFAULT_RECIPES.length} built-in recipes (inserted=${inserted}, updated=${updated}).`);
+} catch (err) {
+  console.error("[recipes] Seed failed:", err);
+}
 const wss = await createServer();
 
 // Start Slack bot if configured

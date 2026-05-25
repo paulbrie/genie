@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { recipes } from "./db/schema.js";
 
@@ -16,6 +16,10 @@ export interface RecipeInput {
   commands?: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   options?: any[];
+  /** Per-apply prompted values (PATs etc). Never persisted at apply time —
+   *  the *schema* is in the DB; the *values* live only in the modal state. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  secrets?: any[];
 }
 
 export async function listRecipes() {
@@ -47,6 +51,7 @@ export async function createRecipe(input: RecipeInput, userId: string | null) {
     setupShSnippet: input.setupShSnippet ?? "",
     commands: input.commands ?? [],
     options: input.options ?? [],
+    secrets: input.secrets ?? [],
     createdBy: userId,
   }).returning();
   return row;
@@ -67,6 +72,7 @@ export async function updateRecipe(id: string, input: Partial<RecipeInput>) {
   if (input.setupShSnippet !== undefined) patch.setupShSnippet = input.setupShSnippet;
   if (input.commands !== undefined) patch.commands = input.commands;
   if (input.options !== undefined) patch.options = input.options;
+  if (input.secrets !== undefined) patch.secrets = input.secrets;
   const [row] = await db.update(recipes).set(patch).where(eq(recipes.id, id)).returning();
   return row ?? null;
 }
@@ -74,4 +80,46 @@ export async function updateRecipe(id: string, input: Partial<RecipeInput>) {
 export async function deleteRecipe(id: string) {
   const db = getDb();
   await db.delete(recipes).where(eq(recipes.id, id));
+}
+
+/** Idempotent boot-time seed: upsert each built-in recipe by slug. Updates
+ *  every field except createdBy/createdAt so editing a recipe in
+ *  default-recipes.ts and redeploying refreshes the DB row in place.
+ *
+ *  Returns counts so the boot log can show what happened. */
+export async function seedDefaultRecipes(defaults: RecipeInput[]): Promise<{ inserted: number; updated: number }> {
+  const db = getDb();
+  let inserted = 0;
+  let updated = 0;
+  for (const r of defaults) {
+    const values = {
+      slug: r.slug.trim(),
+      label: r.label.trim(),
+      description: r.description ?? "",
+      icon: r.icon || "Package",
+      port: r.port ?? null,
+      checkScript: r.checkScript,
+      installScript: r.installScript,
+      uninstallScript: r.uninstallScript ?? "",
+      setupShSnippet: r.setupShSnippet ?? "",
+      commands: r.commands ?? [],
+      options: r.options ?? [],
+      secrets: r.secrets ?? [],
+    };
+    const result = await db.insert(recipes)
+      .values(values)
+      .onConflictDoUpdate({
+        target: recipes.slug,
+        set: { ...values, updatedAt: sql`now()` },
+      })
+      .returning({ id: recipes.id, createdAt: recipes.createdAt, updatedAt: recipes.updatedAt });
+    if (result.length > 0) {
+      const row = result[0];
+      // Heuristic: if createdAt and updatedAt are within 1s of each other this
+      // was an insert; otherwise it was an update.
+      const dt = Math.abs(new Date(row.updatedAt).getTime() - new Date(row.createdAt).getTime());
+      if (dt < 1000) inserted += 1; else updated += 1;
+    }
+  }
+  return { inserted, updated };
 }

@@ -159,3 +159,10 @@ export function reattachPersistedTerminal(record: PersistedTerminalSession): voi
 export function forgetPersistedTerminal(id: string): void {
   wsSend("terminal:forget", { id });
 }
+
+/** Hard-kill a persisted session: closes the in-memory PTY (if any), kills the
+ *  tmux session on the VPS, and drops the registry row. Use this from the
+ *  Sessions tab — `forget` only drops the row and can leak tmux on the VPS. */
+export function killPersistedTerminal(id: string): void {
+  wsSend("terminal:kill", { id });
+}

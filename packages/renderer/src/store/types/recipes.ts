@@ -1,10 +1,11 @@
 // --- Recipe types ---
 //
-// User-created VPS install recipes. The canonical shape lives in the manager's
-// schema (packages/manager/src/db/schema.ts → `recipes` table) and the
-// recipes-service module. These are merged with the built-in VPS_RECIPES (from
-// `components/project-detail.tsx`) in the admin recipes panel — a user recipe
-// whose `slug` matches a built-in overrides the built-in.
+// VPS install recipes. The canonical shape lives in the manager's schema
+// (packages/manager/src/db/schema.ts → `recipes` table) and the recipes-service
+// module. Built-in recipes are seeded by the manager on boot from
+// packages/manager/src/default-recipes.ts; user-created recipes are inserted
+// via the UI. The DB is the single source — there is no in-renderer recipe
+// array any more.
 
 /** A row from the manager's `recipes` table. */
 export interface UserRecipe {
@@ -30,6 +31,9 @@ export interface UserRecipe {
   commands: unknown[];
   /** Pre-install options shown as a tiny form (e.g. PG_VERSION dropdown). */
   options: unknown[];
+  /** Per-apply prompted values (e.g. GitHub PATs). The DB stores the *schema*
+   *  (name/label/placeholder); typed values live only in modal state. */
+  secrets: unknown[];
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;

@@ -125,10 +125,11 @@ export const projects = pgTable("projects", {
   index("idx_projects_team").on(table.teamId),
 ]);
 
-/** User-created recipes for the Add-ons panel. Built-in recipes live in code
- *  (VPS_RECIPES in renderer/project-detail.tsx) and are merged with these on the
- *  client. A recipe describes how to check/install/uninstall a piece of software
- *  on a VM over SSH. */
+/** Recipes for the Add-ons panel — the *single source* at runtime. Built-in
+ *  recipes are seeded on manager boot from `default-recipes.ts`; user-created
+ *  recipes are inserted via the UI. Both kinds live in this table — the panel
+ *  no longer distinguishes between them. A recipe describes how to check /
+ *  install / uninstall a piece of software on a VM over SSH. */
 export const recipes = pgTable("recipes", {
   id: uuid("id").defaultRandom().primaryKey(),
   slug: text("slug").notNull().unique(),       // url-safe stable id (e.g. "redis")
@@ -142,6 +143,9 @@ export const recipes = pgTable("recipes", {
   setupShSnippet: text("setup_sh_snippet").default("").notNull(),
   commands: jsonb("commands").default([]).notNull(),  // RecipeCommand[]
   options: jsonb("options").default([]).notNull(),    // RecipeOption[]
+  /** Per-apply prompted values (e.g. GitHub PAT). Never persisted to user
+   *  config — re-prompted on every Install/Re-apply. See RecipeSecret type. */
+  secrets: jsonb("secrets").default([]).notNull(),
   createdBy: uuid("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
