@@ -16,6 +16,17 @@ export interface VpsConnectionConfig {
   port: number;
   username: string;
   privateKeyPath: string;
+  /** Persisted ProxyJump bastion. Required for v2.0.0 TazCloud VMs whose
+   *  `host` is a private 10.128.N.x address — the manager (and any code that
+   *  reads this connection back from the DB) must tunnel through here.
+   *  `port` defaults to 22 when omitted, mirroring SshConnectionConfig.
+   *  privateKeyPath defaults to the same key as the inner VM when omitted. */
+  bastion?: {
+    host: string;
+    port?: number;
+    username: string;
+    privateKeyPath: string;
+  };
 }
 
 export interface VpsServiceInfo {
@@ -35,10 +46,18 @@ export interface DoDropletInfo {
 
 export interface TazVmInfo {
   vmId: string;       // TazCloud VM UUID
-  ipv6: string;       // public IPv6 (== ssh_host)
+  /** Legacy: public IPv6. v2.0.0 vxlan-bastion VMs have no public IP — this
+   *  field falls back to the private `ssh_host` (10.128.N.x) for display
+   *  parity; never trust it as a routable address. */
+  ipv6: string;
   image: string;      // ubuntu-22 / almalinux-9 / debian-12 / ubuntu-24
   size: string;       // small / medium / large / xlarge
-  sshUser: string;    // ubuntu / debian / almalinux
+  sshUser: string;    // "genie" on v2; image-default on legacy
+  /** v2.0.0 tenants only. "user@host" of the ProxyJump bastion as returned
+   *  by the API. Null/undefined on legacy v6 tenants. */
+  sshBastion?: string | null;
+  /** v2.0.0 tenants only. Project the VM belongs to. */
+  projectId?: string;
 }
 
 export type VpsProvider = "digitalocean" | "tazcloud";

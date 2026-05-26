@@ -1,4 +1,28 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 const TAZ_API = "https://api.taz.ro";
+
+/** Resolve `TAZCLOUD_BASTION_PRIVATE_KEY` for ssh2's `privateKey` option.
+ *  Per `customer-bastion-setup.md` the env var may hold either a filesystem
+ *  path to the customer's `.pem` (the documented default) or the raw key
+ *  content (PEM/OpenSSH). Returns undefined when the env is unset so callers
+ *  can fall back to the per-VM key. */
+export function loadBastionKey(): Buffer | undefined {
+  const raw = process.env.TAZCLOUD_BASTION_PRIVATE_KEY;
+  if (!raw) return undefined;
+  // Raw key content always starts with `-----BEGIN …-----`. Anything else we
+  // treat as a path — letting `~` expand keeps the README copy-paste working.
+  if (raw.includes("-----BEGIN")) return Buffer.from(raw);
+  const resolved = raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
+  try {
+    return fs.readFileSync(resolved);
+  } catch (err) {
+    console.error(`[tazcloud] TAZCLOUD_BASTION_PRIVATE_KEY points at ${resolved} but the file can't be read:`, (err as Error).message);
+    return undefined;
+  }
+}
 
 interface TazRequestInit {
   method?: string;
@@ -58,17 +82,21 @@ async function tazFetch(token: string, path: string, init?: TazRequestInit): Pro
 export interface TazCapabilities {
   images: string[];
   sizes: string[];
+  /** v2.0.0+: tenant runs in vxlan-bastion mode — VMs sit on a private
+   *  10.128.N.0/24 and are only reachable via SSH ProxyJump through
+   *  `bastion_ip`. The legacy v6-only shape (`ssh`, `public_ipv6_prefix`,
+   *  `tenant_ipv6_gateway`) is gone. */
   vm_access: {
-    ssh: string;
-    public_ipv6_prefix: string;
-    tenant_ipv6_gateway: string;
+    mode: "vxlan-bastion";
+    bastion_ip: string;
+    ssh_via_bastion: boolean;
   };
   ingress?: {
     available: boolean;
     public_ip: string;
     tls: boolean;
   };
-  /** Tenants with multi-project support require `project_id` on createVm. */
+  /** v2.0.0+: projects are mandatory. `available: true` on every v2 tenant. */
   projects?: {
     available: boolean;
   };
@@ -134,7 +162,10 @@ export interface TazSnapshotDeleteResult {
   id: string;
 }
 
-/** SSH user TazCloud injects per image (root login is disabled). */
+/** SSH user TazCloud injects per image on **legacy v6-only** tenants (root
+ *  login is disabled). On v2.0.0 vxlan-bastion tenants this is irrelevant —
+ *  every image ships with a unified `genie` user. Prefer `defaultSshUserForVm`
+ *  when you have a TazVm in hand. */
 export function sshUserForImage(image: string): string {
   switch (image) {
     case "ubuntu-22":
@@ -143,6 +174,28 @@ export function sshUserForImage(image: string): string {
     case "almalinux-9": return "almalinux";
     default: return "ubuntu";
   }
+}
+
+/** Default SSH username to use against a TazCloud VM. v2.0.0 tenants ship
+ *  every image with a `genie` user authorised by `genie-key`; legacy v6-only
+ *  tenants still use the image-default user. */
+export function defaultSshUserForVm(vm: Pick<TazVm, "ssh_bastion" | "image">): string {
+  if (vm.ssh_bastion) return "genie";
+  return sshUserForImage(vm.image ?? "ubuntu-22");
+}
+
+/** Parse `ssh_bastion` ("user@host[:port]") into structured form. Returns null
+ *  when the field is missing/empty (legacy v6 tenant). The API returns
+ *  `almalinux@188.213.48.230` for the customer-facing bastion; authentication
+ *  uses the per-customer `.pem` provided out-of-band (set via
+ *  `TAZCLOUD_BASTION_PRIVATE_KEY`), not the per-VM `genie-key`. Override the
+ *  username with `TAZCLOUD_BASTION_USER` if Taz ever changes it. */
+export function parseBastion(ssh_bastion: string | null | undefined): { username: string; host: string; port: number } | null {
+  if (!ssh_bastion) return null;
+  const m = ssh_bastion.match(/^([^@]+)@([^:]+)(?::(\d+))?$/);
+  if (!m) return null;
+  const username = (typeof process !== "undefined" && process.env?.TAZCLOUD_BASTION_USER) || m[1];
+  return { username, host: m[2], port: m[3] ? parseInt(m[3], 10) : 22 };
 }
 
 export interface TazCreateVmOpts {
@@ -163,8 +216,21 @@ export interface TazProject {
   id: string;
   name: string;
   subnet_cidr: string;
-  vm_count: number;
+  /** Neutron network UUID. Returned by create/get; not by list. */
+  network_id?: string;
+  /** Only present on list / get — create response omits it. */
+  vm_count?: number;
   created: string;
+}
+
+export interface TazCreateProjectOpts {
+  /** Lowercase, alphanumeric + hyphens, 3–63 chars. */
+  name: string;
+}
+
+export interface TazProjectDeleteResult {
+  status: string;       // "deleted"
+  id: string;
 }
 
 export interface TazCreateSnapshotOpts {
@@ -182,6 +248,9 @@ export interface TazRegisterIngressOpts {
 export interface TazApiClient {
   getCapabilities(): Promise<TazCapabilities>;
   listProjects(): Promise<TazProject[]>;
+  getProject(id: string): Promise<TazProject>;
+  createProject(opts: TazCreateProjectOpts): Promise<TazProject>;
+  deleteProject(id: string): Promise<TazProjectDeleteResult>;
   createVm(opts: TazCreateVmOpts): Promise<TazVm>;
   getVm(id: string): Promise<TazVm>;
   listVms(): Promise<TazVm[]>;
@@ -206,6 +275,21 @@ export function createTazClient(token: string): TazApiClient {
     async listProjects() {
       const data = await tazFetch(token, "/v1/project");
       return ((data?.projects as TazProject[] | undefined) ?? []);
+    },
+
+    async getProject(id) {
+      const data = await tazFetch(token, `/v1/project/${id}`);
+      return data as unknown as TazProject;
+    },
+
+    async createProject(opts) {
+      const data = await tazFetch(token, "/v1/project", { method: "POST", body: { name: opts.name } });
+      return data as unknown as TazProject;
+    },
+
+    async deleteProject(id) {
+      const data = await tazFetch(token, `/v1/project/${id}`, { method: "DELETE" });
+      return data as unknown as TazProjectDeleteResult;
     },
 
     async createVm(opts) {

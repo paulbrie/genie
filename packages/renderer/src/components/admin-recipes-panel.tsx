@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import { Loader2, Check, X, ChevronDown, ChevronRight, Play, Zap, Square, KeyRound, Package } from "lucide-react";
+import { Loader2, Check, X, ChevronDown, ChevronRight, Play, Square, KeyRound, Package } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { VpsRecipeDef } from "@/components/project-detail";
 import { useAllRecipes } from "@/components/use-all-recipes";
@@ -259,29 +259,6 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
     abortersRef.current.get(recipeId)?.abort();
   }
 
-  /** Trigger check on any recipe with unknown status, then fire installs for everything not installed.
-   *  Recipes that declare secrets are skipped — they need explicit per-apply
-   *  user input that "Install all missing" can't supply silently. */
-  async function installAll() {
-    const unknown = ALL_RECIPES.filter((r) => (states[r.id] ?? INIT).installed === null);
-    await Promise.all(unknown.map((r) => check(r)));
-    setStates((current) => {
-      const toInstall = ALL_RECIPES.filter((r) => {
-        const s = current[r.id] ?? INIT;
-        if (r.secrets && r.secrets.length > 0) return false;
-        return s.installed === false && !s.running && !s.checking;
-      });
-      if (toInstall.length === 0) return current;
-      setExpandedSet((prev) => {
-        const next = new Set(prev);
-        toInstall.forEach((r) => next.add(r.id));
-        return next;
-      });
-      toInstall.forEach((r) => { void install(r); });
-      return current;
-    });
-  }
-
   /** Modal submit: validate, fire install with the typed secrets, then wipe
    *  the draft so the values don't sit in memory longer than necessary. */
   function submitSecrets() {
@@ -323,20 +300,11 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
 
   return (
     <div className="mb-3">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center mb-2">
         <span className="text-md font-medium text-subtext0 flex items-center gap-1.5">
           <Package size={12} />
           Add-ons
         </span>
-        <button
-          onClick={installAll}
-          disabled={Object.values(states).some((s) => s.running || s.checking)}
-          className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-blue/30 text-md text-blue hover:bg-blue/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Check status of all add-ons, then install everything that's missing (parallel)"
-        >
-          <Zap size={11} />
-          Install all missing
-        </button>
       </div>
       <div className="flex flex-wrap gap-2 mt-1">
         {ALL_RECIPES.map((recipe) => {

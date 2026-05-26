@@ -2,10 +2,13 @@ import { batch } from "subjecto";
 import { $admin } from "../subjects/admin";
 import type {
   AdminDroplet,
+  AdminOrg,
+  AdminOrgMember,
   AdminTazVm,
   AdminTeam,
   AdminTeamMember,
   AdminUser,
+  ProjectMemberInfo,
 } from "../types/admin";
 import {
   deletePendingAdminExec,
@@ -14,6 +17,8 @@ import {
   loadAdminRows,
   loadAdminTables,
   loadAdminTazVms,
+  loadAdminUsers,
+  loadTazProjects,
   loadTazSnapshots,
 } from "../actions/admin";
 import type { HandlerMap } from "./types";
@@ -382,6 +387,52 @@ export const handlers: HandlerMap = {
     });
   },
 
+  // --- TazCloud project (v2.0.0) handlers ---
+
+  "admin:tazcloud:project:list": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    if (payload.error) {
+      batch(() => { t.projectsError = payload.error; t.projects = []; t.projectsLoading = false; });
+      return;
+    }
+    // Wire format is snake_case (matches the TazCloud API verbatim). Normalise.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const list = (payload.projects || []).map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      subnetCidr: p.subnet_cidr ?? p.subnetCidr,
+      networkId: p.network_id ?? p.networkId,
+      vmCount: p.vm_count ?? p.vmCount,
+      created: p.created,
+    }));
+    batch(() => { t.projects = list; t.projectsError = null; t.projectsLoading = false; });
+  },
+
+  "admin:tazcloud:project:list:stale": (_payload) => {
+    loadTazProjects();
+  },
+
+  "admin:tazcloud:project:created": (_payload) => {
+    // Server emits :list:stale; we just clear the in-flight banner state.
+    batch(() => {
+      const t = $admin.getValue().tazcloud;
+      t.projectCreating = false;
+      t.projectError = null;
+    });
+  },
+
+  "admin:tazcloud:project:deleted": (_payload) => {
+    // :list:stale broadcast triggers the refresh; nothing else to do here.
+  },
+
+  "admin:tazcloud:project:error": (payload) => {
+    batch(() => {
+      const t = $admin.getValue().tazcloud;
+      t.projectCreating = false;
+      t.projectError = payload.message ?? "Project operation failed";
+    });
+  },
+
   "admin:tazcloud:ingress:registered": (payload) => {
     const t = $admin.getValue().tazcloud;
     batch(() => {
@@ -583,6 +634,99 @@ export const handlers: HandlerMap = {
     const members = $admin.getValue().teams.members;
     const idx = members.findIndex((m: AdminTeamMember) => m.id === payload.member.id);
     if (idx >= 0) members[idx] = payload.member;
+  },
+
+  // --- Orgs ---
+  "admin:orgs:list": (payload) => {
+    batch(() => {
+      const o = $admin.getValue().orgs;
+      o.list = payload.orgs;
+      o.members = payload.members || {};
+      o.loading = false;
+    });
+  },
+
+  "admin:orgs:created": (payload) => {
+    batch(() => {
+      const o = $admin.getValue().orgs;
+      o.list.push(payload.org);
+      o.members[payload.org.id] = payload.members || [];
+      o.selectedOrgId = payload.org.id;
+    });
+  },
+
+  "admin:orgs:updated": (payload) => {
+    const list = $admin.getValue().orgs.list;
+    const idx = list.findIndex((o: AdminOrg) => o.id === payload.org.id);
+    if (idx >= 0) list[idx] = { ...list[idx], ...payload.org };
+  },
+
+  "admin:orgs:deleted": (payload) => {
+    const o = $admin.getValue().orgs;
+    o.list = o.list.filter((x: AdminOrg) => x.id !== payload.orgId);
+    delete o.members[payload.orgId];
+    if (o.selectedOrgId === payload.orgId) o.selectedOrgId = null;
+  },
+
+  "admin:orgs:member-added": (payload) => {
+    const o = $admin.getValue().orgs;
+    const list = o.members[payload.orgId] || [];
+    const idx = list.findIndex((m: AdminOrgMember) => m.userId === payload.member.userId);
+    if (idx >= 0) list[idx] = payload.member;
+    else list.push(payload.member);
+    o.members[payload.orgId] = list;
+  },
+
+  "admin:orgs:member-removed": (payload) => {
+    const o = $admin.getValue().orgs;
+    o.members[payload.orgId] = (o.members[payload.orgId] || []).filter(
+      (m: AdminOrgMember) => m.userId !== payload.userId,
+    );
+  },
+
+  "admin:orgs:member-role-updated": (payload) => {
+    const o = $admin.getValue().orgs;
+    const list = o.members[payload.orgId] || [];
+    const idx = list.findIndex((m: AdminOrgMember) => m.userId === payload.member.userId);
+    if (idx >= 0) list[idx] = payload.member;
+    o.members[payload.orgId] = list;
+  },
+
+  // --- User invitation ---
+  "admin:users:invited": () => {
+    // Refresh user list so the new stub user appears in the table; the server
+    // doesn't broadcast a list-refresh on its own.
+    loadAdminUsers();
+  },
+
+  // --- Per-project members ---
+  "project:members:list": (payload) => {
+    $admin.getValue().projectMembers[payload.projectId] = payload.members;
+  },
+
+  "project:members:updated": (payload) => {
+    const list = $admin.getValue().projectMembers[payload.projectId] || [];
+    if (payload.action === "added" || payload.action === "role-updated") {
+      const m: ProjectMemberInfo | undefined = payload.member;
+      if (!m) return;
+      const idx = list.findIndex((x: ProjectMemberInfo) => x.userId === m.userId);
+      if (idx >= 0) list[idx] = m;
+      else list.push(m);
+    } else if (payload.action === "removed") {
+      $admin.getValue().projectMembers[payload.projectId] = list.filter(
+        (x: ProjectMemberInfo) => x.userId !== payload.userId,
+      );
+      return;
+    }
+    $admin.getValue().projectMembers[payload.projectId] = list;
+  },
+
+  "project:list:stale": () => {
+    // Server hints that the caller's visible project list changed (they were
+    // added to / removed from a project). Re-fetch.
+    // Importing the project action would create a cycle, so just fire the WS
+    // message directly via the global helper.
+    void import("@/lib/ws").then(({ wsSend }) => wsSend("project:list", {}));
   },
 
   "admin:audit:list": (payload) => {

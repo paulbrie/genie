@@ -42,6 +42,20 @@ export function wsRequest<T = any>(type: string, payload: Record<string, any> = 
   });
 }
 
+/** Modules with their own pending-promise registries (e.g. admin exec calls
+ *  that wait minutes for SSH to return) register a drain callback here. When
+ *  the WS closes — typically because `tsx watch` restarted the dev manager —
+ *  every drain runs so dangling promises fail fast instead of waiting on a
+ *  response that the dead connection will never deliver. UI components see a
+ *  rejected promise and can retry on their next poll instead of sitting on
+ *  "Loading…" until the per-request timeout (often 15 min). */
+const closeDrains = new Set<(reason: string) => void>();
+
+export function onWsClose(handler: (reason: string) => void): () => void {
+  closeDrains.add(handler);
+  return () => { closeDrains.delete(handler); };
+}
+
 export function isWsConnected(): boolean {
   return ws !== null && ws.readyState === WebSocket.OPEN;
 }
@@ -125,6 +139,19 @@ export function connectWs(): void {
   ws.onclose = () => {
     ws = null;
     $manager.next({ running: false });
+    // Drain pending request-response promises so callers (UI panels) see a
+    // rejection right away instead of dangling until their per-request timeout
+    // fires. Without this a dev-time `tsx watch` restart leaves every in-flight
+    // call hanging — gauges show 0% and "Loading…" forever even though new
+    // requests succeed once the manager comes back.
+    const reason = "WebSocket disconnected";
+    for (const cb of pendingRequests.values()) {
+      try { cb({ error: reason, __wsClose: true }); } catch { /* ignore */ }
+    }
+    pendingRequests.clear();
+    for (const drain of closeDrains) {
+      try { drain(reason); } catch (err) { console.warn("[ws] drain handler threw:", err); }
+    }
     if (managerRunning) {
       reconnectTimer = setTimeout(connectWs, 2000);
     }

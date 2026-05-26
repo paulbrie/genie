@@ -2,19 +2,21 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, LayoutGrid, List as ListIcon, Trash2, Terminal, ExternalLink } from "lucide-react";
 import type { AdminDroplet } from "@/store/types";
-import { $admin, $auth, $projects, $windowManager } from "@/store/subjects";
+import { $admin, $auth, $manager, $projects, $windowManager } from "@/store/subjects";
 import { addSshTerminalTab, createAdminDroplet, disconnectVps, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
+import { CircularGauge } from "@/components/ui/circular-gauge";
+import { CopyableIp } from "@/components/ui/copyable-ip";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
-import { ManageVmPopup, type ManageVm } from "@/components/tazcloud-panel";
+import { ManageVmPopup, cardStatusPill, formatBytesShort, type ManageVm } from "@/components/tazcloud-panel";
 
 // Confirmation type for the inline delete UI on each row.
 type PendingDeleteId = number | null;
@@ -66,6 +68,20 @@ export function DigitalOceanPanel() {
   const [resizeDraftFor, setResizeDraftFor] = useState<number | null>(null);
   const [resizeSize, setResizeSize] = useState<string>("");
   const [resizeDisk, setResizeDisk] = useState(false);
+  // Per-row overflow menu — matches TazCloud's pattern so the per-row controls
+  // don't span the full width of the row.
+  const [actionMenuOpenFor, setActionMenuOpenFor] = useState<number | null>(null);
+  // Droplet-list view mode + search. Mirrors the TazCloud panel — same keys
+  // would collide, so we namespace under `digitalocean`.
+  const [viewMode, setViewMode] = useState<"list" | "cards">(() => {
+    if (typeof window === "undefined") return "list";
+    return (window.localStorage.getItem("genie.digitalocean.viewMode") as "list" | "cards") || "list";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("genie.digitalocean.viewMode", viewMode);
+  }, [viewMode]);
+  const [search, setSearch] = useState("");
 
   // Walk projects to find DO instances that have been hibernated. These don't
   // appear in DO's droplet list (no live droplet) — only in our DB as a snapshot ref.
@@ -95,6 +111,23 @@ export function DigitalOceanPanel() {
     const id = setInterval(loadAdminDropletStats, 10_000);
     return () => clearInterval(id);
   }, [isSuperAdmin]);
+
+  // Re-fire the one-shot droplet list when the WS reconnects (typically
+  // because `tsx watch` restarted the dev manager). Without this the panel
+  // would sit on a stale list until the user manually hits Refresh — the 10s
+  // stats poll self-heals, but the droplet enumeration itself wouldn't.
+  // Mirrors the same pattern in tazcloud-panel.tsx.
+  const [manager] = useSubject($manager);
+  const wasManagerRunningRef = useRef<boolean>(manager.running);
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    const wasRunning = wasManagerRunningRef.current;
+    wasManagerRunningRef.current = manager.running;
+    if (!wasRunning && manager.running) {
+      loadAdminDroplets();
+      loadAdminDropletStats();
+    }
+  }, [manager.running, isSuperAdmin]);
 
   // Auto-close the deploy form when create succeeds (creating: true → false, no error).
   const prevCreatingRef = useRef(false);
@@ -161,6 +194,48 @@ export function DigitalOceanPanel() {
         {hibernated.length > 0 && (
           <span className="text-md text-blue font-mono">+ {hibernated.length} hibernated</span>
         )}
+        <div className="relative ml-2">
+          <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-overlay0 pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name…"
+            spellCheck={false}
+            className="bg-background border border-surface0 rounded-md pl-7 pr-2 py-1 text-md text-text outline-none focus:border-blue w-44"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-overlay0 hover:text-text"
+              title="Clear"
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+        <div className="inline-flex rounded-md border border-surface0 bg-background overflow-hidden">
+          <button
+            onClick={() => setViewMode("list")}
+            className={cn(
+              "px-1.5 py-1 transition-colors",
+              viewMode === "list" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
+            )}
+            title="List view"
+          >
+            <ListIcon size={13} />
+          </button>
+          <button
+            onClick={() => setViewMode("cards")}
+            className={cn(
+              "px-1.5 py-1 transition-colors border-l border-surface0",
+              viewMode === "cards" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
+            )}
+            title="Card view"
+          >
+            <LayoutGrid size={13} />
+          </button>
+        </div>
         <div className="flex-1" />
         <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
           <Plus size={14} className="mr-1" />
@@ -226,242 +301,485 @@ export function DigitalOceanPanel() {
       )}
 
       <div>
-        {loading && droplets.length === 0 ? (
-          <div className="flex items-center justify-center text-overlay0 py-12">
-            <Loader2 size={16} className="animate-spin mr-2" />
-            Loading…
-          </div>
-        ) : droplets.length === 0 && !error ? (
-          <div className="text-center text-overlay0 py-12">
-            <p className="text-base">No DigitalOcean droplets.</p>
-            <p className="text-md mt-1">Deploy a project with the DigitalOcean provider to see it here.</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {droplets.map((d) => {
-              const isActive = d.status === "active";
-              const isPending = pendingDelete === d.id;
-              const isRenaming = renamingId === d.id;
-              const stats = dropletStats[d.id];
-              const resizeState = admin.dropletResize[d.id];
-              const resizing = !!resizeState && !resizeState.done && !resizeState.error;
-              const resizeFormOpen = resizeDraftFor === d.id;
-              return (
-                <div key={d.id} className="bg-mantle rounded-lg px-3 py-2 border border-overlay0/10">
-                  {isRenaming ? (
-                    <div className="flex items-center gap-1 mb-1">
-                      <span className="text-md text-overlay0">Rename:</span>
-                      <input
-                        autoFocus
-                        type="text"
-                        value={renameDraft}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitRename();
-                          else if (e.key === "Escape") { setRenamingId(null); setRenameDraft(""); }
-                        }}
-                        className="bg-background border border-blue/40 rounded px-1.5 py-0.5 text-md font-mono outline-none"
-                      />
-                      <button onClick={commitRename} className="text-green hover:text-green/70 p-0.5" title="Save">
-                        <Check size={12} />
-                      </button>
-                      <button onClick={() => { setRenamingId(null); setRenameDraft(""); }} className="text-overlay0 hover:text-text p-0.5" title="Cancel">
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ) : (
-                    <DropletInstanceBar
-                      name={d.name}
-                      status={d.status}
-                      ip={d.ip}
-                      region={d.region}
-                      sizeSlug={d.size}
-                      provider="digitalocean"
-                      stats={stats ?? null}
-                      statsLoading={isActive && !stats}
-                      onRefresh={() => { loadAdminDroplets(); loadAdminDropletStats(); }}
-                      onSshTerminal={isActive && d.ip ? () => addSshTerminalTab({ host: d.ip!, username: "genie", port: 22 }, `SSH genie@${d.name}`) : undefined}
-                      onDelete={() => confirmDelete(d.id)}
-                    />
+        {(() => {
+          const q = search.trim().toLowerCase();
+          const visibleDroplets = q ? droplets.filter((d) => d.name.toLowerCase().includes(q)) : droplets;
+          if (loading && droplets.length === 0) {
+            return (
+              <div className="flex items-center justify-center text-overlay0 py-12">
+                <Loader2 size={16} className="animate-spin mr-2" />
+                Loading…
+              </div>
+            );
+          }
+          if (droplets.length === 0 && !error) {
+            return (
+              <div className="text-center text-overlay0 py-12">
+                <p className="text-base">No DigitalOcean droplets.</p>
+                <p className="text-md mt-1">Deploy a project with the DigitalOcean provider to see it here.</p>
+              </div>
+            );
+          }
+          if (visibleDroplets.length === 0) {
+            return (
+              <div className="text-center text-overlay0 py-12">
+                <p className="text-md">No droplets match &ldquo;{search}&rdquo;.</p>
+              </div>
+            );
+          }
+
+          // Per-row rename input — shared between list + card layouts.
+          const renderRenameInput = () => (
+            <div className="flex items-center gap-1 mb-1">
+              <span className="text-md text-overlay0">Rename:</span>
+              <input
+                autoFocus
+                type="text"
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRename();
+                  else if (e.key === "Escape") { setRenamingId(null); setRenameDraft(""); }
+                }}
+                className="bg-background border border-blue/40 rounded px-1.5 py-0.5 text-md font-mono outline-none flex-1 min-w-0"
+              />
+              <button onClick={commitRename} className="text-green hover:text-green/70 p-0.5" title="Save">
+                <Check size={12} />
+              </button>
+              <button onClick={() => { setRenamingId(null); setRenameDraft(""); }} className="text-overlay0 hover:text-text p-0.5" title="Cancel">
+                <X size={12} />
+              </button>
+            </div>
+          );
+
+          // SSH split-button equivalent for DO. Only one user makes sense
+          // (`genie`), so this is a single button rather than a dropdown.
+          const renderSshButton = (d: AdminDroplet, isActive: boolean) => (
+            <button
+              onClick={() => { if (d.ip) addSshTerminalTab({ host: d.ip, username: "genie", port: 22 }, `SSH genie@${d.name}`); }}
+              disabled={!isActive || !d.ip}
+              className="text-overlay0 hover:text-blue transition-colors p-1 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={isActive && d.ip ? `SSH to genie@${d.ip}` : "Droplet is not active"}
+            >
+              <Terminal size={13} />
+            </button>
+          );
+
+          // Overflow menu — mirrors TazCloud's, minus snapshot/ingress/rkhunter
+          // (no DO API equivalents) and plus Resize (DO-specific).
+          const renderActionsMenu = (d: AdminDroplet, isActive: boolean, isRenaming: boolean) => {
+            const resizeState = admin.dropletResize[d.id];
+            const resizing = !!resizeState && !resizeState.done && !resizeState.error;
+            return (
+              <div className="relative inline-flex items-center">
+                <button
+                  onClick={() => setActionMenuOpenFor(actionMenuOpenFor === d.id ? null : d.id)}
+                  className={cn(
+                    "p-1 transition-colors",
+                    actionMenuOpenFor === d.id ? "text-blue" : "text-overlay0 hover:text-blue",
                   )}
-                  <div className="flex items-center gap-3 mt-1 text-md text-overlay0">
-                    <span className="inline-flex items-center gap-1.5">
-                      Project:{" "}
-                      {d.projectName ? (
-                        <>
-                          <span className="text-blue">{d.projectName}</span>
-                          {d.projectId && (
-                            <button
-                              onClick={() => {
-                                // Resolve the project's internal vpsInstance id from $projects —
-                                // the server's vps:disconnect handler needs (projectId, instanceId),
-                                // not the DigitalOcean droplet id.
-                                const project = projects.find((p) => p.id === d.projectId);
-                                const instance = project?.vpsInstances.find((i) => i.digitalocean?.dropletId === d.id);
-                                if (!instance) {
-                                  window.alert(`Could not find a matching vpsInstance on project "${d.projectName}". The project list may be stale — refresh and try again.`);
-                                  return;
-                                }
-                                if (!window.confirm(`Detach "${d.name}" from project "${d.projectName}"?\n\nThe droplet keeps running and its files are untouched — only the project↔droplet link in Genie is removed.`)) {
-                                  return;
-                                }
-                                disconnectVps(d.projectId!, instance.id);
-                              }}
-                              className="text-overlay0 hover:text-red transition-colors p-0.5"
-                              title={`Detach from "${d.projectName}" without touching the droplet`}
-                            >
-                              <Unlink size={11} />
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <AttachVmToProject provider="digitalocean" vmId={d.id} />
+                  title="More actions"
+                >
+                  <MoreVertical size={13} />
+                </button>
+                {actionMenuOpenFor === d.id && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setActionMenuOpenFor(null)} />
+                    <div className="absolute right-0 top-full mt-1 z-20 bg-mantle border border-overlay0/30 rounded-md shadow-lg py-1 min-w-[220px]">
+                      {!isRenaming && (
+                        <button
+                          onClick={() => { setActionMenuOpenFor(null); startRename(d); }}
+                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                        >
+                          <Pencil size={12} className="text-overlay0" />
+                          Rename
+                        </button>
                       )}
-                    </span>
-                    <span>ID: <span className="text-subtext0 font-mono">{String(d.id).slice(0, 8)}</span></span>
-                    {d.locked && (
-                      <span
-                        className="inline-flex items-center gap-1 text-red"
-                        title="Locked: typed-name confirmation required to delete; click the unlock icon to clear"
-                      >
-                        <Lock size={11} /> locked
-                      </span>
-                    )}
-                    <div className="flex-1" />
-                    {!isRenaming && (
+                      {d.locked ? (
+                        <button
+                          onClick={() => { setActionMenuOpenFor(null); unlockAdminDroplet(d.id); }}
+                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                          title="Unlock (allow deletion)"
+                        >
+                          <Unlock size={12} className="text-red" />
+                          Unlock
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => { setActionMenuOpenFor(null); lockAdminDroplet(d.id); }}
+                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                          title="Lock this droplet to prevent accidental deletion"
+                        >
+                          <Lock size={12} className="text-overlay0" />
+                          Lock (prevent deletion)
+                        </button>
+                      )}
                       <button
-                        onClick={() => startRename(d)}
-                        className="text-overlay0 hover:text-blue transition-colors p-1"
-                        title="Rename droplet"
+                        onClick={() => { setActionMenuOpenFor(null); openManageDropletWindow(d); }}
+                        disabled={!isActive}
+                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        <Pencil size={13} />
+                        <SettingsIcon size={12} className="text-overlay0" />
+                        Manage firewall &amp; services…
                       </button>
-                    )}
-                    {d.locked ? (
+                      <div className="my-1 border-t border-overlay0/15" />
                       <button
-                        onClick={() => unlockAdminDroplet(d.id)}
-                        className="p-1 text-red hover:text-red/70 transition-colors"
-                        title="Unlock (allow deletion)"
+                        onClick={() => { setActionMenuOpenFor(null); if (d.ip) { startSecurityScan(d.ip); switchNav("security"); } }}
+                        disabled={!isActive || !d.ip}
+                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={isActive && d.ip ? `Run security scan against ${d.ip}` : "Droplet is not active"}
                       >
-                        <Unlock size={13} />
+                        <Shield size={12} className="text-mauve" />
+                        Run security scan
                       </button>
-                    ) : (
                       <button
-                        onClick={() => lockAdminDroplet(d.id)}
-                        className="p-1 text-overlay0 hover:text-red transition-colors"
-                        title="Lock this droplet to prevent accidental deletion"
-                      >
-                        <Lock size={13} />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => { if (d.ip) { startSecurityScan(d.ip); switchNav("security"); } }}
-                      disabled={!isActive || !d.ip}
-                      className="p-1 text-overlay0 hover:text-mauve transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      title={isActive && d.ip ? `Run security scan against ${d.ip}` : "Droplet is not active"}
-                    >
-                      <Shield size={13} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (resizeFormOpen) {
-                          setResizeDraftFor(null);
-                        } else {
+                        onClick={() => {
+                          setActionMenuOpenFor(null);
                           setResizeDraftFor(d.id);
                           setResizeSize(d.size);
                           setResizeDisk(false);
-                        }
-                      }}
-                      disabled={resizing}
-                      className={cn(
-                        "p-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
-                        resizeFormOpen ? "text-blue" : "text-overlay0 hover:text-blue",
-                      )}
-                      title={resizing ? "Resize in progress…" : "Resize droplet (powers off briefly)"}
-                    >
-                      <Maximize2 size={13} />
-                    </button>
-                    <button
-                      onClick={() => openManageDropletWindow(d)}
-                      disabled={!isActive}
-                      className="p-1 text-overlay0 hover:text-blue transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      title="Open Manage popup"
-                    >
-                      <SettingsIcon size={13} />
-                    </button>
-                  </div>
-                  {resizeFormOpen && !resizing && (
-                    <div className="mt-2 border border-blue/30 rounded-md bg-mantle/60 px-3 py-2">
-                      <div className="flex flex-wrap items-end gap-3">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-xs text-overlay0">New size</label>
-                          <Select value={resizeSize} onChange={(e) => setResizeSize(e.target.value)} className="py-1 text-md font-mono">
-                            {RESIZE_SIZES.map((s) => (
-                              <option key={s} value={s}>{s}{s === d.size ? " (current)" : ""}</option>
-                            ))}
-                          </Select>
-                        </div>
-                        <label className="flex items-center gap-1.5 text-md text-overlay1 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={resizeDisk}
-                            onChange={(e) => setResizeDisk(e.target.checked)}
-                          />
-                          Grow disk (permanent)
-                        </label>
-                        <div className="flex-1" />
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          disabled={!resizeSize || resizeSize === d.size}
+                        }}
+                        disabled={resizing}
+                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={resizing ? "Resize in progress…" : "Resize droplet (powers off briefly)"}
+                      >
+                        <Maximize2 size={12} className="text-blue" />
+                        Resize droplet…
+                      </button>
+                      {d.projectName && d.projectId && (
+                        <button
                           onClick={() => {
-                            resizeAdminDroplet(d.id, resizeSize, resizeDisk);
-                            setResizeDraftFor(null);
+                            setActionMenuOpenFor(null);
+                            const project = projects.find((p) => p.id === d.projectId);
+                            const instance = project?.vpsInstances.find((i) => i.digitalocean?.dropletId === d.id);
+                            if (!instance) {
+                              window.alert(`Could not find a matching vpsInstance on project "${d.projectName}". The project list may be stale — refresh and try again.`);
+                              return;
+                            }
+                            if (!window.confirm(`Detach "${d.name}" from project "${d.projectName}"?\n\nThe droplet keeps running and its files are untouched — only the project↔droplet link in Genie is removed.`)) {
+                              return;
+                            }
+                            disconnectVps(d.projectId!, instance.id);
                           }}
+                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                          title={`Remove the link to "${d.projectName}" without touching the droplet`}
                         >
-                          Resize
-                        </Button>
-                        <Button size="sm" onClick={() => setResizeDraftFor(null)}>Cancel</Button>
-                      </div>
-                      <p className="mt-1.5 text-xs text-overlay0 italic">
-                        The droplet will be powered off, resized, and powered back on. CPU/RAM-only resizes are reversible; disk growth is permanent. Typically 2–5 minutes.
-                      </p>
+                          <Unlink size={12} className="text-overlay0" />
+                          Detach from {d.projectName}
+                        </button>
+                      )}
+                      <div className="my-1 border-t border-overlay0/15" />
+                      <button
+                        onClick={() => { setActionMenuOpenFor(null); confirmDelete(d.id); }}
+                        className="w-full text-left px-3 py-1.5 text-md hover:bg-red/10 text-red flex items-center gap-2"
+                        title={d.locked ? "Locked — superadmin can still confirm" : "Delete this droplet"}
+                      >
+                        <Trash2 size={12} className="text-red" />
+                        Delete droplet…
+                      </button>
                     </div>
-                  )}
-                  {resizeState && (
-                    <div className={cn(
-                      "mt-2 px-3 py-2 rounded-md text-md font-mono whitespace-pre-wrap",
-                      resizeState.error ? "bg-red/10 text-red border border-red/30"
-                        : resizeState.done ? "bg-green/10 text-green border border-green/30"
-                        : "bg-blue/10 text-blue border border-blue/30",
-                    )}>
-                      <div className="flex items-center gap-2 mb-1">
-                        {!resizeState.done && !resizeState.error && <Loader2 size={12} className="animate-spin" />}
-                        <span className="font-semibold">
-                          {resizeState.error ? `Resize failed: ${resizeState.error}`
-                            : resizeState.done ? `Resize complete → ${resizeState.targetSize}`
-                            : `Resizing → ${resizeState.targetSize}`}
+                  </>
+                )}
+              </div>
+            );
+          };
+
+          return (
+            <div
+              className={cn(
+                viewMode === "cards"
+                  ? "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2"
+                  : "flex flex-col gap-2",
+              )}
+            >
+              {visibleDroplets.map((d) => {
+                const isActive = d.status === "active";
+                const isPending = pendingDelete === d.id;
+                const isRenaming = renamingId === d.id;
+                const stats = dropletStats[d.id];
+                const resizeState = admin.dropletResize[d.id];
+                const resizing = !!resizeState && !resizeState.done && !resizeState.error;
+                const resizeFormOpen = resizeDraftFor === d.id;
+                const statsLoading = isActive && !stats;
+                // vCPU label from DO size slug (e.g. "s-2vcpu-4gb" → "2v").
+                const vcpuMatch = d.size?.match(/(\d+)vcpu/);
+                const vcpuLabel = vcpuMatch ? `${vcpuMatch[1]}v` : undefined;
+                const rowOnClick = (e: React.MouseEvent) => {
+                  if (!isActive || isRenaming || isPending || resizeFormOpen) return;
+                  const target = e.target as HTMLElement;
+                  if (target.closest("button, a, input, select, textarea, label")) return;
+                  openManageDropletWindow(d);
+                };
+                const rowClass = cn(
+                  "bg-mantle rounded-lg px-3 py-2 border border-overlay0/10",
+                  isActive && !isRenaming && !isPending && !resizeFormOpen
+                    && "cursor-pointer hover:border-blue/30 transition-colors",
+                );
+
+                // Resize form + progress — shared between layouts, rendered
+                // below the row's primary content.
+                const renderResizeBlocks = () => (
+                  <>
+                    {resizeFormOpen && !resizing && (
+                      <div className="mt-2 border border-blue/30 rounded-md bg-mantle/60 px-3 py-2">
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-xs text-overlay0">New size</label>
+                            <Select value={resizeSize} onChange={(e) => setResizeSize(e.target.value)} className="py-1 text-md font-mono">
+                              {RESIZE_SIZES.map((s) => (
+                                <option key={s} value={s}>{s}{s === d.size ? " (current)" : ""}</option>
+                              ))}
+                            </Select>
+                          </div>
+                          <label className="flex items-center gap-1.5 text-md text-overlay1 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={resizeDisk}
+                              onChange={(e) => setResizeDisk(e.target.checked)}
+                            />
+                            Grow disk (permanent)
+                          </label>
+                          <div className="flex-1" />
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            disabled={!resizeSize || resizeSize === d.size}
+                            onClick={() => {
+                              resizeAdminDroplet(d.id, resizeSize, resizeDisk);
+                              setResizeDraftFor(null);
+                            }}
+                          >
+                            Resize
+                          </Button>
+                          <Button size="sm" onClick={() => setResizeDraftFor(null)}>Cancel</Button>
+                        </div>
+                        <p className="mt-1.5 text-xs text-overlay0 italic">
+                          The droplet will be powered off, resized, and powered back on. CPU/RAM-only resizes are reversible; disk growth is permanent. Typically 2–5 minutes.
+                        </p>
+                      </div>
+                    )}
+                    {resizeState && (
+                      <div className={cn(
+                        "mt-2 px-3 py-2 rounded-md text-md font-mono whitespace-pre-wrap",
+                        resizeState.error ? "bg-red/10 text-red border border-red/30"
+                          : resizeState.done ? "bg-green/10 text-green border border-green/30"
+                          : "bg-blue/10 text-blue border border-blue/30",
+                      )}>
+                        <div className="flex items-center gap-2 mb-1">
+                          {!resizeState.done && !resizeState.error && <Loader2 size={12} className="animate-spin" />}
+                          <span className="font-semibold">
+                            {resizeState.error ? `Resize failed: ${resizeState.error}`
+                              : resizeState.done ? `Resize complete → ${resizeState.targetSize}`
+                              : `Resizing → ${resizeState.targetSize}`}
+                          </span>
+                        </div>
+                        {resizeState.messages.slice(-4).map((m, i) => (
+                          <div key={i} className="text-overlay1 text-xs">{m}</div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+
+                // Card-mode layout: header / stats gauges / metadata grid / footer.
+                // Mirrors the TazCloud card so admins see the same shape across providers.
+                if (viewMode === "cards") {
+                  return (
+                    <div key={d.id} onClick={rowOnClick} className={rowClass}>
+                      {isRenaming ? renderRenameInput() : (
+                        <>
+                          {/* Header: name (+lock) on the left, status pill on the right. */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-semibold text-text truncate" title={d.name}>{d.name}</span>
+                                {d.locked && (
+                                  <span
+                                    className="shrink-0 text-red inline-flex"
+                                    title="Locked: typed-name confirmation required to delete"
+                                  >
+                                    <Lock size={11} />
+                                  </span>
+                                )}
+                              </div>
+                              {d.ip && (
+                                <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                  <span className="min-w-0 truncate">
+                                    <CopyableIp ip={d.ip} className="text-xs text-overlay0 font-mono" />
+                                  </span>
+                                  <a
+                                    href={`http://${d.ip}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-overlay0 hover:text-blue transition-colors shrink-0"
+                                    title="Open in browser"
+                                  >
+                                    <ExternalLink size={10} />
+                                  </a>
+                                </div>
+                              )}
+                            </div>
+                            {cardStatusPill(d.status)}
+                          </div>
+
+                          {/* Stats gauges. */}
+                          {stats && (
+                            <div className="flex items-center justify-around gap-2 mt-3 py-2 bg-base/40 rounded-md">
+                              <CircularGauge
+                                size={44}
+                                label="CPU"
+                                percent={stats.cpuPercent}
+                                showPercentSign
+                                subtitle={vcpuLabel}
+                              />
+                              <CircularGauge
+                                size={44}
+                                label="MEM"
+                                percent={stats.memPercent}
+                                showPercentSign
+                                subtitle={`${formatBytesShort(stats.memUsedBytes)} / ${formatBytesShort(stats.memTotalBytes)}`}
+                              />
+                              <CircularGauge
+                                size={44}
+                                label="DISK"
+                                percent={stats.diskPercent}
+                                showPercentSign
+                                subtitle={`${formatBytesShort(stats.diskUsedBytes)} / ${formatBytesShort(stats.diskTotalBytes)}`}
+                              />
+                            </div>
+                          )}
+                          {!stats && statsLoading && (
+                            <div className="flex items-center justify-center gap-2 mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
+                              <Loader2 size={12} className="animate-spin" />
+                              Checking stats…
+                            </div>
+                          )}
+                          {!stats && !statsLoading && !isActive && (
+                            <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
+                              Droplet is {d.status.toLowerCase()}
+                            </div>
+                          )}
+
+                          {/* Metadata grid. */}
+                          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 mt-3 text-xs">
+                            <span className="text-overlay0">Region</span>
+                            <span className="text-subtext0">{d.region}</span>
+                            <span className="text-overlay0">Size</span>
+                            <span className="text-subtext0">{d.size}</span>
+                            <span className="text-overlay0">Project</span>
+                            <span className="truncate">
+                              {d.projectName ? (
+                                <span className="text-blue">{d.projectName}</span>
+                              ) : (
+                                <AttachVmToProject provider="digitalocean" vmId={d.id} />
+                              )}
+                            </span>
+                            <span className="text-overlay0">ID</span>
+                            <span className="text-subtext0 font-mono truncate" title={String(d.id)}>{String(d.id).slice(0, 8)}…</span>
+                          </div>
+
+                          {/* Footer: open ports + action cluster. */}
+                          <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
+                            {stats && stats.externalPorts.length > 0 ? (
+                              <div className="flex items-center gap-1 flex-wrap min-w-0">
+                                {stats.externalPorts.map((port) => {
+                                  const url = `http://${d.ip}:${port}`;
+                                  return (
+                                    <a
+                                      key={port}
+                                      href={url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-peach/20 text-peach text-xs font-mono hover:bg-peach/30 transition-colors"
+                                      title={`Open ${url}`}
+                                    >
+                                      {port}<ExternalLink size={9} />
+                                    </a>
+                                  );
+                                })}
+                              </div>
+                            ) : <div />}
+                            <div className="flex-1" />
+                            <button
+                              onClick={() => { loadAdminDroplets(); loadAdminDropletStats(); }}
+                              className="p-1 text-overlay0 hover:text-text transition-colors"
+                              title="Refresh"
+                            >
+                              <RefreshCw size={13} />
+                            </button>
+                            {renderSshButton(d, isActive)}
+                            {renderActionsMenu(d, isActive, isRenaming)}
+                          </div>
+                        </>
+                      )}
+                      {renderResizeBlocks()}
+                      {isPending && (
+                        <ServerDeleteConfirm
+                          name={d.name}
+                          locked={d.locked}
+                          canDeleteLocked={isSuperAdmin}
+                          onConfirm={() => { wsDeleteDroplet(d.id); setPendingDelete(null); }}
+                          onCancel={() => setPendingDelete(null)}
+                        />
+                      )}
+                    </div>
+                  );
+                }
+
+                // List-mode layout: header bar + horizontal meta row with overflow menu.
+                return (
+                  <div key={d.id} onClick={rowOnClick} className={rowClass}>
+                    {isRenaming ? renderRenameInput() : (
+                      <DropletInstanceBar
+                        name={d.name}
+                        status={d.status}
+                        ip={d.ip}
+                        region={d.region}
+                        sizeSlug={d.size}
+                        provider="digitalocean"
+                        stats={stats ?? null}
+                        statsLoading={statsLoading}
+                        onRefresh={() => { loadAdminDroplets(); loadAdminDropletStats(); }}
+                      />
+                    )}
+                    <div className="flex items-center gap-3 mt-1 text-md text-overlay0 flex-wrap">
+                      <span>
+                        Project:{" "}
+                        {d.projectName ? (
+                          <span className="text-blue">{d.projectName}</span>
+                        ) : (
+                          <AttachVmToProject provider="digitalocean" vmId={d.id} />
+                        )}
+                      </span>
+                      <span>ID: <span className="text-subtext0 font-mono">{String(d.id).slice(0, 8)}</span></span>
+                      {d.locked && (
+                        <span
+                          className="inline-flex items-center gap-1 text-red"
+                          title="Locked: typed-name confirmation required to delete"
+                        >
+                          <Lock size={11} /> locked
                         </span>
-                      </div>
-                      {resizeState.messages.slice(-4).map((m, i) => (
-                        <div key={i} className="text-overlay1 text-xs">{m}</div>
-                      ))}
+                      )}
+                      <div className="flex-1" />
+                      {renderSshButton(d, isActive)}
+                      {renderActionsMenu(d, isActive, isRenaming)}
                     </div>
-                  )}
-                  {isPending && (
-                    <ServerDeleteConfirm
-                      name={d.name}
-                      locked={d.locked}
-                      canDeleteLocked={isSuperAdmin}
-                      onConfirm={() => { wsDeleteDroplet(d.id); setPendingDelete(null); }}
-                      onCancel={() => setPendingDelete(null)}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                    {renderResizeBlocks()}
+                    {isPending && (
+                      <ServerDeleteConfirm
+                        name={d.name}
+                        locked={d.locked}
+                        canDeleteLocked={isSuperAdmin}
+                        onConfirm={() => { wsDeleteDroplet(d.id); setPendingDelete(null); }}
+                        onCancel={() => setPendingDelete(null)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {hibernated.length > 0 && (
           <div className="mt-6">

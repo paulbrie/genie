@@ -1,5 +1,6 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
+import { migrateOrgs } from "./db/migrate.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
 import { createServer, shutdown } from "./ws-server.js";
@@ -37,6 +38,11 @@ void probeEgress();
 // built-ins visible to the UI on every boot (also picks up any edits to
 // default-recipes.ts).
 await seedClaude();
+try {
+  await migrateOrgs();
+} catch (err) {
+  console.error("[migrate] Orgs migration failed:", err);
+}
 try {
   const { inserted, updated } = await seedDefaultRecipes(DEFAULT_RECIPES);
   console.log(`[recipes] Seeded ${DEFAULT_RECIPES.length} built-in recipes (inserted=${inserted}, updated=${updated}).`);

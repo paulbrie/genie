@@ -185,8 +185,21 @@ function shSingleQuote(s: string): string {
 /** Compose the remote command we send to ssh.exec(). When tmuxSessionName is
  *  set the inner command is wrapped so process state outlives the SSH channel. */
 function buildRemoteCommand(config: SshPtyConfig): string {
+  // Non-tmux path:
+  //   - no command → open an interactive login shell (the default terminal).
+  //   - with a command → run it through an interactive login shell (`$SHELL -ilc`)
+  //     and `exec` so it replaces the shell and becomes the controlling-terminal
+  //     foreground process with job control enabled. This makes a TUI like
+  //     `claude` behave exactly as if typed in an SSH session. A plain
+  //     non-interactive `bash -c "claude"` can't grab the terminal, so claude
+  //     exits immediately (the bug behind "[Process exited with code 0]").
+  if (!config.tmuxSessionName) {
+    if (!config.initialCommand) return 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
+    return `exec $SHELL -ilc ${shSingleQuote(config.initialCommand)}`;
+  }
+  // tmux path: tmux already supplies a proper PTY + job control, so the raw
+  // command works inside it without the interactive-shell wrapper.
   const inner = config.initialCommand || 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
-  if (!config.tmuxSessionName) return inner;
   const name = config.tmuxSessionName;
   // Genie-defined tmux defaults. `set-option -g` is the new-session default;
   // existing sessions keep their own copy, so we also `-t ${name}` when the
@@ -455,8 +468,23 @@ export function spawnSshPty(
           channel = stream;
           stream.on("data", (data: Buffer) => dataCallback?.(data.toString()));
           stream.stderr.on("data", (data: Buffer) => dataCallback?.(data.toString()));
-          stream.on("close", (code: number) => {
-            exitCallback?.({ exitCode: code ?? 0 });
+          // ssh2 reports the real exit status via the 'exit' event (code OR a
+          // terminating signal); the 'close' event carries no code, so the old
+          // `close(code)` read was always undefined → reported as 0 for every
+          // session. Capture 'exit' and surface the true code on close.
+          let remoteExitCode: number | null = null;
+          stream.on("exit", (code: number | null, signal?: string) => {
+            if (typeof code === "number") {
+              remoteExitCode = code;
+            } else if (signal) {
+              // Conventional 128+signal encoding; also note it inline so the
+              // user sees *why* the process died (e.g. OOM kill).
+              remoteExitCode = 137;
+              dataCallback?.(`\r\n\x1b[33m[terminated by signal ${signal}]\x1b[0m\r\n`);
+            }
+          });
+          stream.on("close", () => {
+            exitCallback?.({ exitCode: remoteExitCode ?? 0 });
             conn.end();
           });
         });

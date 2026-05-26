@@ -1,5 +1,5 @@
 import { VPS_SSH_USERNAME } from "../types.js";
-import { createTazClient, sshUserForImage, type TazVm } from "./tazcloud-api-client.js";
+import { createTazClient, defaultSshUserForVm, loadBastionKey, parseBastion, type TazVm } from "./tazcloud-api-client.js";
 import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
 import { vpsDeploy } from "./deploy-service.js";
 import { buildUfwRules } from "./do-provision.js";
@@ -43,10 +43,18 @@ export interface TazProvisionOpts {
 
 export interface TazProvisionResult {
   vmId: string;
+  /** Public IPv6 on legacy tenants; falls back to the private ssh_host
+   *  (10.128.N.x) on v2.0.0 vxlan-bastion tenants. */
   ipv6: string;
   image: string;
   size: string;
   sshUser: string;
+  /** v2.0.0 only. "user@host" of the ProxyJump bastion the manager used to
+   *  reach this VM. Persist alongside the VM record so future SSH calls can
+   *  reconstruct the tunnel without re-hitting /v1/vm/{id}. */
+  sshBastion?: string | null;
+  /** v2.0.0 only. Taz project the VM was created in. */
+  projectId?: string;
 }
 
 /**
@@ -114,17 +122,32 @@ export async function tazcloudProvisionAndDeploy(
     //    though SSH may take 25-70s more to become available.
     const vmName = `genie-${projectName.replace(/[^a-zA-Z0-9-]/g, "-").toLowerCase()}-${Date.now()}`.slice(0, 63);
     onProgress(`Creating VM "${vmName}" (image: ${image}, size: ${size})...`);
-    let vm: TazVm = await client.createVm({ name: vmName, image, size });
+    const vm: TazVm = await client.createVm({ name: vmName, image, size });
     vmIdForCleanup = vm.id;
-    onProgress(`VM created (id: ${vm.id}, ipv6: ${vm.ipv6})`);
+    onProgress(`VM created (id: ${vm.id}, host: ${vm.ssh_host}${vm.ssh_bastion ? ` via ${vm.ssh_bastion}` : ""})`);
 
     checkAbort();
 
-    const initialUser = sshUserForImage(image);
+    // v2.0.0 vxlan-bastion: VM ships with `genie` user + key, only reachable via
+    // ProxyJump. Legacy v6: image-default user (ubuntu/debian/almalinux), direct
+    // SSH. `defaultSshUserForVm` collapses both.
+    const initialUser = defaultSshUserForVm(vm);
     const sshHost = vm.ssh_host;
+    const bastion = parseBastion(vm.ssh_bastion);
+    const bastionKey = loadBastionKey();
+    const bastionConfig = bastion ? {
+      host: bastion.host,
+      port: bastion.port,
+      // The bastion uses a per-customer key (see customer-bastion-setup.md) —
+      // honour TAZCLOUD_BASTION_PRIVATE_KEY when set, fall back to the per-VM
+      // key for tenants where the same key is authorised for both hops.
+      username: bastion.username,
+      privateKeyPath: keyPath,
+      ...(bastionKey ? { privateKey: bastionKey } : {}),
+    } : undefined;
 
     // 3. Wait for SSH to actually accept connections (TazCloud says 25-70s boot).
-    onProgress(`Waiting for SSH on [${sshHost}]:22 as ${initialUser}...`);
+    onProgress(`Waiting for SSH on ${sshHost}:22 as ${initialUser}${bastion ? ` via ${bastion.username}@${bastion.host}` : ""}...`);
     const SSH_TIMEOUT = 180_000;
     const SSH_ATTEMPT_TIMEOUT = 15_000;
     const POLL = 5_000;
@@ -145,6 +168,7 @@ export async function tazcloudProvisionAndDeploy(
               username: initialUser,
               privateKeyPath: "",
               privateKey,
+              ...(bastionConfig ? { bastion: bastionConfig } : {}),
             });
             try { await session.exec("true"); return true; }
             finally { session.close(); }
@@ -172,6 +196,7 @@ export async function tazcloudProvisionAndDeploy(
       port: 22,
       username: initialUser,
       privateKeyPath: keyPath,
+      ...(bastionConfig ? { bastion: bastionConfig } : {}),
     };
 
     // 4. UFW hardening — default-deny, then open ports 22 and 3000 to the world.
@@ -237,16 +262,24 @@ export async function tazcloudProvisionAndDeploy(
 
     checkAbort();
 
-    // 6. Create non-root `genie` user (matches DO flow so deploy-service.ts chown/sudo works).
-    onProgress("Creating genie user...");
+    // 6. Ensure the `genie` user exists with sudo, /opt/project, docker group, and
+    //    Claude. v2.0.0 vxlan-bastion images ship with `genie` already (we're
+    //    even connecting as it), so most steps are no-ops; on legacy images we
+    //    bootstrap from the image-default user. The script is idempotent except
+    //    for the authorized_keys copy, which we skip when initialUser is already
+    //    `genie` (a self-copy would fail).
+    onProgress(initialUser === VPS_SSH_USERNAME ? "Configuring genie user (sudo, /opt/project, docker)..." : "Creating genie user...");
     try {
       const guSession = await connectSsh(initialConn);
+      const copyAuthKeys = initialUser !== VPS_SSH_USERNAME
+        ? `sudo cp ~${initialUser}/.ssh/authorized_keys /home/${VPS_SSH_USERNAME}/.ssh/authorized_keys`
+        : "true";
       await guSession.exec([
         `id ${VPS_SSH_USERNAME} &>/dev/null || sudo useradd -m -s /bin/bash ${VPS_SSH_USERNAME}`,
         `echo '${VPS_SSH_USERNAME} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/${VPS_SSH_USERNAME} > /dev/null`,
         `sudo chmod 440 /etc/sudoers.d/${VPS_SSH_USERNAME}`,
         `sudo mkdir -p /home/${VPS_SSH_USERNAME}/.ssh`,
-        `sudo cp ~${initialUser}/.ssh/authorized_keys /home/${VPS_SSH_USERNAME}/.ssh/authorized_keys`,
+        copyAuthKeys,
         `sudo chown -R ${VPS_SSH_USERNAME}:${VPS_SSH_USERNAME} /home/${VPS_SSH_USERNAME}/.ssh`,
         `sudo chmod 700 /home/${VPS_SSH_USERNAME}/.ssh`,
         `sudo chmod 600 /home/${VPS_SSH_USERNAME}/.ssh/authorized_keys`,
@@ -257,9 +290,9 @@ export async function tazcloudProvisionAndDeploy(
         `echo 'export PATH="$HOME/.local/bin:$PATH"' | sudo tee -a /home/${VPS_SSH_USERNAME}/.bashrc > /dev/null`,
       ].join(" && "));
       guSession.close();
-      onProgress("genie user created");
+      onProgress("genie user ready");
     } catch (err: unknown) {
-      throw new Error(`Failed to create genie user: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Failed to configure genie user: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // From here on, use the genie user.
@@ -309,6 +342,8 @@ chmod 600 ~/.ssh/config`);
       image,
       size,
       sshUser: VPS_SSH_USERNAME,
+      sshBastion: vm.ssh_bastion ?? null,
+      projectId: vm.project_id,
     };
   } catch (err: unknown) {
     const errObj = err instanceof Error ? err : new Error(String(err));

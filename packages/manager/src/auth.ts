@@ -2,9 +2,10 @@ import { URL } from "node:url";
 import type http from "node:http";
 import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
-import { eq } from "drizzle-orm";
+import { eq, isNull, and } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { users } from "./db/schema.js";
+import { ensureDefaultOrgFor } from "./org-service.js";
 
 const JWT_SECRET = process.env.GENIE_JWT_SECRET || process.env.ANTHROPIC_API_KEY || "genie-secret-fallback";
 const JWT_EXPIRY = "30d";
@@ -165,45 +166,68 @@ export async function handleOAuthCallback(
         .returning();
       user = updated;
     } else {
-      // Check if this is the first non-agent user (auto-validate as admin)
-      const [firstUser] = await db.select({ id: users.id })
+      // Check for a pre-existing stub (admin-invited user that hasn't signed in
+      // yet — googleId is NULL but email matches). If found, hydrate it instead
+      // of creating a new row; preserve their pre-assigned role and validate.
+      const [stub] = await db
+        .select()
         .from(users)
-        .where(eq(users.isAgent, false))
-        .orderBy(users.createdAt)
+        .where(and(eq(users.email, userInfo.email), isNull(users.googleId)))
         .limit(1);
-      const isFirstUser = !firstUser; // No non-agent users yet, so this one is first
 
-      const isSuperAdmin = userInfo.email === "paul.brie@teleporthq.io";
+      if (stub) {
+        const [hydrated] = await db
+          .update(users)
+          .set({
+            googleId: userInfo.sub,
+            name: userInfo.name,
+            avatarUrl: userInfo.picture || null,
+            validated: true,
+          })
+          .where(eq(users.id, stub.id))
+          .returning();
+        user = hydrated;
+      } else {
+        // Check if this is the first non-agent user (auto-validate as admin)
+        const [firstUser] = await db.select({ id: users.id })
+          .from(users)
+          .where(eq(users.isAgent, false))
+          .orderBy(users.createdAt)
+          .limit(1);
+        const isFirstUser = !firstUser; // No non-agent users yet, so this one is first
 
-      const [created] = await db
-        .insert(users)
-        .values({
-          googleId: userInfo.sub,
-          email: userInfo.email,
-          name: userInfo.name,
-          avatarUrl: userInfo.picture || null,
-          isAgent: false,
-          validated: isFirstUser || isSuperAdmin,
-          role: isSuperAdmin ? "superadmin" : "user",
-        })
-        .returning();
-      user = created;
+        const isSuperAdmin = userInfo.email === "paul.brie@teleporthq.io";
 
-      // Notify super admin of new user signup
-      try {
-        const sgApiKey = process.env.SENDGRID_API_KEY;
-        if (sgApiKey) {
-          const sgMail = (await import("@sendgrid/mail")).default;
-          sgMail.setApiKey(sgApiKey);
-          await sgMail.send({
-            to: "paul.brie@teleporthq.io",
-            from: process.env.BACKUP_EMAIL || "noreply@teleporthq.io",
-            subject: `[Genie] New user signup: ${user.name}`,
-            text: `New user signed up:\n\nName: ${user.name}\nEmail: ${user.email}\n\nThey need to be validated before they can use the platform.`,
-          });
+        const [created] = await db
+          .insert(users)
+          .values({
+            googleId: userInfo.sub,
+            email: userInfo.email,
+            name: userInfo.name,
+            avatarUrl: userInfo.picture || null,
+            isAgent: false,
+            validated: isFirstUser || isSuperAdmin,
+            role: isSuperAdmin ? "superadmin" : (isFirstUser ? "admin" : "user"),
+          })
+          .returning();
+        user = created;
+
+        // Notify super admin of new user signup
+        try {
+          const sgApiKey = process.env.SENDGRID_API_KEY;
+          if (sgApiKey) {
+            const sgMail = (await import("@sendgrid/mail")).default;
+            sgMail.setApiKey(sgApiKey);
+            await sgMail.send({
+              to: "paul.brie@teleporthq.io",
+              from: process.env.BACKUP_EMAIL || "noreply@teleporthq.io",
+              subject: `[Genie] New user signup: ${user.name}`,
+              text: `New user signed up:\n\nName: ${user.name}\nEmail: ${user.email}\n\nThey need to be validated before they can use the platform.`,
+            });
+          }
+        } catch (emailErr) {
+          console.error("[auth] Failed to send new-user notification:", emailErr);
         }
-      } catch (emailErr) {
-        console.error("[auth] Failed to send new-user notification:", emailErr);
       }
     }
 
@@ -213,6 +237,16 @@ export async function handleOAuthCallback(
       res.end(`<html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4"><div style="text-align:center"><h2>Access Pending</h2><p>Your account is pending validation by an administrator.</p><p style="color:#a6adc8;margin-top:1rem">Please contact the admin for access.</p></div></body></html>`);
       onError("User not validated");
       return true;
+    }
+
+    // Auto-create a default org for admin/superadmin if they have none yet.
+    // Other users only get into an org via admin invitation — never silently.
+    if (user.role === "admin" || user.role === "superadmin") {
+      try {
+        await ensureDefaultOrgFor(user.id, user.name, user.email);
+      } catch (orgErr) {
+        console.error("[auth] Failed to ensure default org:", orgErr);
+      }
     }
 
     const token = createToken(user.id);

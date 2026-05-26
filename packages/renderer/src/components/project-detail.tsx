@@ -155,10 +155,12 @@ import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
 import { openManageVmWindow } from "@/components/tazcloud-panel";
 import { openManageDropletWindow } from "@/components/digitalocean-panel";
+import { ProjectMembersTab } from "@/components/project-members-tab";
 
 
 const BASE_PROJECT_TABS: { key: ProjectTab; label: string }[] = [
   { key: "deploy-history", label: "Deploy History" },
+  { key: "members", label: "Members" },
   { key: "settings", label: "Settings" },
 ];
 
@@ -226,6 +228,10 @@ export function ProjectDetail({ activeTab = "deploy-history" }: { activeTab?: Pr
         <DeployHistoryTab project={project} vpsDeploy={vpsDeploy} />
       )}
 
+      {activeTab === "members" && (
+        <ProjectMembersTab project={project} />
+      )}
+
       {activeTab === "settings" && (
         <ProjectSettingsTab project={project} />
       )}
@@ -264,6 +270,10 @@ function ServersBar({
           const tazVmId = instance.tazcloud?.vmId;
           const doDropletId = instance.digitalocean?.dropletId;
           const canManage = !!tazVmId || !!doDropletId;
+          // Show the server's address in the button so multiple instances are
+          // distinguishable at a glance (and duplicate records pointing at the
+          // same droplet are obvious — they'll show the same IP).
+          const host = instance.digitalocean?.ipAddress || instance.tazcloud?.ipv6 || instance.connection.host;
           return (
             <button
               key={instance.id}
@@ -285,9 +295,16 @@ function ServersBar({
                 : "This instance is not linked to a supported provider"}
             >
               <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dotColor)} />
-              {instance.label}
-              <span className="text-overlay0 text-xs">
-                {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : ""}
+              {/* Baseline-align the text so the smaller IP/provider tags read on
+                  the same line as the label instead of floating optically high. */}
+              <span className="inline-flex items-baseline gap-1.5">
+                <span>{instance.label}</span>
+                {host && host !== "unknown" && (
+                  <span className="text-overlay0 text-xs font-mono">{host}</span>
+                )}
+                <span className="text-overlay0 text-xs">
+                  {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : ""}
+                </span>
               </span>
             </button>
           );
@@ -1244,7 +1261,20 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
   }, [exec, fetchStatus]);
 
   const enableFirewall = useCallback(() => {
-    execAndRefresh("sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw --force enable");
+    // Order matters: whitelist SSH on **both** IPv4 and IPv6 before flipping
+    // the default-deny + enabling UFW, otherwise the very next packet (the
+    // active SSH session re-auth) gets dropped and the user is locked out.
+    // `ufw allow 22/tcp` installs one v4 rule and one v6 rule, but only when
+    // /etc/default/ufw has IPV6=yes — which it does on stock Ubuntu/Debian/
+    // AlmaLinux, but we set it explicitly here to be safe (idempotent if it
+    // is already yes; harmless on images where /etc/default/ufw is missing).
+    execAndRefresh([
+      "sudo test -f /etc/default/ufw && sudo sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw || true",
+      "sudo ufw allow 22/tcp",
+      "sudo ufw default deny incoming",
+      "sudo ufw default allow outgoing",
+      "sudo ufw --force enable",
+    ].join(" && "));
   }, [execAndRefresh]);
 
   const disableFirewall = useCallback(() => {

@@ -1,5 +1,5 @@
 import { batch } from "subjecto";
-import { wsSend } from "@/lib/ws";
+import { wsSend, onWsClose } from "@/lib/ws";
 import { $admin } from "../subjects/admin";
 import type {
   AdminUser,
@@ -95,7 +95,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "audit" | "prodlogs"): void {
   $admin.getValue().activeTab = tab;
 }
 
@@ -188,14 +188,46 @@ export function loadAdminTazcloudStats(): void {
 
 /** Create a bare TazCloud VM. Mirrors `createAdminDroplet`. Pass `snapshot_id`
  *  (mutually exclusive with `image`) to boot from an existing snapshot instead
- *  of a base image. */
-export function createAdminTazVm(opts: { name: string; size: string; image?: string; snapshot_id?: string }): void {
+ *  of a base image. `project_id` is required on v2.0.0 tenants with multi-project
+ *  mode; the API auto-picks if exactly one project exists otherwise. */
+export function createAdminTazVm(opts: { name: string; size: string; image?: string; snapshot_id?: string; project_id?: string }): void {
   batch(() => {
     const v = $admin.getValue();
     v.tazcloud.creating = true;
     v.tazcloud.createError = null;
   });
   wsSend("admin:tazcloud:create", opts);
+}
+
+// --- TazCloud project actions (v2.0.0+) ---
+
+/** Fetch all TazCloud projects (VXLAN tenant projects). Empty on legacy v6
+ *  tenants — the server returns an empty list, not an error. */
+export function loadTazProjects(): void {
+  batch(() => {
+    const t = $admin.getValue().tazcloud;
+    t.projectsLoading = true;
+    t.projectsError = null;
+  });
+  wsSend("admin:tazcloud:project:list", {});
+}
+
+/** Create a new TazCloud project. Server replies with
+ *  `admin:tazcloud:project:created` on success and a stale broadcast for refresh. */
+export function createTazProject(name: string): void {
+  batch(() => {
+    const t = $admin.getValue().tazcloud;
+    t.projectCreating = true;
+    t.projectError = null;
+  });
+  wsSend("admin:tazcloud:project:create", { name });
+}
+
+/** Delete a TazCloud project. Fails (409) if any VMs still exist in it —
+ *  the API surfaces a specific message we relay to the UI. */
+export function deleteTazProject(projectId: string): void {
+  batch(() => { $admin.getValue().tazcloud.projectError = null; });
+  wsSend("admin:tazcloud:project:delete", { projectId });
 }
 
 /** Rename a TazCloud VM — Genie's DB only (TazCloud's API doesn't support
@@ -298,6 +330,20 @@ interface PendingAdminExec {
 
 const pendingAdminExecs = new Map<string, PendingAdminExec>();
 
+// When the WS drops (typically `tsx watch` restarting the dev manager), the
+// manager will never send a `:result` for any in-flight exec — the corresponding
+// SSH session on the server side died with the process. Without this drain,
+// every pending promise sits for 15 minutes (the per-call timeout) and the
+// Manage popup's gauges/services stay on "Loading…" even after the manager
+// comes back up and new requests work fine.
+onWsClose(() => {
+  for (const [execId, pending] of pendingAdminExecs) {
+    try { pending.resolve({ output: pending.output || "Connection lost (manager restarted)", error: true }); }
+    catch { /* ignore */ }
+    pendingAdminExecs.delete(execId);
+  }
+});
+
 /** Internal — called by handlers. */
 export function getPendingAdminExec(execId: string): PendingAdminExec | undefined {
   return pendingAdminExecs.get(execId);
@@ -351,8 +397,11 @@ export function adminDropletExec(
   });
 }
 
-/** Run a command on a TazCloud VM. Passes the VM's known host so the manager
- *  doesn't have to hit the (sometimes flaky) TazCloud API on every call. */
+/** Run a command on a TazCloud VM. Passes the VM's known `host` and `sshBastion`
+ *  so the manager doesn't have to hit the TazCloud API on every call — on v2
+ *  vxlan-bastion tenants this matters a lot because the Manage popup fires 3-4
+ *  parallel probes on mount (gauges, services, ports, recipes) and each one
+ *  was previously waiting on a fresh `/v1/vm/{id}` round-trip. */
 export function adminTazcloudExec(
   vmId: string,
   sshUser: string,
@@ -360,11 +409,12 @@ export function adminTazcloudExec(
   host?: string,
   onChunk?: ExecChunk,
   signal?: AbortSignal,
+  sshBastion?: string | null,
 ): Promise<ExecResult> {
   const execId = crypto.randomUUID();
   return new Promise((resolve) => {
     pendingAdminExecs.set(execId, { resolve, onChunk, output: "" });
-    wsSend("admin:tazcloud:exec", { vmId, sshUser, host, command, execId });
+    wsSend("admin:tazcloud:exec", { vmId, sshUser, host, command, execId, sshBastion });
     attachAbort(execId, signal);
     setTimeout(() => {
       const pending = pendingAdminExecs.get(execId);
@@ -534,6 +584,65 @@ export function removeTeamMember(memberId: string): void {
 
 export function setTeamMemberRole(memberId: string, role: string): void {
   wsSend("admin:teams:set-role", { memberId, role });
+}
+
+// --- Orgs Admin actions ---
+
+export function loadAdminOrgs(): void {
+  $admin.getValue().orgs.loading = true;
+  wsSend("admin:orgs:list", {});
+}
+
+export function createOrg(name: string): void {
+  wsSend("admin:orgs:create", { name });
+}
+
+export function updateOrg(orgId: string, name: string): void {
+  wsSend("admin:orgs:update", { orgId, name });
+}
+
+export function deleteOrg(orgId: string): void {
+  wsSend("admin:orgs:delete", { orgId });
+}
+
+export function selectOrg(orgId: string | null): void {
+  $admin.getValue().orgs.selectedOrgId = orgId;
+}
+
+export function addOrgMember(orgId: string, userId: string, role: "owner" | "admin" | "member" = "member"): void {
+  wsSend("admin:orgs:members:add", { orgId, userId, role });
+}
+
+export function removeOrgMember(orgId: string, userId: string): void {
+  wsSend("admin:orgs:members:remove", { orgId, userId });
+}
+
+export function setOrgMemberRole(orgId: string, userId: string, role: "owner" | "admin" | "member"): void {
+  wsSend("admin:orgs:members:set-role", { orgId, userId, role });
+}
+
+// --- Invite user ---
+
+export function inviteUser(opts: { email: string; name?: string; role?: "user" | "tazcloud" | "admin" | "superadmin"; orgIds: string[] }): void {
+  wsSend("admin:users:invite", opts);
+}
+
+// --- Project members ---
+
+export function loadProjectMembers(projectId: string): void {
+  wsSend("project:members:list", { projectId });
+}
+
+export function addProjectMember(projectId: string, userId: string, role: "owner" | "member" = "member"): void {
+  wsSend("project:members:add", { projectId, userId, role });
+}
+
+export function removeProjectMember(projectId: string, userId: string): void {
+  wsSend("project:members:remove", { projectId, userId });
+}
+
+export function setProjectMemberRole(projectId: string, userId: string, role: "owner" | "member"): void {
+  wsSend("project:members:set-role", { projectId, userId, role });
 }
 
 export function loadAuditLogs(opts?: { userId?: string; action?: string }): void {

@@ -1,4 +1,4 @@
-import { createTazClient, sshUserForImage } from "../vps/tazcloud-api-client.js";
+import { createTazClient, defaultSshUserForVm } from "../vps/tazcloud-api-client.js";
 
 function getClient(): { client: ReturnType<typeof createTazClient> } | { error: string } {
   const token = process.env.TAZCLOUD_API_TOKEN;
@@ -16,10 +16,13 @@ export async function executeTazListVms(): Promise<string> {
       const parts = [
         `${vm.name} (${vm.id})`,
         `status=${vm.status}`,
-        `ipv6=${vm.ipv6}`,
+        // v2 vxlan-bastion VMs have null ipv6 — show ssh_host (private IP) instead.
+        `host=${vm.ssh_host || vm.ipv6 || "-"}`,
       ];
+      if (vm.ssh_bastion) parts.push(`bastion=${vm.ssh_bastion}`);
       if (vm.image) parts.push(`image=${vm.image}`);
       if (vm.size) parts.push(`size=${vm.size}`);
+      if (vm.project_id) parts.push(`project=${vm.project_id}`);
       if (vm.ingress) {
         parts.push(`domain=${vm.ingress.domain}`);
         parts.push(`url=${vm.ingress.url}`);
@@ -41,12 +44,14 @@ export async function executeTazGetVm(vmId: string): Promise<string> {
     const lines = [
       `VM ${vm.name} (${vm.id})`,
       `Status: ${vm.status}`,
-      `IPv6: ${vm.ipv6}`,
-      `SSH: ssh ${vm.image ? sshUserForImage(vm.image) : "<user>"}@${vm.ssh_host} -p ${vm.ssh_port}`,
+      `Host: ${vm.ssh_host}${vm.ipv6 ? ` (ipv6: ${vm.ipv6})` : ""}`,
+      // Prefer the API's ready-to-run ssh_command on v2 since it includes -J.
+      `SSH: ${vm.ssh_command ?? `ssh ${defaultSshUserForVm(vm)}@${vm.ssh_host} -p ${vm.ssh_port}`}`,
     ];
     if (vm.image) lines.push(`Image: ${vm.image}`);
     if (vm.snapshot_id) lines.push(`Booted from snapshot: ${vm.snapshot_id}`);
     if (vm.size) lines.push(`Size: ${vm.size}`);
+    if (vm.project_id) lines.push(`Project: ${vm.project_id}`);
     if (vm.ingress) {
       lines.push("");
       lines.push("Ingress:");
@@ -77,16 +82,16 @@ export async function executeTazCreateVm(opts: {
   }
   try {
     const vm = await c.client.createVm(opts);
-    const sshUser = vm.image ? sshUserForImage(vm.image) : "(see snapshot source)";
     const lines = [
       `Created VM ${vm.name} (${vm.id})`,
       `Status: ${vm.status}`,
-      `IPv6: ${vm.ipv6}`,
+      `Host: ${vm.ssh_host}${vm.ipv6 ? ` (ipv6: ${vm.ipv6})` : ""}`,
     ];
     if (vm.image) lines.push(`Image: ${vm.image}`);
     if (vm.snapshot_id) lines.push(`Booted from snapshot: ${vm.snapshot_id}`);
     if (vm.size) lines.push(`Size: ${vm.size}`);
-    lines.push(`SSH: ssh ${sshUser}@${vm.ssh_host} -p ${vm.ssh_port}`);
+    if (vm.project_id) lines.push(`Project: ${vm.project_id}`);
+    lines.push(`SSH: ${vm.ssh_command ?? `ssh ${defaultSshUserForVm(vm)}@${vm.ssh_host} -p ${vm.ssh_port}`}`);
     return lines.join("\n");
   } catch (err: unknown) {
     return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -213,7 +218,7 @@ export async function executeTazGetCapabilities(): Promise<string> {
     const lines = [
       `Images: ${caps.images.join(", ")}`,
       `Sizes: ${caps.sizes.join(", ")}`,
-      `SSH: ${caps.vm_access.ssh} (prefix ${caps.vm_access.public_ipv6_prefix})`,
+      `SSH access: ${caps.vm_access.mode} via ${caps.vm_access.bastion_ip}`,
     ];
     if (caps.ingress) {
       lines.push(
@@ -222,6 +227,9 @@ export async function executeTazGetCapabilities(): Promise<string> {
       );
     } else {
       lines.push("Ingress: not advertised on this deployment");
+    }
+    if (caps.projects?.available) {
+      lines.push("Projects: required (every VM must belong to one)");
     }
     return lines.join("\n");
   } catch (err: unknown) {

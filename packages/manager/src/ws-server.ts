@@ -10,6 +10,7 @@ interface WsMessage extends Omit<WsMessageBase, 'payload'> {
   payload: Record<string, any>;
 }
 import * as projectService from "./project-service.js";
+import * as orgService from "./org-service.js";
 import * as cloudVmAliases from "./cloud-vm-alias-service.js";
 import * as projectManager from "./project-manager.js";
 import { startMonitoring, stopMonitoring, setMonitoringInterval, getDockerBin } from "./monitor.js";
@@ -44,7 +45,7 @@ import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
 import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules } from "./vps/do-provision.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
-import { createTazClient, sshUserForImage } from "./vps/tazcloud-api-client.js";
+import { createTazClient, defaultSshUserForVm, loadBastionKey, parseBastion, sshUserForImage } from "./vps/tazcloud-api-client.js";
 import * as recipesService from "./recipes-service.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
@@ -83,6 +84,16 @@ const activeSecurityAbortControllers = new Map<string, AbortController>();
 
 /** Active SSH sessions for inline project commands (key: projectId:commandId) */
 const activeCommandSessions = new Map<string, SshSession>();
+
+/** Active admin/VM exec SSH sessions keyed by execId, so admin:exec:cancel can
+ *  abort an in-flight droplet/VM exec (e.g. the recipes Stop button). */
+const activeExecSessions = new Map<string, SshSession>();
+
+/** tazcloud/admin/superadmin — roles that may exec on any VM without an explicit
+ *  project-ownership check. Plain users are owner-scoped (see userCanAccessVm). */
+function isPrivilegedRole(role: Role | null): boolean {
+  return role === "tazcloud" || role === "admin" || role === "superadmin";
+}
 
 /** In-flight chunked uploads, keyed by client-generated uploadId */
 interface PendingUpload {
@@ -2588,6 +2599,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "terminal:share:error", payload: { message: access ? "Only the owner can share this terminal" : "Terminal session not found (may have been restarted)" } });
         break;
       }
+      // Terminal sharing is scoped to teammates: the target must share at least
+      // one team with the owner. This is the authoritative gate — the share UI
+      // lists every online user (chat roster isn't team-scoped), so it cannot
+      // be relied on to enforce this.
+      if (!(await projectService.usersShareTeam(userId, targetUserId))) {
+        send(ws, { type: "terminal:share:error", payload: { message: "You can only share terminals with members of your team" } });
+        break;
+      }
       sendToUser(targetUserId, {
         type: "terminal:share:invite",
         payload: { sessionId, ownerId: userId, ownerName: state.user?.name || "Unknown", conversationId: shareConvId },
@@ -2609,14 +2628,26 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "terminal:share:accept": {
       const { sessionId } = msg.payload;
+      const access = getSessionAccess(sessionId);
+      if (!access) {
+        send(ws, { type: "error", payload: { message: "Terminal session not found" } });
+        break;
+      }
+      // Defense-in-depth: accept adds a collaborator purely by sessionId — the
+      // invite is not a capability token — so re-verify the teammate constraint
+      // here too (membership could have changed, or the accept was fabricated).
+      if (!(await projectService.usersShareTeam(access.ownerId, userId))) {
+        send(ws, { type: "terminal:share:error", payload: { message: "You can only join terminals shared by members of your team" } });
+        break;
+      }
       const added = addCollaborator(sessionId, userId);
       if (!added) {
         send(ws, { type: "error", payload: { message: "Terminal session not found" } });
         break;
       }
-      const access = getSessionAccess(sessionId);
-      if (access) {
-        const allUsers = [access.ownerId, ...access.collaboratorIds];
+      const updatedAccess = getSessionAccess(sessionId);
+      if (updatedAccess) {
+        const allUsers = [updatedAccess.ownerId, ...updatedAccess.collaboratorIds];
         broadcastToUsers(allUsers, {
           type: "terminal:share:viewers",
           payload: { sessionId, viewerIds: allUsers },
@@ -2700,7 +2731,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           .limit(1);
         resolvedTeamId = firstTeam?.teamId ?? null;
       }
-      const added = await projectService.add({ name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl, teamId: resolvedTeamId });
+      const added = await projectService.add({ name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl, teamId: resolvedTeamId, createdByUserId: creatorId });
+      void added;
       await broadcastProjectList();
       break;
     }
@@ -3776,11 +3808,23 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       ).then(async (result) => {
         activeTazAbortControllers.delete(tazProjectId);
         const tazKeyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
+        // v2.0.0: the manager can only reach this VM through the bastion the
+        // provision step used. Persist it so every later SSH call (Manage
+        // popup, vpsStatus, recipe exec) reconstructs the same tunnel.
+        const persistedBastion = parseBastion(result.sshBastion);
         const connection: VpsConnectionConfig = {
           host: result.ipv6,
           port: 22,
           username: VPS_SSH_USERNAME,
           privateKeyPath: tazKeyPath,
+          ...(persistedBastion ? {
+            bastion: {
+              host: persistedBastion.host,
+              port: persistedBastion.port,
+              username: persistedBastion.username,
+              privateKeyPath: tazKeyPath,
+            },
+          } : {}),
         };
         const instance: import("./types.js").VpsInstance = {
           id: newTazInstanceId,
@@ -3793,6 +3837,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             image: result.image,
             size: result.size,
             sshUser: result.sshUser,
+            sshBastion: result.sshBastion ?? null,
+            ...(result.projectId ? { projectId: result.projectId } : {}),
           },
         };
         try {
@@ -3974,28 +4020,49 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
           const tazClient = createTazClient(tazToken);
           const vm = await tazClient.getVm(String(vmId));
-          if (!vm.ipv6) throw new Error("VM has no IPv6 address yet");
+          // v2.0.0 vxlan-bastion VMs have null ipv6 and only ssh_host (private IP);
+          // legacy v6 tenants still have ipv6. Trust ssh_host as the authoritative
+          // address since the API resolves it correctly for both modes.
+          const tazHost = vm.ssh_host || vm.ipv6;
+          if (!tazHost) throw new Error("VM has no ssh_host yet");
           const imageDefault = vm.image ? sshUserForImage(vm.image) : "ubuntu";
+          const bastion = parseBastion(vm.ssh_bastion);
+          const bastionConfig = bastion ? {
+            host: bastion.host,
+            port: bastion.port,
+            username: bastion.username,
+            privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
+          } : undefined;
           const probed = await pickWorkingSshUser(
-            { host: vm.ipv6, port: vm.ssh_port || 22, privateKeyPath: "~/.genie/ssh/tazcloud_ed25519" },
+            {
+              host: tazHost,
+              port: vm.ssh_port || 22,
+              privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
+              ...(bastionConfig ? { bastion: bastionConfig } : {}),
+            },
+            // On v2 only `genie` is provisioned; on legacy try genie first then
+            // the image-default user.
             [VPS_SSH_USERNAME, imageDefault],
           );
           if (!probed) {
-            throw new Error(`Cannot SSH into VM ${vm.ipv6} as 'genie' or '${imageDefault}' with the TazCloud key`);
+            throw new Error(`Cannot SSH into VM ${tazHost} as 'genie' or '${imageDefault}' with the TazCloud key`);
           }
           initialConnection = {
-            host: vm.ipv6,
+            host: tazHost,
             port: vm.ssh_port || 22,
             username: probed,
             privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
+            ...(bastionConfig ? { bastion: bastionConfig } : {}),
           };
           providerMeta = {
             tazcloud: {
               vmId: vm.id,
-              ipv6: vm.ipv6,
+              ipv6: vm.ipv6 || tazHost,
               image: vm.image || "ubuntu-22",
               size: vm.size || "small",
               sshUser: VPS_SSH_USERNAME, // ensureBootstrapped guarantees this below
+              sshBastion: vm.ssh_bastion ?? null,
+              ...(vm.project_id ? { projectId: vm.project_id } : {}),
             },
           };
           resolvedLabel = (label || vm.name).slice(0, 64);
@@ -5168,13 +5235,34 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         }
         const results: Record<string, unknown> = {};
+        const bastionKey = loadBastionKey();
         await Promise.allSettled(
           vms
             .filter((vm) => vm.status === "ACTIVE" && vm.ssh_host)
             .map(async (vm) => {
               try {
-                const username = linked.has(vm.id) ? VPS_SSH_USERNAME : sshUserForImage(vm.image || "ubuntu-22");
-                const stats = await vpsStats({ host: vm.ssh_host, port: 22, username, privateKeyPath: keyPath });
+                // Linked VMs always have a `genie` user (provision step creates
+                // it). Unlinked legacy VMs only have the image-default user.
+                // Unlinked v2 VMs ship with `genie` already, so prefer it.
+                const username = linked.has(vm.id) || vm.ssh_bastion
+                  ? VPS_SSH_USERNAME
+                  : sshUserForImage(vm.image || "ubuntu-22");
+                const bastion = parseBastion(vm.ssh_bastion);
+                const stats = await vpsStats({
+                  host: vm.ssh_host,
+                  port: 22,
+                  username,
+                  privateKeyPath: keyPath,
+                  ...(bastion ? {
+                    bastion: {
+                      host: bastion.host,
+                      port: bastion.port,
+                      username: bastion.username,
+                      privateKeyPath: keyPath,
+                      ...(bastionKey ? { privateKey: bastionKey } : {}),
+                    },
+                  } : {}),
+                });
                 results[vm.id] = stats;
               } catch { /* skip unreachable VM */ }
             }),
@@ -5239,42 +5327,62 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       // don't hit the TazCloud API on every command — previously every recipe check
       // (5+ per panel open) triggered a getVm() call, which is wasteful and dies when
       // the upstream API is flaky.
-      const { vmId, sshUser, host: hostFromClient, command, execId } = msg.payload as {
+      const { vmId, sshUser, host: hostFromClient, command, execId, sshBastion: bastionFromClient } = msg.payload as {
         vmId: string; sshUser: string; host?: string; command: string; execId: string;
+        /** Renderer-supplied `ssh_bastion` (e.g. "almalinux@188.213.48.230").
+         *  When provided alongside `host` we skip the per-call `/v1/vm/{id}`
+         *  lookup that previously gated every exec — that was adding ~200ms-1s
+         *  per call and 3-4 calls fire in parallel when the Manage popup
+         *  mounts. */
+        sshBastion?: string | null;
       };
+      // Owner-scoped access: tazcloud+ may exec on any VM; a plain user only on a
+      // VM attached to a project they can access. The ACL already let the message
+      // through (send: user) — this is the real authorization gate.
+      if (!isPrivilegedRole(state.role) && !(await projectService.userCanAccessVm(userId, { vmId }))) {
+        send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output: "Not authorized for this server", error: true } });
+        break;
+      }
       try {
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazPrivateKey) throw new Error("TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager");
         let host = hostFromClient;
-        // The renderer doesn't currently know about ssh_bastion, so we always
-        // fetch the VM record server-side to discover it. Cheap (~100ms) and
-        // gets us the freshest hostname for vxlan-bastion VMs that only have
-        // a private IP. If the API is flaky and a host is provided, fall back.
+        // Resolve bastion. Fast path: renderer passed it through (it's already
+        // in the admin store from /v1/vm list). Slow path: re-fetch /v1/vm/{id}
+        // — needed for non-Manage-popup callers (e.g. tools) that don't supply
+        // it. Bastion is stable for the VM lifetime so trusting the
+        // renderer's copy is safe. Use the shared `parseBastion` so the
+        // username rewrite (API returns `almalinux`, but per Taz the correct
+        // user is `genie`) applies uniformly.
         let bastion: { user: string; host: string } | null = null;
-        const tazToken = process.env.TAZCLOUD_API_TOKEN;
-        if (tazToken) {
-          try {
-            const tazClient = createTazClient(tazToken);
-            const vm = await tazClient.getVm(vmId);
-            if (!host) host = vm?.ssh_host;
-            if (vm?.ssh_bastion) {
-              const m = vm.ssh_bastion.match(/^([^@]+)@(.+)$/);
-              if (m) bastion = { user: m[1], host: m[2] };
+        if (bastionFromClient) {
+          const p = parseBastion(bastionFromClient);
+          if (p) bastion = { user: p.username, host: p.host };
+        }
+        if (!bastion || !host) {
+          const tazToken = process.env.TAZCLOUD_API_TOKEN;
+          if (tazToken) {
+            try {
+              const tazClient = createTazClient(tazToken);
+              const vm = await tazClient.getVm(vmId);
+              if (!host) host = vm?.ssh_host;
+              if (!bastion && vm?.ssh_bastion) {
+                const p = parseBastion(vm.ssh_bastion);
+                if (p) bastion = { user: p.username, host: p.host };
+              }
+            } catch (err) {
+              if (!host) throw err;
+              // host known + API flaky → proceed without bastion (works for legacy v6 VMs).
             }
-          } catch (err) {
-            if (!host) throw err;
-            // host known + API flaky → proceed without bastion (works for legacy v6 VMs).
           }
         }
         if (!host) throw new Error(`VM ${vmId} has no ssh_host`);
         const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
-        // Bastion may use a different key from the per-VM key; allow override
-        // via TAZCLOUD_BASTION_PRIVATE_KEY (raw PEM/OpenSSH string). Falls back
-        // to the VM key, which works on tenants where the bastion is configured
-        // to accept the same Tazcloud-managed key.
-        const bastionKey = process.env.TAZCLOUD_BASTION_PRIVATE_KEY
-          ? Buffer.from(process.env.TAZCLOUD_BASTION_PRIVATE_KEY)
-          : undefined;
+        // Bastion uses the customer-specific key documented in
+        // customer-bastion-setup.md (env var TAZCLOUD_BASTION_PRIVATE_KEY,
+        // path or raw content). Falls back to the per-VM key for tenants where
+        // a single key is authorised for both hops.
+        const bastionKey = loadBastionKey();
         const session = await connectSsh({
           host,
           port: 22,
@@ -5290,6 +5398,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             },
           } : {}),
         });
+        activeExecSessions.set(execId, session);
         // Secrets (GIT_TOKEN etc.) are baked into the script by the renderer
         // per-apply — see admin-recipes-panel.tsx → buildInstallCommand. We no
         // longer inject them from settings here.
@@ -5302,7 +5411,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             send(ws, { type: "admin:tazcloud:exec:progress", payload: { execId, chunk } });
           }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
           send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output } });
-        } finally { session.close(); }
+        } finally { session.close(); activeExecSessions.delete(execId); }
       } catch (err: unknown) {
         send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
       }
@@ -5355,6 +5464,13 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const { dropletId, command, execId } = msg.payload as {
         dropletId: number; command: string; execId: string;
       };
+      // Owner-scoped access: tazcloud+ may exec on any droplet; a plain user only
+      // on a droplet attached to a project they can access. The ACL already let
+      // the message through (send: user) — this is the real authorization gate.
+      if (!isPrivilegedRole(state.role) && !(await projectService.userCanAccessVm(userId, { dropletId }))) {
+        send(ws, { type: "admin:droplets:exec:result", payload: { execId, output: "Not authorized for this server", error: true } });
+        break;
+      }
       try {
         const doToken = await settingsService.getGlobalDoToken();
         if (!doToken) throw new Error("DigitalOcean API token not configured");
@@ -5369,6 +5485,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           username: VPS_SSH_USERNAME,
           privateKeyPath: keyPath,
         });
+        activeExecSessions.set(execId, session);
         // Secrets baked into the script per-apply; no settings-based injection.
         const shQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
         try {
@@ -5376,23 +5493,39 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             send(ws, { type: "admin:droplets:exec:progress", payload: { execId, chunk } });
           }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
           send(ws, { type: "admin:droplets:exec:result", payload: { execId, output } });
-        } finally { session.close(); }
+        } finally { session.close(); activeExecSessions.delete(execId); }
       } catch (err: unknown) {
         send(ws, { type: "admin:droplets:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
       }
       break;
     }
 
+    case "admin:exec:cancel": {
+      // Abort an in-flight droplet/VM exec (the recipes Stop button). The execId
+      // is a random uuid only the initiator holds, so no extra ownership check is
+      // needed — closing the SSH session makes the exec promise reject and emit
+      // its error result. No-op if the exec already finished.
+      const { execId } = msg.payload as { execId: string };
+      const session = activeExecSessions.get(execId);
+      if (session) {
+        activeExecSessions.delete(execId);
+        try { session.close(); } catch { /* already closed */ }
+      }
+      break;
+    }
+
     case "admin:tazcloud:create": {
       try {
-        const { name, image, size, snapshot_id } = msg.payload;
+        const { name, image, size, snapshot_id, project_id } = msg.payload as {
+          name: string; image?: string; size?: string; snapshot_id?: string; project_id?: string;
+        };
         if (!name || typeof name !== "string") throw new Error("name is required");
         if (image && snapshot_id) throw new Error("`image` and `snapshot_id` are mutually exclusive");
         const tazToken = process.env.TAZCLOUD_API_TOKEN;
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
         const tazClient = createTazClient(tazToken);
-        const vm = await tazClient.createVm({ name, image, size, snapshot_id });
+        const vm = await tazClient.createVm({ name, image, size, snapshot_id, project_id });
         send(ws, { type: "admin:tazcloud:created", payload: { vm } });
 
         // Async firewall preset: wait for SSH, then apply default-deny + allow 22/3000.
@@ -5404,8 +5537,26 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (tazPrivateKey && vm.ssh_host && !snapshot_id) {
           void (async () => {
             const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
-            const sshUser = sshUserForImage(image || "ubuntu-22");
-            const conn = { host: vm.ssh_host, port: 22, username: sshUser, privateKeyPath: keyPath };
+            // v2.0.0 vxlan-bastion: VM ships with `genie` user, only reachable
+            // via ProxyJump. Legacy v6: image-default user, direct SSH.
+            const sshUser = defaultSshUserForVm(vm);
+            const bastion = parseBastion(vm.ssh_bastion);
+            const bastionKey = loadBastionKey();
+            const conn = {
+              host: vm.ssh_host,
+              port: 22,
+              username: sshUser,
+              privateKeyPath: keyPath,
+              ...(bastion ? {
+                bastion: {
+                  host: bastion.host,
+                  port: bastion.port,
+                  username: bastion.username,
+                  privateKeyPath: keyPath,
+                  ...(bastionKey ? { privateKey: bastionKey } : {}),
+                },
+              } : {}),
+            };
             // Poll SSH up to 3 minutes.
             const sshStart = Date.now();
             let ready = false;
@@ -5581,6 +5732,60 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             message: err instanceof Error ? err.message : String(err),
           },
         });
+      }
+      break;
+    }
+
+    // --- TazCloud projects (v2.0.0). A project is an isolated VXLAN network
+    // (10.128.N.0/24). Every VM must belong to one. UI lets the admin list
+    // them, create new ones, and delete empty ones — VMs are managed
+    // separately via admin:tazcloud:create and admin:tazcloud:delete.
+    case "admin:tazcloud:project:list": {
+      const tazToken = process.env.TAZCLOUD_API_TOKEN;
+      if (!tazToken) {
+        send(ws, { type: "admin:tazcloud:project:list", payload: { projects: [], error: "TAZCLOUD_API_TOKEN not configured on the manager." } });
+        break;
+      }
+      try {
+        const tazClient = createTazClient(tazToken);
+        const projects = await tazClient.listProjects();
+        send(ws, { type: "admin:tazcloud:project:list", payload: { projects } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:project:list", payload: { projects: [], error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:project:create": {
+      try {
+        const { name } = msg.payload as { name: string };
+        if (!name || typeof name !== "string") throw new Error("name is required");
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        const project = await tazClient.createProject({ name: name.trim() });
+        send(ws, { type: "admin:tazcloud:project:created", payload: { project } });
+        broadcast({ type: "admin:tazcloud:project:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:project:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:project:delete": {
+      try {
+        const { projectId } = msg.payload as { projectId: string };
+        if (!projectId || typeof projectId !== "string") throw new Error("projectId is required");
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
+        const tazClient = createTazClient(tazToken);
+        await tazClient.deleteProject(projectId);
+        send(ws, { type: "admin:tazcloud:project:deleted", payload: { projectId } });
+        broadcast({ type: "admin:tazcloud:project:list:stale", payload: {} });
+      } catch (err: unknown) {
+        // 409 from the API means the project still has VMs — surface as a
+        // dedicated message the UI can act on (e.g. show a "delete VMs first" hint).
+        send(ws, { type: "admin:tazcloud:project:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -6363,6 +6568,249 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // ── Organizations ─────────────────────────────────────
+    // ACL gate (admin+) lets only admins reach these handlers; per-org checks
+    // below additionally restrict non-superadmins to orgs they own/admin.
+    case "admin:orgs:list": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const orgs = await orgService.listManageable(callerId);
+        // Eagerly include members for every visible org so the panel can render
+        // without N round-trips. For huge installs we'd switch to lazy fetch.
+        const members: Record<string, Awaited<ReturnType<typeof orgService.getMembers>>> = {};
+        for (const o of orgs) {
+          members[o.id] = await orgService.getMembers(o.id);
+        }
+        send(ws, { type: "admin:orgs:list", payload: { orgs, members } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:orgs:create": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const { name } = msg.payload as { name: string };
+        if (!name?.trim()) { send(ws, { type: "admin:error", payload: { message: "Name required" } }); break; }
+        const org = await orgService.createOrg({ name: name.trim(), ownerUserId: callerId });
+        const members = await orgService.getMembers(org.id);
+        send(ws, { type: "admin:orgs:created", payload: { org, members } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:orgs:update": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, name } = msg.payload as { orgId: string; name: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "admin:error", payload: { message: "Not authorized to manage this org" } });
+          break;
+        }
+        const org = await orgService.updateOrg(orgId, { name });
+        send(ws, { type: "admin:orgs:updated", payload: { org } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:orgs:delete": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId } = msg.payload as { orgId: string };
+        // Delete requires owner role (or superadmin) — re-check by looking up
+        // the caller's role in this org.
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "admin:error", payload: { message: "Not authorized to delete this org" } });
+          break;
+        }
+        await orgService.deleteOrg(orgId);
+        send(ws, { type: "admin:orgs:deleted", payload: { orgId } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:orgs:members:add": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, userId, role } = msg.payload as { orgId: string; userId: string; role?: orgService.OrgRole };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "admin:error", payload: { message: "Not authorized to manage this org" } });
+          break;
+        }
+        const member = await orgService.addMember(orgId, userId, role || "member");
+        send(ws, { type: "admin:orgs:member-added", payload: { orgId, member } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:orgs:members:remove": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, userId } = msg.payload as { orgId: string; userId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "admin:error", payload: { message: "Not authorized to manage this org" } });
+          break;
+        }
+        await orgService.removeMember(orgId, userId);
+        send(ws, { type: "admin:orgs:member-removed", payload: { orgId, userId } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:orgs:members:set-role": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, userId, role } = msg.payload as { orgId: string; userId: string; role: orgService.OrgRole };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "admin:error", payload: { message: "Not authorized to manage this org" } });
+          break;
+        }
+        const member = await orgService.setMemberRole(orgId, userId, role);
+        send(ws, { type: "admin:orgs:member-role-updated", payload: { orgId, member } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    // ── User invitation ───────────────────────────────────
+    case "admin:users:invite": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "admin:error", payload: { message: "Not authenticated" } }); break; }
+        const { email, name, role, orgIds } = msg.payload as { email: string; name?: string; role?: "user" | "tazcloud" | "admin" | "superadmin"; orgIds: string[] };
+        if (!email?.trim()) { send(ws, { type: "admin:error", payload: { message: "Email required" } }); break; }
+        // Non-superadmin: every org in payload must be manageable by caller.
+        const manageable = await orgService.manageableOrgIds(callerId);
+        const manageableSet = new Set(manageable);
+        for (const oid of orgIds || []) {
+          if (!manageableSet.has(oid)) {
+            send(ws, { type: "admin:error", payload: { message: `Not authorized to assign to org ${oid}` } });
+            return;
+          }
+        }
+        // Only superadmin may pre-assign admin/superadmin role to an invitee.
+        let finalRole: "user" | "tazcloud" | "admin" | "superadmin" = role || "user";
+        if ((finalRole === "admin" || finalRole === "superadmin") && callerState?.role !== "superadmin") {
+          finalRole = "user";
+        }
+        const { user, created } = await orgService.inviteUser({
+          email: email.trim(),
+          name,
+          role: finalRole,
+          orgIds: orgIds || [],
+          addedByUserId: callerId,
+        });
+        send(ws, { type: "admin:users:invited", payload: { user, created, orgIds } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    // ── Per-project members ───────────────────────────────
+    case "project:members:list": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "error", payload: { message: "Not authenticated" } }); break; }
+        const { projectId } = msg.payload as { projectId: string };
+        if (!(await projectService.userCanSeeProject(callerId, projectId))) {
+          send(ws, { type: "error", payload: { message: "Not authorized" } });
+          break;
+        }
+        const members = await projectService.getProjectMembers(projectId);
+        send(ws, { type: "project:members:list", payload: { projectId, members } });
+      } catch (err) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "project:members:add": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "error", payload: { message: "Not authenticated" } }); break; }
+        const { projectId, userId, role } = msg.payload as { projectId: string; userId: string; role?: "owner" | "member" };
+        if (!(await projectService.userCanManageProject(callerId, projectId))) {
+          send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+          break;
+        }
+        const member = await projectService.addProjectMember(projectId, userId, callerId, role || "member");
+        send(ws, { type: "project:members:updated", payload: { projectId, member, action: "added" } });
+        // Notify both ends: refresh project list for the affected user so they
+        // now see the project they were just added to.
+        broadcastToUsers([userId], { type: "project:list:stale", payload: {} });
+      } catch (err) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "project:members:remove": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "error", payload: { message: "Not authenticated" } }); break; }
+        const { projectId, userId } = msg.payload as { projectId: string; userId: string };
+        if (!(await projectService.userCanManageProject(callerId, projectId))) {
+          send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+          break;
+        }
+        await projectService.removeProjectMember(projectId, userId);
+        send(ws, { type: "project:members:updated", payload: { projectId, userId, action: "removed" } });
+        broadcastToUsers([userId], { type: "project:list:stale", payload: {} });
+      } catch (err) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "project:members:set-role": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "error", payload: { message: "Not authenticated" } }); break; }
+        const { projectId, userId, role } = msg.payload as { projectId: string; userId: string; role: "owner" | "member" };
+        if (!(await projectService.userCanManageProject(callerId, projectId))) {
+          send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+          break;
+        }
+        const member = await projectService.setProjectMemberRole(projectId, userId, role);
+        send(ws, { type: "project:members:updated", payload: { projectId, member, action: "role-updated" } });
+      } catch (err) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
     // ── Settings ──────────────────────────────────────────
     case "settings:get": {
       const reqId = msg.payload?.reqId;
@@ -7056,15 +7504,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       // Bastion key precedence mirrors admin:tazcloud:exec: explicit
       // TAZCLOUD_BASTION_PRIVATE_KEY env wins; otherwise reuse the per-VM key
       // (works on tenants where the bastion accepts the same Tazcloud-managed key).
+      const bastionKey = loadBastionKey();
       const bastionConfig = bastion
         ? {
             host: bastion.host,
             port: bastion.port ?? 22,
             username: bastion.username,
             privateKeyPath: resolvedKey,
-            ...(process.env.TAZCLOUD_BASTION_PRIVATE_KEY
-              ? { privateKey: Buffer.from(process.env.TAZCLOUD_BASTION_PRIVATE_KEY) }
-              : {}),
+            ...(bastionKey ? { privateKey: bastionKey } : {}),
           }
         : undefined;
       spawnSshPty(id, cols || 80, rows || 24, {

@@ -74,6 +74,16 @@ export interface AdminTazSnapshot {
   created: string;             // ISO-8601
 }
 
+/** v2.0.0 Taz tenant project (isolated VXLAN). Every VM belongs to one. */
+export interface AdminTazProject {
+  id: string;
+  name: string;
+  subnetCidr: string;
+  networkId?: string;
+  vmCount?: number;
+  created: string;
+}
+
 export interface AdminTazState {
   vms: AdminTazVm[];
   loading: boolean;
@@ -85,6 +95,14 @@ export interface AdminTazState {
    *  the list-load error) so the create form can show a banner without
    *  clobbering list-load state. */
   createError: string | null;
+  /** v2.0.0+ tenant projects. Empty array on legacy v6 tenants. */
+  projects: AdminTazProject[];
+  projectsLoading: boolean;
+  projectsError: string | null;
+  /** True while a create-project request is in flight. */
+  projectCreating: boolean;
+  /** Latest project create/delete error (banner-style). */
+  projectError: string | null;
   /** Per-VM stats keyed by vmId. Populated by `admin:tazcloud:stats`. */
   vmStats: Record<string, VpsStats>;
   /** True while the periodic stats refresh is in flight. */
@@ -195,6 +213,41 @@ export interface AdminTeamMember {
   joinedAt: string;
 }
 
+export type OrgRole = "owner" | "admin" | "member";
+
+export interface AdminOrg {
+  id: string;
+  name: string;
+  createdBy: string | null;
+  createdAt: string;
+  /** Role of the *current* user in this org. "owner" when superadmin sees an
+   *  org they don't actually belong to (server hands back "owner" for ergonomics). */
+  role?: OrgRole | null;
+}
+
+export interface AdminOrgMember {
+  id: string;
+  orgId: string;
+  userId: string;
+  role: OrgRole;
+  joinedAt: string;
+  userName?: string;
+  userEmail?: string;
+  userAvatarUrl?: string | null;
+}
+
+export interface ProjectMemberInfo {
+  id: string;
+  projectId: string;
+  userId: string;
+  role: "owner" | "member";
+  addedBy: string | null;
+  joinedAt: string;
+  userName?: string;
+  userEmail?: string;
+  userAvatarUrl?: string | null;
+}
+
 export interface AuditLogEntry {
   id: string;
   userId: string | null;
@@ -220,7 +273,7 @@ export interface RailwayLogEntry {
 }
 
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "audit" | "prodlogs";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "audit" | "prodlogs";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];
@@ -286,6 +339,15 @@ export interface AdminState {
     members: AdminTeamMember[];
     loading: boolean;
   };
+  orgs: {
+    list: AdminOrg[];
+    members: Record<string, AdminOrgMember[]>;
+    loading: boolean;
+    selectedOrgId: string | null;
+  };
+  /** Members of individual projects, keyed by projectId. Populated on demand
+   *  when the project-detail Members section is opened. */
+  projectMembers: Record<string, ProjectMemberInfo[]>;
   audit: {
     logs: AuditLogEntry[];
     loading: boolean;

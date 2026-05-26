@@ -84,6 +84,9 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
 
   // Admin namespaces.
   admin: { send: "admin", receive: "admin" },
+  // Admin-scoped orgs management — handler-level checks gate by org-ownership
+  // for non-superadmins.
+  "admin:orgs": { send: "admin", receive: "admin" },
   // The Clouds panel uses admin:droplets:* and admin:tazcloud:* — exposed to tazcloud.
   "admin:droplets": { send: "tazcloud", receive: "tazcloud" },
   "admin:tazcloud": { send: "tazcloud", receive: "tazcloud" },
@@ -130,6 +133,44 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   // runtime so a lower role can't unlock-then-delete in one round-trip.
   "admin:droplets:unlock": { send: "superadmin", receive: "tazcloud" },
   "admin:tazcloud:unlock": { send: "superadmin", receive: "tazcloud" },
+
+  // Recipe catalog reads inside an otherwise superadmin-only namespace. Any
+  // authenticated user may LIST recipes so the Add-ons panel populates for the
+  // project VMs they can manage — the list carries install scripts + metadata
+  // but no secret VALUES (those are never persisted), and these users already
+  // have shell access to those VMs. Mutations (recipes:create/update/delete and
+  // their responses) stay superadmin via the namespace default: recipe install
+  // scripts run as root on every VM, so a non-admin editing them would be a
+  // privilege-escalation / supply-chain risk.
+  "recipes:list": { send: "user", receive: "user", notes: "read-only catalog access for the Add-ons panel" },
+  "recipes:list:stale": { receive: "user", notes: "cache-invalidation broadcast; clients refetch recipes:list" },
+
+  // Per-VM exec inside the otherwise tazcloud+ admin:droplets / admin:tazcloud
+  // namespaces. Lowered to "user" so a normal user can drive the Manage popup
+  // (stats, services, recipes) for their OWN project servers. This only lets the
+  // message reach the handler — the handler enforces ownership: a non-admin may
+  // exec only on a droplet/VM attached to a project they can access (tazcloud+
+  // bypass that check). All other admin:droplets:* / admin:tazcloud:* ops (create,
+  // delete, rename, snapshot, …) stay tazcloud+ via the namespace default.
+  "admin:droplets:exec": { send: "user", notes: "handler enforces project ownership for non-admins" },
+  "admin:droplets:exec:result": { receive: "user" },
+  "admin:droplets:exec:progress": { receive: "user" },
+  "admin:tazcloud:exec": { send: "user", notes: "handler enforces project ownership for non-admins" },
+  "admin:tazcloud:exec:result": { receive: "user" },
+  "admin:tazcloud:exec:progress": { receive: "user" },
+  // Cancel an in-flight exec by execId (a random uuid only the initiator knows),
+  // so the recipes Stop button works for any role.
+  "admin:exec:cancel": { send: "user" },
+
+  // Per-project membership management. The handler enforces userCanManageProject
+  // (org owner/admin of the project's org, project-level owner, or superadmin),
+  // so reaching the handler is enough — admin gate at the ACL level keeps casual
+  // user clients from probing the endpoint.
+  "project:members:list": { send: "user", receive: "user", notes: "handler enforces userCanSeeProject" },
+  "project:members:add": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
+  "project:members:remove": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
+  "project:members:set-role": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
+  "project:members:updated": { receive: "user" },
 };
 
 /** Look up the effective ACL entry for a message type. Returns null when nothing matches and policy is deny-unknown. */

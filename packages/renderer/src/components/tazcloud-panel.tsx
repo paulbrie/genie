@@ -3,14 +3,14 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug } from "lucide-react";
-import { $admin, $auth, $persistedTerminals, $windowManager } from "@/store/subjects";
-import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession } from "@/store/types";
-import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazSnapshot, deleteAdminTazVm, deleteTazSnapshot, disconnectVps, focusWindow, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition } from "@/store/actions";
+import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
+import { $admin, $auth, $manager, $persistedTerminals, $vpsDeploy, $windowManager } from "@/store/subjects";
+import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
+import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
 import { useDraggable, useResizable } from "@/components/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project-detail";
 import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
-import { AdminSystemPanel } from "@/components/admin-system-panel";
+import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin-system-panel";
 import { VpsResourceGauges } from "@/components/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
@@ -19,7 +19,7 @@ import { FileExplorer } from "@/components/vps-file-explorer";
 import { DbExplorer } from "@/components/db-explorer";
 import { CommandsTab } from "@/components/project-detail";
 import { $projects } from "@/store/subjects";
-import { FolderTree, Database as DatabaseIcon, PlayCircle, Network } from "lucide-react";
+import { FolderTree, Database as DatabaseIcon, PlayCircle, Network, Cpu } from "lucide-react";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { CopyableIp } from "@/components/ui/copyable-ip";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
@@ -28,14 +28,14 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 
-function formatBytesShort(bytes: number): string {
+export function formatBytesShort(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);
   if (gb >= 1) return `${gb % 1 === 0 ? gb.toFixed(0) : gb.toFixed(1)}G`;
   const mb = bytes / (1024 * 1024);
   return `${mb.toFixed(0)}M`;
 }
 
-function cardStatusPill(status: string) {
+export function cardStatusPill(status: string) {
   const s = status.toLowerCase();
   const isActive = s === "active";
   const isHibernated = s === "hibernated";
@@ -79,12 +79,16 @@ function imageDefaultUser(image?: string): string {
   }
 }
 
-/** SSH user the user probably wants for an interactive session. Genie's project-deploy
- *  flow creates a `genie` user; non-Genie-deployed VMs only have the image-default user.
- *  We can't distinguish those at list time (the API doesn't tell us), so we lean toward
- *  `genie` for project-linked VMs and image-default otherwise. Users can override via
- *  the dropdown if the heuristic is wrong. */
-function defaultSshUserFor(vm: { image?: string; projectId: string | null }): string {
+/** SSH user the user probably wants for an interactive session. Order of
+ *  inference:
+ *    1. v2.0.0 vxlan-bastion VMs (`sshBastion` set) — `genie` is the **only**
+ *       user; image-default users don't exist there.
+ *    2. Project-linked VMs (any provider/mode) — Genie's deploy flow creates
+ *       a `genie` user.
+ *    3. Otherwise — image-default user (legacy v6 bare VMs).
+ *  Users can override via the dropdown if the heuristic is wrong. */
+function defaultSshUserFor(vm: { image?: string; projectId: string | null; sshBastion?: string | null }): string {
+  if (vm.sshBastion) return "genie";
   if (vm.projectId) return "genie";
   return imageDefaultUser(vm.image);
 }
@@ -125,6 +129,13 @@ export function TazCloudPanel() {
   const [vmName, setVmName] = useState(defaultVmName());
   const [vmImage, setVmImage] = useState("ubuntu-22");
   const [vmSize, setVmSize] = useState("small");
+  /** v2.0.0 only — selected Taz project for the create form. Empty string means
+   *  "let the server auto-pick" (works when the tenant has exactly one project). */
+  const [vmProjectId, setVmProjectId] = useState<string>("");
+  /** Inline "Create project" form state. Toggled from the Projects section. */
+  const [projectFormOpen, setProjectFormOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [pendingProjectDelete, setPendingProjectDelete] = useState<string | null>(null);
   const [userMenuOpenFor, setUserMenuOpenFor] = useState<string | null>(null);
   /** Per-row overflow menu. Collapses the rename/lock/security/rkhunter/snapshot/
    *  ingress/manage/delete cluster so the row isn't visually swamped. */
@@ -176,11 +187,36 @@ export function TazCloudPanel() {
     loadAdminTazVms();
     loadAdminTazcloudStats();
     loadTazSnapshots();
+    // v2.0.0: projects are mandatory. Empty list on legacy v6 tenants — handled
+    // gracefully in the UI (the Projects section just doesn't render).
+    loadTazProjects();
     // SSH-probing every VM is expensive; refresh on a slow cadence and let the
     // user hit Refresh for an immediate update.
     const id = setInterval(loadAdminTazcloudStats, 30_000);
     return () => clearInterval(id);
   }, [canAccess]);
+
+  // Re-fire the one-shot loads when the WS reconnects (typically because
+  // `tsx watch` restarted the dev manager). Without this the VM/snapshot/
+  // project lists stay frozen on whatever they had pre-restart — the user
+  // would see the panel "stuck" until they manually hit Refresh. The 5s gauges
+  // poll already self-heals; this brings the static lists in line.
+  const [manager] = useSubject($manager);
+  const wasRunningRef = useRef<boolean>(manager.running);
+  useEffect(() => {
+    if (!canAccess) return;
+    const wasRunning = wasRunningRef.current;
+    wasRunningRef.current = manager.running;
+    // Only re-fire on a false→true transition. Skip the initial true state
+    // (that's the first mount, already handled by the effect above) and skip
+    // the true→false drop (close handlers already drained pending promises).
+    if (!wasRunning && manager.running) {
+      loadAdminTazVms();
+      loadAdminTazcloudStats();
+      loadTazSnapshots();
+      loadTazProjects();
+    }
+  }, [manager.running, canAccess]);
 
   // Snapshots transition pending → active in 1-5 min. Poll while any pending one
   // exists so the row's status badge flips without manual refresh. Stops when
@@ -223,7 +259,22 @@ export function TazCloudPanel() {
   function submitCreate() {
     const trimmed = vmName.trim();
     if (validateTazVmName(trimmed)) return;
-    createAdminTazVm({ name: trimmed, image: vmImage, size: vmSize });
+    createAdminTazVm({
+      name: trimmed,
+      image: vmImage,
+      size: vmSize,
+      // Omit `project_id` when blank — the server auto-picks the only project,
+      // or errors with the list of available IDs on multi-project tenants.
+      ...(vmProjectId ? { project_id: vmProjectId } : {}),
+    });
+  }
+
+  function submitCreateProject() {
+    const trimmed = newProjectName.trim();
+    if (!trimmed) return;
+    createTazProject(trimmed);
+    setNewProjectName("");
+    setProjectFormOpen(false);
   }
 
   function toggleDeploy() {
@@ -235,15 +286,20 @@ export function TazCloudPanel() {
     }
   }
 
-  function openSshTerminal(vm: { id: string; name: string; ipv6: string; status: string; image?: string; projectId: string | null }, userOverride?: string) {
+  function openSshTerminal(vm: { id: string; name: string; ipv6: string; status: string; image?: string; projectId: string | null; sshBastion?: string | null }, userOverride?: string) {
     if (!vm.ipv6 || vm.status !== "ACTIVE") return;
     const username = userOverride ?? defaultSshUserFor(vm);
+    // v2.0.0: ipv6 here is actually the private 10.128.x.y address — only
+    // reachable via ProxyJump through `sshBastion`. Without this, the terminal
+    // would try a direct connection to the VLAN address and time out.
+    const bastion = vm.sshBastion ? parseBastion(vm.sshBastion) : undefined;
     addSshTerminalTab(
       {
         host: vm.ipv6,
         port: 22,
         username,
         privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
+        ...(bastion ? { bastion } : {}),
       },
       `SSH ${username}@${vm.name}`,
     );
@@ -385,6 +441,19 @@ export function TazCloudPanel() {
               {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
             </Select>
           </div>
+          {admin.tazcloud.projects.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <label className="text-md text-overlay0">VXLAN</label>
+              <Select value={vmProjectId} onChange={(e) => setVmProjectId(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
+                <option value="">
+                  {admin.tazcloud.projects.length === 1 ? `auto (${admin.tazcloud.projects[0].name})` : "Select a VXLAN…"}
+                </option>
+                {admin.tazcloud.projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.subnetCidr})</option>
+                ))}
+              </Select>
+            </div>
+          )}
           <Button variant="primary" size="sm" onClick={submitCreate} disabled={creating || validateTazVmName(vmName.trim()) !== null}>
             {creating ? <Loader2 size={14} className="animate-spin mr-1" /> : null}
             {creating ? "Creating…" : "Create"}
@@ -410,6 +479,104 @@ export function TazCloudPanel() {
       {admin.tazcloud.ingressError && (
         <div className="mb-3">
           <ErrorMessage variant="banner">Ingress: {admin.tazcloud.ingressError}</ErrorMessage>
+        </div>
+      )}
+
+      {/* v2.0.0 VXLANs (isolated tenant networks; called "projects" in the
+          TazCloud API but renamed in the UI to avoid colliding with Genie's
+          own "Project" concept). Hidden on legacy v6 tenants — the server
+          returns an empty list there. */}
+      {(admin.tazcloud.projects.length > 0 || admin.tazcloud.projectsLoading || projectFormOpen) && (
+        <div className="mb-3 border border-overlay0/15 rounded-lg bg-mantle/40">
+          <div className="px-3 py-2 flex items-center gap-2 border-b border-overlay0/10">
+            <Network size={13} className="text-blue" />
+            <span className="text-md font-medium text-text">VXLANs</span>
+            <span className="text-xs text-overlay0">isolated tenant networks · v2.0.0</span>
+            <div className="flex-1" />
+            <Button size="sm" variant={projectFormOpen ? "active" : "ghost"} onClick={() => setProjectFormOpen((o) => !o)}>
+              <Plus size={12} className="mr-1" />
+              {projectFormOpen ? "Cancel" : "New VXLAN"}
+            </Button>
+          </div>
+
+          {admin.tazcloud.projectError && (
+            <div className="px-3 pt-2">
+              <ErrorMessage variant="banner">{admin.tazcloud.projectError}</ErrorMessage>
+            </div>
+          )}
+
+          {projectFormOpen && (
+            <div className="px-3 py-2 flex items-end gap-2 border-b border-overlay0/10 bg-background/50">
+              <div className="flex flex-col gap-1 flex-1">
+                <label className="text-xs text-overlay0">VXLAN name (lowercase, 3–63 chars)</label>
+                <input
+                  autoFocus
+                  type="text"
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitCreateProject(); else if (e.key === "Escape") { setProjectFormOpen(false); setNewProjectName(""); } }}
+                  placeholder="acme-prod"
+                  spellCheck={false}
+                  disabled={admin.tazcloud.projectCreating}
+                  className="bg-background border border-surface0 rounded-md px-2 py-1 text-md text-text outline-none font-mono focus:border-blue disabled:opacity-50"
+                />
+              </div>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={submitCreateProject}
+                disabled={admin.tazcloud.projectCreating || !newProjectName.trim()}
+              >
+                {admin.tazcloud.projectCreating ? <Loader2 size={12} className="animate-spin mr-1" /> : null}
+                Create VXLAN
+              </Button>
+            </div>
+          )}
+
+          <div className="divide-y divide-overlay0/10">
+            {admin.tazcloud.projects.length === 0 && !admin.tazcloud.projectsLoading && (
+              <div className="px-3 py-3 text-md text-overlay0 italic">
+                No VXLANs yet. Create one — every VM must belong to a VXLAN on v2.0.0.
+              </div>
+            )}
+            {admin.tazcloud.projects.map((p) => {
+              const vmCount = p.vmCount ?? vms.filter((v) => v.projectId === p.id).length;
+              const isPending = pendingProjectDelete === p.id;
+              return (
+                <div key={p.id} className="px-3 py-2 flex items-center gap-3 text-md">
+                  <span className="text-text font-medium">{p.name}</span>
+                  <span className="text-overlay0 font-mono text-xs">{p.subnetCidr}</span>
+                  <span className="text-overlay0 text-xs">{vmCount} VM{vmCount === 1 ? "" : "s"}</span>
+                  <span className="text-overlay0 text-xs font-mono" title={p.id}>{p.id.slice(0, 8)}</span>
+                  <div className="flex-1" />
+                  {isPending ? (
+                    <>
+                      <span className="text-xs text-red">Delete this VXLAN?</span>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => { deleteTazProject(p.id); setPendingProjectDelete(null); }}
+                        disabled={vmCount > 0}
+                        title={vmCount > 0 ? "Delete all VMs in this VXLAN first" : "Delete VXLAN"}
+                      >
+                        Confirm
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setPendingProjectDelete(null)}>Cancel</Button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => setPendingProjectDelete(p.id)}
+                      disabled={vmCount > 0}
+                      className="text-overlay0 hover:text-red transition-colors p-1 disabled:opacity-30 disabled:cursor-not-allowed"
+                      title={vmCount > 0 ? `Cannot delete — ${vmCount} VM(s) still in this VXLAN` : "Delete VXLAN"}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -1084,6 +1251,11 @@ export interface ManageVm {
   sshBastion?: string | null;
 }
 
+/** Human-readable cloud provider name, shown in the Manage popup title bar. */
+function providerLabel(provider: ManageVmProvider): string {
+  return provider === "do" ? "DigitalOcean" : "TazCloud";
+}
+
 /** SSH key file used to log in to a provider's VMs. The manager rolls a
  *  separate key per provider so a TazCloud key compromise doesn't trample DO. */
 function sshKeyPathFor(provider: ManageVmProvider): string {
@@ -1097,11 +1269,13 @@ function sshUserChoicesFor(vm: ManageVm): string[] {
 }
 
 /** Bind an exec function to this VM. Hides the provider-specific WS call shape
- *  so child panels (recipes, system, firewall) can just call `exec(cmd)`. */
+ *  so child panels (recipes, system, firewall) can just call `exec(cmd)`.
+ *  Passes `vm.sshBastion` straight through so the server can skip the per-call
+ *  `/v1/vm/{id}` round-trip used to discover the bastion. */
 function makeVmExec(vm: ManageVm, sshUser: string) {
   if (vm.provider === "tazcloud") {
     return (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
-      adminTazcloudExec(vm.id, sshUser, command, vm.host, onChunk, signal);
+      adminTazcloudExec(vm.id, sshUser, command, vm.host, onChunk, signal, vm.sshBastion);
   }
   // DigitalOcean: exec runs as `genie` server-side; the username is fixed and
   // the dropletId is a number, so we ignore sshUser and stringify back to int.
@@ -1114,6 +1288,11 @@ function makeVmExec(vm: ManageVm, sshUser: string) {
  *  on a fresh VM, only the image-default user exists. DigitalOcean droplets are
  *  provisioned by Genie itself with the genie user, so no probe is needed there. */
 function ClaudeManageButton({ vm }: { vm: ManageVm }) {
+  // v2.0.0 vxlan-bastion VMs ship with `genie` baked into the image and no
+  // image-default user — so we both know the right SSH user up-front (genie)
+  // and must probe AS genie. Probing as `ubuntu`/`debian` would auth-fail
+  // before the script runs.
+  const isV2 = !!vm.sshBastion;
   // `null` while probing; `true` if genie is ready; `false` otherwise. For DO,
   // we know the user is provisioned so we skip the probe entirely.
   const [genieReady, setGenieReady] = useState<boolean | null>(vm.provider === "do" ? true : null);
@@ -1121,7 +1300,7 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   useEffect(() => {
     if (vm.provider === "do") { setGenieReady(true); return; }
     let cancelled = false;
-    const probeUser = imageDefaultUser(vm.image);
+    const probeUser = isV2 ? "genie" : imageDefaultUser(vm.image);
     // -n: non-interactive sudo so it fails fast if a password is required.
     // The /home/genie/.ssh dir is mode 700, hence the sudo.
     const script = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v claude >/dev/null 2>&1; then echo "GENIE_READY"; else echo "NO_GENIE"; fi`;
@@ -1131,10 +1310,12 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
       setGenieReady(last === "GENIE_READY");
     });
     return () => { cancelled = true; };
-  }, [vm.id, vm.image, vm.host, vm.provider]);
+  }, [vm.id, vm.image, vm.host, vm.provider, isV2]);
 
   const pending = genieReady === null;
-  const sshUser = genieReady ? "genie" : imageDefaultUser(vm.image);
+  // On v2, fall back to `genie` even if the probe failed — `imageDefault` users
+  // (ubuntu/debian/almalinux) don't exist there at all.
+  const sshUser = genieReady ? "genie" : (isV2 ? "genie" : imageDefaultUser(vm.image));
 
   const launch = () => {
     if (pending) return;
@@ -1169,7 +1350,10 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   );
 }
 
-/** Parse Taz's "user@host" bastion string into the SshConfig.bastion shape. */
+/** Parse Taz's "user@host" bastion string into the SshConfig.bastion shape.
+ *  Honours the username the API returns (`almalinux@188.213.48.230` today).
+ *  Authentication is via the per-customer key set in the manager env as
+ *  `TAZCLOUD_BASTION_PRIVATE_KEY`. */
 function parseBastion(b: string): { host: string; port?: number; username: string } | undefined {
   const m = b.match(/^([^@]+)@(.+)$/);
   if (!m) return undefined;
@@ -1311,6 +1495,7 @@ export function ManageVmPopup({ vm, windowId, windowState }: {
         <SettingsIcon size={14} className="text-blue shrink-0" />
         <span className="text-text font-medium text-md">Manage</span>
         <span className="text-overlay0 text-md font-mono truncate">{vm.name}</span>
+        <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-medium bg-surface0 text-subtext0">{providerLabel(vm.provider)}</span>
         <div className="flex-1" />
         <button onClick={() => minimizeWindow(windowId)} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1" title="Minimize">
           <Minus size={14} />
@@ -1611,7 +1796,7 @@ interface ManageVmInlineProps {
   vm: ManageVm;
 }
 
-type ManageTab = "manage" | "firewall" | "ports" | "sessions" | "files" | "db" | "commands";
+type ManageTab = "manage" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -1622,6 +1807,12 @@ type ManageTab = "manage" | "firewall" | "ports" | "sessions" | "files" | "db" |
  *              project linkage). Lives here so users have one place to drive
  *              a server; the project page no longer has a Commands tab. */
 function ManageVmInline({ vm }: ManageVmInlineProps) {
+  // Admin exec messages (`admin:*:exec`) require tazcloud+ at the WS ACL —
+  // plain "user" callers get silently dropped and would stall on the 15-min
+  // client timeout. Non-admin callers route through user-level `vps:exec`.
+  const [auth] = useSubject($auth);
+  const canUseAdminExec = (auth.user?.role ?? "user") !== "user";
+
   // Probe whether the 'genie' deploy user is set up (created + SSH key + sudo)
   // and prefer it over the image-default user. This matters because recipes
   // like "Next.js (latest)" write to /opt/project, which Genie Standard Setup
@@ -1630,10 +1821,24 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   // ClaudeManageButton uses. DigitalOcean droplets are provisioned with genie
   // from the start, so we skip the probe and pin the user there.
   const imageDefault = imageDefaultUser(vm.image);
-  const [resolvedUser, setResolvedUser] = useState<string | null>(vm.provider === "do" ? "genie" : null);
+  // v2.0.0 vxlan-bastion: only `genie` exists on the image (no ubuntu/debian/
+  // almalinux user). Probing as `imageDefault` would auth-fail before the probe
+  // script runs, falling back to a username that can't log in at all — that's
+  // what surfaces as "trying to access the internal VLAN address" in the UI.
+  const isV2 = !!vm.sshBastion;
+  // Initialize synchronously for branches where we know the answer without a
+  // probe: skips the brief "Detecting SSH user…" flash on first render.
+  const [resolvedUser, setResolvedUser] = useState<string | null>(() => {
+    if (!canUseAdminExec) return imageDefault;
+    if (vm.provider === "do") return "genie";
+    if (isV2) return "genie";
+    return null;
+  });
 
   useEffect(() => {
+    if (!canUseAdminExec) { setResolvedUser(imageDefault); return; }
     if (vm.provider === "do") { setResolvedUser("genie"); return; }
+    if (isV2) { setResolvedUser("genie"); return; }
     let cancelled = false;
     const probe = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys; then echo "GENIE"; else echo "DEFAULT"; fi`;
     adminTazcloudExec(vm.id, imageDefault, probe, vm.host).then((res) => {
@@ -1644,10 +1849,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
       if (!cancelled) setResolvedUser(imageDefault);
     });
     return () => { cancelled = true; };
-  }, [vm.id, vm.host, vm.provider, imageDefault]);
+  }, [vm.id, vm.host, vm.provider, imageDefault, canUseAdminExec, isV2]);
 
   const user = resolvedUser ?? imageDefault;
-  const exec = makeVmExec(vm, user);
 
   const [tab, setTab] = useState<ManageTab>("manage");
   const [projects] = useSubject($projects);
@@ -1669,10 +1873,17 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
   const hasProject = !!linked;
 
+  // `vps:exec` resolves the SSH connection from the project, so it needs
+  // linkage; without it we have no choice but the admin path even for "user".
+  const exec = !canUseAdminExec && linked
+    ? (command: string) => vpsExec(linked.project.id, linked.instance.id, command)
+    : makeVmExec(vm, user);
+
   const tabs: { key: ManageTab; label: string; icon: typeof SettingsIcon; enabled: boolean; reason?: string }[] = [
     { key: "manage", label: "Manage", icon: SettingsIcon, enabled: true },
     { key: "firewall", label: "Firewall", icon: Shield, enabled: true },
     { key: "ports", label: "Ports", icon: Network, enabled: true },
+    { key: "processes", label: "Processes", icon: Cpu, enabled: true },
     { key: "sessions", label: "Sessions", icon: Activity, enabled: true },
     { key: "commands", label: "Commands", icon: PlayCircle, enabled: hasProject, reason: "Attach this VM to a project to manage commands" },
     { key: "files", label: "Files", icon: FolderTree, enabled: hasProject, reason: "Attach this VM to a project to browse files" },
@@ -1710,13 +1921,20 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         </div>
       ) : (
         <>
-          {tab === "manage" && (
+          {tab === "manage" && (() => {
+            // Display the bastion in the form we actually connect with — see
+            // `parseBastion` above for why the API's `almalinux@…` becomes
+            // `genie@…`. Without this rewrite the popup would advertise a
+            // login that doesn't actually authenticate.
+            const bastionParsed = vm.sshBastion ? parseBastion(vm.sshBastion) : undefined;
+            const bastionDisplay = bastionParsed ? `${bastionParsed.username}@${bastionParsed.host}` : null;
+            return (
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs text-overlay0">
                   Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.host}</span>
-                  {vm.sshBastion && (
-                    <span className="ml-1">via <span className="font-mono text-overlay1">{vm.sshBastion}</span></span>
+                  {bastionDisplay && (
+                    <span className="ml-1">via <span className="font-mono text-overlay1">{bastionDisplay}</span></span>
                   )}
                 </p>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1724,10 +1942,13 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
                   <SshLaunchButton vm={vm} />
                 </div>
               </div>
-              {vm.sshBastion && (
+              {vm.provider === "do" && linked && (
+                <DropletSleepControl projectId={linked.project.id} instanceId={linked.instance.id} />
+              )}
+              {bastionDisplay && (
                 <div className="text-xs text-yellow bg-yellow/10 border border-yellow/30 rounded px-3 py-2">
                   This VM is on a vxlan-bastion tenant — the manager reaches it via{" "}
-                  <span className="font-mono">{vm.sshBastion}</span>. If recipes time out with
+                  <span className="font-mono">{bastionDisplay}</span>. If recipes time out with
                   &ldquo;SSH connection failed&rdquo;, the bastion isn&rsquo;t accepting the manager&rsquo;s
                   key — set <span className="font-mono">TAZCLOUD_BASTION_PRIVATE_KEY</span> in the
                   manager env (or have your Tazcloud account upload the existing key to the bastion).
@@ -1742,7 +1963,8 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
               <AdminRecipesPanel exec={exec} />
               <AdminSystemPanel exec={exec} view="services" />
             </div>
-          )}
+            );
+          })()}
 
           {tab === "firewall" && (
             <VpsFirewall exec={exec} />
@@ -1750,6 +1972,10 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
           {tab === "ports" && (
             <AdminSystemPanel exec={exec} view="ports" />
+          )}
+
+          {tab === "processes" && (
+            <VpsProcessesPanel exec={exec} />
           )}
 
           {tab === "sessions" && (
@@ -1773,6 +1999,54 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
           <DbExplorer project={linked.project} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** "Sleep" (hibernate) control for a DigitalOcean droplet linked to a project.
+ *  Snapshots the droplet, then destroys it to stop billing — the instance can
+ *  be woken later from the snapshot. Mirrors the Hibernate box on the project
+ *  page; only rendered for `provider === "do"` VMs that are project-attached
+ *  (the server-side `vps:hibernate` handler resolves the droplet via the
+ *  project's vpsInstance). Subscribes to $vpsDeploy for live progress. */
+function DropletSleepControl({ projectId, instanceId }: { projectId: string; instanceId: string }) {
+  const vpsDeploy = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
+  const inst = vpsDeploy.instances[instanceId];
+  const hibernating = inst?.hibernating ?? false;
+  const progress = inst?.progress ?? [];
+  const error = inst?.error ?? null;
+  const [confirm, setConfirm] = useState(false);
+
+  return (
+    <div className="border border-blue/20 rounded-lg px-3 py-2">
+      {hibernating ? (
+        <div>
+          <div className="flex items-center gap-2">
+            <Loader2 size={14} className="text-blue animate-spin" />
+            <span className="text-md font-medium text-blue">Hibernating…</span>
+          </div>
+          {progress.length > 0 && (
+            <div className="max-h-[150px] overflow-y-auto scrollbar-thin bg-crust rounded-lg p-2 mt-2">
+              {progress.map((line, i) => (
+                <div key={i} className="text-md text-overlay1 font-mono whitespace-pre-wrap">{line}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : confirm ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <Moon size={12} className="text-blue shrink-0" />
+          <span className="text-md text-blue">Snapshot and destroy this droplet? You can wake it up later.</span>
+          <Button size="sm" onClick={() => { hibernateVps(projectId, instanceId); setConfirm(false); }}>Confirm</Button>
+          <Button size="sm" onClick={() => setConfirm(false)}>Cancel</Button>
+        </div>
+      ) : (
+        <button onClick={() => setConfirm(true)} className="flex items-center gap-1.5 text-md text-blue/70 hover:text-blue transition-colors">
+          <Moon size={12} /> Sleep
+          <span className="text-overlay0 font-normal ml-1">— snapshot &amp; stop the droplet to save costs</span>
+        </button>
+      )}
+      {error && !hibernating && <div className="text-md text-red mt-1">{error}</div>}
     </div>
   );
 }

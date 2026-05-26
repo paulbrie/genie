@@ -14,7 +14,9 @@ import {
 import type { AdminBaseImageState, AdminColumnInfo, AdminState, AdminTeam, AdminTeamMember, AdminUser, AiSettings, AiSubTab, AiUsageRow, AuditLogEntry, BaseImageConfig, BaseImageTemplate, DropletsSubTab, RailwayDeployment, RailwayLogEntry, TemplateHistoryEntry } from "@/store/types";
 import { $admin, $auth, $doSnapshots, $doSnapshotsLoading } from "@/store/subjects";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser } from "@/store/actions";
+import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser } from "@/store/actions";
+import { OrgsPanel } from "./admin-orgs-panel";
+import { InviteUserDialog } from "./admin-invite-user-dialog";
 import { useSubject } from "subjecto/react";
 import { cn } from "@/lib/utils";
 import { buildAdminPath } from "@/lib/routes";
@@ -700,6 +702,7 @@ export function AdminPanel() {
 
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; user: AdminUser } | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [sqlInput, setSqlInput] = useState("");
   // Configs sub-tab state
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
@@ -812,6 +815,7 @@ export function AdminPanel() {
             { key: "ai" as const, label: "AI" },
             { key: "users" as const, label: "Users" },
             { key: "teams" as const, label: "Teams" },
+            { key: "orgs" as const, label: "Orgs" },
             { key: "audit" as const, label: "Audit" },
             { key: "prodlogs" as const, label: "Prod Logs" },
           ]}
@@ -823,6 +827,7 @@ export function AdminPanel() {
             else if (tab === "ai") { setAdminTab("ai"); loadAiCosts(); router.push(buildAdminPath("ai", aiState.subTab)); }
             else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); router.push(buildAdminPath("users")); }
             else if (tab === "teams") { setAdminTab("teams"); loadAdminTeams(); loadAdminUsers(); router.push(buildAdminPath("teams")); }
+            else if (tab === "orgs") { setAdminTab("orgs"); loadAdminOrgs(); loadAdminUsers(); router.push(buildAdminPath("orgs")); }
             else if (tab === "audit") { setAdminTab("audit"); loadAuditLogs(); router.push(buildAdminPath("audit")); }
             else if (tab === "prodlogs") { setAdminTab("prodlogs"); loadProdDeployments(); router.push(buildAdminPath("prodlogs")); }
           }}
@@ -1694,6 +1699,11 @@ export function AdminPanel() {
         /* ===== USERS TAB ===== */
         <div className="flex-1 overflow-auto p-4">
           <div className="space-y-2">
+            <div className="flex items-center justify-end">
+              <Button size="sm" onClick={() => setInviteOpen(true)}>
+                <Plus size={14} className="mr-1" /> Invite User
+              </Button>
+            </div>
             {usersState.loading ? (
               <p className="text-subtext0">Loading users...</p>
             ) : usersState.list.length === 0 ? (
@@ -1789,6 +1799,9 @@ export function AdminPanel() {
       ) : activeTab === "teams" ? (
         /* ===== TEAMS TAB ===== */
         <TeamsPanel teams={teamsState} users={usersState.list} />
+      ) : activeTab === "orgs" ? (
+        /* ===== ORGS TAB ===== */
+        <OrgsPanel orgs={admin.orgs} users={usersState.list} />
       ) : activeTab === "audit" ? (
         /* ===== AUDIT TAB ===== */
         <AuditPanel audit={admin.audit} />
@@ -1804,6 +1817,15 @@ export function AdminPanel() {
           teams={teamsState.list}
           teamMembers={teamsState.members}
           onClose={() => setEditingUser(null)}
+        />
+      )}
+
+      {/* Invite user dialog */}
+      {inviteOpen && (
+        <InviteUserDialog
+          orgs={admin.orgs.list}
+          isSuperadmin={isSuperadmin}
+          onClose={() => setInviteOpen(false)}
         />
       )}
 

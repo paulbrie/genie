@@ -2,7 +2,10 @@ import { pgTable, uuid, text, boolean, timestamp, index, integer, real, jsonb } 
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
-  googleId: text("google_id").unique().notNull(),
+  // Nullable so admins can invite a user (creates a stub row) before that user
+  // ever signs in with Google. On their first OAuth sign-in we hydrate this
+  // column from `sub` and mark the user validated.
+  googleId: text("google_id").unique(),
   email: text("email").unique().notNull(),
   name: text("name").notNull(),
   avatarUrl: text("avatar_url"),
@@ -372,11 +375,44 @@ export const securityScans = pgTable("security_scans", {
   index("idx_security_scans_started").on(t.startedAt),
 ]);
 
+/**
+ * Top-level organizations. Sit ABOVE teams: a team has at most one org. An
+ * admin who creates an org becomes its owner; org membership is what binds
+ * users to the orgs they can see / be assigned to projects under.
+ */
+export const organizations = pgTable("organizations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const orgMembers = pgTable(
+  "org_members",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }).notNull(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+    // owner = full org control incl. delete; admin = manage users/projects;
+    // member = visibility only (project-level ACL still applies).
+    role: text("role", { enum: ["owner", "admin", "member"] }).default("member").notNull(),
+    joinedAt: timestamp("joined_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_org_members_org").on(table.orgId),
+    index("idx_org_members_user").on(table.userId),
+  ]
+);
+
 export const teams = pgTable("teams", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: text("name").notNull(),
+  // Owning org. Nullable for legacy rows; boot-time migration backfills it.
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_teams_org").on(table.orgId),
+]);
 
 export const teamMembers = pgTable(
   "team_members",
@@ -390,6 +426,27 @@ export const teamMembers = pgTable(
   (table) => [
     index("idx_team_members_team").on(table.teamId),
     index("idx_team_members_user").on(table.userId),
+  ]
+);
+
+/**
+ * Per-project ACL. A user sees a project iff they are listed here OR they
+ * are an owner/admin of the project's org (via teams → orgs → org_members).
+ * Superadmins bypass both checks.
+ */
+export const projectMembers = pgTable(
+  "project_members",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+    role: text("role", { enum: ["owner", "member"] }).default("member").notNull(),
+    addedBy: uuid("added_by").references(() => users.id, { onDelete: "set null" }),
+    joinedAt: timestamp("joined_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_project_members_project").on(table.projectId),
+    index("idx_project_members_user").on(table.userId),
   ]
 );
 

@@ -316,3 +316,159 @@ export function AdminSystemPanel({ exec, view = "both" }: { exec: ExecFn; view?:
     </div>
   );
 }
+
+interface ProcRow {
+  pid: number;
+  user: string;
+  cpu: number;
+  mem: number;
+  command: string;
+}
+
+function parseProcesses(output: string): ProcRow[] {
+  const rows: ProcRow[] = [];
+  for (const raw of output.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    // Columns from `ps -eo pid,user,pcpu,pmem,args`: pid user cpu mem <args…>.
+    // args is the remainder (may contain spaces), captured greedily.
+    const m = line.match(/^(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(.*)$/);
+    if (!m) continue;
+    const [, pid, user, cpu, mem, command] = m;
+    rows.push({ pid: Number(pid), user, cpu: Number(cpu), mem: Number(mem), command });
+  }
+  return rows;
+}
+
+/** Running-process list for a VM, driven by the popup's SSH `exec` (so it works
+ *  for both project-linked and standalone admin VMs, unlike the project page's
+ *  `vps:stats` flow). Sorted by CPU; supports filtering and per-row kill. */
+export function VpsProcessesPanel({ exec }: { exec: ExecFn }) {
+  const [procs, setProcs] = useState<ProcRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [killing, setKilling] = useState<number | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await exec("ps -eo pid,user,pcpu,pmem,args --sort=-pcpu --no-headers 2>/dev/null | head -n 100");
+      if (res.error) setError(res.output.slice(0, 200));
+      else setProcs(parseProcesses(res.output));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    setLoading(false);
+  }, [exec]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const kill = useCallback(async (proc: ProcRow, force: boolean) => {
+    if (!window.confirm(`${force ? "Force kill" : "Kill"} PID ${proc.pid}?\n\n${proc.command.slice(0, 120)}`)) return;
+    setKilling(proc.pid);
+    try {
+      await exec(`sudo kill ${force ? "-9 " : ""}${proc.pid} 2>&1 || kill ${force ? "-9 " : ""}${proc.pid}`);
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    setKilling(null);
+  }, [exec, refresh]);
+
+  const filtered = procs?.filter((p) => {
+    if (!filter.trim()) return true;
+    const q = filter.toLowerCase();
+    return p.command.toLowerCase().includes(q) || p.user.toLowerCase().includes(q) || String(p.pid).includes(q);
+  });
+
+  return (
+    <div className="bg-mantle rounded-lg p-3 border border-overlay0/20">
+      <div className="flex items-center gap-2 mb-2">
+        <Activity size={12} className="text-peach" />
+        <span className="text-md font-medium text-subtext0">Processes</span>
+        {procs && (
+          <span className="text-md text-overlay0 font-mono">
+            {filter.trim() && filtered ? `${filtered.length} / ${procs.length}` : procs.length}
+          </span>
+        )}
+        <div className="flex-1" />
+        <button onClick={refresh} disabled={loading} className="text-overlay0 hover:text-blue transition-colors disabled:opacity-50">
+          <RefreshCw size={11} className={cn(loading && "animate-spin")} />
+        </button>
+      </div>
+      {procs && procs.length > 0 && (
+        <div className="relative mb-2">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by command, user or PID…"
+            spellCheck={false}
+            className="w-full bg-background border border-surface0 rounded px-2 py-1 pr-6 text-xs text-text outline-none font-mono focus:border-blue placeholder:text-overlay0"
+          />
+          {filter && (
+            <button
+              onClick={() => setFilter("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text"
+              title="Clear filter"
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+      )}
+      {loading && !procs ? (
+        <div className="flex items-center gap-2 text-overlay0 text-md py-2">
+          <Loader2 size={11} className="animate-spin" /> Loading…
+        </div>
+      ) : filtered && filtered.length > 0 ? (
+        <div className="max-h-72 overflow-auto pr-1">
+          <table className="w-full text-xs font-mono">
+            <thead className="text-overlay0 sticky top-0 bg-mantle">
+              <tr>
+                <th className="text-left font-normal py-0.5">PID</th>
+                <th className="text-left font-normal py-0.5">User</th>
+                <th className="text-right font-normal py-0.5">CPU%</th>
+                <th className="text-right font-normal py-0.5">MEM%</th>
+                <th className="text-left font-normal py-0.5 pl-3">Command</th>
+                <th className="text-right font-normal py-0.5 w-0" />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((p) => (
+                <tr key={p.pid} className="border-t border-overlay0/10 group">
+                  <td className="py-0.5 text-text">{p.pid}</td>
+                  <td className="py-0.5 text-overlay1">{p.user}</td>
+                  <td className={cn("py-0.5 text-right", p.cpu >= 50 ? "text-red" : p.cpu >= 10 ? "text-peach" : "text-overlay1")}>{p.cpu.toFixed(1)}</td>
+                  <td className={cn("py-0.5 text-right", p.mem >= 50 ? "text-red" : p.mem >= 10 ? "text-peach" : "text-overlay1")}>{p.mem.toFixed(1)}</td>
+                  <td className="py-0.5 pl-3 text-overlay1 truncate max-w-[300px]" title={p.command}>{p.command}</td>
+                  <td className="py-0.5 text-right whitespace-nowrap">
+                    {killing === p.pid ? (
+                      <Loader2 size={11} className="animate-spin text-overlay0 inline" />
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => kill(p, false)} className="text-overlay0 hover:text-peach transition-colors" title={`Kill PID ${p.pid} (SIGTERM)`}>
+                          kill
+                        </button>
+                        <button onClick={() => kill(p, true)} className="text-overlay0 hover:text-red transition-colors" title={`Force kill PID ${p.pid} (SIGKILL)`}>
+                          -9
+                        </button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : procs && filter.trim() ? (
+        <p className="text-overlay0 text-md py-2">No matches for &ldquo;{filter}&rdquo;.</p>
+      ) : (
+        <p className="text-overlay0 text-md py-2">No processes.</p>
+      )}
+      {error && <div className="text-xs text-red font-mono mt-1">{error}</div>}
+    </div>
+  );
+}
