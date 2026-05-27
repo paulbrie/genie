@@ -21,6 +21,7 @@ import { GitPanel } from "./tabs/git";
 import { FileExplorer } from "./tabs/files";
 import { DockerLogs } from "./tabs/docker";
 import { ExtCommandsTab } from "./tabs/commands";
+import { ExtTrackerTab } from "./tabs/tracker";
 
 
 function relativeTimeAgo(iso: string): string {
@@ -2002,13 +2003,6 @@ export default function ExtensionPage() {
   );
 }
 
-function ExtTrackerTab({ projectId }: { projectId: string }) {
-  useEffect(() => {
-    setTrackerProject(projectId);
-  }, [projectId]);
-
-  return <TrackerPanel />;
-}
 
 const SW_WS_OPTIONS = ["ws://127.0.0.1:9876", "wss://api.genie.teleporthq.ai"];
 
