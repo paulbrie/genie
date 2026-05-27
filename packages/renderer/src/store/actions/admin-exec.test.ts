@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 
-vi.mock("@/lib/ws", () => ({ wsSend: vi.fn() }));
+vi.mock("@/lib/ws", () => ({ wsSend: vi.fn(), onWsClose: vi.fn(() => () => {}) }));
 
 import { adminTazcloudExec, adminDropletExec } from "./admin";
 import { wsSend } from "@/lib/ws";
