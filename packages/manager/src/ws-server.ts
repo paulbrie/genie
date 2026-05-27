@@ -71,6 +71,7 @@ import { handleSecurityMessage, abortAllSecurityScans } from "./handlers/securit
 import { handleRecipesMessage } from "./handlers/recipes-handler.js";
 import { handleFileTemplateMessage } from "./handlers/file-template-handler.js";
 import { handleProjectFileMessage } from "./handlers/project-file-handler.js";
+import { handleTrackerMessage } from "./handlers/tracker-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
@@ -569,7 +570,7 @@ async function routeChatToVpsAgent(
           `    const cfg = JSON.parse(input);`,
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
           ...(tunnel.streamTunnel ? [
-          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'genie-mcp', args: ['tracker'], env: { GENIE_MCP_SOCKET: '${tunnel.streamTunnel.socketPath}' } };`,
+          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${tunnel.streamTunnel.socketPath}' } };`,
           ] : []),
           ...(tunnel.securityTunnel ? [
           `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
@@ -1201,7 +1202,7 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
           `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
           ...(streamTunnel ? [
-          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'genie-mcp', args: ['tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
+          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
           ] : []),
           ...(securityTunnel ? [
           `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
@@ -1602,13 +1603,6 @@ async function sendDocsListToUser(targetUserId: string): Promise<void> {
   sendToUser(targetUserId, { type: "docs:list", payload: await buildDocsPayload(targetUserId) });
 }
 
-async function sendTrackerList(ws: WebSocket): Promise<void> {
-  const [issues, labels] = await Promise.all([
-    trackerService.listIssues(),
-    trackerService.listLabels(),
-  ]);
-  send(ws, { type: "tracker:list", payload: { issues, labels } });
-}
 
 async function broadcastTrackerList(): Promise<void> {
   const [issues, labels] = await Promise.all([
@@ -1719,6 +1713,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (userId && await handleRecipesMessage(ws, msg as Parameters<typeof handleRecipesMessage>[1], send as Parameters<typeof handleRecipesMessage>[2], userId, broadcast as Parameters<typeof handleRecipesMessage>[4])) return;
   if (userId && await handleFileTemplateMessage(ws, msg as Parameters<typeof handleFileTemplateMessage>[1], send as Parameters<typeof handleFileTemplateMessage>[2], userId)) return;
   if (await handleProjectFileMessage(ws, msg as Parameters<typeof handleProjectFileMessage>[1], send as Parameters<typeof handleProjectFileMessage>[2])) return;
+  if (userId && await handleTrackerMessage(ws, msg as Parameters<typeof handleTrackerMessage>[1], send as Parameters<typeof handleTrackerMessage>[2], userId, broadcast as Parameters<typeof handleTrackerMessage>[4], broadcastTrackerList as Parameters<typeof handleTrackerMessage>[5])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -4017,7 +4012,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
           `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
           ...(streamTunnel ? [
-          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'genie-mcp', args: ['tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
+          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
           ] : []),
           ...(securityTunnel ? [
           `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
@@ -4440,16 +4435,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
-    // --- Tracker handlers ---
-
-    case "tracker:list": {
-      try {
-        await sendTrackerList(ws);
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
+    // --- Feedback ---
 
     case "feedback:submit": {
       try {
@@ -4495,137 +4481,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "feedback:submitted", payload: {} });
       } catch (err: unknown) {
         send(ws, { type: "feedback:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:issue:create": {
-      try {
-        const issue = await trackerService.createIssue(userId, msg.payload as { projectId: string; title: string; description?: string; status?: string; priority?: string; assigneeId?: string | null; labelIds?: string[] });
-        send(ws, { type: "tracker:issue:created", payload: issue as Record<string, unknown> });
-        await broadcastTrackerList();
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:issue:update": {
-      try {
-        const { issueId, ...fields } = msg.payload;
-        const issue = await trackerService.updateIssue(userId, issueId, fields);
-        if (!issue) {
-          send(ws, { type: "tracker:error", payload: { message: "Issue not found" } });
-        } else {
-          broadcast({ type: "tracker:issue:updated", payload: issue });
-          await broadcastTrackerList();
-        }
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:issue:delete": {
-      try {
-        const { issueId } = msg.payload;
-        const deleted = await trackerService.deleteIssue(userId, issueId);
-        if (!deleted) {
-          send(ws, { type: "tracker:error", payload: { message: "Issue not found" } });
-        } else {
-          broadcast({ type: "tracker:issue:deleted", payload: { issueId } });
-          await broadcastTrackerList();
-        }
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:issue:reorder": {
-      try {
-        const { issueId, sortOrder } = msg.payload;
-        await trackerService.reorderIssue(issueId, sortOrder);
-        await broadcastTrackerList();
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:label:create": {
-      try {
-        const { name, color } = msg.payload;
-        await trackerService.createLabel(userId, name, color);
-        await broadcastTrackerList();
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:label:update": {
-      try {
-        const { labelId, ...fields } = msg.payload;
-        await trackerService.updateLabel(userId, labelId, fields);
-        await broadcastTrackerList();
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:label:delete": {
-      try {
-        const { labelId } = msg.payload;
-        await trackerService.deleteLabel(userId, labelId);
-        await broadcastTrackerList();
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:comments:list": {
-      try {
-        const { issueId } = msg.payload;
-        const comments = await trackerService.listComments(issueId);
-        send(ws, { type: "tracker:comments:list", payload: { issueId, comments } });
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:comment:create": {
-      try {
-        const { issueId, content } = msg.payload;
-        const userRow = await getDb()
-          .select({ name: users.name, avatarUrl: users.avatarUrl })
-          .from(users)
-          .where(eq(users.id, userId))
-          .then((r) => r[0]);
-        const comment = await trackerService.createComment({
-          issueId,
-          userId,
-          authorName: userRow?.name || "Unknown",
-          authorAvatar: userRow?.avatarUrl || undefined,
-          content,
-        });
-        broadcast({ type: "tracker:comment:created", payload: { issueId, comment } });
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "tracker:comment:delete": {
-      try {
-        const { commentId, issueId } = msg.payload;
-        await trackerService.deleteComment(commentId);
-        broadcast({ type: "tracker:comment:deleted", payload: { commentId, issueId } });
-      } catch (err: unknown) {
-        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
