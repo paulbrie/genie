@@ -27,6 +27,8 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
+import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmName, imageDefaultUser, validateTazVmName } from "./tazcloud/helpers";
+import { TazSnapshotsSection } from "./tazcloud/taz-snapshots-section";
 
 export function formatBytesShort(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);
@@ -59,62 +61,15 @@ export function cardStatusPill(status: string) {
   );
 }
 
-const IMAGES = ["ubuntu-22", "ubuntu-24", "debian-12", "almalinux-9"];
-const SIZES = ["small", "medium", "large", "xlarge"];
-
 // Ingress is locked to the Genie-owned zone — a wildcard A record covers it
 // at the DNS level, so attaching a new VM is a one-field operation.
 const INGRESS_DOMAIN_SUFFIX = "cloud.teleporthq.ai";
 const INGRESS_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
-/** Image-default SSH user — the one TazCloud injects the key into. Always exists,
- *  regardless of whether Genie's bootstrap has run on this VM. */
-function imageDefaultUser(image?: string): string {
-  switch (image) {
-    case "ubuntu-22":
-    case "ubuntu-24": return "ubuntu";
-    case "debian-12": return "debian";
-    case "almalinux-9": return "almalinux";
-    default: return "ubuntu";  // best guess when image is unknown (listVms doesn't return it)
-  }
-}
-
-/** SSH user the user probably wants for an interactive session. Order of
- *  inference:
- *    1. v2.0.0 vxlan-bastion VMs (`sshBastion` set) — `genie` is the **only**
- *       user; image-default users don't exist there.
- *    2. Project-linked VMs (any provider/mode) — Genie's deploy flow creates
- *       a `genie` user.
- *    3. Otherwise — image-default user (legacy v6 bare VMs).
- *  Users can override via the dropdown if the heuristic is wrong. */
-function defaultSshUserFor(vm: { image?: string; projectId: string | null; sshBastion?: string | null }): string {
-  if (vm.sshBastion) return "genie";
-  if (vm.projectId) return "genie";
-  return imageDefaultUser(vm.image);
-}
-
-function defaultVmName(): string {
-  // taz-<yyyymmddhhmm>-<3-char-random>
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const rand = Math.random().toString(36).slice(2, 5);
-  return `taz-${ts}-${rand}`;
-}
-
-// Must match the API's rule: starts lowercase letter, ends lowercase letter or
-// digit, body of lowercase letters/digits/hyphens, total length 3–63.
-const TAZ_NAME_RE = /^[a-z][a-z0-9-]{1,61}[a-z0-9]$/;
-
-function validateTazVmName(name: string): string | null {
-  if (!name) return "Name is required.";
-  if (name.length < 3) return "Name must be at least 3 characters.";
-  if (name.length > 63) return "Name must be at most 63 characters.";
-  if (!TAZ_NAME_RE.test(name)) {
-    return "Name must be lowercase, start with a letter, end with a letter or digit, and contain only letters, digits, and hyphens.";
-  }
-  return null;
-}
+// IMAGES / SIZES / imageDefaultUser / defaultSshUserFor / defaultVmName /
+// validateTazVmName moved to ./tazcloud/helpers.ts so taz-snapshots-section.tsx
+// and the manage popup cluster can reuse them without re-importing the whole
+// panel.
 
 export function TazCloudPanel() {
   const admin = useDeepSubjectAll($admin);
@@ -318,7 +273,7 @@ export function TazCloudPanel() {
 
   function submitSnapshot(vmId: string) {
     const name = snapshotName.trim();
-    if (!name || !TAZ_NAME_RE.test(name)) return;
+    if (validateTazVmName(name) !== null) return;
     createTazSnapshot(vmId, name, snapshotStopFirst);
     setSnapshotFormFor(null);
   }
@@ -1621,177 +1576,6 @@ export function ManageVmWindows() {
 /** List of all TazCloud snapshots — across every VM, since the API doesn't
  *  scope listSnapshots() per VM. Source VM names resolved from the current VM
  *  list when possible (snapshot's source VM may have been deleted). */
-function TazSnapshotsSection({ vms }: { vms: AdminTazVm[] }) {
-  const admin = useDeepSubjectAll($admin);
-  const { snapshots, snapshotsLoading, snapshotsError, snapshotCreateError, creating, createError } = admin.tazcloud;
-  const vmNameById = new Map(vms.map((v) => [v.id, v.name]));
-
-  // Per-row "boot from snapshot" form state.
-  const [bootFormFor, setBootFormFor] = useState<string | null>(null);
-  const [bootVmName, setBootVmName] = useState("");
-  const [bootVmSize, setBootVmSize] = useState("small");
-  const submittingRef = useRef(false);
-
-  // Auto-close the boot form when the create completes successfully.
-  // `creating` is shared with the deploy form at the top of the page, so we
-  // gate on `submittingRef` to only react when *this* form initiated it.
-  const prevCreatingRef = useRef(false);
-  useEffect(() => {
-    if (prevCreatingRef.current && !creating && submittingRef.current) {
-      submittingRef.current = false;
-      if (!createError) {
-        setBootFormFor(null);
-      }
-    }
-    prevCreatingRef.current = creating;
-  }, [creating, createError]);
-
-  function openBootForm(snapshotId: string) {
-    setBootVmName(defaultVmName());
-    setBootVmSize("small");
-    setBootFormFor(snapshotId);
-  }
-
-  function submitBoot(snapshotId: string) {
-    const trimmed = bootVmName.trim();
-    if (validateTazVmName(trimmed)) return;
-    submittingRef.current = true;
-    createAdminTazVm({ name: trimmed, size: bootVmSize, snapshot_id: snapshotId });
-  }
-
-  if (snapshots.length === 0 && !snapshotsLoading && !snapshotsError && !snapshotCreateError) {
-    return null;  // nothing to show — keep the page clean until the user creates one
-  }
-
-  return (
-    <div className="mt-6">
-      <div className="flex items-center gap-2 mb-3">
-        <Camera size={16} className="text-teal" />
-        <span className="text-md font-medium text-subtext0">Snapshots</span>
-        <span className="text-md text-overlay0 font-mono">{snapshots.length}</span>
-        <div className="flex-1" />
-        <Button size="sm" onClick={loadTazSnapshots} disabled={snapshotsLoading}>
-          <RefreshCw size={14} className={cn("mr-1", snapshotsLoading && "animate-spin")} />
-          Refresh
-        </Button>
-      </div>
-      {snapshotCreateError && (
-        <ErrorMessage className="mb-2">{snapshotCreateError}</ErrorMessage>
-      )}
-      {snapshotsError && (
-        <ErrorMessage className="mb-2">{snapshotsError}</ErrorMessage>
-      )}
-      {snapshots.length > 0 && (
-        <div className="border border-overlay0/20 rounded-lg overflow-hidden">
-          <table className="w-full text-md">
-            <thead className="bg-surface0/40 text-overlay1 text-left">
-              <tr>
-                <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Source VM</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Size</th>
-                <th className="px-3 py-2 font-medium">Created</th>
-                <th className="px-3 py-2 font-medium w-0"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshots.map((s) => {
-                const sourceName = vmNameById.get(s.sourceVmId);
-                const bootOpen = bootFormFor === s.id;
-                const bootNameErr = validateTazVmName(bootVmName.trim());
-                return (
-                  <Fragment key={s.id}>
-                    <tr className="border-t border-overlay0/10">
-                      <td className="px-3 py-2 font-mono text-text">{s.name}</td>
-                      <td className="px-3 py-2 text-overlay1 font-mono text-xs">
-                        {sourceName ? <span>{sourceName}</span> : s.sourceVmId ? <span title={s.sourceVmId} className="text-overlay0">(deleted: {s.sourceVmId.slice(0, 8)}…)</span> : <span className="text-overlay0">—</span>}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className={cn(
-                          "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium",
-                          s.status === "active" && "bg-green/15 text-green",
-                          s.status === "pending" && "bg-yellow/15 text-yellow",
-                          s.status === "error" && "bg-red/15 text-red",
-                        )}>
-                          {s.status === "pending" && <Loader2 size={10} className="animate-spin" />}
-                          {s.status}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-overlay1">{s.sizeGb} GB</td>
-                      <td className="px-3 py-2 text-overlay1 text-xs">{new Date(s.created).toLocaleString()}</td>
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-1 justify-end">
-                          <button
-                            onClick={() => bootOpen ? setBootFormFor(null) : openBootForm(s.id)}
-                            disabled={s.status !== "active"}
-                            className={cn(
-                              "p-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
-                              bootOpen ? "text-blue" : "text-overlay0 hover:text-blue",
-                            )}
-                            title={s.status !== "active" ? "Snapshot must be active to boot a VM" : "Boot a new VM from this snapshot"}
-                          >
-                            <Rocket size={13} />
-                          </button>
-                          <button
-                            onClick={() => { if (confirm(`Delete snapshot "${s.name}"? VMs already booted from it are unaffected.`)) deleteTazSnapshot(s.id); }}
-                            disabled={s.status === "pending"}
-                            className="p-1 text-overlay0 hover:text-red transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                            title={s.status === "pending" ? "Cannot delete a pending snapshot" : "Delete snapshot"}
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                    {bootOpen && (
-                      <tr className="border-t border-overlay0/10 bg-surface0/20">
-                        <td colSpan={6} className="px-3 py-3">
-                          <div className="flex items-end gap-2 flex-wrap">
-                            <div className="flex flex-col gap-1 flex-1 min-w-[240px]">
-                              <label className="text-md text-overlay0">New VM name</label>
-                              <input
-                                type="text"
-                                value={bootVmName}
-                                onChange={(e) => setBootVmName(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") submitBoot(s.id); if (e.key === "Escape") setBootFormFor(null); }}
-                                spellCheck={false}
-                                autoFocus
-                                disabled={creating}
-                                className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue disabled:opacity-50"
-                              />
-                              {bootNameErr && <span className="text-xs text-red italic">{bootNameErr}</span>}
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-md text-overlay0">Size</label>
-                              <Select value={bootVmSize} onChange={(e) => setBootVmSize(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-                                {SIZES.map((sz) => <option key={sz} value={sz}>{sz}</option>)}
-                              </Select>
-                            </div>
-                            <Button size="sm" variant="primary" onClick={() => submitBoot(s.id)} disabled={creating || bootNameErr !== null}>
-                              {creating && submittingRef.current ? <Loader2 size={14} className="animate-spin mr-1" /> : <Rocket size={14} className="mr-1" />}
-                              {creating && submittingRef.current ? "Booting…" : "Boot VM"}
-                            </Button>
-                            <Button size="sm" onClick={() => setBootFormFor(null)} disabled={creating && submittingRef.current}>
-                              Cancel
-                            </Button>
-                            <p className="basis-full text-xs text-overlay0 italic">
-                              Boots a new VM from snapshot <span className="font-mono">{s.name}</span>. SSH user matches the snapshot's source image. Firewall preset is not applied — the snapshot keeps its existing rules.
-                            </p>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
 interface ManageVmInlineProps {
   vm: ManageVm;
 }
