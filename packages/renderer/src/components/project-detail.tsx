@@ -153,7 +153,7 @@ import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
 import type { ProcessInfo } from "@/store/types";
 import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
-import { openManageVmWindow } from "@/components/tazcloud-panel";
+import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
 import { openManageDropletWindow } from "@/components/digitalocean-panel";
 import { ProjectMembersTab } from "@/components/project-members-tab";
 

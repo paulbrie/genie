@@ -16,7 +16,8 @@ import { CopyableIp } from "@/components/ui/copyable-ip";
 import { DropletInstanceBar } from "@/components/droplet-instance-bar";
 import { AttachVmToProject } from "@/components/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
-import { ManageVmPopup, cardStatusPill, formatBytesShort, type ManageVm } from "@/components/tazcloud-panel";
+import { cardStatusPill, formatBytesShort } from "@/components/tazcloud-panel";
+import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
 
 // Confirmation type for the inline delete UI on each row.
 type PendingDeleteId = number | null;

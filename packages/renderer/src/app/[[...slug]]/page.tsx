@@ -14,7 +14,7 @@ import { LogsPanel } from "@/components/logs-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { ChatView } from "@/components/chat-view";
 import { ChatNotificationToasts } from "@/components/chat-notification-toasts";
-import { ManageVmWindows } from "@/components/tazcloud-panel";
+import { ManageVmWindows } from "@/components/tazcloud/manage-vm-popup";
 import { ManageDropletWindows } from "@/components/digitalocean-panel";
 import { TrackerPanel } from "@/components/tracker-panel";
 import { AdminPanel } from "@/components/admin-panel";

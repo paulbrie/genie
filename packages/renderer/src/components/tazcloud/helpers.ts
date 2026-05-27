@@ -55,3 +55,13 @@ export function validateTazVmName(name: string): string | null {
   }
   return null;
 }
+
+/** Parse Taz's `ssh_bastion` API field ("user@host[:port]") into the
+ *  SshConfig.bastion shape the terminal-spawn action expects. Defaults port
+ *  to 22 to match the API contract. Returns undefined on a malformed string
+ *  so callers can do `vm.sshBastion ? parseBastion(vm.sshBastion) : undefined`. */
+export function parseBastion(b: string): { host: string; port?: number; username: string } | undefined {
+  const m = b.match(/^([^@]+)@(.+)$/);
+  if (!m) return undefined;
+  return { username: m[1], host: m[2], port: 22 };
+}
