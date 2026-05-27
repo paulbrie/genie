@@ -53,7 +53,8 @@ import { setupMcpTrackerTunnel, type McpTrackerTunnel } from "./vps/mcp-tracker-
 import { setupMcpSecurityTunnel, type McpSecurityTunnel } from "./vps/mcp-security-tunnel.js";
 import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tunnel.js";
 import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
-import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type AgentOutboundMessage } from "./types.js";
+import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type AgentOutboundMessage, type StatsPayload } from "./types.js";
+import { getActiveSshConnections } from "./vps/ssh-metrics.js";
 import * as settingsService from "./settings-service.js";
 import type { BaseImageConfig, BaseImageTemplate } from "./settings-service.js";
 import fs from "node:fs";
@@ -62,6 +63,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { type Role, canSend, canReceive, getEntry, POLICY } from "./ws-acl.js";
+import { handleDbMessage, parseTableList, parseCsvResult, parseCsvLine } from "./handlers/db-handler.js";
 
 
 /** Track active base image creation AbortController */
@@ -88,6 +90,12 @@ const activeCommandSessions = new Map<string, SshSession>();
 /** Active admin/VM exec SSH sessions keyed by execId, so admin:exec:cancel can
  *  abort an in-flight droplet/VM exec (e.g. the recipes Stop button). */
 const activeExecSessions = new Map<string, SshSession>();
+
+/** Running tally of WebSocket frames (inbound handled + outbound sent), used to
+ *  derive a messages/sec rate for the sidebar server-health gauge. */
+let wsFrameCount = 0;
+let lastWsFrameCount = 0;
+let lastStatsTs = Date.now();
 
 /** tazcloud/admin/superadmin — roles that may exec on any VM without an explicit
  *  project-ownership check. Plain users are owner-scoped (see userCanAccessVm). */
@@ -286,70 +294,7 @@ async function getVpsConnection(projectId: string, instanceId: string): Promise<
   return inst.connection;
 }
 
-/** Parse psql table list output (relname|reltuples per line) */
-function parseTableList(out: string): { name: string; rowCount: number | null }[] {
-  return out.trim().split("\n").filter(Boolean).map((line) => {
-    const parts = line.split("|");
-    const name = parts[0]?.trim();
-    if (!name || name.startsWith("(") || name.includes("ERROR") || name.includes("FATAL")) return null;
-    const count = parts[1] ? parseInt(parts[1].trim()) : null;
-    return { name, rowCount: count !== null && count >= 0 ? count : null };
-  }).filter(Boolean) as { name: string; rowCount: number | null }[];
-}
-
-/** Parse psql CSV output into columns + rows */
-function parseCsvResult(out: string): { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string } {
-  const lines = out.trim().split("\n");
-  if (lines.length === 0 || out.includes("ERROR") || out.includes("FATAL")) {
-    return { columns: [], rows: [], rowCount: 0, error: out.trim() };
-  }
-
-  // First line is header
-  const headerLine = lines[0];
-  const columns = parseCsvLine(headerLine);
-  const rows: Record<string, unknown>[] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line || line.startsWith("(") || line.startsWith("--")) continue;
-    const values = parseCsvLine(line);
-    const row: Record<string, unknown> = {};
-    columns.forEach((col, j) => { row[col] = values[j] ?? null; });
-    rows.push(row);
-  }
-
-  return { columns, rows, rowCount: rows.length };
-}
-
-/** Simple CSV line parser that handles quoted fields */
-function parseCsvLine(line: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let inQuote = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuote) {
-      if (ch === '"' && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else if (ch === '"') {
-        inQuote = false;
-      } else {
-        current += ch;
-      }
-    } else if (ch === '"') {
-      inQuote = true;
-    } else if (ch === ",") {
-      result.push(current);
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  result.push(current);
-  return result;
-}
+// Note: parseTableList, parseCsvResult, and parseCsvLine have been refactored to ./handlers/db-handler.js
 
 /** Ensure the vps-agent on the remote VPS matches the local build, re-uploading if stale */
 async function ensureVpsAgent(connection: VpsConnectionConfig): Promise<void> {
@@ -1346,6 +1291,7 @@ function broadcast(message: WsMessage): void {
   for (const [ws, state] of clients) {
     if (ws.readyState === ws.OPEN && state.userId && aclAllowsDelivery(state, message.type)) {
       ws.send(data);
+      wsFrameCount++;
     }
   }
 }
@@ -1356,12 +1302,29 @@ function broadcastToUsers(userIds: string[], message: WsMessage): void {
   for (const [ws, state] of clients) {
     if (ws.readyState === ws.OPEN && state.userId && idSet.has(state.userId) && aclAllowsDelivery(state, message.type)) {
       ws.send(data);
+      wsFrameCount++;
     }
   }
 }
 
 function sendToUser(targetUserId: string, message: WsMessage): void {
   broadcastToUsers([targetUserId], message);
+}
+
+/** Decorate a stats payload with manager-process health (WS throughput + live
+ *  SSH connections) and broadcast it. wsMessagesPerSec is the frame delta since
+ *  the previous stats tick divided by the elapsed time. */
+function broadcastStats(stats: StatsPayload): void {
+  const now = Date.now();
+  const elapsedSec = Math.max(0.001, (now - lastStatsTs) / 1000);
+  stats.server = {
+    wsMessagesPerSec: Math.max(0, Math.round((wsFrameCount - lastWsFrameCount) / elapsedSec)),
+    wsConnections: clients.size,
+    sshConnections: getActiveSshConnections(),
+  };
+  lastWsFrameCount = wsFrameCount;
+  lastStatsTs = now;
+  broadcast({ type: "stats", payload: stats });
 }
 
 function send(ws: WebSocket, message: WsMessage): void {
@@ -1374,6 +1337,7 @@ function send(ws: WebSocket, message: WsMessage): void {
     return;
   }
   ws.send(JSON.stringify(message));
+  wsFrameCount++;
 }
 
 /**
@@ -1676,6 +1640,7 @@ async function broadcastTrackerList(): Promise<void> {
 }
 
 async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
+  wsFrameCount++; // count every inbound frame for the messages/sec gauge
   // Auth messages are always handled
   if (msg.type.startsWith("auth:")) {
     await handleAuthMessage(ws, msg);
@@ -1763,6 +1728,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
     return;
   }
+
+  // Modular handlers first — return early if any of them handles the message.
+  // Inline cases below stay until they get migrated to their own module.
+  if (await handleDbMessage(ws, msg as Parameters<typeof handleDbMessage>[1], send as Parameters<typeof handleDbMessage>[2])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -2359,7 +2328,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const ms = msg.payload.intervalMs;
       if (typeof ms === "number" && ms >= 500 && ms <= 30000) {
         setMonitoringInterval((stats) => {
-          broadcast({ type: "stats", payload: stats });
+          broadcastStats(stats);
         }, ms);
         broadcast({ type: "monitor:interval", payload: { intervalMs: ms } });
       }
@@ -5025,131 +4994,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
-    case "admin:tables": {
-      try {
-        const tables = await adminService.listTables();
-        send(ws, { type: "admin:tables", payload: { tables } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:table:columns": {
-      try {
-        const { tableName } = msg.payload;
-        const columns = await adminService.getTableColumns(tableName);
-        const primaryKey = await adminService.getPrimaryKey(tableName);
-        send(ws, { type: "admin:table:columns", payload: { tableName, columns, primaryKey } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:table:rows": {
-      try {
-        const { tableName, page, pageSize, orderBy, orderDir } = msg.payload;
-        const result = await adminService.getTableRows(tableName, { page, pageSize, orderBy, orderDir });
-        send(ws, { type: "admin:table:rows", payload: result });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:row:get": {
-      try {
-        const { tableName, pkCol, pkVal } = msg.payload;
-        const row = await adminService.getRow(tableName, pkCol, pkVal);
-        send(ws, { type: "admin:row:get", payload: { row } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:row:insert": {
-      try {
-        const { tableName, data } = msg.payload;
-        const row = await adminService.insertRow(tableName, data);
-        send(ws, { type: "admin:row:inserted", payload: { tableName, row } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:row:update": {
-      try {
-        const { tableName, pkCol, pkVal, data } = msg.payload;
-        const row = await adminService.updateRow(tableName, pkCol, pkVal, data);
-        send(ws, { type: "admin:row:updated", payload: { tableName, row } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:row:delete": {
-      try {
-        const { tableName, pkCol, pkVal } = msg.payload;
-        const row = await adminService.deleteRow(tableName, pkCol, pkVal);
-        send(ws, { type: "admin:row:deleted", payload: { tableName, row } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:sql:execute": {
-      try {
-        const { query } = msg.payload;
-        const result = await adminService.executeRawSql(query);
-        send(ws, { type: "admin:sql:result", payload: result });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:sql:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:drizzle:push": {
-      try {
-        // Backup DB before push
-        send(ws, { type: "admin:drizzle:push:output", payload: { data: "Creating database backup...\n" } });
-        try {
-          const backupPath = await backupService.createBackup();
-          send(ws, { type: "admin:drizzle:push:output", payload: { data: `Backup saved: ${backupPath}\n\n` } });
-        } catch (backupErr: unknown) {
-          send(ws, { type: "admin:drizzle:push:output", payload: { data: `Backup warning: ${(backupErr instanceof Error ? backupErr.message : String(backupErr))}\n\n` } });
-        }
-
-        const dir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
-        const cwd = path.resolve(dir, "..");
-        const child = spawn("npx", ["drizzle-kit", "push", "--force"], {
-          cwd,
-          shell: true,
-          env: { ...process.env },
-        });
-        const sendChunk = (data: string) => {
-          send(ws, { type: "admin:drizzle:push:output", payload: { data } });
-        };
-        child.stdout?.on("data", (buf: Buffer) => sendChunk(buf.toString()));
-        child.stderr?.on("data", (buf: Buffer) => sendChunk(buf.toString()));
-        child.on("close", (code) => {
-          sendChunk(`\nProcess exited with code ${code}\n`);
-          send(ws, { type: "admin:drizzle:push:done", payload: { code } });
-        });
-        child.on("error", (err) => {
-          sendChunk(`\nError: ${(err instanceof Error ? err.message : String(err))}\n`);
-          send(ws, { type: "admin:drizzle:push:done", payload: { code: 1 } });
-        });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:drizzle:push:output", payload: { data: `Error: ${(err instanceof Error ? err.message : String(err))}\n` } });
-        send(ws, { type: "admin:drizzle:push:done", payload: { code: 1 } });
-      }
-      break;
-    }
 
     case "admin:backups:list": {
       try {
@@ -7811,7 +7655,7 @@ export async function createServer(): Promise<WebSocketServer> {
   });
 
   startMonitoring((stats) => {
-    broadcast({ type: "stats", payload: stats });
+    broadcastStats(stats);
   });
 
   // Capture manager stdout/stderr and broadcast to clients
