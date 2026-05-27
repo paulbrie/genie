@@ -35,6 +35,35 @@ export function testVpsConnection(connection: VpsConnectionConfig): void {
   wsSend("vps:test-connection", connection);
 }
 
+/** Connect details for a generic ("bring-your-own") SSH server. */
+export interface ConnectServerInput {
+  host: string;
+  port?: number;
+  username: string;
+  label?: string;
+  authMethod: "genie-key" | "stored-key";
+  /** Raw private key — only for authMethod === "stored-key". */
+  privateKey?: string;
+}
+
+/** Validate a generic SSH connection (genie-key reuses the shared key path
+ *  server-side; stored-key sends the pasted key for a one-off test). */
+export function testServerConnection(input: ConnectServerInput): void {
+  $vpsDeploy.getValue().testResult = null;
+  wsSend("vps:test-connection", {
+    host: input.host,
+    port: input.port,
+    username: input.username,
+    authMethod: input.authMethod,
+    ...(input.privateKey ? { privateKey: input.privateKey } : {}),
+  });
+}
+
+/** Register a generic SSH server on a project (connect-only, no provisioning). */
+export function connectServer(projectId: string, input: ConnectServerInput): void {
+  wsSend("vps:connect", { projectId, ...input });
+}
+
 export function deployToVps(projectId: string, connection: VpsConnectionConfig, label?: string, instanceId?: string): void {
   const id = instanceId || crypto.randomUUID();
   $vpsDeploy.getValue().activeDeploys[id] = {

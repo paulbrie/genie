@@ -28,4 +28,10 @@ export interface AuthState {
   token: string | null;
   /** Non-null while a superadmin is impersonating another user. */
   impersonatedBy: ImpersonatedBy | null;
+  /** Server capability: may a user paste a private key when connecting a
+   *  generic SSH server (requires encryption-at-rest configured). */
+  pasteKeyEnabled?: boolean;
+  /** Genie's public SSH key, shown in the connect-server form for genie-key
+   *  auth (the user adds it to their server's authorized_keys). */
+  geniePublicKey?: string | null;
 }

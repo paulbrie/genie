@@ -34,6 +34,17 @@ export const handlers: HandlerMap = {
     $vpsDeploy.getValue().testResult = { ok: false, error: payload.message };
   },
 
+  // Generic SSH server connect result — the connect form listens for these
+  // (the new instance arrives via the project:list broadcast). Window events
+  // keep the form decoupled from the deploy store.
+  "vps:connect:ok": (payload) => {
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("genie:vps:connect:ok", { detail: payload }));
+  },
+
+  "vps:connect:error": (payload) => {
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("genie:vps:connect:error", { detail: payload }));
+  },
+
   "vps:deploy:progress": (payload) => {
     const { instanceId: progInstId } = payload;
     if (progInstId) {

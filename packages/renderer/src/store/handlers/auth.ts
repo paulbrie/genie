@@ -17,8 +17,8 @@ export const handlers: HandlerMap = {
   },
 
   "auth:success": (payload) => {
-    const { token, user, impersonatedBy } = payload;
-    $auth.next({ status: "authenticated", user, token, impersonatedBy: impersonatedBy ?? null });
+    const { token, user, impersonatedBy, pasteKeyEnabled, geniePublicKey } = payload;
+    $auth.next({ status: "authenticated", user, token, impersonatedBy: impersonatedBy ?? null, pasteKeyEnabled: !!pasteKeyEnabled, geniePublicKey: geniePublicKey ?? null });
     setStoredToken(token);
   },
 

@@ -76,6 +76,7 @@ import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
 import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
 import { openManageDropletWindow } from "@/components/admin/digitalocean-panel";
+import { ConnectServerForm } from "@/components/project/connect-server-form";
 import { ProjectMembersTab } from "@/components/project/project-members-tab";
 import { DeployHistoryPanel, DeployHistoryTab } from "@/components/project/deploy-history";
 import { VpsRecipes, VpsRunCommands } from "@/components/project/vps-recipes";
@@ -184,8 +185,10 @@ function ServersBar({
   vpsDeploy: VpsDeployState;
 }) {
   const [deployLabel, setDeployLabel] = useState("");
+  const [connectOpen, setConnectOpen] = useState(false);
   return (
     <div className="flex flex-col gap-2 mb-3 py-3 border-y border-surface0">
+      {connectOpen && <ConnectServerForm projectId={project.id} onClose={() => setConnectOpen(false)} />}
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-md text-overlay0 font-medium">Servers:</span>
         {project.vpsInstances.length === 0 && (
@@ -202,7 +205,8 @@ function ServersBar({
           // generic ManageVmPopup machinery.
           const tazVmId = instance.tazcloud?.vmId;
           const doDropletId = instance.digitalocean?.dropletId;
-          const canManage = !!tazVmId || !!doDropletId;
+          const isSsh = !!instance.ssh;
+          const canManage = !!tazVmId || !!doDropletId || isSsh;
           // Show the server's address in the button so multiple instances are
           // distinguishable at a glance (and duplicate records pointing at the
           // same droplet are obvious — they'll show the same IP).
@@ -215,6 +219,9 @@ function ServersBar({
                   openManageVmWindow({ id: tazVmId, name: instance.label });
                 } else if (doDropletId) {
                   openManageDropletWindow({ id: doDropletId, name: instance.label });
+                } else if (isSsh) {
+                  // Generic servers reuse the Manage popup, keyed by instance id.
+                  openManageVmWindow({ id: instance.id, name: instance.label });
                 }
               }}
               disabled={!canManage}
@@ -236,7 +243,7 @@ function ServersBar({
                   <span className="text-overlay0 text-xs font-mono">{host}</span>
                 )}
                 <span className="text-overlay0 text-xs">
-                  {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : ""}
+                  {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : instance.ssh ? "SSH" : ""}
                 </span>
               </span>
             </button>
@@ -262,6 +269,13 @@ function ServersBar({
           title="Deploy a new TazCloud VM for this project"
         >
           <Cloud size={12} className="mr-1 text-blue" /> + Taz
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => setConnectOpen(true)}
+          title="Connect an existing SSH server (any cloud / on-prem) — no provisioning"
+        >
+          <Server size={12} className="mr-1 text-blue" /> + Server
         </Button>
       </div>
     </div>
