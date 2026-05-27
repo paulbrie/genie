@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
-import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmName, imageDefaultUser, parseBastion, validateTazVmName } from "../tazcloud/helpers";
+import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmName, imageDefaultUser, validateTazVmName } from "../tazcloud/helpers";
 import { TazSnapshotsSection } from "../tazcloud/taz-snapshots-section";
 import { openManageVmWindow } from "../tazcloud/manage-vm-popup";
 
@@ -242,20 +242,17 @@ export function TazCloudPanel() {
     }
   }
 
-  function openSshTerminal(vm: { id: string; name: string; ipv6: string; status: string; image?: string; projectId: string | null; sshBastion?: string | null }, userOverride?: string) {
+  function openSshTerminal(vm: { id: string; name: string; ipv6: string; status: string; image?: string; projectId: string | null; isPrivateHost?: boolean }, userOverride?: string) {
     if (!vm.ipv6 || vm.status !== "ACTIVE") return;
     const username = userOverride ?? defaultSshUserFor(vm);
-    // v2.0.0: ipv6 here is actually the private 10.128.x.y address — only
-    // reachable via ProxyJump through `sshBastion`. Without this, the terminal
-    // would try a direct connection to the VLAN address and time out.
-    const bastion = vm.sshBastion ? parseBastion(vm.sshBastion) : undefined;
+    // v2.0.0: ipv6 here is actually the private 10.128.x.y address — the
+    // manager reaches it directly over the WireGuard tunnel (wireguard.md).
     addSshTerminalTab(
       {
         host: vm.ipv6,
         port: 22,
         username,
         privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
-        ...(bastion ? { bastion } : {}),
       },
       `SSH ${username}@${vm.name}`,
     );
@@ -912,9 +909,12 @@ export function TazCloudPanel() {
                 openManageVmWindow(vm);
               };
               const cardClass = cn(
-                "bg-mantle rounded-lg px-3 py-2 border border-overlay0/10",
+                "bg-mantle rounded-lg px-3 py-2 border border-overlay0/10 transition-colors",
                 vmViewMode === "cards" && isActive && !isRenaming && !isPending && !isDeleting
-                  && "cursor-pointer hover:border-blue/30 transition-colors",
+                  && "cursor-pointer hover:border-blue/30",
+                // Locked → red-tinted border so the state is visible at a glance,
+                // even before the user notices the lock badge.
+                vm.locked && "border-red/40 hover:border-red/60",
               );
 
               // Card-mode layout: vertical sections (header / stats / meta / footer)
@@ -931,12 +931,12 @@ export function TazCloudPanel() {
                               <span className="font-semibold text-text truncate" title={vm.name}>{vm.name}</span>
                               {vm.locked && (
                                 <span
-                                  className="shrink-0 text-red inline-flex"
+                                  className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red/15 text-red border border-red/30"
                                   title={isSuperAdmin
-                                    ? "Locked: typed-name confirmation required to delete"
+                                    ? "Locked: typed-name confirmation required to delete; click the unlock icon to clear"
                                     : "Locked: only a superadmin can delete or unlock this VM"}
                                 >
-                                  <Lock size={11} />
+                                  <Lock size={10} /> locked
                                 </span>
                               )}
                             </div>
@@ -1117,12 +1117,12 @@ export function TazCloudPanel() {
                     <span>ID: <span className="text-subtext0 font-mono">{vm.id.slice(0, 8)}…</span></span>
                     {vm.locked && (
                       <span
-                        className="inline-flex items-center gap-1 text-red"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red/15 text-red border border-red/30"
                         title={isSuperAdmin
                           ? "Locked: typed-name confirmation required to delete; click the unlock icon to clear"
                           : "Locked: only a superadmin can delete or unlock this VM"}
                       >
-                        <Lock size={11} /> locked
+                        <Lock size={10} /> locked
                       </span>
                     )}
                     {vm.ingress && renderIngressBadge(vm)}

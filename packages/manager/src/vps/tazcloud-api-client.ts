@@ -1,44 +1,4 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
 const TAZ_API = "https://api.taz.ro";
-
-/** Resolve the TazCloud bastion private key for ssh2's `privateKey` option.
- *  Accepts either env name: `TAZCLOUD_BASTION_PRIVATE_KEY` (documented in
- *  `customer-bastion-setup.md`) or `TAZCLOUD_BASTION_SSH_PRIVATE_KEY` (mirrors
- *  the per-VM `TAZCLOUD_SSH_PRIVATE_KEY` naming). Either may hold a filesystem
- *  path to the customer's `.pem` or the raw key content (PEM/OpenSSH). Returns
- *  undefined when unset so callers can fall back to the per-VM key. */
-let bastionKeyLogged = false;
-/** Log once (not per-exec — loadBastionKey is called on every SSH hop) so the
- *  operator can confirm the bastion key was picked up without leaking it. */
-function logBastionKeyOnce(buf: Buffer, source: string): void {
-  if (bastionKeyLogged) return;
-  bastionKeyLogged = true;
-  console.log(`[tazcloud] bastion key loaded (${buf.length} bytes, ${source})`);
-}
-
-export function loadBastionKey(): Buffer | undefined {
-  const raw = process.env.TAZCLOUD_BASTION_PRIVATE_KEY || process.env.TAZCLOUD_BASTION_SSH_PRIVATE_KEY;
-  if (!raw) return undefined;
-  // Raw key content always starts with `-----BEGIN …-----`. Anything else we
-  // treat as a path — letting `~` expand keeps the README copy-paste working.
-  if (raw.includes("-----BEGIN")) {
-    const buf = Buffer.from(raw);
-    logBastionKeyOnce(buf, "inline PEM");
-    return buf;
-  }
-  const resolved = raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
-  try {
-    const buf = fs.readFileSync(resolved);
-    logBastionKeyOnce(buf, `file ${resolved}`);
-    return buf;
-  } catch (err) {
-    console.error(`[tazcloud] bastion key points at ${resolved} but the file can't be read:`, (err as Error).message);
-    return undefined;
-  }
-}
 
 interface TazRequestInit {
   method?: string;
@@ -99,9 +59,9 @@ export interface TazCapabilities {
   images: string[];
   sizes: string[];
   /** v2.0.0+: tenant runs in vxlan-bastion mode — VMs sit on a private
-   *  10.128.N.0/24 and are only reachable via SSH ProxyJump through
-   *  `bastion_ip`. The legacy v6-only shape (`ssh`, `public_ipv6_prefix`,
-   *  `tenant_ipv6_gateway`) is gone. */
+   *  10.128.N.0/24. Genie reaches them directly via a WireGuard tunnel
+   *  (see wireguard.md); the API still advertises the legacy ProxyJump
+   *  `bastion_ip` but Genie no longer routes through it. */
   vm_access: {
     mode: "vxlan-bastion";
     bastion_ip: string;
@@ -132,13 +92,11 @@ export interface TazVm {
   status: string;            // e.g. "ACTIVE"
   ip?: string | null;        // private IPv4 (10.x) for vxlan-bastion VMs; absent on legacy v6-only
   ipv6?: string | null;      // public IPv6 (legacy v6-only mode); null on vxlan-bastion
-  ssh_host: string;          // address to ssh to — equals ipv6 (legacy) or ip (bastion)
+  ssh_host: string;          // address to ssh to — equals ipv6 (legacy) or ip (bastion, reached via WireGuard)
   ssh_port: number;
-  /** Present on tenants with `vm_access.mode === "vxlan-bastion"`. Format:
-   *  "<user>@<host>" (e.g. "almalinux@188.213.48.230"). When set, ssh_host
-   *  is a private IP only reachable via this bastion. */
-  ssh_bastion?: string | null;
-  /** Human-readable command, e.g. "ssh -J almalinux@188.213.48.230 …". */
+  /** Human-readable ssh command produced by the API. Genie ignores this and
+   *  connects directly to `ssh_host` over the WireGuard tunnel (see
+   *  wireguard.md), so the API's `-J almalinux@…` prefix is informational only. */
   ssh_command?: string;
   image?: string | null;     // null when booted from snapshot
   snapshot_id?: string;      // present when booted from snapshot
@@ -192,26 +150,13 @@ export function sshUserForImage(image: string): string {
   }
 }
 
-/** Default SSH username to use against a TazCloud VM. v2.0.0 tenants ship
- *  every image with a `genie` user authorised by `genie-key`; legacy v6-only
- *  tenants still use the image-default user. */
-export function defaultSshUserForVm(vm: Pick<TazVm, "ssh_bastion" | "image">): string {
-  if (vm.ssh_bastion) return "genie";
+/** Default SSH username to use against a TazCloud VM. v2.0.0 vxlan-bastion
+ *  tenants (identified by `ipv6 == null` — VM lives on a private 10.128/24)
+ *  ship every image with a unified `genie` user; legacy v6-only tenants still
+ *  use the image-default user. */
+export function defaultSshUserForVm(vm: Pick<TazVm, "ipv6" | "image">): string {
+  if (!vm.ipv6) return "genie";
   return sshUserForImage(vm.image ?? "ubuntu-22");
-}
-
-/** Parse `ssh_bastion` ("user@host[:port]") into structured form. Returns null
- *  when the field is missing/empty (legacy v6 tenant). The API returns
- *  `almalinux@188.213.48.230` for the customer-facing bastion; authentication
- *  uses the per-customer `.pem` provided out-of-band (set via
- *  `TAZCLOUD_BASTION_PRIVATE_KEY`), not the per-VM `genie-key`. Override the
- *  username with `TAZCLOUD_BASTION_USER` if Taz ever changes it. */
-export function parseBastion(ssh_bastion: string | null | undefined): { username: string; host: string; port: number } | null {
-  if (!ssh_bastion) return null;
-  const m = ssh_bastion.match(/^([^@]+)@([^:]+)(?::(\d+))?$/);
-  if (!m) return null;
-  const username = (typeof process !== "undefined" && process.env?.TAZCLOUD_BASTION_USER) || m[1];
-  return { username, host: m[2], port: m[3] ? parseInt(m[3], 10) : 22 };
 }
 
 export interface TazCreateVmOpts {

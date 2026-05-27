@@ -33,15 +33,12 @@ export interface AdminTazVm {
   name: string;
   status: string;
   /** Display + SSH host. Public IPv6 on legacy Taz; private IPv4 on vxlan-bastion
-   *  tenants (where the only reachable path is via `sshBastion`). */
+   *  tenants (reached by the manager over the WireGuard tunnel). */
   ipv6: string;
   /** True when `ipv6` is an RFC1918 private address — used by the UI to hide
    *  the "open in browser" link (the address isn't reachable from the user's
-   *  browser without a VPN/ingress). */
+   *  browser without WireGuard/ingress) and to signal "this is a v2 VM". */
   isPrivateHost?: boolean;
-  /** "user@host" of the ProxyJump bastion (e.g. "almalinux@188.213.48.230").
-   *  Present on vxlan-bastion tenants; null on legacy v6-only VMs. */
-  sshBastion?: string | null;
   image?: string;
   size?: string;
   projectId: string | null;

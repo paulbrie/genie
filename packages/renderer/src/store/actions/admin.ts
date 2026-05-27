@@ -397,11 +397,11 @@ export function adminDropletExec(
   });
 }
 
-/** Run a command on a TazCloud VM. Passes the VM's known `host` and `sshBastion`
- *  so the manager doesn't have to hit the TazCloud API on every call — on v2
- *  vxlan-bastion tenants this matters a lot because the Manage popup fires 3-4
- *  parallel probes on mount (gauges, services, ports, recipes) and each one
- *  was previously waiting on a fresh `/v1/vm/{id}` round-trip. */
+/** Run a command on a TazCloud VM. Passes the VM's known `host` so the manager
+ *  doesn't have to hit the TazCloud API on every call — on v2 vxlan-bastion
+ *  tenants this matters because the Manage popup fires 3-4 parallel probes on
+ *  mount (gauges, services, ports, recipes) and each one was previously
+ *  waiting on a fresh `/v1/vm/{id}` round-trip. */
 export function adminTazcloudExec(
   vmId: string,
   sshUser: string,
@@ -409,12 +409,11 @@ export function adminTazcloudExec(
   host?: string,
   onChunk?: ExecChunk,
   signal?: AbortSignal,
-  sshBastion?: string | null,
 ): Promise<ExecResult> {
   const execId = crypto.randomUUID();
   return new Promise((resolve) => {
     pendingAdminExecs.set(execId, { resolve, onChunk, output: "" });
-    wsSend("admin:tazcloud:exec", { vmId, sshUser, host, command, execId, sshBastion });
+    wsSend("admin:tazcloud:exec", { vmId, sshUser, host, command, execId });
     attachAbort(execId, signal);
     setTimeout(() => {
       const pending = pendingAdminExecs.get(execId);

@@ -1062,6 +1062,9 @@ async function buildAuthPayload(
     // private key" option when connecting a generic SSH server (false unless a
     // real GENIE_SECRET/GENIE_JWT_SECRET is configured for encryption at rest).
     pasteKeyEnabled: isPasteKeyEnabled(),
+    // Genie's public key (not secret) — shown in the connect-server form so the
+    // user can authorize it on their box for the default "genie-key" auth.
+    geniePublicKey: (await settingsService.getGenieKeyPair())?.publicKey ?? null,
   };
 }
 

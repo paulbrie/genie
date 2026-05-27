@@ -1,6 +1,9 @@
-# python3, gcc, gnumake are required for node-pty native compilation (used by the terminal feature)
+# python3, gcc, gnumake are required for node-pty native compilation (used by the terminal feature).
+# wireproxy is a userspace WireGuard binary that exposes a SOCKS5 proxy — the manager spawns it
+# at boot when WG_* env vars are present so it can reach Taz private 10.128/24 VMs without
+# kernel WireGuard (Railway containers can't load kernel modules). See wireguard.md.
 [phases.setup]
-nixPkgs = ["nodejs_22", "python3", "gcc", "gnumake"]
+nixPkgs = ["nodejs_22", "python3", "gcc", "gnumake", "wireproxy"]
 
 [phases.install]
 cmds = ["npm install"]

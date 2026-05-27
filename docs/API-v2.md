@@ -6,6 +6,8 @@ TazCloud provisions on-demand VMs backed by OpenStack. v2.0.0 introduces **proje
 
 New VMs are placed in a private VXLAN network (`10.128.N.0/24`). SSH access goes through a bastion at `188.213.48.230` using ProxyJump. All VMs, regardless of OS, are accessible with the same `genie` user and `genie-key`.
 
+> **Note (Genie):** The upstream API still advertises `ssh_bastion` / `ssh_command` with a `-J` ProxyJump prefix. Genie itself no longer routes through that bastion — the manager joins the private 10.128/24 network directly via a WireGuard tunnel (see `wireguard.md`) and SSHes straight to `ssh_host`. The fields below are documented as the API returns them; Genie ignores the bastion-routing parts.
+
 ## Base URL
 
 ```

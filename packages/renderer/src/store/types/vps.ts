@@ -80,6 +80,15 @@ export interface VpsInstance {
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;
+  /** Present for a generic "bring-your-own" SSH server (neither cloud block).
+   *  `genie-key` = the user authorized Genie's public key on the box;
+   *  `stored-key` = an encrypted key row, materialized on the manager. */
+  ssh?: SshServerInfo;
+}
+
+export interface SshServerInfo {
+  authMethod: "genie-key" | "stored-key";
+  credentialId?: string;
 }
 
 export interface DeployLogEntry {
@@ -186,16 +195,6 @@ export interface SshConfig {
   port?: number;
   username?: string;
   privateKeyPath?: string;
-  /** ProxyJump-style bastion. Set on Taz vxlan-bastion VMs whose `host` is a
-   *  private 10.x address — the manager opens an SSH session to the bastion,
-   *  then tunnels the real connection through it. Format mirrors `ssh -J`:
-   *  username + host (the same private key is reused for the bastion unless
-   *  explicitly overridden via TAZCLOUD_BASTION_PRIVATE_KEY on the manager). */
-  bastion?: {
-    host: string;
-    port?: number;
-    username: string;
-  };
 }
 
 export interface TerminalTab {

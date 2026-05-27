@@ -19,7 +19,6 @@ export async function executeTazListVms(): Promise<string> {
         // v2 vxlan-bastion VMs have null ipv6 — show ssh_host (private IP) instead.
         `host=${vm.ssh_host || vm.ipv6 || "-"}`,
       ];
-      if (vm.ssh_bastion) parts.push(`bastion=${vm.ssh_bastion}`);
       if (vm.image) parts.push(`image=${vm.image}`);
       if (vm.size) parts.push(`size=${vm.size}`);
       if (vm.project_id) parts.push(`project=${vm.project_id}`);

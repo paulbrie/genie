@@ -30,7 +30,7 @@ import { DbExplorer } from "@/components/admin/db-explorer";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { imageDefaultUser, parseBastion } from "./helpers";
+import { imageDefaultUser } from "./helpers";
 
 const MANAGE_VM_WINDOW_PREFIX = "manage-vm-";
 /** Default size + cascade offset for any Manage popup variant. Exported so the
@@ -50,13 +50,12 @@ export function openManageVmWindow(vm: { id: string; name: string }) {
   focusWindow(wid);
 }
 
-export type ManageVmProvider = "tazcloud" | "do";
+export type ManageVmProvider = "tazcloud" | "do" | "ssh";
 
 /** Provider-agnostic shape consumed by ManageVmInline + the floating popup.
  *  `host` is whatever address SSH should target — IPv6 for legacy TazCloud
  *  VMs, IPv4 for DigitalOcean droplets, and a private 10.x for Taz vxlan-
- *  bastion VMs (in which case `sshBastion` is set and the manager opens the
- *  SSH session via ProxyJump). */
+ *  bastion VMs (which the manager reaches over the WireGuard tunnel). */
 export interface ManageVm {
   id: string;
   name: string;
@@ -65,39 +64,47 @@ export interface ManageVm {
   projectId: string | null;
   provider: ManageVmProvider;
   ingress?: { domain: string; url?: string } | null;
-  /** True when `host` is an RFC1918 address — UI suppresses the unreachable
-   *  http://host:port link in that case. */
+  /** True when `host` is an RFC1918 address — i.e. a Taz vxlan-bastion VM.
+   *  UI suppresses the unreachable http://host:port link in that case and
+   *  uses it as the "v2 mode" signal (the image-default users don't exist;
+   *  only `genie` does). */
   isPrivateHost?: boolean;
-  /** "user@host" form of the ProxyJump bastion. Present on Taz vxlan-bastion
-   *  VMs. Required for the manager to reach the VM at all. */
-  sshBastion?: string | null;
+  /** Generic "ssh" servers always run through the project-scoped vps:exec /
+   *  terminal path, so we carry the instance id + connection essentials. */
+  instanceId?: string;
+  connection?: { username: string; privateKeyPath: string };
 }
 
 /** Human-readable cloud provider name, shown in the Manage popup title bar. */
 function providerLabel(provider: ManageVmProvider): string {
-  return provider === "do" ? "DigitalOcean" : "TazCloud";
+  return provider === "do" ? "DigitalOcean" : provider === "ssh" ? "SSH" : "TazCloud";
 }
 
-/** SSH key file used to log in to a provider's VMs. The manager rolls a
- *  separate key per provider so a TazCloud key compromise doesn't trample DO. */
-function sshKeyPathFor(provider: ManageVmProvider): string {
-  return provider === "tazcloud" ? "~/.genie/ssh/tazcloud_ed25519" : "~/.genie/ssh/genie_ed25519";
+/** SSH key file used to log in to a VM. Cloud providers roll a separate key
+ *  each; generic servers carry their own key path on the connection. */
+function sshKeyPathFor(vm: ManageVm): string {
+  if (vm.provider === "ssh") return vm.connection?.privateKeyPath || "~/.genie/ssh/genie_ed25519";
+  return vm.provider === "tazcloud" ? "~/.genie/ssh/tazcloud_ed25519" : "~/.genie/ssh/genie_ed25519";
 }
 
 /** Default SSH user candidates shown in the SSH split-button dropdown. */
 function sshUserChoicesFor(vm: ManageVm): string[] {
+  if (vm.provider === "ssh") return [vm.connection?.username || "root"];
   if (vm.provider === "do") return ["genie", "root"];
   return ["genie", "ubuntu", "debian", "almalinux", "root"];
 }
 
 /** Bind an exec function to this VM. Hides the provider-specific WS call shape
- *  so child panels (recipes, system, firewall) can just call `exec(cmd)`.
- *  Passes `vm.sshBastion` straight through so the server can skip the per-call
- *  `/v1/vm/{id}` round-trip used to discover the bastion. */
+ *  so child panels (recipes, system, firewall) can just call `exec(cmd)`. */
 function makeVmExec(vm: ManageVm, sshUser: string) {
+  if (vm.provider === "ssh") {
+    // Generic servers have no admin exec; route through the project-scoped
+    // vps:exec (one-shot — no streaming/abort, fine for connect-only boxes).
+    return (command: string) => vpsExec(vm.projectId!, vm.instanceId!, command);
+  }
   if (vm.provider === "tazcloud") {
     return (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
-      adminTazcloudExec(vm.id, sshUser, command, vm.host, onChunk, signal, vm.sshBastion);
+      adminTazcloudExec(vm.id, sshUser, command, vm.host, onChunk, signal);
   }
   // DigitalOcean: exec runs as `genie` server-side; the username is fixed and
   // the dropletId is a number, so we ignore sshUser and stringify back to int.
@@ -114,13 +121,14 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
   // image-default user — so we both know the right SSH user up-front (genie)
   // and must probe AS genie. Probing as `ubuntu`/`debian` would auth-fail
   // before the script runs.
-  const isV2 = !!vm.sshBastion;
-  // `null` while probing; `true` if genie is ready; `false` otherwise. For DO,
-  // we know the user is provisioned so we skip the probe entirely.
-  const [genieReady, setGenieReady] = useState<boolean | null>(vm.provider === "do" ? true : null);
+  const isV2 = vm.isPrivateHost === true;
+  const isSsh = vm.provider === "ssh";
+  // `null` while probing; `true` if genie is ready; `false` otherwise. For DO
+  // and generic ssh servers there's no admin probe — use the connection user.
+  const [genieReady, setGenieReady] = useState<boolean | null>(vm.provider === "do" || isSsh ? true : null);
 
   useEffect(() => {
-    if (vm.provider === "do") { setGenieReady(true); return; }
+    if (vm.provider === "do" || isSsh) { setGenieReady(true); return; }
     let cancelled = false;
     const probeUser = isV2 ? "genie" : imageDefaultUser(vm.image);
     // -n: non-interactive sudo so it fails fast if a password is required.
@@ -136,8 +144,9 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
 
   const pending = genieReady === null;
   // On v2, fall back to `genie` even if the probe failed — `imageDefault` users
-  // (ubuntu/debian/almalinux) don't exist there at all.
-  const sshUser = genieReady ? "genie" : (isV2 ? "genie" : imageDefaultUser(vm.image));
+  // (ubuntu/debian/almalinux) don't exist there at all. Generic ssh: the user
+  // the server was connected as.
+  const sshUser = isSsh ? (vm.connection?.username || "root") : genieReady ? "genie" : (isV2 ? "genie" : imageDefaultUser(vm.image));
 
   const launch = () => {
     if (pending) return;
@@ -146,8 +155,7 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
         host: vm.host,
         port: 22,
         username: sshUser,
-        privateKeyPath: sshKeyPathFor(vm.provider),
-        ...(vm.sshBastion ? { bastion: parseBastion(vm.sshBastion) } : {}),
+        privateKeyPath: sshKeyPathFor(vm),
       },
       `Claude ${sshUser}@${vm.name}`,
       // Start in /opt/project — that's the canonical project root that
@@ -183,13 +191,12 @@ function SshLaunchButton({ vm }: { vm: ManageVm }) {
         host: vm.host,
         port: 22,
         username: user,
-        privateKeyPath: sshKeyPathFor(vm.provider),
-        ...(vm.sshBastion ? { bastion: parseBastion(vm.sshBastion) } : {}),
+        privateKeyPath: sshKeyPathFor(vm),
       },
       `SSH ${user}@${vm.name}`,
     );
   };
-  const defaultUser = "genie";
+  const defaultUser = vm.provider === "ssh" ? (vm.connection?.username || "root") : "genie";
   const imageDefault = imageDefaultUser(vm.image);
   const userChoices = sshUserChoicesFor(vm);
   return (
@@ -358,7 +365,6 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
   const adminIngressDomain = adminVm?.ingress?.domain ?? null;
   const adminIngressUrl = adminVm?.ingress?.url ?? null;
   const adminIsPrivateHost = adminVm?.isPrivateHost === true;
-  const adminSshBastion = adminVm?.sshBastion ?? null;
 
   let projInst: { label: string; ipv6: string; image?: string; projectId: string } | null = null;
   if (!adminVm) {
@@ -380,6 +386,26 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
   const projImage = projInst?.image;
   const projProjectId = projInst?.projectId ?? null;
 
+  // Generic ("ssh") bring-your-own server. openManageVmWindow is reused for
+  // these, so the window is keyed by the *instance* id — match on that, not a
+  // cloud VM id (they have no tazcloud/digitalocean block).
+  let sshInst: { label: string; host: string; projectId: string; instanceId: string; username: string; keyPath: string } | null = null;
+  if (!adminVm && !projInst) {
+    for (const p of projects) {
+      const inst = p.vpsInstances.find((i) => i.id === vmId && i.ssh);
+      if (inst) {
+        sshInst = { label: inst.label, host: inst.connection.host, projectId: p.id, instanceId: inst.id, username: inst.connection.username, keyPath: inst.connection.privateKeyPath };
+        break;
+      }
+    }
+  }
+  const sshLabel = sshInst?.label ?? "";
+  const sshHost = sshInst?.host ?? "";
+  const sshProjectId = sshInst?.projectId ?? null;
+  const sshInstanceId = sshInst?.instanceId ?? "";
+  const sshUsername = sshInst?.username ?? "";
+  const sshKeyPath = sshInst?.keyPath ?? "";
+
   const vm = useMemo<ManageVm | null>(() => {
     if (adminVm) {
       return {
@@ -393,15 +419,17 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
           ? { domain: adminIngressDomain, url: adminIngressUrl ?? undefined }
           : null,
         isPrivateHost: adminIsPrivateHost,
-        sshBastion: adminSshBastion,
       };
     }
     if (projInst) {
       return { id: vmId, name: projLabel, host: projIpv6, image: projImage, projectId: projProjectId, provider: "tazcloud" };
     }
+    if (sshInst) {
+      return { id: vmId, name: sshLabel, host: sshHost, projectId: sshProjectId, provider: "ssh", instanceId: sshInstanceId, connection: { username: sshUsername, privateKeyPath: sshKeyPath } };
+    }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vmId, !!adminVm, adminName, adminIpv6, adminImage, adminProjectId, adminIngressDomain, adminIngressUrl, adminIsPrivateHost, adminSshBastion, !!projInst, projLabel, projIpv6, projImage, projProjectId]);
+  }, [vmId, !!adminVm, adminName, adminIpv6, adminImage, adminProjectId, adminIngressDomain, adminIngressUrl, adminIsPrivateHost, !!projInst, projLabel, projIpv6, projImage, projProjectId, !!sshInst, sshLabel, sshHost, sshProjectId, sshInstanceId, sshUsername, sshKeyPath]);
 
   // Defensive cache: if `vm` momentarily resolves to null (e.g. while the admin
   // VM list is being refreshed after a stale broadcast on navigation), keep the
@@ -463,10 +491,11 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   // almalinux user). Probing as `imageDefault` would auth-fail before the probe
   // script runs, falling back to a username that can't log in at all — that's
   // what surfaces as "trying to access the internal VLAN address" in the UI.
-  const isV2 = !!vm.sshBastion;
+  const isV2 = vm.isPrivateHost === true;
   // Initialize synchronously for branches where we know the answer without a
   // probe: skips the brief "Detecting SSH user…" flash on first render.
   const [resolvedUser, setResolvedUser] = useState<string | null>(() => {
+    if (vm.provider === "ssh") return vm.connection?.username || "root";
     if (!canUseAdminExec) return imageDefault;
     if (vm.provider === "do") return "genie";
     if (isV2) return "genie";
@@ -474,6 +503,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   });
 
   useEffect(() => {
+    if (vm.provider === "ssh") { setResolvedUser(vm.connection?.username || "root"); return; }
     if (!canUseAdminExec) { setResolvedUser(imageDefault); return; }
     if (vm.provider === "do") { setResolvedUser("genie"); return; }
     if (isV2) { setResolvedUser("genie"); return; }
@@ -487,7 +517,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
       if (!cancelled) setResolvedUser(imageDefault);
     });
     return () => { cancelled = true; };
-  }, [vm.id, vm.host, vm.provider, imageDefault, canUseAdminExec, isV2]);
+  }, [vm.id, vm.host, vm.provider, vm.connection?.username, imageDefault, canUseAdminExec, isV2]);
 
   const user = resolvedUser ?? imageDefault;
 
@@ -501,13 +531,15 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     const project = projects.find((p) => p.id === vm.projectId);
     if (!project) return null;
     const instance = project.vpsInstances.find((i) =>
-      vm.provider === "tazcloud"
-        ? i.tazcloud?.vmId === vm.id
-        : i.digitalocean?.dropletId === Number(vm.id),
+      vm.provider === "ssh"
+        ? i.id === vm.instanceId
+        : vm.provider === "tazcloud"
+          ? i.tazcloud?.vmId === vm.id
+          : i.digitalocean?.dropletId === Number(vm.id),
     );
     if (!instance) return null;
     return { project, instance };
-  }, [projects, vm.projectId, vm.id, vm.provider]);
+  }, [projects, vm.projectId, vm.id, vm.provider, vm.instanceId]);
 
   const hasProject = !!linked;
 
@@ -559,20 +591,13 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         </div>
       ) : (
         <>
-          {tab === "manage" && (() => {
-            // Display the bastion in the form we actually connect with — see
-            // `parseBastion` above for why the API's `almalinux@…` becomes
-            // `genie@…`. Without this rewrite the popup would advertise a
-            // login that doesn't actually authenticate.
-            const bastionParsed = vm.sshBastion ? parseBastion(vm.sshBastion) : undefined;
-            const bastionDisplay = bastionParsed ? `${bastionParsed.username}@${bastionParsed.host}` : null;
-            return (
+          {tab === "manage" && (
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs text-overlay0">
                   Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.host}</span>
-                  {bastionDisplay && (
-                    <span className="ml-1">via <span className="font-mono text-overlay1">{bastionDisplay}</span></span>
+                  {vm.isPrivateHost && (
+                    <span className="ml-1">over the WireGuard tunnel</span>
                   )}
                 </p>
                 <div className="flex items-center gap-2 shrink-0">
@@ -583,13 +608,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
               {vm.provider === "do" && linked && (
                 <DropletSleepControl projectId={linked.project.id} instanceId={linked.instance.id} />
               )}
-              {bastionDisplay && (
-                <div className="text-xs text-yellow bg-yellow/10 border border-yellow/30 rounded px-3 py-2">
-                  This VM is on a vxlan-bastion tenant — the manager reaches it via{" "}
-                  <span className="font-mono">{bastionDisplay}</span>. If recipes time out with
-                  &ldquo;SSH connection failed&rdquo;, the bastion isn&rsquo;t accepting the manager&rsquo;s
-                  key — set <span className="font-mono">TAZCLOUD_BASTION_PRIVATE_KEY</span> in the
-                  manager env (or have your Tazcloud account upload the existing key to the bastion).
+              {vm.isPrivateHost && (
+                <div className="text-xs text-overlay0 bg-surface0/40 border border-surface0 rounded px-3 py-2">
+                  This VM lives on a private 10.128/24 network — the manager reaches it over the
+                  WireGuard tunnel (see <span className="font-mono">wireguard.md</span>). If recipes
+                  time out with &ldquo;SSH connection failed&rdquo;, check that the tunnel is up on
+                  the manager host (<span className="font-mono">sudo wg show</span>).
                 </div>
               )}
               <VpsResourceGauges
@@ -601,8 +625,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
               <AdminRecipesPanel exec={exec} />
               <AdminSystemPanel exec={exec} view="services" />
             </div>
-            );
-          })()}
+          )}
 
           {tab === "firewall" && (
             <VpsFirewall exec={exec} />

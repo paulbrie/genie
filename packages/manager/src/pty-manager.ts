@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "ssh2";
 import { sshConnOpened, sshConnClosed } from "./vps/ssh-metrics.js";
+import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./vps/socks-dial.js";
 
 const MAX_SCROLLBACK = 100_000; // chars
 
@@ -166,16 +167,6 @@ export interface SshPtyConfig {
    *  A subsequent spawn with the same name will reattach instead of starting
    *  a fresh shell. Requires `tmux` on the VPS. */
   tmuxSessionName?: string;
-  /** Optional ProxyJump bastion — required for Taz vxlan-bastion VMs whose
-   *  `host` is a private 10.x address. The PTY connection opens the bastion
-   *  session first, then tunnels TCP to (host, port) through it. */
-  bastion?: {
-    host: string;
-    port: number;
-    username: string;
-    privateKeyPath: string;
-    privateKey?: string | Buffer;
-  };
 }
 
 /** Quote a string for safe use inside POSIX-shell single-quotes. */
@@ -356,7 +347,6 @@ export function spawnSshPty(
       cancelled = true;
       channel?.close();
       conn.end();
-      endBastion();
     },
     onData: (cb) => { dataCallback = cb; },
     onExit: (cb) => { exitCallback = cb; },
@@ -403,75 +393,42 @@ export function spawnSshPty(
     sessions.delete(id);
   }
 
-  let bastionConn: Client | null = null;
-  let bastionCounted = false;
   let connCounted = false;
-  function endBastion(): void {
-    if (bastionConn) { try { bastionConn.end(); } catch { /* ignore */ } bastionConn = null; }
-    if (bastionCounted) { bastionCounted = false; sshConnClosed(); }
-  }
 
   function tryConnect(): void {
     if (cancelled) return;
     attempt++;
-    endBastion();
     conn = new Client();
 
-    /** When a bastion is configured: open it, forwardOut a TCP channel to the
-     *  target, then resume the normal connect path with `sock` set. Errors at
-     *  this stage fall through to the standard retry logic via conn.emit. */
-    const proceed = (sock?: NodeJS.ReadWriteStream): void => {
-      conn.connect({
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        ...authConfig,
-        ...(sock ? { sock: sock as unknown as import("node:stream").Readable } : {}),
-        readyTimeout: PER_ATTEMPT_TIMEOUT_MS,
-      });
-    };
+    // Same Railway/userspace-WG route as connectSsh — see ssh-client.ts. Hosts
+    // outside 10.128/16 or with no GENIE_TAZ_SOCKS env dial directly. SOCKS
+    // failures are emitted as conn errors so the retry/backoff path handles
+    // them with the same UX as a normal transient SSH failure.
+    const dialPromise: Promise<import("node:net").Socket | null> = shouldRouteViaSocks(config.host)
+      ? socksDial(tazSocksProxy()!, config.host, config.port, PER_ATTEMPT_TIMEOUT_MS)
+      : Promise.resolve(null);
 
-    if (config.bastion) {
-      const b = config.bastion;
-      const bastionAuth = (() => {
-        if (b.privateKey) return { privateKey: b.privateKey };
-        try { return { privateKey: readFileSync(resolveHome(b.privateKeyPath)) }; }
-        catch { return process.env.SSH_AUTH_SOCK ? { agent: process.env.SSH_AUTH_SOCK } : {}; }
-      })();
-      bastionConn = new Client();
-      bastionConn
-        .on("ready", () => {
-          if (!bastionCounted) { bastionCounted = true; sshConnOpened(); }
-          if (cancelled) { endBastion(); return; }
-          bastionConn!.forwardOut("127.0.0.1", 0, config.host, config.port, (err, stream) => {
-            if (cancelled) { endBastion(); return; }
-            if (err) {
-              // Surface as a conn error so the retry/backoff path handles it.
-              conn.emit("error", new Error(`Bastion forwardOut to ${config.host}:${config.port} failed: ${err.message}`));
-              return;
-            }
-            proceed(stream as unknown as NodeJS.ReadWriteStream);
-          });
-        })
-        .on("error", (err) => {
-          if (cancelled) return;
-          conn.emit("error", new Error(`Bastion ${b.username}@${b.host}: ${err.message}`));
-        })
-        .connect({
-          host: b.host,
-          port: b.port,
-          username: b.username,
-          ...bastionAuth,
+    dialPromise
+      .then((sock) => {
+        if (cancelled) { if (sock) try { sock.destroy(); } catch { /* ignore */ } return; }
+        conn.connect({
+          host: config.host,
+          port: config.port,
+          username: config.username,
+          ...authConfig,
+          ...(sock ? { sock } : {}),
           readyTimeout: PER_ATTEMPT_TIMEOUT_MS,
         });
-    } else {
-      proceed();
-    }
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        conn.emit("error", new Error(`SOCKS dial via ${tazSocksProxy()} failed: ${err.message}`));
+      });
 
     conn
       .on("ready", () => {
         if (!connCounted) { connCounted = true; sshConnOpened(); }
-        if (cancelled) { conn.end(); endBastion(); return; }
+        if (cancelled) { conn.end(); return; }
         const shellCmd = buildRemoteCommand(config);
         conn.exec(shellCmd, { pty: { cols: currentCols, rows: currentRows, term: "xterm-256color" } }, (err, stream) => {
           if (err) {
@@ -545,10 +502,7 @@ export function spawnSshPty(
           return;
         }
         failWithMessage(formatTerminalSshError(config.host, msg));
-        endBastion();
       });
-    // .connect() is invoked by proceed() above — either directly or after the
-    // bastion's forwardOut callback resolves with a tunneled socket.
   }
 
   tryConnect();

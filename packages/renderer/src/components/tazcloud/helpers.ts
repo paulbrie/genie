@@ -19,14 +19,14 @@ export function imageDefaultUser(image?: string): string {
 
 /** SSH user the user probably wants for an interactive session. Order of
  *  inference:
- *    1. v2.0.0 vxlan-bastion VMs (`sshBastion` set) — `genie` is the **only**
+ *    1. v2.0.0 vxlan-bastion VMs (`isPrivateHost`) — `genie` is the **only**
  *       user; image-default users don't exist there.
  *    2. Project-linked VMs (any provider/mode) — Genie's deploy flow creates
  *       a `genie` user.
  *    3. Otherwise — image-default user (legacy v6 bare VMs).
  *  Users can override via the dropdown if the heuristic is wrong. */
-export function defaultSshUserFor(vm: { image?: string; projectId: string | null; sshBastion?: string | null }): string {
-  if (vm.sshBastion) return "genie";
+export function defaultSshUserFor(vm: { image?: string; projectId: string | null; isPrivateHost?: boolean }): string {
+  if (vm.isPrivateHost) return "genie";
   if (vm.projectId) return "genie";
   return imageDefaultUser(vm.image);
 }
@@ -56,12 +56,3 @@ export function validateTazVmName(name: string): string | null {
   return null;
 }
 
-/** Parse Taz's `ssh_bastion` API field ("user@host[:port]") into the
- *  SshConfig.bastion shape the terminal-spawn action expects. Defaults port
- *  to 22 to match the API contract. Returns undefined on a malformed string
- *  so callers can do `vm.sshBastion ? parseBastion(vm.sshBastion) : undefined`. */
-export function parseBastion(b: string): { host: string; port?: number; username: string } | undefined {
-  const m = b.match(/^([^@]+)@(.+)$/);
-  if (!m) return undefined;
-  return { username: m[1], host: m[2], port: 22 };
-}
