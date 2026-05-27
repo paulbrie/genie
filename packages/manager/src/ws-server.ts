@@ -72,6 +72,7 @@ import { handleRecipesMessage } from "./handlers/recipes-handler.js";
 import { handleFileTemplateMessage } from "./handlers/file-template-handler.js";
 import { handleProjectFileMessage } from "./handlers/project-file-handler.js";
 import { handleTrackerMessage } from "./handlers/tracker-handler.js";
+import { handleDocsMessage } from "./handlers/docs-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
@@ -1581,29 +1582,6 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
   }
 }
 
-async function buildDocsPayload(userId: string) {
-  const [{ own, shared, publicDocs }, { own: folders, publicFolders }] = await Promise.all([
-    docsService.listDocs(userId),
-    docsService.listFolders(userId),
-  ]);
-  return {
-    own: own.map((f) => ({ id: f.id, title: f.title, folderId: f.folderId, isPublic: f.isPublic, publicKey: f.publicKey, projectId: f.projectId, updatedAt: f.updatedAt.toISOString() })),
-    shared: shared.map((f) => ({ id: f.id, title: f.title, updatedAt: f.updatedAt.toISOString(), permission: f.permission, ownerId: f.ownerId, ownerName: f.ownerName, projectId: f.projectId, isPublic: f.isPublic })),
-    publicDocs: publicDocs.map((f) => ({ id: f.id, title: f.title, updatedAt: f.updatedAt.toISOString(), ownerId: f.ownerId, ownerName: f.ownerName, projectId: f.projectId, isPublic: f.isPublic, permission: "read" as const })),
-    folders: folders.map((f) => ({ id: f.id, parentId: f.parentId, name: f.name, isPublic: f.isPublic, projectId: f.projectId, updatedAt: f.updatedAt.toISOString() })),
-    publicFolders: publicFolders.map((f) => ({ id: f.id, parentId: f.parentId, name: f.name, isPublic: f.isPublic, projectId: f.projectId, updatedAt: f.updatedAt.toISOString(), ownerId: f.ownerId, ownerName: f.ownerName })),
-  };
-}
-
-async function sendDocsList(ws: WebSocket, userId: string): Promise<void> {
-  send(ws, { type: "docs:list", payload: await buildDocsPayload(userId) });
-}
-
-async function sendDocsListToUser(targetUserId: string): Promise<void> {
-  sendToUser(targetUserId, { type: "docs:list", payload: await buildDocsPayload(targetUserId) });
-}
-
-
 async function broadcastTrackerList(): Promise<void> {
   const [issues, labels] = await Promise.all([
     trackerService.listIssues(),
@@ -1714,6 +1692,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (userId && await handleFileTemplateMessage(ws, msg as Parameters<typeof handleFileTemplateMessage>[1], send as Parameters<typeof handleFileTemplateMessage>[2], userId)) return;
   if (await handleProjectFileMessage(ws, msg as Parameters<typeof handleProjectFileMessage>[1], send as Parameters<typeof handleProjectFileMessage>[2])) return;
   if (userId && await handleTrackerMessage(ws, msg as Parameters<typeof handleTrackerMessage>[1], send as Parameters<typeof handleTrackerMessage>[2], userId, broadcast as Parameters<typeof handleTrackerMessage>[4], broadcastTrackerList as Parameters<typeof handleTrackerMessage>[5])) return;
+  if (userId && await handleDocsMessage(ws, msg as Parameters<typeof handleDocsMessage>[1], send as Parameters<typeof handleDocsMessage>[2], userId, sendToUser as Parameters<typeof handleDocsMessage>[4])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -2876,252 +2855,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         session.close();
         activeCommandSessions.delete(cmdKey);
         send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: -1, error: "Stopped by user" } });
-      }
-      break;
-    }
-
-    // --- Docs handlers ---
-
-    case "docs:list": {
-      try {
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:get": {
-      try {
-        const doc = await docsService.getDoc(userId, msg.payload.docId);
-        if (!doc) {
-          send(ws, { type: "docs:error", payload: { message: "Doc not found" } });
-        } else {
-          send(ws, { type: "docs:content", payload: doc });
-        }
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:create": {
-      try {
-        const { title, content, folderId, projectId } = msg.payload;
-        const doc = await docsService.createDoc(userId, title, content, folderId, projectId);
-        send(ws, { type: "docs:created", payload: doc });
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:save": {
-      try {
-        const { docId, title, content } = msg.payload;
-        const result = await docsService.updateDoc(userId, docId, { title, content });
-        if (!result) {
-          send(ws, { type: "docs:error", payload: { message: "Doc not found" } });
-        } else {
-          // Fan-out saved event and refresh lists for all collaborators
-          for (const uid of result.allUserIds) {
-            sendToUser(uid, { type: "docs:saved", payload: result.doc });
-            await sendDocsListToUser(uid);
-          }
-        }
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:delete": {
-      try {
-        const { docId } = msg.payload;
-        const deleted = await docsService.deleteDoc(userId, docId);
-        if (!deleted) {
-          send(ws, { type: "docs:error", payload: { message: "Doc not found" } });
-        } else {
-          send(ws, { type: "docs:deleted", payload: { docId } });
-          await sendDocsList(ws, userId);
-        }
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:folder:create": {
-      try {
-        const { name, parentId, projectId } = msg.payload;
-        await docsService.createFolder(userId, name, parentId, projectId);
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:folder:rename": {
-      try {
-        const { folderId, name } = msg.payload;
-        await docsService.renameFolder(userId, folderId, name);
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:folder:delete": {
-      try {
-        const { folderId } = msg.payload;
-        await docsService.deleteFolder(userId, folderId);
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:move": {
-      try {
-        const { docId, folderId } = msg.payload;
-        await docsService.moveDoc(userId, docId, folderId ?? null);
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:share": {
-      try {
-        const { docId, targetUserId, permission } = msg.payload;
-        await docsService.shareDoc(userId, docId, targetUserId, permission);
-        const shares = await docsService.getDocShares(userId, docId);
-        send(ws, { type: "docs:shares", payload: { docId, shares: shares.map((s) => ({ ...s, createdAt: s.createdAt.toISOString() })) } });
-        await sendDocsListToUser(targetUserId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:unshare": {
-      try {
-        const { docId, targetUserId } = msg.payload;
-        await docsService.unshareDoc(userId, docId, targetUserId);
-        const shares = await docsService.getDocShares(userId, docId);
-        send(ws, { type: "docs:shares", payload: { docId, shares: shares.map((s) => ({ ...s, createdAt: s.createdAt.toISOString() })) } });
-        await sendDocsListToUser(targetUserId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:shares:get": {
-      try {
-        const { docId } = msg.payload;
-        const shares = await docsService.getDocShares(userId, docId);
-        send(ws, { type: "docs:shares", payload: { docId, shares: shares.map((s) => ({ ...s, createdAt: s.createdAt.toISOString() })) } });
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:download:zip": {
-      try {
-        const zipBuffer = await docsService.exportDocsAsZip(userId);
-        send(ws, { type: "docs:download:zip", payload: { data: zipBuffer.toString("base64") } });
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:download:doc": {
-      try {
-        const { docId } = msg.payload;
-        const { buffer, fileName } = await docsService.exportDocAsZip(userId, docId);
-        send(ws, { type: "docs:download:item", payload: { data: buffer.toString("base64"), fileName } });
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:download:folder": {
-      try {
-        const { folderId } = msg.payload;
-        const { buffer, fileName } = await docsService.exportFolderAsZip(userId, folderId);
-        send(ws, { type: "docs:download:item", payload: { data: buffer.toString("base64"), fileName } });
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:toggle-public": {
-      try {
-        const { docId } = msg.payload;
-        const result = await docsService.toggleDocPublic(userId, docId);
-        send(ws, { type: "docs:public-toggled", payload: result });
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:folder:toggle-public": {
-      try {
-        const { folderId } = msg.payload;
-        const result = await docsService.toggleFolderPublic(userId, folderId);
-        send(ws, { type: "docs:folder:public-toggled", payload: result });
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:set-project": {
-      try {
-        const { docId, projectId } = msg.payload;
-        await docsService.setDocProject(userId, docId, projectId ?? null);
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:folder:set-project": {
-      try {
-        const { folderId, projectId } = msg.payload;
-        await docsService.setFolderProject(userId, folderId, projectId ?? null);
-        await sendDocsList(ws, userId);
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "docs:get-public": {
-      try {
-        const { publicKey } = msg.payload;
-        const doc = await docsService.getDocByPublicKey(publicKey);
-        if (!doc) {
-          send(ws, { type: "docs:error", payload: { message: "Public doc not found" } });
-        } else {
-          send(ws, { type: "docs:public-content", payload: doc });
-        }
-      } catch (err: unknown) {
-        send(ws, { type: "docs:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
