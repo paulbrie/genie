@@ -35,7 +35,7 @@ import * as auditService from "./audit-service.js";
 import * as railwayService from "./railway-service.js";
 import { getClaudeUserId } from "./db/seed.js";
 import { getDb } from "./db/index.js";
-import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers, fileTemplates } from "./db/schema.js";
+import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers } from "./db/schema.js";
 import { eq, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { connectSsh, pickWorkingSshUser, type SshSession } from "./vps/ssh-client.js";
@@ -69,6 +69,7 @@ import { handleFsMessage } from "./handlers/fs-handler.js";
 import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
 import { handleSecurityMessage, abortAllSecurityScans } from "./handlers/security-handler.js";
 import { handleRecipesMessage } from "./handlers/recipes-handler.js";
+import { handleFileTemplateMessage } from "./handlers/file-template-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
@@ -1715,6 +1716,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleVpsDbMessage(ws, msg as Parameters<typeof handleVpsDbMessage>[1], send as Parameters<typeof handleVpsDbMessage>[2])) return;
   if (userId && await handleSecurityMessage(ws, msg as Parameters<typeof handleSecurityMessage>[1], send as Parameters<typeof handleSecurityMessage>[2], userId)) return;
   if (userId && await handleRecipesMessage(ws, msg as Parameters<typeof handleRecipesMessage>[1], send as Parameters<typeof handleRecipesMessage>[2], userId, broadcast as Parameters<typeof handleRecipesMessage>[4])) return;
+  if (userId && await handleFileTemplateMessage(ws, msg as Parameters<typeof handleFileTemplateMessage>[1], send as Parameters<typeof handleFileTemplateMessage>[2], userId)) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -3257,95 +3259,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "project-file:import-from-disk": {
       const { projectId } = msg.payload;
       send(ws, { type: "project-file:imported", payload: { projectId, files: [], error: "Import from disk is no longer supported. Create files directly in the editor." } });
-      break;
-    }
-
-    // --- File template handlers ---
-
-    case "file-template:list": {
-      const db = getDb();
-      const rows = await db.select().from(fileTemplates).orderBy(fileTemplates.name);
-      const templates = rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        description: r.description,
-        files: r.files as Record<string, string>,
-        createdBy: r.createdBy,
-        createdAt: r.createdAt.toISOString(),
-      }));
-      send(ws, { type: "file-template:list", payload: { templates } });
-      break;
-    }
-
-    case "file-template:create": {
-      const { name, description, files } = msg.payload;
-      const db = getDb();
-      const [row] = await db.insert(fileTemplates).values({
-        name,
-        description: description || "",
-        files: files || {},
-        createdBy: userId!,
-      }).returning();
-      send(ws, { type: "file-template:created", payload: { ok: true, template: { id: row.id, name: row.name, description: row.description, files: row.files, createdBy: row.createdBy, createdAt: row.createdAt.toISOString() } } });
-      break;
-    }
-
-    case "file-template:update": {
-      const { id, name, description, files } = msg.payload;
-      const db = getDb();
-      const patch: Record<string, unknown> = { updatedAt: new Date() };
-      if (name !== undefined) patch.name = name;
-      if (description !== undefined) patch.description = description;
-      if (files !== undefined) patch.files = files;
-      await db.update(fileTemplates).set(patch).where(eq(fileTemplates.id, id));
-      send(ws, { type: "file-template:updated", payload: { ok: true, id } });
-      break;
-    }
-
-    case "file-template:delete": {
-      const { id } = msg.payload;
-      const db = getDb();
-      await db.delete(fileTemplates).where(eq(fileTemplates.id, id));
-      send(ws, { type: "file-template:deleted", payload: { ok: true, id } });
-      break;
-    }
-
-    case "file-template:inject": {
-      const { projectId, templateId, mode } = msg.payload; // mode: "merge" | "replace"
-      const db = getDb();
-      const [tpl] = await db.select().from(fileTemplates).where(eq(fileTemplates.id, templateId));
-      if (!tpl) {
-        send(ws, { type: "file-template:injected", payload: { ok: false, error: "Template not found" } });
-        break;
-      }
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "file-template:injected", payload: { ok: false, error: "Project not found" } });
-        break;
-      }
-      const tplFiles = (tpl.files || {}) as Record<string, string>;
-      const existing = (project.setupFiles || {}) as Record<string, string>;
-      const merged = mode === "replace" ? { ...tplFiles } : { ...existing, ...tplFiles };
-      await projectService.patchProject(projectId, { setupFiles: merged });
-      send(ws, { type: "file-template:injected", payload: { ok: true, projectId } });
-      break;
-    }
-
-    case "file-template:save-from-project": {
-      const { projectId, name, description } = msg.payload;
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "file-template:created", payload: { ok: false, error: "Project not found" } });
-        break;
-      }
-      const db = getDb();
-      const [row] = await db.insert(fileTemplates).values({
-        name,
-        description: description || "",
-        files: project.setupFiles || {},
-        createdBy: userId!,
-      }).returning();
-      send(ws, { type: "file-template:created", payload: { ok: true, template: { id: row.id, name: row.name, description: row.description, files: row.files, createdBy: row.createdBy, createdAt: row.createdAt.toISOString() } } });
       break;
     }
 
