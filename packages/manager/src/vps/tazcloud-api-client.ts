@@ -4,22 +4,38 @@ import path from "node:path";
 
 const TAZ_API = "https://api.taz.ro";
 
-/** Resolve `TAZCLOUD_BASTION_PRIVATE_KEY` for ssh2's `privateKey` option.
- *  Per `customer-bastion-setup.md` the env var may hold either a filesystem
- *  path to the customer's `.pem` (the documented default) or the raw key
- *  content (PEM/OpenSSH). Returns undefined when the env is unset so callers
- *  can fall back to the per-VM key. */
+/** Resolve the TazCloud bastion private key for ssh2's `privateKey` option.
+ *  Accepts either env name: `TAZCLOUD_BASTION_PRIVATE_KEY` (documented in
+ *  `customer-bastion-setup.md`) or `TAZCLOUD_BASTION_SSH_PRIVATE_KEY` (mirrors
+ *  the per-VM `TAZCLOUD_SSH_PRIVATE_KEY` naming). Either may hold a filesystem
+ *  path to the customer's `.pem` or the raw key content (PEM/OpenSSH). Returns
+ *  undefined when unset so callers can fall back to the per-VM key. */
+let bastionKeyLogged = false;
+/** Log once (not per-exec — loadBastionKey is called on every SSH hop) so the
+ *  operator can confirm the bastion key was picked up without leaking it. */
+function logBastionKeyOnce(buf: Buffer, source: string): void {
+  if (bastionKeyLogged) return;
+  bastionKeyLogged = true;
+  console.log(`[tazcloud] bastion key loaded (${buf.length} bytes, ${source})`);
+}
+
 export function loadBastionKey(): Buffer | undefined {
-  const raw = process.env.TAZCLOUD_BASTION_PRIVATE_KEY;
+  const raw = process.env.TAZCLOUD_BASTION_PRIVATE_KEY || process.env.TAZCLOUD_BASTION_SSH_PRIVATE_KEY;
   if (!raw) return undefined;
   // Raw key content always starts with `-----BEGIN …-----`. Anything else we
   // treat as a path — letting `~` expand keeps the README copy-paste working.
-  if (raw.includes("-----BEGIN")) return Buffer.from(raw);
+  if (raw.includes("-----BEGIN")) {
+    const buf = Buffer.from(raw);
+    logBastionKeyOnce(buf, "inline PEM");
+    return buf;
+  }
   const resolved = raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
   try {
-    return fs.readFileSync(resolved);
+    const buf = fs.readFileSync(resolved);
+    logBastionKeyOnce(buf, `file ${resolved}`);
+    return buf;
   } catch (err) {
-    console.error(`[tazcloud] TAZCLOUD_BASTION_PRIVATE_KEY points at ${resolved} but the file can't be read:`, (err as Error).message);
+    console.error(`[tazcloud] bastion key points at ${resolved} but the file can't be read:`, (err as Error).message);
     return undefined;
   }
 }
