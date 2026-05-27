@@ -23,16 +23,6 @@
     "start:renderer": "cd packages/renderer && next start",
     "manager": "npx tsx packages/manager/src/index.ts"
   },
-  "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.0",
-    "@ai-sdk/fireworks": "^2.0.40",
-    "ai": "^6.0.0",
-    "dotenv": "^17.3.1",
-    "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1",
-    "subjecto": "^0.0.64",
-    "zod": "^3.24.0"
-  },
   "devDependencies": {
     "concurrently": "^9.2.1"
   }
