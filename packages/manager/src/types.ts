@@ -16,17 +16,6 @@ export interface VpsConnectionConfig {
   port: number;
   username: string;
   privateKeyPath: string;
-  /** Persisted ProxyJump bastion. Required for v2.0.0 TazCloud VMs whose
-   *  `host` is a private 10.128.N.x address — the manager (and any code that
-   *  reads this connection back from the DB) must tunnel through here.
-   *  `port` defaults to 22 when omitted, mirroring SshConnectionConfig.
-   *  privateKeyPath defaults to the same key as the inner VM when omitted. */
-  bastion?: {
-    host: string;
-    port?: number;
-    username: string;
-    privateKeyPath: string;
-  };
 }
 
 export interface VpsServiceInfo {
@@ -47,15 +36,13 @@ export interface DoDropletInfo {
 export interface TazVmInfo {
   vmId: string;       // TazCloud VM UUID
   /** Legacy: public IPv6. v2.0.0 vxlan-bastion VMs have no public IP — this
-   *  field falls back to the private `ssh_host` (10.128.N.x) for display
-   *  parity; never trust it as a routable address. */
+   *  field falls back to the private `ssh_host` (10.128.N.x, reached over
+   *  WireGuard) for display parity; never trust it as a routable address from
+   *  outside the tunnel. */
   ipv6: string;
   image: string;      // ubuntu-22 / almalinux-9 / debian-12 / ubuntu-24
   size: string;       // small / medium / large / xlarge
   sshUser: string;    // "genie" on v2; image-default on legacy
-  /** v2.0.0 tenants only. "user@host" of the ProxyJump bastion as returned
-   *  by the API. Null/undefined on legacy v6 tenants. */
-  sshBastion?: string | null;
   /** v2.0.0 tenants only. Project the VM belongs to. */
   projectId?: string;
 }
@@ -87,6 +74,17 @@ export interface VpsInstance {
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;
+  /** Present for a generic "bring-your-own" SSH server (neither digitalocean
+   *  nor tazcloud). `genie-key` reuses the shared Genie keypair (the user
+   *  authorized its public key on the box); `stored-key` references an
+   *  encrypted private key row in serverCredentials, materialized on demand. */
+  ssh?: SshServerInfo;
+}
+
+export interface SshServerInfo {
+  authMethod: "genie-key" | "stored-key";
+  /** serverCredentials row id; set only for authMethod === "stored-key". */
+  credentialId?: string;
 }
 
 export interface ProjectDef {
@@ -170,7 +168,7 @@ export interface ServerStats {
   wsMessagesPerSec: number;
   /** Currently-connected WebSocket clients. */
   wsConnections: number;
-  /** Live outbound SSH connections the manager holds open (VM + bastion). */
+  /** Live outbound SSH connections the manager holds open. */
   sshConnections: number;
 }
 

@@ -16,6 +16,24 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "./index.js";
 
+/** Create the server_credentials table (encrypted SSH keys for generic
+ *  bring-your-own servers). Idempotent; safe to call on every boot. */
+export async function migrateServerCredentials(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS server_credentials (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    ciphertext TEXT NOT NULL,
+    iv TEXT NOT NULL,
+    auth_tag TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    created_by UUID NOT NULL REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_server_credentials_project ON server_credentials(project_id)`);
+}
+
 export async function migrateOrgs(): Promise<void> {
   const db = getDb();
 

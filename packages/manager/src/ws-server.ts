@@ -43,9 +43,9 @@ import type { StreamingChannel } from "./vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from "./vps/deploy-service.js";
 import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
 import { createDoClient } from "./vps/do-api-client.js";
-import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules } from "./vps/do-provision.js";
+import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules, getGenieKeyPath } from "./vps/do-provision.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
-import { createTazClient, defaultSshUserForVm, loadBastionKey, parseBastion, sshUserForImage } from "./vps/tazcloud-api-client.js";
+import { createTazClient, defaultSshUserForVm, sshUserForImage } from "./vps/tazcloud-api-client.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
 import { setupMcpStreamTunnel, type McpStreamTunnel } from "./vps/mcp-stream-tunnel.js";
@@ -74,6 +74,8 @@ import { handleProjectFileMessage } from "./handlers/project-file-handler.js";
 import { handleTrackerMessage } from "./handlers/tracker-handler.js";
 import { handleDocsMessage } from "./handlers/docs-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
+import { storeServerCredential, deleteServerCredential, ensureServerKeyOnDisk } from "./vps/server-credential-service.js";
+import { isPasteKeyEnabled } from "./vps/credential-crypto.js";
 
 
 /** Track active base image creation AbortController */
@@ -108,6 +110,21 @@ let lastStatsTs = Date.now();
  *  project-ownership check. Plain users are owner-scoped (see userCanAccessVm). */
 function isPrivilegedRole(role: Role | null): boolean {
   return role === "tazcloud" || role === "admin" || role === "superadmin";
+}
+
+/** Reject obvious SSRF / internal targets when a user connects an arbitrary SSH
+ *  host. Blocks loopback, link-local, and cloud metadata addresses. Not a full
+ *  egress firewall (the manager already dials user hosts via terminal:ssh:spawn),
+ *  just a guard against the most dangerous self-/metadata targets. */
+function isBlockedSshHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!h) return true;
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h === "::1" || h === "0.0.0.0") return true;
+  if (h.startsWith("127.")) return true;          // loopback
+  if (h.startsWith("169.254.")) return true;       // link-local + cloud metadata (169.254.169.254)
+  if (h.startsWith("fe80:") || h.startsWith("fd") || h.startsWith("fc")) return true; // v6 link-local / ULA
+  return false;
 }
 
 
@@ -1041,6 +1058,10 @@ async function buildAuthPayload(
       lastSeenUpdateVersion,
     },
     impersonatedBy: impersonatedBy ?? null,
+    // Capability flags for the renderer. pasteKeyEnabled gates the "paste a
+    // private key" option when connecting a generic SSH server (false unless a
+    // real GENIE_SECRET/GENIE_JWT_SECRET is configured for encryption at rest).
+    pasteKeyEnabled: isPasteKeyEnabled(),
   };
 }
 
@@ -1685,8 +1706,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleDbMessage(ws, msg as Parameters<typeof handleDbMessage>[1], send as Parameters<typeof handleDbMessage>[2])) return;
   if (await handleBackupMessage(ws, msg as Parameters<typeof handleBackupMessage>[1], send as Parameters<typeof handleBackupMessage>[2])) return;
   if (await handleGitMessage(ws, msg as Parameters<typeof handleGitMessage>[1], send as Parameters<typeof handleGitMessage>[2])) return;
-  if (await handleFsMessage(ws, msg as Parameters<typeof handleFsMessage>[1], send as Parameters<typeof handleFsMessage>[2])) return;
-  if (await handleVpsDbMessage(ws, msg as Parameters<typeof handleVpsDbMessage>[1], send as Parameters<typeof handleVpsDbMessage>[2])) return;
+  if (userId && await handleFsMessage(ws, msg as Parameters<typeof handleFsMessage>[1], send as Parameters<typeof handleFsMessage>[2], userId)) return;
+  if (userId && await handleVpsDbMessage(ws, msg as Parameters<typeof handleVpsDbMessage>[1], send as Parameters<typeof handleVpsDbMessage>[2], userId)) return;
   if (userId && await handleSecurityMessage(ws, msg as Parameters<typeof handleSecurityMessage>[1], send as Parameters<typeof handleSecurityMessage>[2], userId)) return;
   if (userId && await handleRecipesMessage(ws, msg as Parameters<typeof handleRecipesMessage>[1], send as Parameters<typeof handleRecipesMessage>[2], userId, broadcast as Parameters<typeof handleRecipesMessage>[4])) return;
   if (userId && await handleFileTemplateMessage(ws, msg as Parameters<typeof handleFileTemplateMessage>[1], send as Parameters<typeof handleFileTemplateMessage>[2], userId)) return;
@@ -3194,23 +3215,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       ).then(async (result) => {
         activeTazAbortControllers.delete(tazProjectId);
         const tazKeyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
-        // v2.0.0: the manager can only reach this VM through the bastion the
-        // provision step used. Persist it so every later SSH call (Manage
-        // popup, vpsStatus, recipe exec) reconstructs the same tunnel.
-        const persistedBastion = parseBastion(result.sshBastion);
+        // v2.0.0 VMs sit on a private 10.128.N.x address reached over the
+        // WireGuard tunnel (see wireguard.md); no per-call bastion plumbing
+        // needed.
         const connection: VpsConnectionConfig = {
           host: result.ipv6,
           port: 22,
           username: VPS_SSH_USERNAME,
           privateKeyPath: tazKeyPath,
-          ...(persistedBastion ? {
-            bastion: {
-              host: persistedBastion.host,
-              port: persistedBastion.port,
-              username: persistedBastion.username,
-              privateKeyPath: tazKeyPath,
-            },
-          } : {}),
         };
         const instance: import("./types.js").VpsInstance = {
           id: newTazInstanceId,
@@ -3223,7 +3235,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             image: result.image,
             size: result.size,
             sshUser: result.sshUser,
-            sshBastion: result.sshBastion ?? null,
             ...(result.projectId ? { projectId: result.projectId } : {}),
           },
         };
@@ -3315,15 +3326,82 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     // --- VPS (SSH) deploy handlers ---
 
     case "vps:test-connection": {
-      const { host, port, username, privateKeyPath } = msg.payload as VpsConnectionConfig;
+      const p = msg.payload as { host: string; port?: number; username: string; authMethod?: "genie-key" | "stored-key"; privateKey?: string; privateKeyPath?: string };
       try {
-        const session = await connectSsh({ host, port, username, privateKeyPath });
-        // Quick smoke test — run hostname
+        let conn: VpsConnectionConfig & { privateKey?: string };
+        if (p.authMethod === "stored-key") {
+          if (!isPasteKeyEnabled()) throw new Error("Pasted-key auth is disabled on this manager — set GENIE_SECRET to enable it.");
+          if (!p.privateKey?.trim()) throw new Error("No private key provided.");
+          conn = { host: p.host, port: p.port || 22, username: p.username, privateKeyPath: "", privateKey: p.privateKey };
+        } else {
+          // genie-key (default) or an explicit legacy path
+          conn = { host: p.host, port: p.port || 22, username: p.username, privateKeyPath: p.authMethod === "genie-key" ? getGenieKeyPath() : (p.privateKeyPath || getGenieKeyPath()) };
+        }
+        const session = await connectSsh(conn);
         const hostname = await session.exec("hostname");
         session.close();
         send(ws, { type: "vps:test-connection:ok", payload: { hostname: hostname.trim() } });
       } catch (err: unknown) {
         send(ws, { type: "vps:test-connection:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "vps:connect": {
+      // Register a generic ("bring-your-own") SSH server on a project — no
+      // provisioning/bootstrap, just validate the connection and persist it.
+      // genie-key: reuse the shared Genie keypair (user authorized its pubkey).
+      // stored-key: encrypt + store the pasted private key, materialize on disk.
+      const p = msg.payload as { projectId: string; host: string; port?: number; username: string; label?: string; authMethod: "genie-key" | "stored-key"; privateKey?: string };
+      try {
+        if (!(await projectService.userCanSeeProject(userId, p.projectId))) {
+          send(ws, { type: "vps:connect:error", payload: { message: "Not authorized for this project" } });
+          break;
+        }
+        const host = (p.host || "").trim();
+        if (isBlockedSshHost(host)) {
+          send(ws, { type: "vps:connect:error", payload: { message: "That host is not allowed (loopback / link-local / metadata addresses are blocked)." } });
+          break;
+        }
+        const port = p.port || 22;
+        const username = (p.username || "").trim() || "root";
+        const instanceId = uuidv4();
+        let connection: VpsConnectionConfig;
+        let ssh: import("./types.js").SshServerInfo;
+        if (p.authMethod === "stored-key") {
+          if (!isPasteKeyEnabled()) { send(ws, { type: "vps:connect:error", payload: { message: "Pasted-key auth is disabled — set GENIE_SECRET on the manager." } }); break; }
+          if (!p.privateKey?.trim()) { send(ws, { type: "vps:connect:error", payload: { message: "No private key provided." } }); break; }
+          const credentialId = await storeServerCredential({ projectId: p.projectId, instanceId, privateKey: p.privateKey, createdBy: userId });
+          const keyPath = await ensureServerKeyOnDisk(credentialId);
+          connection = { host, port, username, privateKeyPath: keyPath };
+          ssh = { authMethod: "stored-key", credentialId };
+        } else {
+          connection = { host, port, username, privateKeyPath: getGenieKeyPath() };
+          ssh = { authMethod: "genie-key" };
+        }
+        // Validate before persisting; clean up a stored credential on failure.
+        try {
+          const session = await connectSsh(connection);
+          await session.exec("hostname");
+          session.close();
+        } catch (err: unknown) {
+          if (ssh.credentialId) await deleteServerCredential(ssh.credentialId).catch(() => { /* best-effort */ });
+          send(ws, { type: "vps:connect:error", payload: { message: `SSH connection failed: ${(err instanceof Error ? err.message : String(err))}` } });
+          break;
+        }
+        const instance: import("./types.js").VpsInstance = {
+          id: instanceId,
+          label: (p.label || host).slice(0, 64),
+          connection,
+          services: [],
+          ssh,
+        };
+        await projectService.addVpsInstance(p.projectId, instance);
+        await broadcastProjectList();
+        void notifySuperadmin("Generic SSH server connected", `${state.user?.email || userId} connected ${username}@${host}:${port} to project ${p.projectId} (auth: ${ssh.authMethod}).`);
+        send(ws, { type: "vps:connect:ok", payload: { projectId: p.projectId, instanceId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:connect:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -3406,25 +3484,18 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
           const tazClient = createTazClient(tazToken);
           const vm = await tazClient.getVm(String(vmId));
-          // v2.0.0 vxlan-bastion VMs have null ipv6 and only ssh_host (private IP);
-          // legacy v6 tenants still have ipv6. Trust ssh_host as the authoritative
-          // address since the API resolves it correctly for both modes.
+          // v2.0.0 vxlan-bastion VMs have null ipv6 and only ssh_host (private IP
+          // reached via WireGuard); legacy v6 tenants still have ipv6. Trust
+          // ssh_host as the authoritative address since the API resolves it
+          // correctly for both modes.
           const tazHost = vm.ssh_host || vm.ipv6;
           if (!tazHost) throw new Error("VM has no ssh_host yet");
           const imageDefault = vm.image ? sshUserForImage(vm.image) : "ubuntu";
-          const bastion = parseBastion(vm.ssh_bastion);
-          const bastionConfig = bastion ? {
-            host: bastion.host,
-            port: bastion.port,
-            username: bastion.username,
-            privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
-          } : undefined;
           const probed = await pickWorkingSshUser(
             {
               host: tazHost,
               port: vm.ssh_port || 22,
               privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
-              ...(bastionConfig ? { bastion: bastionConfig } : {}),
             },
             // On v2 only `genie` is provisioned; on legacy try genie first then
             // the image-default user.
@@ -3438,7 +3509,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             port: vm.ssh_port || 22,
             username: probed,
             privateKeyPath: "~/.genie/ssh/tazcloud_ed25519",
-            ...(bastionConfig ? { bastion: bastionConfig } : {}),
           };
           providerMeta = {
             tazcloud: {
@@ -3447,7 +3517,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
               image: vm.image || "ubuntu-22",
               size: vm.size || "small",
               sshUser: VPS_SSH_USERNAME, // ensureBootstrapped guarantees this below
-              sshBastion: vm.ssh_bastion ?? null,
               ...(vm.project_id ? { projectId: vm.project_id } : {}),
             },
           };
@@ -3609,6 +3678,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "vps:status": {
       const { projectId, instanceId } = msg.payload;
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        break;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst) {
@@ -3616,7 +3689,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       try {
-        const containers = await vpsStatus(project!.name, vpsInst.connection);
+        const containers = await vpsStatus(project!.name, await getVpsConnection(projectId, instanceId));
         await projectService.updateVpsInstance(projectId, instanceId, { services: containers });
         send(ws, { type: "vps:status:update", payload: { projectId, instanceId, services: containers } });
         await broadcastProjectList();
@@ -3628,6 +3701,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "vps:stats": {
       const { projectId, instanceId } = msg.payload;
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "Not authorized for this project" } });
+        break;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst) {
@@ -3641,7 +3718,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         void syncDropletStatuses();
       }
       try {
-        const stats = await vpsStats(vpsInst.connection);
+        const stats = await vpsStats(await getVpsConnection(projectId, instanceId));
         send(ws, { type: "vps:stats:result", payload: { projectId, instanceId, stats } });
       } catch (err: unknown) {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
@@ -3651,14 +3728,19 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "vps:process:kill": {
       const { projectId, instanceId, pid } = msg.payload;
-      const project = await projectService.getById(projectId);
-      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
-      if (!vpsInst) {
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:process:kill:result", payload: { projectId, instanceId, pid, ok: false, error: "Not authorized for this project" } });
+        break;
+      }
+      let killConn: VpsConnectionConfig;
+      try {
+        killConn = await getVpsConnection(projectId, instanceId);
+      } catch {
         send(ws, { type: "vps:process:kill:result", payload: { projectId, instanceId, pid, ok: false, error: "No VPS deployment" } });
         break;
       }
       try {
-        const session = await connectSsh(vpsInst.connection);
+        const session = await connectSsh(killConn);
         try {
           await session.exec(`kill -9 ${Number(pid)}`);
         } finally {
@@ -3801,14 +3883,19 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const { projectId, instanceId, command, execId } = msg.payload as {
         projectId: string; instanceId: string; command: string; execId: string;
       };
-      const project = await projectService.getById(projectId);
-      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
-      if (!vpsInst) {
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:exec:result", payload: { execId, output: "Not authorized for this project", error: true } });
+        break;
+      }
+      let execConn: VpsConnectionConfig;
+      try {
+        execConn = await getVpsConnection(projectId, instanceId);
+      } catch {
         send(ws, { type: "vps:exec:result", payload: { execId, output: "No VPS deployment found", error: true } });
         break;
       }
       try {
-        const session = await connectSsh(vpsInst.connection);
+        const session = await connectSsh(execConn);
         try {
           const output = await session.exec(`${command} 2>&1`, undefined, { timeoutMs: 30_000 });
           send(ws, { type: "vps:exec:result", payload: { execId, output } });
@@ -4163,7 +4250,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "vps:disconnect": {
       const { projectId, instanceId } = msg.payload;
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        break;
+      }
+      const dProject = await projectService.getById(projectId);
+      const dInst = dProject?.vpsInstances.find(v => v.id === instanceId);
       await projectService.removeVpsInstance(projectId, instanceId);
+      if (dInst?.ssh?.credentialId) await deleteServerCredential(dInst.ssh.credentialId).catch(() => { /* best-effort */ });
       await broadcastProjectList();
       break;
     }
@@ -4325,7 +4419,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         }
         const results: Record<string, unknown> = {};
-        const bastionKey = loadBastionKey();
         await Promise.allSettled(
           vms
             .filter((vm) => vm.status === "ACTIVE" && vm.ssh_host)
@@ -4333,25 +4426,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
               try {
                 // Linked VMs always have a `genie` user (provision step creates
                 // it). Unlinked legacy VMs only have the image-default user.
-                // Unlinked v2 VMs ship with `genie` already, so prefer it.
-                const username = linked.has(vm.id) || vm.ssh_bastion
+                // Unlinked v2 VMs (no public ipv6) ship with `genie` already.
+                const username = linked.has(vm.id) || !vm.ipv6
                   ? VPS_SSH_USERNAME
                   : sshUserForImage(vm.image || "ubuntu-22");
-                const bastion = parseBastion(vm.ssh_bastion);
                 const stats = await vpsStats({
                   host: vm.ssh_host,
                   port: 22,
                   username,
                   privateKeyPath: keyPath,
-                  ...(bastion ? {
-                    bastion: {
-                      host: bastion.host,
-                      port: bastion.port,
-                      username: bastion.username,
-                      privateKeyPath: keyPath,
-                      ...(bastionKey ? { privateKey: bastionKey } : {}),
-                    },
-                  } : {}),
                 });
                 results[vm.id] = stats;
               } catch { /* skip unreachable VM */ }
@@ -4369,14 +4452,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       // don't hit the TazCloud API on every command — previously every recipe check
       // (5+ per panel open) triggered a getVm() call, which is wasteful and dies when
       // the upstream API is flaky.
-      const { vmId, sshUser, host: hostFromClient, command, execId, sshBastion: bastionFromClient } = msg.payload as {
+      const { vmId, sshUser, host: hostFromClient, command, execId } = msg.payload as {
         vmId: string; sshUser: string; host?: string; command: string; execId: string;
-        /** Renderer-supplied `ssh_bastion` (e.g. "almalinux@188.213.48.230").
-         *  When provided alongside `host` we skip the per-call `/v1/vm/{id}`
-         *  lookup that previously gated every exec — that was adding ~200ms-1s
-         *  per call and 3-4 calls fire in parallel when the Manage popup
-         *  mounts. */
-        sshBastion?: string | null;
       };
       // Owner-scoped access: tazcloud+ may exec on any VM; a plain user only on a
       // VM attached to a project they can access. The ACL already let the message
@@ -4389,56 +4466,21 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazPrivateKey) throw new Error("TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager");
         let host = hostFromClient;
-        // Resolve bastion. Fast path: renderer passed it through (it's already
-        // in the admin store from /v1/vm list). Slow path: re-fetch /v1/vm/{id}
-        // — needed for non-Manage-popup callers (e.g. tools) that don't supply
-        // it. Bastion is stable for the VM lifetime so trusting the
-        // renderer's copy is safe. Use the shared `parseBastion` so the
-        // username rewrite (API returns `almalinux`, but per Taz the correct
-        // user is `genie`) applies uniformly.
-        let bastion: { user: string; host: string } | null = null;
-        if (bastionFromClient) {
-          const p = parseBastion(bastionFromClient);
-          if (p) bastion = { user: p.username, host: p.host };
-        }
-        if (!bastion || !host) {
+        if (!host) {
           const tazToken = process.env.TAZCLOUD_API_TOKEN;
           if (tazToken) {
-            try {
-              const tazClient = createTazClient(tazToken);
-              const vm = await tazClient.getVm(vmId);
-              if (!host) host = vm?.ssh_host;
-              if (!bastion && vm?.ssh_bastion) {
-                const p = parseBastion(vm.ssh_bastion);
-                if (p) bastion = { user: p.username, host: p.host };
-              }
-            } catch (err) {
-              if (!host) throw err;
-              // host known + API flaky → proceed without bastion (works for legacy v6 VMs).
-            }
+            const tazClient = createTazClient(tazToken);
+            const vm = await tazClient.getVm(vmId);
+            host = vm?.ssh_host;
           }
         }
         if (!host) throw new Error(`VM ${vmId} has no ssh_host`);
         const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
-        // Bastion uses the customer-specific key documented in
-        // customer-bastion-setup.md (env var TAZCLOUD_BASTION_PRIVATE_KEY,
-        // path or raw content). Falls back to the per-VM key for tenants where
-        // a single key is authorised for both hops.
-        const bastionKey = loadBastionKey();
         const session = await connectSsh({
           host,
           port: 22,
           username: sshUser || "ubuntu",
           privateKeyPath: keyPath,
-          ...(bastion ? {
-            bastion: {
-              host: bastion.host,
-              port: 22,
-              username: bastion.user,
-              privateKeyPath: keyPath,
-              ...(bastionKey ? { privateKey: bastionKey } : {}),
-            },
-          } : {}),
         });
         activeExecSessions.set(execId, session);
         // Secrets (GIT_TOKEN etc.) are baked into the script by the renderer
@@ -4579,25 +4621,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (tazPrivateKey && vm.ssh_host && !snapshot_id) {
           void (async () => {
             const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
-            // v2.0.0 vxlan-bastion: VM ships with `genie` user, only reachable
-            // via ProxyJump. Legacy v6: image-default user, direct SSH.
+            // v2.0.0 vxlan-bastion VMs ship with `genie`, reached over WireGuard.
+            // Legacy v6: image-default user, direct SSH.
             const sshUser = defaultSshUserForVm(vm);
-            const bastion = parseBastion(vm.ssh_bastion);
-            const bastionKey = loadBastionKey();
             const conn = {
               host: vm.ssh_host,
               port: 22,
               username: sshUser,
               privateKeyPath: keyPath,
-              ...(bastion ? {
-                bastion: {
-                  host: bastion.host,
-                  port: bastion.port,
-                  username: bastion.username,
-                  privateKeyPath: keyPath,
-                  ...(bastionKey ? { privateKey: bastionKey } : {}),
-                },
-              } : {}),
             };
             // Poll SSH up to 3 minutes.
             const sshStart = Date.now();
@@ -6146,27 +6177,13 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "terminal:ssh:spawn": {
-      const { id, host, port, username, privateKeyPath, cols, rows, title, command, bastion } = msg.payload as {
+      const { id, host, port, username, privateKeyPath, cols, rows, title, command } = msg.payload as {
         id: string; host: string; port?: number; username?: string; privateKeyPath?: string;
         cols?: number; rows?: number; title?: string; command?: string;
-        bastion?: { host: string; port?: number; username: string };
       };
       const resolvedUser = username || VPS_SSH_USERNAME;
       const resolvedKey = privateKeyPath || "~/.genie/ssh/genie_ed25519";
       const resolvedPort = port || 22;
-      // Bastion key precedence mirrors admin:tazcloud:exec: explicit
-      // TAZCLOUD_BASTION_PRIVATE_KEY env wins; otherwise reuse the per-VM key
-      // (works on tenants where the bastion accepts the same Tazcloud-managed key).
-      const bastionKey = loadBastionKey();
-      const bastionConfig = bastion
-        ? {
-            host: bastion.host,
-            port: bastion.port ?? 22,
-            username: bastion.username,
-            privateKeyPath: resolvedKey,
-            ...(bastionKey ? { privateKey: bastionKey } : {}),
-          }
-        : undefined;
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: resolvedPort,
@@ -6174,7 +6191,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         privateKeyPath: resolvedKey,
         initialCommand: command,
         tmuxSessionName: id,
-        ...(bastionConfig ? { bastion: bastionConfig } : {}),
       }, userId);
       // Persist for the History/Terminals tab. Direct SSH carries its own
       // connection details since there's no project/instance to look them up from.

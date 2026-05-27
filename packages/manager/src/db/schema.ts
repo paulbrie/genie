@@ -353,6 +353,24 @@ export const fileTemplates = pgTable("file_templates", {
   index("idx_file_templates_created_by").on(t.createdBy),
 ]);
 
+// Encrypted SSH private keys for generic ("bring-your-own") servers connected
+// with the paste-a-key auth method. The key is never stored plaintext — see
+// vps/credential-crypto.ts (AES-256-GCM, per-row salt + iv). Genie-key servers
+// have no row here (they reuse the shared Genie keypair).
+export const serverCredentials = pgTable("server_credentials", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  instanceId: text("instance_id").notNull(),  // the VpsInstance.id this key belongs to
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  authTag: text("auth_tag").notNull(),
+  salt: text("salt").notNull(),
+  createdBy: uuid("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [
+  index("idx_server_credentials_project").on(t.projectId),
+]);
+
 export const globalSettings = pgTable("global_settings", {
   key: text("key").primaryKey(),
   value: jsonb("value").notNull(),

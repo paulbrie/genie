@@ -9,6 +9,7 @@ import type { WsMessage as WsMessageBase } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh } from "../vps/ssh-client.js";
 import { parseTableList, parseCsvResult } from "./db-handler.js";
+import * as projectService from "../project-service.js";
 
 export interface WsMessage extends Omit<WsMessageBase, "payload"> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -19,7 +20,15 @@ export async function handleVpsDbMessage(
   ws: WebSocket,
   msg: WsMessage,
   send: (ws: WebSocket, message: WsMessage) => void,
+  userId: string,
 ): Promise<boolean> {
+  if (!msg.type.startsWith("vps:db:")) return false;
+  // Project-membership gate (resolves a server from projectId+instanceId only).
+  const dbProjectId = msg.payload?.projectId as string | undefined;
+  if (dbProjectId && !(await projectService.userCanSeeProject(userId, dbProjectId))) {
+    send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+    return true;
+  }
   switch (msg.type) {
     case "vps:db:detect": {
       const { projectId, instanceId, reqId } = msg.payload;

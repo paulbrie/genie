@@ -1,10 +1,11 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
-import { migrateOrgs } from "./db/migrate.js";
+import { migrateOrgs, migrateServerCredentials } from "./db/migrate.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
 import { createServer, shutdown } from "./ws-server.js";
 import { startSlackBot, stopSlackBot } from "./slack-bot.js";
+import { startWireproxyIfConfigured, stopWireproxy } from "./wireproxy-launcher.js";
 
 // One-shot egress probe at boot — logs the manager's public IPv4 and IPv6 (or "n/a")
 // so you know what to put in MANAGER_PUBLIC_IP / MANAGER_PUBLIC_IP_V6 env vars.
@@ -33,6 +34,19 @@ async function probeEgress(): Promise<void> {
 }
 void probeEgress();
 
+// Start wireproxy if configured — must run BEFORE createServer so the first
+// SSH attempts (recipe checks, stats, etc.) see GENIE_TAZ_SOCKS in the env.
+// No-op on hosts with kernel WireGuard (local dev with the macOS app).
+try {
+  await startWireproxyIfConfigured();
+} catch (err) {
+  console.error("[wireproxy] startup failed:", err);
+  // Fail fast — running the manager with no path to Taz VMs just produces a
+  // wall of opaque "SSH connection failed" errors. Better to surface the
+  // wireproxy/config problem immediately.
+  process.exit(1);
+}
+
 // Seed the Claude agent user + upsert built-in recipes into the DB. The
 // renderer's Add-ons panel reads only from the DB, so this is what makes the
 // built-ins visible to the UI on every boot (also picks up any edits to
@@ -42,6 +56,11 @@ try {
   await migrateOrgs();
 } catch (err) {
   console.error("[migrate] Orgs migration failed:", err);
+}
+try {
+  await migrateServerCredentials();
+} catch (err) {
+  console.error("[migrate] server_credentials migration failed:", err);
 }
 try {
   const { inserted, updated } = await seedDefaultRecipes(DEFAULT_RECIPES);
@@ -59,6 +78,7 @@ if (process.env.SLACK_BOT_TOKEN) {
 function gracefulShutdown(): void {
   console.log("\nShutting down Genie manager...");
   stopSlackBot().catch(() => {});
+  stopWireproxy();
   shutdown(wss);
   process.exit(0);
 }

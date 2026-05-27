@@ -8,6 +8,7 @@ import { type WebSocket } from "ws";
 import type { WsMessage as WsMessageBase } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh, type SftpWriteHandle, type SshSession } from "../vps/ssh-client.js";
+import * as projectService from "../project-service.js";
 
 export interface WsMessage extends Omit<WsMessageBase, "payload"> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -42,7 +43,17 @@ export async function handleFsMessage(
   ws: WebSocket,
   msg: WsMessage,
   send: (ws: WebSocket, message: WsMessage) => void,
+  userId: string,
 ): Promise<boolean> {
+  if (!msg.type.startsWith("vps:fs:")) return false;
+  // Project-membership gate (these handlers resolve a server purely from
+  // projectId+instanceId, so without this any user could touch any project's
+  // files). userCanSeeProject admin-bypasses for admins/superadmins.
+  const fsProjectId = msg.payload?.projectId as string | undefined;
+  if (fsProjectId && !(await projectService.userCanSeeProject(userId, fsProjectId))) {
+    send(ws, { type: "vps:fs:result", payload: { ok: false, error: "Not authorized for this project", reqId: msg.payload?.reqId } });
+    return true;
+  }
   switch (msg.type) {
     case "vps:fs:readDirectory": {
       const { projectId, instanceId, path: dirPath, reqId } = msg.payload;
