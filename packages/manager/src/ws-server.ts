@@ -46,7 +46,6 @@ import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules } from "./vps/do-provision.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
 import { createTazClient, defaultSshUserForVm, loadBastionKey, parseBastion, sshUserForImage } from "./vps/tazcloud-api-client.js";
-import * as recipesService from "./recipes-service.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
 import { setupMcpTrackerTunnel, type McpTrackerTunnel } from "./vps/mcp-tracker-tunnel.js";
@@ -69,6 +68,7 @@ import { handleGitMessage } from "./handlers/git-handler.js";
 import { handleFsMessage } from "./handlers/fs-handler.js";
 import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
 import { handleSecurityMessage, abortAllSecurityScans } from "./handlers/security-handler.js";
+import { handleRecipesMessage } from "./handlers/recipes-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
@@ -1710,6 +1710,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleFsMessage(ws, msg as Parameters<typeof handleFsMessage>[1], send as Parameters<typeof handleFsMessage>[2])) return;
   if (await handleVpsDbMessage(ws, msg as Parameters<typeof handleVpsDbMessage>[1], send as Parameters<typeof handleVpsDbMessage>[2])) return;
   if (userId && await handleSecurityMessage(ws, msg as Parameters<typeof handleSecurityMessage>[1], send as Parameters<typeof handleSecurityMessage>[2], userId)) return;
+  if (userId && await handleRecipesMessage(ws, msg as Parameters<typeof handleRecipesMessage>[1], send as Parameters<typeof handleRecipesMessage>[2], userId, broadcast as Parameters<typeof handleRecipesMessage>[4])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -4944,54 +4945,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "admin:tazcloud:stats", payload: { stats: results } });
       } catch {
         send(ws, { type: "admin:tazcloud:stats", payload: { stats: {} } });
-      }
-      break;
-    }
-
-    // --- Recipes CRUD ---
-
-    case "recipes:list": {
-      try {
-        const rows = await recipesService.listRecipes();
-        send(ws, { type: "recipes:list", payload: { recipes: rows } });
-      } catch (err: unknown) {
-        send(ws, { type: "recipes:list", payload: { recipes: [], error: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "recipes:create": {
-      try {
-        const row = await recipesService.createRecipe(msg.payload as recipesService.RecipeInput, userId);
-        send(ws, { type: "recipes:upserted", payload: { recipe: row } });
-        broadcast({ type: "recipes:list:stale", payload: {} });
-      } catch (err: unknown) {
-        send(ws, { type: "recipes:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "recipes:update": {
-      try {
-        const { id, ...rest } = msg.payload;
-        const row = await recipesService.updateRecipe(id, rest);
-        if (!row) throw new Error("Recipe not found");
-        send(ws, { type: "recipes:upserted", payload: { recipe: row } });
-        broadcast({ type: "recipes:list:stale", payload: {} });
-      } catch (err: unknown) {
-        send(ws, { type: "recipes:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "recipes:delete": {
-      try {
-        const { id } = msg.payload;
-        await recipesService.deleteRecipe(id);
-        send(ws, { type: "recipes:deleted", payload: { id } });
-        broadcast({ type: "recipes:list:stale", payload: {} });
-      } catch (err: unknown) {
-        send(ws, { type: "recipes:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
