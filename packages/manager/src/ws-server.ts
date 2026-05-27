@@ -64,6 +64,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { type Role, canSend, canReceive, getEntry, POLICY } from "./ws-acl.js";
 import { handleDbMessage, parseTableList, parseCsvResult, parseCsvLine } from "./handlers/db-handler.js";
+import { handleBackupMessage } from "./handlers/backup-handler.js";
 
 
 /** Track active base image creation AbortController */
@@ -1732,6 +1733,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   // Modular handlers first — return early if any of them handles the message.
   // Inline cases below stay until they get migrated to their own module.
   if (await handleDbMessage(ws, msg as Parameters<typeof handleDbMessage>[1], send as Parameters<typeof handleDbMessage>[2])) return;
+  if (await handleBackupMessage(ws, msg as Parameters<typeof handleBackupMessage>[1], send as Parameters<typeof handleBackupMessage>[2])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -4995,37 +4997,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
 
-    case "admin:backups:list": {
-      try {
-        const files = backupService.listBackups();
-        send(ws, { type: "admin:backups:list", payload: { files } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:backups:create": {
-      try {
-        await backupService.createBackup();
-        const files = backupService.listBackups();
-        send(ws, { type: "admin:backups:created", payload: { files } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "admin:backups:delete": {
-      try {
-        backupService.deleteBackup(msg.payload.name);
-        const files = backupService.listBackups();
-        send(ws, { type: "admin:backups:deleted", payload: { files } });
-      } catch (err: unknown) {
-        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
 
     case "admin:tazcloud:list": {
       const tazToken = process.env.TAZCLOUD_API_TOKEN;
