@@ -68,6 +68,7 @@ import { handleBackupMessage } from "./handlers/backup-handler.js";
 import { handleGitMessage } from "./handlers/git-handler.js";
 import { handleFsMessage } from "./handlers/fs-handler.js";
 import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
+import { handleSecurityMessage, abortAllSecurityScans } from "./handlers/security-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
@@ -85,9 +86,6 @@ const activeConversationAbortControllers = new Map<string, AbortController>();
 /** Track active DO deploy AbortControllers by projectId */
 const activeDoAbortControllers = new Map<string, AbortController>();
 const activeTazAbortControllers = new Map<string, AbortController>();
-
-/** Track active security scan AbortControllers by scanId */
-const activeSecurityAbortControllers = new Map<string, AbortController>();
 
 /** Active SSH sessions for inline project commands (key: projectId:commandId) */
 const activeCommandSessions = new Map<string, SshSession>();
@@ -1711,6 +1709,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleGitMessage(ws, msg as Parameters<typeof handleGitMessage>[1], send as Parameters<typeof handleGitMessage>[2])) return;
   if (await handleFsMessage(ws, msg as Parameters<typeof handleFsMessage>[1], send as Parameters<typeof handleFsMessage>[2])) return;
   if (await handleVpsDbMessage(ws, msg as Parameters<typeof handleVpsDbMessage>[1], send as Parameters<typeof handleVpsDbMessage>[2])) return;
+  if (userId && await handleSecurityMessage(ws, msg as Parameters<typeof handleSecurityMessage>[1], send as Parameters<typeof handleSecurityMessage>[2], userId)) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -6842,79 +6841,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
-    // --- Security scanning ---
-
-    case "security:scan:start": {
-      const { target } = msg.payload;
-      if (!target) {
-        send(ws, { type: "security:scan:error", payload: { scanId: "", message: "Target is required" } });
-        break;
-      }
-      const abortController = new AbortController();
-      let registeredScanId: string | null = null;
-      const scanResult = await (async () => {
-        const { runSecurityScan } = await import("./security-service.js");
-        return runSecurityScan(target, {
-          signal: abortController.signal,
-          onProgress: (update) => {
-            if (update.id && !registeredScanId) {
-              registeredScanId = update.id;
-              activeSecurityAbortControllers.set(registeredScanId, abortController);
-            }
-            send(ws, { type: "security:scan:progress", payload: update });
-          },
-        });
-      })();
-      const scanId = scanResult.id;
-      activeSecurityAbortControllers.delete(scanId);
-      // Persist to DB
-      try {
-        const { saveScan } = await import("./security-service.js");
-        await saveScan(userId, scanResult);
-      } catch (err) {
-        console.error("Failed to persist security scan:", err);
-      }
-      if (scanResult.status === "completed") {
-        send(ws, { type: "security:scan:complete", payload: { scanId, completedAt: scanResult.completedAt } });
-      } else if (scanResult.status === "error") {
-        send(ws, { type: "security:scan:error", payload: { scanId, message: scanResult.error || "Unknown error" } });
-      }
-      break;
-    }
-
-    case "security:scan:stop": {
-      const { scanId } = msg.payload;
-      const ctrl = activeSecurityAbortControllers.get(scanId);
-      if (ctrl) {
-        ctrl.abort();
-        activeSecurityAbortControllers.delete(scanId);
-        send(ws, { type: "security:scan:complete", payload: { scanId, completedAt: Date.now() } });
-      }
-      break;
-    }
-
-    case "security:scans:list": {
-      try {
-        const { listScans } = await import("./security-service.js");
-        const scans = await listScans(userId);
-        send(ws, { type: "security:scans:list", payload: { scans } });
-      } catch (err: unknown) {
-        send(ws, { type: "security:scan:error", payload: { scanId: "", message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
-    case "security:scan:delete": {
-      try {
-        const { deleteScan } = await import("./security-service.js");
-        await deleteScan(msg.payload.scanId);
-        send(ws, { type: "security:scan:deleted", payload: { scanId: msg.payload.scanId } });
-      } catch (err: unknown) {
-        send(ws, { type: "security:scan:error", payload: { scanId: msg.payload.scanId, message: (err instanceof Error ? err.message : String(err)) } });
-      }
-      break;
-    }
-
     default:
       send(ws, {
         type: "error",
@@ -7173,10 +7099,7 @@ export async function createServer(): Promise<WebSocketServer> {
       }
 
       // Abort any active security scans for this connection
-      for (const [scanId, ctrl] of activeSecurityAbortControllers) {
-        ctrl.abort();
-        activeSecurityAbortControllers.delete(scanId);
-      }
+      abortAllSecurityScans();
 
       const closingState = clients.get(ws);
       const wasAuthenticated = closingState?.userId != null;
