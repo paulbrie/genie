@@ -211,15 +211,24 @@ function buildRemoteCommand(config: SshPtyConfig): string {
   //                       pane height. The Genie History panel already shows
   //                       session name + last-active info, so the tmux status
   //                       line is redundant inside Genie's window chrome.
+  //   mouse off         — Genie terminals are single-pane web terminals, so we
+  //                       don't want tmux's mouse handling: with `mouse on` the
+  //                       wheel enters tmux copy-mode and never reaches the app
+  //                       (Claude couldn't be scrolled). Off lets the wheel pass
+  //                       through to the TUI and restores native xterm.js
+  //                       selection. We force it off in case the VM's tmux.conf
+  //                       turned it on.
   //   history-limit     — generous scrollback so reattaches show useful context.
   const setGlobal = [
     'tmux set-option -g focus-events on 2>/dev/null || true',
     'tmux set-option -g status off 2>/dev/null || true',
+    'tmux set-option -g mouse off 2>/dev/null || true',
     'tmux set-option -g history-limit 50000 2>/dev/null || true',
   ].join('; ');
   const setForExisting = [
     `tmux set-option -t ${name} focus-events on 2>/dev/null || true`,
     `tmux set-option -t ${name} status off 2>/dev/null || true`,
+    `tmux set-option -t ${name} mouse off 2>/dev/null || true`,
   ].join('; ');
   // Bash script: apply globals, then either attach (with per-session overrides
   // for already-running sessions) or create fresh.
