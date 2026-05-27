@@ -48,7 +48,7 @@ import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk 
 import { createTazClient, defaultSshUserForVm, loadBastionKey, parseBastion, sshUserForImage } from "./vps/tazcloud-api-client.js";
 import { createBaseImage } from "./vps/do-base-image.js";
 import { setupMcpTunnel, type McpTunnel } from "./vps/mcp-tunnel.js";
-import { setupMcpTrackerTunnel, type McpTrackerTunnel } from "./vps/mcp-tracker-tunnel.js";
+import { setupMcpStreamTunnel, type McpStreamTunnel } from "./vps/mcp-stream-tunnel.js";
 import { setupMcpSecurityTunnel, type McpSecurityTunnel } from "./vps/mcp-security-tunnel.js";
 import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tunnel.js";
 import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
@@ -506,7 +506,7 @@ async function routeChatToVpsAgent(
   {
     const tKey = tunnelKey(userId, instance.connection.host);
     let tunnel = persistentMcpTunnels.get(tKey);
-    const needsAnyTunnel = !tunnel?.trackerTunnel || !tunnel?.securityTunnel || !tunnel?.notifyTunnel || !tunnel?.storageTunnel;
+    const needsAnyTunnel = !tunnel?.streamTunnel || !tunnel?.securityTunnel || !tunnel?.notifyTunnel || !tunnel?.storageTunnel;
 
     if (needsAnyTunnel) {
       try {
@@ -518,12 +518,12 @@ async function routeChatToVpsAgent(
           persistentMcpTunnels.set(tKey, tunnel);
         }
 
-        if (!tunnel.trackerTunnel) {
+        if (!tunnel.streamTunnel) {
           try {
-            tunnel.trackerTunnel = await setupMcpTrackerTunnel(tunnelSsh, project.id, { remotePort: MCP_TRACKER_REMOTE_PORT, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
-            console.log(`[claude-code] Tracker tunnel established for ${project.name}`);
+            tunnel.streamTunnel = await setupMcpStreamTunnel(tunnelSsh, { projectId: project.id, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
+            console.log(`[claude-code] Stream tunnel established for ${project.name} at ${tunnel.streamTunnel.socketPath}`);
           } catch (err: unknown) {
-            console.error(`[claude-code] Tracker tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
+            console.error(`[claude-code] Stream tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
           }
         }
 
@@ -566,8 +566,8 @@ async function routeChatToVpsAgent(
           `  process.stdin.on('end', () => {`,
           `    const cfg = JSON.parse(input);`,
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
-          ...(tunnel.trackerTunnel ? [
-          `    cfg.mcpServers['genie-tracker'] = { type: 'http', url: 'http://127.0.0.1:${MCP_TRACKER_REMOTE_PORT}/mcp' };`,
+          ...(tunnel.streamTunnel ? [
+          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'genie-mcp', args: ['tracker'], env: { GENIE_MCP_SOCKET: '${tunnel.streamTunnel.socketPath}' } };`,
           ] : []),
           ...(tunnel.securityTunnel ? [
           `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
@@ -654,7 +654,7 @@ async function routeChatToVpsAgent(
 
     // Tell Claude about the tracker MCP tools
     const tKey = tunnelKey(userId, serverIp);
-    if (persistentMcpTunnels.get(tKey)?.trackerTunnel) {
+    if (persistentMcpTunnels.get(tKey)?.streamTunnel) {
       systemContext += `\n\n=== Tracker ===\nYou have access to the project's issue tracker via MCP tools (genie-tracker server). Use tracker_list_issues to see all tickets, tracker_get_issue to read a specific ticket by its number, tracker_update_issue to change status/priority, and tracker_comment_on_issue to leave notes.\n\nWorkflow: set status to in_progress when you start working on a ticket. When you finish, leave a concise summary comment (bullet list of changes) using tracker_comment_on_issue, then set status to in_review (NEVER set to done — a human reviews and marks done).`;
     }
 
@@ -1104,7 +1104,6 @@ function createDomActionExecutor(extensionWs: WebSocket): DomActionExecutor {
 /* ---- Persistent MCP browser tunnels ---- */
 
 const MCP_BROWSER_REMOTE_PORT = 9877;
-const MCP_TRACKER_REMOTE_PORT = 9878;
 const MCP_SECURITY_REMOTE_PORT = 9879;
 const MCP_NOTIFY_REMOTE_PORT = 9880;
 const MCP_STORAGE_REMOTE_PORT = 9881;
@@ -1112,10 +1111,12 @@ const MCP_STORAGE_REMOTE_PORT = 9881;
 interface PersistentMcpTunnel {
   sshSession: SshSession;
   mcpTunnel: McpTunnel;
-  trackerTunnel?: McpTrackerTunnel;
   securityTunnel?: McpSecurityTunnel;
   notifyTunnel?: McpNotifyTunnel;
   storageTunnel?: McpStorageTunnel;
+  /** Unix-socket stdio multiplexer. Replaces trackerTunnel-style port forwards
+   *  for any MCP server registered in mcp-stream-tunnel. */
+  streamTunnel?: McpStreamTunnel;
   projectName: string;
   instanceHost: string;
 }
@@ -1146,13 +1147,13 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
         const sshSession = await connectSsh(instance.connection, { timeoutMs: 30_000 });
         const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
 
-        // Set up tracker tunnel for this project
-        let trackerTunnel: McpTrackerTunnel | undefined;
+        // Set up stdio stream tunnel (carries tracker + future MCPs)
+        let streamTunnel: McpStreamTunnel | undefined;
         try {
-          trackerTunnel = await setupMcpTrackerTunnel(sshSession, project.id, { remotePort: MCP_TRACKER_REMOTE_PORT, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
-          console.log(`[mcp-persistent] Tracker tunnel ready for ${project.name}`);
-        } catch (trackerErr: unknown) {
-          console.error(`[mcp-persistent] Tracker tunnel failed for ${project.name}: ${(trackerErr instanceof Error ? trackerErr.message : String(trackerErr))}`);
+          streamTunnel = await setupMcpStreamTunnel(sshSession, { projectId: project.id, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
+          console.log(`[mcp-persistent] Stream tunnel ready for ${project.name} at ${streamTunnel.socketPath}`);
+        } catch (streamErr: unknown) {
+          console.error(`[mcp-persistent] Stream tunnel failed for ${project.name}: ${(streamErr instanceof Error ? streamErr.message : String(streamErr))}`);
         }
 
         // Set up security tunnel
@@ -1184,7 +1185,7 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
           console.error(`[mcp-persistent] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
         }
 
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, trackerTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host });
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host });
 
         // Merge MCP servers into .mcp.json on the VPS
         const mergeScript = [
@@ -1197,8 +1198,8 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
           `    const cfg = JSON.parse(input);`,
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
           `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
-          ...(trackerTunnel ? [
-          `    cfg.mcpServers['genie-tracker'] = { type: 'http', url: 'http://127.0.0.1:${MCP_TRACKER_REMOTE_PORT}/mcp' };`,
+          ...(streamTunnel ? [
+          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'genie-mcp', args: ['tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
           ] : []),
           ...(securityTunnel ? [
           `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
@@ -1236,7 +1237,10 @@ async function teardownPersistentMcpTunnels(userId: string): Promise<void> {
   for (const [key, tunnel] of persistentMcpTunnels) {
     if (key.startsWith(prefix)) {
       toRemove.push(key);
-      try { tunnel.trackerTunnel?.close(); } catch {}
+      try { tunnel.streamTunnel?.close(); } catch {}
+      try { tunnel.securityTunnel?.close(); } catch {}
+      try { tunnel.notifyTunnel?.close(); } catch {}
+      try { tunnel.storageTunnel?.close(); } catch {}
       try { tunnel.mcpTunnel.close(); } catch {}
       try { tunnel.sshSession.close(); } catch {}
     }
@@ -4141,12 +4145,12 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const sshSession = await connectSsh(vpsInst.connection, { timeoutMs: 30_000 });
         const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
 
-        // Set up tracker tunnel
-        let trackerTunnel: McpTrackerTunnel | undefined;
+        // Set up stdio stream tunnel (carries tracker + future MCPs)
+        let streamTunnel: McpStreamTunnel | undefined;
         try {
-          trackerTunnel = await setupMcpTrackerTunnel(sshSession, project.id, { remotePort: MCP_TRACKER_REMOTE_PORT, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
-        } catch (trackerErr: unknown) {
-          console.error(`[mcp-tunnel] Tracker tunnel failed for ${project.name}: ${(trackerErr instanceof Error ? trackerErr.message : String(trackerErr))}`);
+          streamTunnel = await setupMcpStreamTunnel(sshSession, { projectId: project.id, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
+        } catch (streamErr: unknown) {
+          console.error(`[mcp-tunnel] Stream tunnel failed for ${project.name}: ${(streamErr instanceof Error ? streamErr.message : String(streamErr))}`);
         }
 
         // Set up security tunnel
@@ -4175,7 +4179,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           console.error(`[mcp-tunnel] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
         }
 
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, trackerTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: host });
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: host });
 
         // Merge MCP servers into .mcp.json on the VPS
         const dest = remoteDir(project.name);
@@ -4189,8 +4193,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           `    const cfg = JSON.parse(input);`,
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
           `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
-          ...(trackerTunnel ? [
-          `    cfg.mcpServers['genie-tracker'] = { type: 'http', url: 'http://127.0.0.1:${MCP_TRACKER_REMOTE_PORT}/mcp' };`,
+          ...(streamTunnel ? [
+          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'genie-mcp', args: ['tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
           ] : []),
           ...(securityTunnel ? [
           `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,

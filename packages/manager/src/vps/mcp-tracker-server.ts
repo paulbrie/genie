@@ -121,6 +121,150 @@ function jsonRpcError(id: unknown, code: number, message: string) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
+/** Pure JSON-RPC handler for the tracker MCP. Both the legacy HTTP server and
+ *  the new stdio bridge (mcp-stream-tunnel) dispatch through here, so the
+ *  transport is the only thing that varies. Returns the full JSON-RPC envelope
+ *  (with `id`), or `null` for notifications that don't expect a reply. */
+export async function handleTrackerRequest(
+  projectId: string,
+  req: { id?: unknown; method?: string; params?: Record<string, unknown> },
+  opts?: { onIssueUpdated?: () => void },
+): Promise<object | null> {
+  const { id, method, params } = req;
+  if (id === undefined || id === null) return null;
+
+  try {
+    if (method === "initialize") {
+      return jsonRpcResponse(id, {
+        protocolVersion: "2024-11-05",
+        serverInfo: { name: "genie-tracker-mcp", version: "1.0.0" },
+        capabilities: { tools: {} },
+      });
+    }
+    if (method === "tools/list") {
+      return jsonRpcResponse(id, { tools: TOOLS });
+    }
+    if (method !== "tools/call") {
+      return jsonRpcError(id, -32601, `Method not found: ${method}`);
+    }
+
+    const toolName = params?.name as string;
+    const args = (params?.arguments ?? {}) as Record<string, unknown>;
+
+    if (toolName === "tracker_list_issues") {
+      const allIssues = await trackerService.listIssues();
+      let issues = allIssues.filter((i) => i.projectId === projectId);
+      if (args.status) issues = issues.filter((i) => i.status === args.status);
+      if (args.priority) issues = issues.filter((i) => i.priority === args.priority);
+      const summary = issues.map((i) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        priority: i.priority,
+        assignee: i.assigneeName || null,
+        labels: i.labels.map((l) => l.name),
+        description: i.description?.slice(0, 200) || "",
+        updatedAt: i.updatedAt,
+      }));
+      return jsonRpcResponse(id, { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] });
+    }
+
+    if (toolName === "tracker_get_issue") {
+      const identifier = args.identifier as number;
+      const allIssues = await trackerService.listIssues();
+      const issue = allIssues.find((i) => i.projectId === projectId && i.identifier === identifier);
+      if (!issue) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
+          isError: true,
+        });
+      }
+      return jsonRpcResponse(id, {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            id: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            description: issue.description,
+            status: issue.status,
+            priority: issue.priority,
+            assignee: issue.assigneeName || null,
+            labels: issue.labels.map((l) => l.name),
+            createdAt: issue.createdAt,
+            updatedAt: issue.updatedAt,
+          }, null, 2),
+        }],
+      });
+    }
+
+    if (toolName === "tracker_update_issue") {
+      const identifier = args.identifier as number;
+      const allIssues = await trackerService.listIssues();
+      const issue = allIssues.find((i) => i.projectId === projectId && i.identifier === identifier);
+      if (!issue) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
+          isError: true,
+        });
+      }
+      const updateFields: Record<string, unknown> = {};
+      if (args.status) updateFields.status = args.status;
+      if (args.priority) updateFields.priority = args.priority;
+      const updated = await trackerService.updateIssue("system", issue.id, updateFields);
+      if (updated) opts?.onIssueUpdated?.();
+      return jsonRpcResponse(id, {
+        content: [{ type: "text", text: updated ? `Issue #${identifier} updated successfully.` : `Failed to update issue #${identifier}.` }],
+        isError: !updated,
+      });
+    }
+
+    if (toolName === "tracker_create_issue") {
+      const title = args.title as string | undefined;
+      if (!title || typeof title !== "string" || title.trim().length === 0) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: "Cannot create issue: 'title' is required and must be a non-empty string." }],
+          isError: true,
+        });
+      }
+      const description = typeof args.description === "string" ? args.description : undefined;
+      const status = typeof args.status === "string" ? args.status : undefined;
+      const priority = typeof args.priority === "string" ? args.priority : undefined;
+      const created = await trackerService.createIssue("system", { projectId, title: title.trim(), description, status, priority });
+      if (created) opts?.onIssueUpdated?.();
+      return jsonRpcResponse(id, {
+        content: [{ type: "text", text: created ? `Created issue #${created.identifier}: ${created.title}` : "Failed to create issue." }],
+        isError: !created,
+      });
+    }
+
+    if (toolName === "tracker_comment_on_issue") {
+      const identifier = args.identifier as number;
+      const content = args.content as string;
+      const allIssues = await trackerService.listIssues();
+      const issue = allIssues.find((i) => i.projectId === projectId && i.identifier === identifier);
+      if (!issue) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
+          isError: true,
+        });
+      }
+      const comment = await trackerService.createComment({ issueId: issue.id, userId: null, authorName: "Genie", content });
+      if (comment) opts?.onIssueUpdated?.();
+      return jsonRpcResponse(id, {
+        content: [{ type: "text", text: comment ? `Comment added to issue #${identifier}.` : `Failed to add comment to issue #${identifier}.` }],
+        isError: !comment,
+      });
+    }
+
+    return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return jsonRpcError(id, -32000, message || "Internal error");
+  }
+}
+
 function sendSseResponse(res: http.ServerResponse, payload: object) {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -167,215 +311,17 @@ export function createMcpTrackerServer(
         return;
       }
 
-      const { id, method, params } = parsed as {
-        id?: unknown;
-        method?: string;
-        params?: Record<string, unknown>;
-      };
-
-      // Notifications (no id) — acknowledge with 202
-      if (id === undefined || id === null) {
+      const result = await handleTrackerRequest(projectId, parsed as Parameters<typeof handleTrackerRequest>[1], { onIssueUpdated });
+      // Notifications (no id) — handler returns null; ack with 202.
+      if (result === null) {
         res.writeHead(202).end();
         return;
       }
-
-      try {
-        let result: object;
-
-        if (method === "initialize") {
-          result = jsonRpcResponse(id, {
-            protocolVersion: "2024-11-05",
-            serverInfo: { name: "genie-tracker-mcp", version: "1.0.0" },
-            capabilities: { tools: {} },
-          });
-        } else if (method === "tools/list") {
-          result = jsonRpcResponse(id, { tools: TOOLS });
-        } else if (method === "tools/call") {
-          const toolName = params?.name as string;
-          const args = (params?.arguments ?? {}) as Record<string, unknown>;
-
-          if (toolName === "tracker_list_issues") {
-            const allIssues = await trackerService.listIssues();
-            let issues = allIssues.filter((i) => i.projectId === projectId);
-
-            if (args.status) {
-              issues = issues.filter((i) => i.status === args.status);
-            }
-            if (args.priority) {
-              issues = issues.filter((i) => i.priority === args.priority);
-            }
-
-            const summary = issues.map((i) => ({
-              id: i.id,
-              identifier: i.identifier,
-              title: i.title,
-              status: i.status,
-              priority: i.priority,
-              assignee: i.assigneeName || null,
-              labels: i.labels.map((l) => l.name),
-              description: i.description?.slice(0, 200) || "",
-              updatedAt: i.updatedAt,
-            }));
-
-            result = jsonRpcResponse(id, {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(summary, null, 2),
-                },
-              ],
-            });
-          } else if (toolName === "tracker_get_issue") {
-            const identifier = args.identifier as number;
-            const allIssues = await trackerService.listIssues();
-            const issue = allIssues.find(
-              (i) => i.projectId === projectId && i.identifier === identifier,
-            );
-
-            if (!issue) {
-              result = jsonRpcResponse(id, {
-                content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
-                isError: true,
-              });
-            } else {
-              result = jsonRpcResponse(id, {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(
-                      {
-                        id: issue.id,
-                        identifier: issue.identifier,
-                        title: issue.title,
-                        description: issue.description,
-                        status: issue.status,
-                        priority: issue.priority,
-                        assignee: issue.assigneeName || null,
-                        labels: issue.labels.map((l) => l.name),
-                        createdAt: issue.createdAt,
-                        updatedAt: issue.updatedAt,
-                      },
-                      null,
-                      2,
-                    ),
-                  },
-                ],
-              });
-            }
-          } else if (toolName === "tracker_update_issue") {
-            const identifier = args.identifier as number;
-            const allIssues = await trackerService.listIssues();
-            const issue = allIssues.find(
-              (i) => i.projectId === projectId && i.identifier === identifier,
-            );
-
-            if (!issue) {
-              result = jsonRpcResponse(id, {
-                content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
-                isError: true,
-              });
-            } else {
-              const updateFields: Record<string, unknown> = {};
-              if (args.status) updateFields.status = args.status;
-              if (args.priority) updateFields.priority = args.priority;
-
-              // Use a system user ID for agent updates
-              const updated = await trackerService.updateIssue("system", issue.id, updateFields);
-              if (updated) onIssueUpdated?.();
-              result = jsonRpcResponse(id, {
-                content: [
-                  {
-                    type: "text",
-                    text: updated
-                      ? `Issue #${identifier} updated successfully.`
-                      : `Failed to update issue #${identifier}.`,
-                  },
-                ],
-                isError: !updated,
-              });
-            }
-          } else if (toolName === "tracker_create_issue") {
-            const title = args.title as string | undefined;
-            if (!title || typeof title !== "string" || title.trim().length === 0) {
-              result = jsonRpcResponse(id, {
-                content: [{ type: "text", text: "Cannot create issue: 'title' is required and must be a non-empty string." }],
-                isError: true,
-              });
-            } else {
-              const description = typeof args.description === "string" ? args.description : undefined;
-              const status = typeof args.status === "string" ? args.status : undefined;
-              const priority = typeof args.priority === "string" ? args.priority : undefined;
-              // "system" mirrors the userId convention used by the update / comment branches.
-              const created = await trackerService.createIssue("system", {
-                projectId,
-                title: title.trim(),
-                description,
-                status,
-                priority,
-              });
-              if (created) onIssueUpdated?.();
-              result = jsonRpcResponse(id, {
-                content: [
-                  {
-                    type: "text",
-                    text: created
-                      ? `Created issue #${created.identifier}: ${created.title}`
-                      : "Failed to create issue.",
-                  },
-                ],
-                isError: !created,
-              });
-            }
-          } else if (toolName === "tracker_comment_on_issue") {
-            const identifier = args.identifier as number;
-            const content = args.content as string;
-            const allIssues = await trackerService.listIssues();
-            const issue = allIssues.find(
-              (i) => i.projectId === projectId && i.identifier === identifier,
-            );
-
-            if (!issue) {
-              result = jsonRpcResponse(id, {
-                content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
-                isError: true,
-              });
-            } else {
-              const comment = await trackerService.createComment({
-                issueId: issue.id,
-                userId: null,
-                authorName: "Genie",
-                content,
-              });
-              if (comment) onIssueUpdated?.();
-              result = jsonRpcResponse(id, {
-                content: [
-                  {
-                    type: "text",
-                    text: comment
-                      ? `Comment added to issue #${identifier}.`
-                      : `Failed to add comment to issue #${identifier}.`,
-                  },
-                ],
-                isError: !comment,
-              });
-            }
-          } else {
-            result = jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
-          }
-        } else {
-          result = jsonRpcError(id, -32601, `Method not found: ${method}`);
-        }
-
-        const accept = req.headers.accept || "";
-        if (accept.includes("text/event-stream")) {
-          sendSseResponse(res, result);
-        } else {
-          res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
-        }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        const errResp = jsonRpcError(id, -32000, message || "Internal error");
-        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(errResp));
+      const accept = req.headers.accept || "";
+      if (accept.includes("text/event-stream")) {
+        sendSseResponse(res, result);
+      } else {
+        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
       }
     });
 

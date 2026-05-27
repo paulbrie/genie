@@ -35,6 +35,12 @@ export interface SshSession {
   forwardIn(bindAddr: string, bindPort: number): Promise<number>;
   unforwardIn(bindAddr: string, bindPort: number): Promise<void>;
   onTcpConnection(handler: (info: { destPort: number }, accept: () => ClientChannel) => void): void;
+  /** OpenSSH unix-socket reverse forward: ask the server to bind a unix socket
+   *  at `socketPath`. Incoming connections surface via {@link onUnixConnection}. */
+  forwardInUnixSocket(socketPath: string): Promise<void>;
+  unforwardInUnixSocket(socketPath: string): Promise<void>;
+  /** Fires for every incoming connection on a forwarded unix socket. */
+  onUnixConnection(handler: (info: { socketPath: string }, accept: () => ClientChannel) => void): void;
   sftpOpenWrite(remotePath: string): Promise<SftpWriteHandle>;
   close(): void;
 }
@@ -214,6 +220,30 @@ function makeSession(conn: Client): SshSession {
     onTcpConnection(handler: (info: { destPort: number }, accept: () => ClientChannel) => void): void {
       conn.on("tcp connection", (details: { destPort: number }, accept: () => ClientChannel) => {
         handler({ destPort: details.destPort }, accept);
+      });
+    },
+
+    forwardInUnixSocket(socketPath: string): Promise<void> {
+      return new Promise((resolve, reject) => {
+        conn.openssh_forwardInStreamLocal(socketPath, (err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+    },
+
+    unforwardInUnixSocket(socketPath: string): Promise<void> {
+      return new Promise((resolve, reject) => {
+        conn.openssh_unforwardInStreamLocal(socketPath, (err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+    },
+
+    onUnixConnection(handler: (info: { socketPath: string }, accept: () => ClientChannel) => void): void {
+      conn.on("unix connection", (details: { socketPath: string }, accept) => {
+        handler({ socketPath: details.socketPath }, accept as () => ClientChannel);
       });
     },
 

@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "genie-agent": "dist/index.js"
+    "genie-agent": "dist/index.js",
+    "genie-mcp": "dist/mcp-cli.js"
   },
   "scripts": {
     "build": "tsc",
