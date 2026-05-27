@@ -70,6 +70,7 @@ import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
 import { handleSecurityMessage, abortAllSecurityScans } from "./handlers/security-handler.js";
 import { handleRecipesMessage } from "./handlers/recipes-handler.js";
 import { handleFileTemplateMessage } from "./handlers/file-template-handler.js";
+import { handleProjectFileMessage } from "./handlers/project-file-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
@@ -1717,6 +1718,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (userId && await handleSecurityMessage(ws, msg as Parameters<typeof handleSecurityMessage>[1], send as Parameters<typeof handleSecurityMessage>[2], userId)) return;
   if (userId && await handleRecipesMessage(ws, msg as Parameters<typeof handleRecipesMessage>[1], send as Parameters<typeof handleRecipesMessage>[2], userId, broadcast as Parameters<typeof handleRecipesMessage>[4])) return;
   if (userId && await handleFileTemplateMessage(ws, msg as Parameters<typeof handleFileTemplateMessage>[1], send as Parameters<typeof handleFileTemplateMessage>[2], userId)) return;
+  if (await handleProjectFileMessage(ws, msg as Parameters<typeof handleProjectFileMessage>[1], send as Parameters<typeof handleProjectFileMessage>[2])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -3167,98 +3169,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const setupFiles = { ...files, [targetName]: content };
       await projectService.patchProject(projectId, { setupFiles });
       send(ws, { type: "compose:saved", payload: { projectId, ok: true, filePath: targetName, error: null } });
-      break;
-    }
-
-    // --- Project file editor handlers ---
-
-    case "project-file:list": {
-      const { projectId } = msg.payload;
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "project-file:files", payload: { projectId, files: [], error: "Project not found" } });
-        break;
-      }
-      const files = Object.keys(project.setupFiles || {});
-      send(ws, { type: "project-file:files", payload: { projectId, files, error: null } });
-      break;
-    }
-
-    case "project-file:read": {
-      const { projectId, fileName } = msg.payload;
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "project-file:content", payload: { projectId, fileName, content: null, error: "Project not found" } });
-        break;
-      }
-      const content = (project.setupFiles || {})[fileName] ?? null;
-      send(ws, { type: "project-file:content", payload: { projectId, fileName, content, error: null } });
-      break;
-    }
-
-    case "project-file:save": {
-      const { projectId, fileName, content } = msg.payload;
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "project-file:saved", payload: { projectId, fileName, ok: false, error: "Project not found" } });
-        break;
-      }
-      const setupFiles = { ...(project.setupFiles || {}), [fileName]: content };
-      await projectService.patchProject(projectId, { setupFiles });
-      send(ws, { type: "project-file:saved", payload: { projectId, fileName, ok: true, error: null } });
-      break;
-    }
-
-    case "project-file:delete": {
-      const { projectId, fileName } = msg.payload;
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "project-file:deleted", payload: { projectId, fileName, ok: false, error: "Project not found" } });
-        break;
-      }
-      const remaining = { ...(project.setupFiles || {}) };
-      delete remaining[fileName];
-      await projectService.patchProject(projectId, { setupFiles: remaining });
-      send(ws, { type: "project-file:deleted", payload: { projectId, fileName, ok: true, error: null } });
-      break;
-    }
-
-    case "project-file:add": {
-      const { projectId, fileName } = msg.payload;
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "project-file:added", payload: { projectId, fileName, ok: false, error: "Project not found" } });
-        break;
-      }
-      const withNew = { ...(project.setupFiles || {}), [fileName]: "" };
-      await projectService.patchProject(projectId, { setupFiles: withNew });
-      send(ws, { type: "project-file:added", payload: { projectId, fileName, ok: true, error: null } });
-      break;
-    }
-
-    case "project-file:rename": {
-      const { projectId, oldName, newName } = msg.payload;
-      const project = await projectService.getById(projectId);
-      if (!project) {
-        send(ws, { type: "project-file:renamed", payload: { projectId, ok: false, error: "Project not found" } });
-        break;
-      }
-      const files = { ...(project.setupFiles || {}) };
-      if (!(oldName in files)) {
-        send(ws, { type: "project-file:renamed", payload: { projectId, ok: false, error: "File not found" } });
-        break;
-      }
-      const content = files[oldName];
-      delete files[oldName];
-      files[newName] = content;
-      await projectService.patchProject(projectId, { setupFiles: files });
-      send(ws, { type: "project-file:renamed", payload: { projectId, oldName, newName, ok: true, error: null } });
-      break;
-    }
-
-    case "project-file:import-from-disk": {
-      const { projectId } = msg.payload;
-      send(ws, { type: "project-file:imported", payload: { projectId, files: [], error: "Import from disk is no longer supported. Create files directly in the editor." } });
       break;
     }
 
