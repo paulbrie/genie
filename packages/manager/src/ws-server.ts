@@ -65,6 +65,8 @@ import crypto from "node:crypto";
 import { type Role, canSend, canReceive, getEntry, POLICY } from "./ws-acl.js";
 import { handleDbMessage, parseTableList, parseCsvResult, parseCsvLine } from "./handlers/db-handler.js";
 import { handleBackupMessage } from "./handlers/backup-handler.js";
+import { handleGitMessage } from "./handlers/git-handler.js";
+import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
 /** Track active base image creation AbortController */
@@ -287,13 +289,8 @@ async function collectAgentFiles(): Promise<{ remotePath: string; content: strin
 
 const VERSION_FILE = `${VPS_AGENT_REMOTE_BASE}/.version`;
 
-/** Resolve a VPS connection config from projectId + instanceId */
-async function getVpsConnection(projectId: string, instanceId: string): Promise<VpsConnectionConfig> {
-  const project = await projectService.getById(projectId);
-  const inst = project?.vpsInstances.find((v) => v.id === instanceId);
-  if (!inst) throw new Error("VPS instance not found");
-  return inst.connection;
-}
+// `getVpsConnection` moved to ./vps/connection-resolver.ts so handler modules
+// under ./handlers/ can import it without taking a dep on ws-server itself.
 
 // Note: parseTableList, parseCsvResult, and parseCsvLine have been refactored to ./handlers/db-handler.js
 
@@ -1734,6 +1731,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   // Inline cases below stay until they get migrated to their own module.
   if (await handleDbMessage(ws, msg as Parameters<typeof handleDbMessage>[1], send as Parameters<typeof handleDbMessage>[2])) return;
   if (await handleBackupMessage(ws, msg as Parameters<typeof handleBackupMessage>[1], send as Parameters<typeof handleBackupMessage>[2])) return;
+  if (await handleGitMessage(ws, msg as Parameters<typeof handleGitMessage>[1], send as Parameters<typeof handleGitMessage>[2])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -2896,123 +2894,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         session.close();
         activeCommandSessions.delete(cmdKey);
         send(ws, { type: "project:command:done", payload: { projectId, commandId, exitCode: -1, error: "Stopped by user" } });
-      }
-      break;
-    }
-
-    // --- Git handlers ---
-
-    case "git:status":
-    case "git:log":
-    case "git:branches":
-    case "git:diff":
-    case "git:stage":
-    case "git:unstage":
-    case "git:commit":
-    case "git:push":
-    case "git:pull":
-    case "git:checkout":
-    case "git:stash":
-    case "git:stash-pop": {
-      const { projectId, instanceId, folder, reqId } = msg.payload;
-      const gitReply = (type: string, extra: Record<string, unknown>) =>
-        send(ws, { type, payload: { ...extra, ...(reqId ? { reqId } : {}) } });
-      let conn;
-      try {
-        conn = await getVpsConnection(projectId, instanceId);
-      } catch {
-        gitReply("git:error", { message: "VPS instance not found" });
-        break;
-      }
-      let session: SshSession;
-      try {
-        session = await connectSsh(conn, { timeoutMs: 15_000 });
-      } catch (err: unknown) {
-        gitReply("git:error", { message: `SSH failed: ${(err instanceof Error ? err.message : String(err))}` });
-        break;
-      }
-      const cwd = folder || "/opt/project";
-      try {
-        let result: string;
-        switch (msg.type) {
-          case "git:status": {
-            const porcelain = await session.exec(`cd ${cwd} && git status --porcelain -b 2>&1`);
-            const branch = await session.exec(`cd ${cwd} && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""`);
-            const ahead = await session.exec(`cd ${cwd} && git rev-list --count @{u}..HEAD 2>/dev/null || echo "0"`);
-            const behind = await session.exec(`cd ${cwd} && git rev-list --count HEAD..@{u} 2>/dev/null || echo "0"`);
-            gitReply("git:status:result", { projectId, folder: cwd, porcelain: porcelain.trim(), branch: branch.trim(), ahead: parseInt(ahead.trim()) || 0, behind: parseInt(behind.trim()) || 0 });
-            break;
-          }
-          case "git:log": {
-            const count = msg.payload.count || 50;
-            result = await session.exec(`cd ${cwd} && git log --oneline --decorate -n ${count} 2>&1`);
-            gitReply("git:log:result", { projectId, folder: cwd, log: result.trim() });
-            break;
-          }
-          case "git:branches": {
-            result = await session.exec(`cd ${cwd} && git branch -a --format='%(refname:short) %(HEAD)' 2>&1`);
-            gitReply("git:branches:result", { projectId, folder: cwd, branches: result.trim() });
-            break;
-          }
-          case "git:diff": {
-            const { file, staged } = msg.payload;
-            const diffCmd = staged ? "git diff --cached" : "git diff";
-            const target = file ? ` -- "${file}"` : "";
-            result = await session.exec(`cd ${cwd} && ${diffCmd}${target} 2>&1`);
-            gitReply("git:diff:result", { projectId, folder: cwd, file, staged, diff: result });
-            break;
-          }
-          case "git:stage": {
-            const files: string[] = msg.payload.files || ["."];
-            result = await session.exec(`cd ${cwd} && git add ${files.map((f: string) => `"${f}"`).join(" ")} 2>&1`);
-            gitReply("git:stage:done", { projectId, folder: cwd });
-            break;
-          }
-          case "git:unstage": {
-            const files: string[] = msg.payload.files || ["."];
-            result = await session.exec(`cd ${cwd} && git reset HEAD ${files.map((f: string) => `"${f}"`).join(" ")} 2>&1`);
-            gitReply("git:unstage:done", { projectId, folder: cwd });
-            break;
-          }
-          case "git:commit": {
-            const message = msg.payload.message || "commit";
-            // Escape single quotes in commit message
-            const safeMsg = message.replace(/'/g, "'\\''");
-            result = await session.exec(`cd ${cwd} && git commit -m '${safeMsg}' 2>&1`);
-            gitReply("git:commit:done", { projectId, folder: cwd, output: result.trim() });
-            break;
-          }
-          case "git:push": {
-            result = await session.exec(`cd ${cwd} && git push 2>&1`, undefined, { timeoutMs: 60_000 });
-            gitReply("git:push:done", { projectId, folder: cwd, output: result.trim() });
-            break;
-          }
-          case "git:pull": {
-            result = await session.exec(`cd ${cwd} && git pull 2>&1`, undefined, { timeoutMs: 60_000 });
-            gitReply("git:pull:done", { projectId, folder: cwd, output: result.trim() });
-            break;
-          }
-          case "git:checkout": {
-            const branchName = msg.payload.branch;
-            result = await session.exec(`cd ${cwd} && git checkout "${branchName}" 2>&1`);
-            gitReply("git:checkout:done", { projectId, folder: cwd, output: result.trim() });
-            break;
-          }
-          case "git:stash": {
-            result = await session.exec(`cd ${cwd} && git stash 2>&1`);
-            gitReply("git:stash:done", { projectId, folder: cwd, output: result.trim() });
-            break;
-          }
-          case "git:stash-pop": {
-            result = await session.exec(`cd ${cwd} && git stash pop 2>&1`);
-            gitReply("git:stash-pop:done", { projectId, folder: cwd, output: result.trim() });
-            break;
-          }
-        }
-      } catch (err: unknown) {
-        gitReply("git:error", { message: (err instanceof Error ? err.message : String(err)) });
-      } finally {
-        session.close();
       }
       break;
     }
