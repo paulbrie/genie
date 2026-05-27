@@ -156,6 +156,7 @@ import type { ProjectTab } from "@/lib/routes";
 import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
 import { openManageDropletWindow } from "@/components/digitalocean-panel";
 import { ProjectMembersTab } from "@/components/project-members-tab";
+import { DeployHistoryPanel, DeployHistoryTab } from "@/components/project/deploy-history";
 
 
 const BASE_PROJECT_TABS: { key: ProjectTab; label: string }[] = [
@@ -354,66 +355,7 @@ function StaticElapsed({ startedAt, endedAt }: { startedAt: number; endedAt: num
   return <span className="text-md text-overlay0 font-mono">in {m}:{String(s).padStart(2, "0")}</span>;
 }
 
-function DeployLog({ progress, error, deploying }: { progress: string[]; error: string | null; deploying: boolean }) {
-  const logRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [progress, error]);
-
-  return (
-    <div
-      ref={logRef}
-      className="bg-background rounded p-3 max-h-96 overflow-y-auto font-mono text-base select-text scrollbar-thin"
-    >
-      {progress.map((line, i) => (
-        <div key={i} className="flex items-start gap-1.5 py-0.5">
-          <Check size={12} className="text-green shrink-0 mt-0.5" />
-          <span className="text-overlay1">{line}</span>
-        </div>
-      ))}
-      {deploying && (
-        <div className="flex items-center gap-1.5 py-0.5 text-blue">
-          <Loader2 size={12} className="animate-spin shrink-0" />
-          <span>Waiting...</span>
-        </div>
-      )}
-      {error && (
-        <div className="flex items-start gap-1.5 py-0.5">
-          <X size={12} className="text-red shrink-0 mt-0.5" />
-          <ErrorMessage>{error}</ErrorMessage>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DeployProgressLog({ progress, error, deploying }: { progress: string[]; error: string | null; deploying: boolean }) {
-  const endRef = useRef<HTMLDivElement>(null);
-  const [copied, setCopied] = useState(false);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [progress.length]);
-  const fullText = [...progress, ...(error ? [error] : [])].join("\n");
-  return (
-    <div className="border-t border-surface0 relative">
-      <button
-        onClick={() => { navigator.clipboard.writeText(fullText); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-        className="absolute top-1.5 right-2 p-1 bg-transparent border-none cursor-pointer text-overlay0 hover:text-text transition-colors z-10"
-        title="Copy logs"
-      >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
-      </button>
-      <div className="px-3 py-2 max-h-[200px] overflow-auto font-mono text-md select-text">
-        {progress.map((msg, i) => (
-          <div key={i} className="text-overlay1 leading-relaxed">{msg}</div>
-        ))}
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        <div ref={endRef} />
-      </div>
-    </div>
-  );
-}
+// DeployLog / DeployProgressLog moved to ./project/deploy-history.tsx
 
 function CloudDashboardGrid({
   projects,
@@ -1868,133 +1810,10 @@ function VpsLogViewer({
   );
 }
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const secs = Math.floor(diff / 1000);
-  if (secs < 60) return "just now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
+// timeAgo / formatDuration moved to ./project/deploy-history.tsx (only callers
+// were DeployHistoryPanel / DeployHistoryTab, which moved with them).
 
-function formatDuration(startedAt: string, endedAt: string | null): string {
-  if (!endedAt) return "...";
-  const secs = Math.floor((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000);
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function DeployHistoryPanel({
-  logs,
-  onClose,
-}: {
-  logs: DeployLogEntry[];
-  onClose: () => void;
-}) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  return (
-    <div className="mb-3">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-md font-medium text-subtext0">Deploy History</span>
-        <button onClick={onClose} className="text-md text-overlay0 hover:text-text">
-          Close
-        </button>
-      </div>
-      {logs.length === 0 ? (
-        <div className="text-md text-overlay0 bg-background rounded p-3">No deploy history found.</div>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {logs.map((entry) => {
-            const isExpanded = expandedId === entry.id;
-            return (
-              <div key={entry.id} className="bg-background rounded-lg overflow-hidden">
-                <button
-                  onClick={() => setExpandedId(isExpanded ? null : entry.id)}
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface0/50 transition-colors text-left"
-                >
-                  {entry.status === "success" && <Check size={12} className="text-green shrink-0" />}
-                  {entry.status === "error" && <X size={12} className="text-red shrink-0" />}
-                  {entry.status === "running" && <Loader2 size={12} className="text-blue animate-spin shrink-0" />}
-                  <span className="text-md text-overlay0 flex-1">
-                    {timeAgo(entry.startedAt)}
-                  </span>
-                  <span className="text-md text-overlay0 font-mono">
-                    {formatDuration(entry.startedAt, entry.endedAt)}
-                  </span>
-                  {isExpanded ? <ChevronDown size={12} className="text-overlay0" /> : <ChevronRight size={12} className="text-overlay0" />}
-                </button>
-                {isExpanded && (
-                  <div className="px-3 pb-3">
-                    <DeployLog
-                      progress={entry.progress}
-                      error={entry.error}
-                      deploying={entry.status === "running"}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DeployHistoryTab({
-  project,
-  vpsDeploy,
-}: {
-  project: ProjectDef;
-  vpsDeploy: VpsDeployState;
-}) {
-  useEffect(() => {
-    loadDeployLogs(project.id);
-  }, [project.id]);
-
-  // Active deploys for this project
-  const projectDeploys = Object.values(vpsDeploy.activeDeploys).filter(
-    (d) => d.projectId === project.id
-  );
-
-  return (
-    <div className="py-4">
-      {projectDeploys.length > 0 && (
-        <div className="flex flex-col gap-1 mb-3">
-          {projectDeploys.map((d) => (
-            <button
-              key={d.instanceId}
-              onClick={() => {
-                openWindow("deploy-" + d.instanceId);
-              }}
-              className="w-full flex items-center gap-2 px-3 py-2 bg-background rounded-lg hover:bg-surface0/50 transition-colors text-left"
-            >
-              {d.deploying && <Loader2 size={12} className="text-blue animate-spin shrink-0" />}
-              {!d.deploying && !d.error && <Check size={12} className="text-green shrink-0" />}
-              {!d.deploying && d.error && <X size={12} className="text-red shrink-0" />}
-              <span className="text-md text-text flex-1">
-                {d.deploying ? "Deploying..." : d.error ? "Failed" : "Complete"}
-              </span>
-              <span className="text-md text-overlay0">
-                Open window
-              </span>
-              <ExternalLink size={10} className="text-overlay0" />
-            </button>
-          ))}
-        </div>
-      )}
-      <DeployHistoryPanel
-        logs={vpsDeploy.deployLogs}
-        onClose={() => {}}
-      />
-    </div>
-  );
-}
+// DeployHistoryPanel / DeployHistoryTab moved to ./project/deploy-history.tsx
 
 function VpsProcessTable({
   processes,
