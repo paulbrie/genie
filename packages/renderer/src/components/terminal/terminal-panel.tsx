@@ -16,7 +16,7 @@ import {
 } from "@/lib/terminal-bridge";
 import { wsSend } from "@/lib/ws";
 import { cn } from "@/lib/utils";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 
 export function TerminalPanel() {
   const [terminal] = useSubject($terminal);

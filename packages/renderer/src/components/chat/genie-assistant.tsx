@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
 import { UsageLine } from "@/components/ui/usage-line";
-import { useDraggable, useResizable } from "@/components/use-draggable";
+import { useDraggable, useResizable } from "@/hooks/use-draggable";
 
 const WINDOW_ID = "genie-assistant";
 const DEFAULT_W = 420;

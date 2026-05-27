@@ -7,15 +7,15 @@ import type { TerminalShareInvite } from "@/store/types";
 import { $auth, $terminal } from "@/store/subjects";
 import { acceptTerminalShare, declineTerminalShare, loadUiState, stopImpersonating } from "@/store/actions";
 import { connectWs, setManagerRunning } from "@/lib/ws";
-import { Sidebar } from "@/components/sidebar";
-import { WindowToolbar } from "@/components/window-toolbar";
+import { Sidebar } from "@/components/ui/sidebar";
+import { WindowToolbar } from "@/components/ui/window-toolbar";
 import { FileExplorerPanel } from "@/components/file-explorer";
-import { WsLogDrawer } from "@/components/ws-log-drawer";
-import { GenieAssistant } from "@/components/genie-assistant";
-import { DeployWindow } from "@/components/deploy-window";
-import { BuildLogWindow } from "@/components/build-log-window";
-import { TerminalWindows } from "@/components/terminal-window";
-import { LoginScreen } from "@/components/login-screen";
+import { WsLogDrawer } from "@/components/ui/ws-log-drawer";
+import { GenieAssistant } from "@/components/chat/genie-assistant";
+import { DeployWindow } from "@/components/project/deploy-window";
+import { BuildLogWindow } from "@/components/project/build-log-window";
+import { TerminalWindows } from "@/components/terminal/terminal-window";
+import { LoginScreen } from "@/components/ui/login-screen";
 
 export default function AppShellLayout({
   children,

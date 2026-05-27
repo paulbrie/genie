@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { useSubject } from "subjecto/react";
-import { ViewHeader } from "@/components/view-header";
-import { ViewTabs } from "@/components/view-tabs";
-import { DigitalOceanPanel } from "@/components/digitalocean-panel";
-import { TazCloudPanel } from "@/components/tazcloud-panel";
+import { ViewHeader } from "@/components/ui/view-header";
+import { ViewTabs } from "@/components/ui/view-tabs";
+import { DigitalOceanPanel } from "@/components/admin/digitalocean-panel";
+import { TazCloudPanel } from "@/components/admin/tazcloud-panel";
 import { $auth } from "@/store/subjects";
 import type { CloudSubTab } from "@/store/types";
 import { buildCloudPath } from "@/lib/routes";

@@ -19,12 +19,12 @@ import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn, parseDockerPorts } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ErrorMessage } from "@/components/ui/error-message";
-import { ChatView } from "@/components/chat-view";
-import { DbExplorer } from "@/components/db-explorer";
-import { FileExplorer } from "@/components/vps-file-explorer";
-import { DropletInstanceBar } from "@/components/droplet-instance-bar";
-import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
-import { ClaudeLogo, VpsFirewall } from "@/components/project-detail";
+import { ChatView } from "@/components/chat/chat-view";
+import { DbExplorer } from "@/components/admin/db-explorer";
+import { FileExplorer } from "@/components/project/vps-file-explorer";
+import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
+import { ProcessCity as IsometricProcessCity } from "@/components/ui/process-city";
+import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
 import { DeployHistoryPanel } from "./deploy-history";
 import { VpsRecipes, VpsRunCommands } from "./vps-recipes";
 

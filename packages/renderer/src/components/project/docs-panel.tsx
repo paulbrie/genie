@@ -10,7 +10,7 @@ import { $conversationChat, $docs, $projects } from "@/store/subjects";
 import { closeShareModal, createFolder, createNewDoc, deleteDoc, deleteFolder, downloadAllDocs, downloadDoc, downloadFolder, loadDocsList, moveDoc, openDoc, openShareModal, renameDoc, renameFolder, saveDoc, setDocProject, setFolderProject, shareDoc, toggleDocPublic, toggleFolderPublic, unshareDoc } from "@/store/actions";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 import { Select } from "@/components/ui/select";
 import { buildDocPath } from "@/lib/routes";
 

@@ -6,7 +6,7 @@
 
 import { useEffect } from "react";
 import { setTrackerProject } from "@/store/actions";
-import { TrackerPanel } from "@/components/tracker-panel";
+import { TrackerPanel } from "@/components/project/tracker-panel";
 
 export function ExtTrackerTab({ projectId }: { projectId: string }) {
   useEffect(() => {

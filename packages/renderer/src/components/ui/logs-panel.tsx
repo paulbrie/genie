@@ -6,7 +6,7 @@ import type { LogsState } from "@/store/types";
 import { $logs } from "@/store/subjects";
 import { clearManagerLogs, switchLogSource } from "@/store/actions";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 import { Select } from "@/components/ui/select";
 import { wsSend } from "@/lib/ws";
 

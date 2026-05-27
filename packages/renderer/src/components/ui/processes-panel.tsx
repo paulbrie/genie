@@ -6,9 +6,9 @@ import type { ProcessInfo } from "@/store/types";
 import { $filterPortsOnly, $processSortBy, $processes } from "@/store/subjects";
 import { togglePortFilter, toggleSort } from "@/store/actions";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
-import { ProcessContextMenu } from "@/components/process-context-menu";
-import { ProcessCity } from "@/components/process-city";
+import { ViewHeader } from "@/components/ui/view-header";
+import { ProcessContextMenu } from "@/components/ui/process-context-menu";
+import { ProcessCity } from "@/components/ui/process-city";
 import { wsSend } from "@/lib/ws";
 import { cn } from "@/lib/utils";
 

@@ -1,6 +1,6 @@
 import { wsSend } from "@/lib/ws";
 import { disposeTerminal } from "@/lib/terminal-bridge";
-import { WINDOW_PREFIX } from "@/components/terminal-window";
+import { WINDOW_PREFIX } from "@/components/terminal/terminal-window";
 import { $persistedTerminals, $terminal } from "../subjects/vps";
 import { $windowManager } from "../subjects/common";
 import { openWindow } from "./window-manager";

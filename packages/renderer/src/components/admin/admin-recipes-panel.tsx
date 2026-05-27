@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { Loader2, Check, X, ChevronDown, ChevronRight, Play, Square, KeyRound, Package } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { VpsRecipeDef } from "@/components/project-detail";
-import { useAllRecipes } from "@/components/use-all-recipes";
+import type { VpsRecipeDef } from "@/components/project/project-detail";
+import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { loadRecipes } from "@/store/actions";
 
 /** Function-shaped SSH exec contract. `onChunk` streams stdout/stderr so long-

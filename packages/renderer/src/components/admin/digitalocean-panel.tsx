@@ -13,10 +13,10 @@ import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { CircularGauge } from "@/components/ui/circular-gauge";
 import { CopyableIp } from "@/components/ui/copyable-ip";
-import { DropletInstanceBar } from "@/components/droplet-instance-bar";
-import { AttachVmToProject } from "@/components/attach-vm-to-project";
-import { ServerDeleteConfirm } from "@/components/server-delete-confirm";
-import { cardStatusPill, formatBytesShort } from "@/components/tazcloud-panel";
+import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
+import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
+import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
+import { cardStatusPill, formatBytesShort } from "@/components/admin/tazcloud-panel";
 import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
 
 // Confirmation type for the inline delete UI on each row.

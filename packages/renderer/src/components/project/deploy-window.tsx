@@ -8,7 +8,7 @@ import { Loader2, Check, X, Minus, Copy, Rocket, Maximize2, Minimize2, ArrowDown
 import type { FloatingWindowState, PendingDeploy, ProjectDef, VpsDeployState } from "@/store/types";
 import { $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
 import { clearVpsDeployState, closeWindow, destroyFailedDroplet, focusWindow, keepFailedDroplet, minimizeWindow, openWindow, registerWindow, setWindowBusy, updateWindowPosition } from "@/store/actions";
-import { useDraggable, useResizable } from "@/components/use-draggable";
+import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ErrorMessage } from "@/components/ui/error-message";
 
 const WINDOW_PREFIX = "deploy-";

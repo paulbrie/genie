@@ -15,8 +15,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
-import { ViewTabs } from "@/components/view-tabs";
+import { ViewHeader } from "@/components/ui/view-header";
+import { ViewTabs } from "@/components/ui/view-tabs";
 
 // --- Status / Priority config ---
 

@@ -8,7 +8,7 @@ import { RefreshCw, X, Check, Copy, Minus, Maximize2, Minimize2, Terminal, Trash
 import type { AdminBaseImageState, FloatingWindowState } from "@/store/types";
 import { $admin, $windowManager } from "@/store/subjects";
 import { addTerminalTab, closeWindow, destroyFailedBuildDroplet, focusWindow, minimizeWindow, openWindow, registerWindow, updateWindowPosition } from "@/store/actions";
-import { useDraggable, useResizable } from "@/components/use-draggable";
+import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ErrorMessage } from "@/components/ui/error-message";
 
 const WINDOW_ID = "build-log";

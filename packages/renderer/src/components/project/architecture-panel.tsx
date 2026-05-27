@@ -15,7 +15,7 @@ import {
   applyNodeChanges,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { TopologyGraph3D } from "./topology-graph-3d";
+import { TopologyGraph3D } from "@/components/project/topology-graph-3d";
 import { Boxes, Network as NetworkIcon } from "lucide-react";
 
 // --- Custom Node ---

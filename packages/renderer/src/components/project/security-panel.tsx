@@ -6,7 +6,7 @@ import type { PortResult, SecurityScan, SecurityState, Severity, WebFinding } fr
 import { $security } from "@/store/subjects";
 import { deleteSecurityScan, loadSecurityScans, startSecurityScan, stopSecurityScan } from "@/store/actions";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 import { cn } from "@/lib/utils";
 import { Shield, Play, Square, ChevronDown, Trash2 } from "lucide-react";
 

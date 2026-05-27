@@ -14,7 +14,7 @@ import {
   renameChatSession,
 } from "@/store/actions";
 import { useNavigate } from "@/lib/navigation";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 

@@ -6,10 +6,10 @@ import type { DockerContainerInfo, DockerInfo } from "@/store/types";
 import { $docker } from "@/store/subjects";
 import { ExternalLink, Loader2, ChevronRight, Play, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DockerContextMenu } from "@/components/docker-context-menu";
+import { DockerContextMenu } from "@/components/project/docker-context-menu";
 import { wsSend } from "@/lib/ws";
 import { cn } from "@/lib/utils";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 
 function stateDot(state: string) {
   if (state === "running") return "bg-green";

@@ -4,14 +4,14 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useSubject } from "subjecto/react";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 import type { ConversationSummary } from "@/store/types";
 import { $conversationChat } from "@/store/subjects";
 import { createGenieDm, loadChatUsers, loadConversations } from "@/store/actions";
-import { ConversationList } from "@/components/conversation-list";
-import { ConversationMessages } from "@/components/conversation-messages";
-import { ChatUsersPanel } from "@/components/chat-users-panel";
-import { CreateRoomDialog } from "@/components/create-room-dialog";
+import { ConversationList } from "@/components/chat/conversation-list";
+import { ConversationMessages } from "@/components/chat/conversation-messages";
+import { ChatUsersPanel } from "@/components/chat/chat-users-panel";
+import { CreateRoomDialog } from "@/components/chat/create-room-dialog";
 
 export function ChatView() {
   const [conversationChat] = useSubject($conversationChat);

@@ -6,14 +6,14 @@ import { useDeepSubjectAll } from "@/lib/hooks";
 import type { BaseImageTemplate, DeployLogEntry, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
 import { $admin, $auth, $commandRunOutputs, $projects, $selectedProjectId, $vpsDeploy } from "@/store/subjects";
 import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadDeployLogs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, uninstallVpsRecipe, vpsExec, wakeVps } from "@/store/actions";
-import { useAllRecipes } from "@/components/use-all-recipes";
+import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { wsSend } from "@/lib/ws";
 import { cn, parseDockerPorts } from "@/lib/utils";
-import { ViewHeader } from "@/components/view-header";
-import { ViewTabs } from "@/components/view-tabs";
+import { ViewHeader } from "@/components/ui/view-header";
+import { ViewTabs } from "@/components/ui/view-tabs";
 import {
   TerminalSquare,
   CloudOff,
@@ -54,10 +54,10 @@ import {
   Sparkles,
   Layers,
 } from "lucide-react";
-import { ChatView } from "@/components/chat-view";
-import { DbExplorer } from "@/components/db-explorer";
-import { FileExplorer } from "@/components/vps-file-explorer";
-import { ProjectFilesEditor } from "@/components/project-files-editor";
+import { ChatView } from "@/components/chat/chat-view";
+import { DbExplorer } from "@/components/admin/db-explorer";
+import { FileExplorer } from "@/components/project/vps-file-explorer";
+import { ProjectFilesEditor } from "@/components/project/project-files-editor";
 
 export function ClaudeLogo({ size = 16 }: { size?: number }) {
   return (
@@ -68,15 +68,15 @@ export function ClaudeLogo({ size = 16 }: { size?: number }) {
 }
 
 
-import { DropletInstanceBar } from "@/components/droplet-instance-bar";
+import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
 import { CircularGauge } from "@/components/ui/circular-gauge";
-import { ProcessCity as IsometricProcessCity } from "@/components/process-city";
+import { ProcessCity as IsometricProcessCity } from "@/components/ui/process-city";
 import type { ProcessInfo } from "@/store/types";
 import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
 import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
-import { openManageDropletWindow } from "@/components/digitalocean-panel";
-import { ProjectMembersTab } from "@/components/project-members-tab";
+import { openManageDropletWindow } from "@/components/admin/digitalocean-panel";
+import { ProjectMembersTab } from "@/components/project/project-members-tab";
 import { DeployHistoryPanel, DeployHistoryTab } from "@/components/project/deploy-history";
 import { VpsRecipes, VpsRunCommands } from "@/components/project/vps-recipes";
 // Re-export the recipe type interfaces so external imports (default-recipes.ts

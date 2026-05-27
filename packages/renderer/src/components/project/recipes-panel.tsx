@@ -9,7 +9,7 @@ import { $auth, $recipes } from "@/store/subjects";
 import { createRecipe, deleteRecipe, loadRecipes, switchNav, updateRecipe } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 import { cn } from "@/lib/utils";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {

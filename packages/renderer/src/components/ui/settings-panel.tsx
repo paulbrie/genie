@@ -7,8 +7,8 @@ import { deleteSshKey, loadSettings, loadSshKey, regenerateSshKey, saveSettingsF
 import { useDeepSubject } from "subjecto/react";
 import { type AppSettings } from "@/lib/genie-api";
 import { Eye, EyeOff, Key, Copy, Check, Loader2, Trash2, RefreshCw } from "lucide-react";
-import { ViewHeader } from "@/components/view-header";
-import { ViewTabs } from "@/components/view-tabs";
+import { ViewHeader } from "@/components/ui/view-header";
+import { ViewTabs } from "@/components/ui/view-tabs";
 import { Select } from "@/components/ui/select";
 import { buildSettingsPath, type SettingsTab } from "@/lib/routes";
 import { useRouter } from "next/navigation";

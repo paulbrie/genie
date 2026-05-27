@@ -1,6 +1,6 @@
 import { Package, Database, Container, Globe, Cloud, FileText, Activity, Network, Shield, Server, Layers, Bug, KeyRound, Sparkles } from "lucide-react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import type { VpsRecipeDef } from "@/components/project-detail";
+import type { VpsRecipeDef } from "@/components/project/project-detail";
 import type { UserRecipe } from "@/store/types";
 import { $recipes } from "@/store/subjects";
 

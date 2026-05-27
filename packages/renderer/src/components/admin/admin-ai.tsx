@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { AdminState, AiUsageRow } from "@/store/types";
 import { CHAT_MODELS, loadAiSettings, saveAiSettings, setAiSubTab } from "@/store/actions";
 import { Button } from "@/components/ui/button";
-import { ViewTabs } from "@/components/view-tabs";
+import { ViewTabs } from "@/components/ui/view-tabs";
 
 function formatCost(cost: number): string {
   if (cost < 0.001) return `$${cost.toFixed(6)}`;

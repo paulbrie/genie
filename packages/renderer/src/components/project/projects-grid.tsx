@@ -5,7 +5,7 @@ import { Users } from "lucide-react";
 import { $projects } from "@/store/subjects";
 import { showAddProjectForm as openAddProjectForm } from "@/store/actions";
 import { Button } from "@/components/ui/button";
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 import { useNavigate } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 

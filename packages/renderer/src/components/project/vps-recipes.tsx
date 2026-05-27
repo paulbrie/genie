@@ -6,7 +6,7 @@ import { Check, ChevronDown, ChevronRight, Copy, Globe, Loader2, Package, Play, 
 import type { ProjectDef, RecipeState } from "@/store/types";
 import { $commandRunOutputs, $projects } from "@/store/subjects";
 import { addSshTerminalTab, checkVpsRecipe, loadRecipes, runProjectCommand, runVpsRecipe, stopProjectCommand, uninstallVpsRecipe, vpsExec } from "@/store/actions";
-import { useAllRecipes } from "@/components/use-all-recipes";
+import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { wsSend } from "@/lib/ws";
 import { cn } from "@/lib/utils";
 import { ErrorMessage } from "@/components/ui/error-message";

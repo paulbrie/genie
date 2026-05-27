@@ -20,13 +20,13 @@ import {
   hibernateVps, killPersistedTerminal, loadPersistedTerminals, minimizeWindow,
   openWindow, reattachPersistedTerminal, registerWindow, updateWindowPosition, vpsExec,
 } from "@/store/actions";
-import { useDraggable, useResizable } from "@/components/use-draggable";
-import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project-detail";
-import { AdminRecipesPanel } from "@/components/admin-recipes-panel";
-import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin-system-panel";
-import { VpsResourceGauges } from "@/components/vps-resource-gauges";
-import { FileExplorer } from "@/components/vps-file-explorer";
-import { DbExplorer } from "@/components/db-explorer";
+import { useDraggable, useResizable } from "@/hooks/use-draggable";
+import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
+import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
+import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
+import { VpsResourceGauges } from "@/components/project/vps-resource-gauges";
+import { FileExplorer } from "@/components/project/vps-file-explorer";
+import { DbExplorer } from "@/components/admin/db-explorer";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";

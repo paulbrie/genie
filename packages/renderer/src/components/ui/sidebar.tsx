@@ -7,14 +7,14 @@ import type { AuthUser } from "@/store/types";
 import { $auth, $manager } from "@/store/subjects";
 import { addTerminalTab, markUpdatesSeen } from "@/store/actions";
 import { logout } from "@/lib/ws";
-import { SystemStats } from "@/components/system-stats";
-import { SidebarNav } from "@/components/sidebar-nav";
-import { FileExplorerToggle } from "@/components/file-explorer-toggle";
-import { FeedbackModal } from "@/components/feedback-modal";
-import { UpdateLogModal } from "@/components/update-log-modal";
+import { SystemStats } from "@/components/ui/system-stats";
+import { SidebarNav } from "@/components/ui/sidebar-nav";
+import { FileExplorerToggle } from "@/components/project/file-explorer-toggle";
+import { FeedbackModal } from "@/components/ui/feedback-modal";
+import { UpdateLogModal } from "@/components/ui/update-log-modal";
 import { unseenChangelogEntries, latestChangelogVersion } from "@/lib/changelog";
 import { cn } from "@/lib/utils";
-import { useWsLogCount } from "@/components/ws-log-drawer";
+import { useWsLogCount } from "@/components/ui/ws-log-drawer";
 
 export function Sidebar({
   wsLogOpen,

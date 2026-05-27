@@ -1,4 +1,4 @@
-import { ViewHeader } from "@/components/view-header";
+import { ViewHeader } from "@/components/ui/view-header";
 
 function CheckIcon() {
   return (

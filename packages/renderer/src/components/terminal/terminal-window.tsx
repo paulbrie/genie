@@ -17,7 +17,7 @@ import {
   refitTerminal,
 } from "@/lib/terminal-bridge";
 import { wsSend } from "@/lib/ws";
-import { useDraggable, useResizable } from "@/components/use-draggable";
+import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
