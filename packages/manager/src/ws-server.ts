@@ -63,10 +63,11 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { type Role, canSend, canReceive, getEntry, POLICY } from "./ws-acl.js";
-import { handleDbMessage, parseTableList, parseCsvResult, parseCsvLine } from "./handlers/db-handler.js";
+import { handleDbMessage } from "./handlers/db-handler.js";
 import { handleBackupMessage } from "./handlers/backup-handler.js";
 import { handleGitMessage } from "./handlers/git-handler.js";
 import { handleFsMessage } from "./handlers/fs-handler.js";
+import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
 import { getVpsConnection } from "./vps/connection-resolver.js";
 
 
@@ -269,8 +270,6 @@ const VERSION_FILE = `${VPS_AGENT_REMOTE_BASE}/.version`;
 
 // `getVpsConnection` moved to ./vps/connection-resolver.ts so handler modules
 // under ./handlers/ can import it without taking a dep on ws-server itself.
-
-// Note: parseTableList, parseCsvResult, and parseCsvLine have been refactored to ./handlers/db-handler.js
 
 /** Ensure the vps-agent on the remote VPS matches the local build, re-uploading if stale */
 async function ensureVpsAgent(connection: VpsConnectionConfig): Promise<void> {
@@ -1711,6 +1710,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleBackupMessage(ws, msg as Parameters<typeof handleBackupMessage>[1], send as Parameters<typeof handleBackupMessage>[2])) return;
   if (await handleGitMessage(ws, msg as Parameters<typeof handleGitMessage>[1], send as Parameters<typeof handleGitMessage>[2])) return;
   if (await handleFsMessage(ws, msg as Parameters<typeof handleFsMessage>[1], send as Parameters<typeof handleFsMessage>[2])) return;
+  if (await handleVpsDbMessage(ws, msg as Parameters<typeof handleVpsDbMessage>[1], send as Parameters<typeof handleVpsDbMessage>[2])) return;
 
   switch (msg.type) {
     case "process:kill": {
@@ -6646,223 +6646,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         } finally { session.close(); }
       } catch (err: unknown) {
         send(ws, { type: "vps:docker:logs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    // ── VPS Database Explorer ──────────────────────────────
-    case "vps:db:detect": {
-      const { projectId, instanceId, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 15_000 });
-        try {
-          // Try common locations for DATABASE_URL
-          const envOut = await session.exec(
-            `cat /opt/project/.env 2>/dev/null; cat /opt/project/.env.local 2>/dev/null; cat /opt/project/.env.production 2>/dev/null`
-          );
-          // Match DATABASE_URL or POSTGRES_URL patterns
-          const match = envOut.match(/(?:DATABASE_URL|POSTGRES_URL|DB_URL)\s*=\s*['"]?(postgres(?:ql)?:\/\/[^\s'"]+)/);
-          if (match) {
-            send(ws, { type: "vps:db:detect:result", payload: { ok: true, url: match[1], reqId } });
-          } else {
-            // Try to detect a running postgres and construct a URL
-            const pgOut = await session.exec(`docker exec $(docker ps --filter 'ancestor=postgres' -q 2>/dev/null | head -1) printenv 2>/dev/null || echo ""`);
-            const pgUser = pgOut.match(/POSTGRES_USER=(\S+)/)?.[1] || "postgres";
-            const pgPass = pgOut.match(/POSTGRES_PASSWORD=(\S+)/)?.[1];
-            const pgDb = pgOut.match(/POSTGRES_DB=(\S+)/)?.[1] || pgUser;
-            if (pgPass) {
-              send(ws, { type: "vps:db:detect:result", payload: { ok: true, url: `postgres://${pgUser}:${pgPass}@localhost:5432/${pgDb}`, reqId } });
-            } else {
-              send(ws, { type: "vps:db:detect:result", payload: { ok: false, reqId } });
-            }
-          }
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:detect:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    case "vps:db:databases": {
-      const { projectId, instanceId, dbUrl, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 15_000 });
-        try {
-          const escapedUrl = (dbUrl as string).replace(/'/g, "'\\''");
-          let out = await session.exec(
-            `psql '${escapedUrl}' -t -A -c "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname" 2>&1`
-          );
-          if (out.includes("command not found")) {
-            out = await session.exec(
-              `docker run --rm --network host postgres:16-alpine psql '${escapedUrl}' -t -A -c "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname" 2>&1`
-            );
-          }
-          const databases = out.trim().split("\n").filter(Boolean).filter(d => !d.includes("FATAL") && !d.includes("ERROR"));
-          send(ws, { type: "vps:db:databases:result", payload: { ok: true, databases, reqId } });
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:databases:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    case "vps:db:tables": {
-      const { projectId, instanceId, dbUrl, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 15_000 });
-        try {
-          const escaped = (dbUrl as string).replace(/'/g, "'\\''");
-          const out = await session.exec(
-            `psql '${escaped}' -t -A -c "SELECT c.relname, c.reltuples::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY c.relname" 2>&1`
-          );
-          if (out.includes("command not found")) {
-            // psql not on host — try via docker
-            const dockerOut = await session.exec(
-              `docker run --rm --network host postgres:16-alpine psql '${escaped}' -t -A -c "SELECT c.relname, c.reltuples::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY c.relname" 2>&1`
-            );
-            const tables = parseTableList(dockerOut);
-            send(ws, { type: "vps:db:tables:result", payload: { ok: true, tables, reqId } });
-          } else if (out.includes("FATAL") || out.includes("could not connect")) {
-            send(ws, { type: "vps:db:tables:result", payload: { ok: false, error: out.trim(), reqId } });
-          } else {
-            const tables = parseTableList(out);
-            send(ws, { type: "vps:db:tables:result", payload: { ok: true, tables, reqId } });
-          }
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:tables:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    case "vps:db:query": {
-      const { projectId, instanceId, dbUrl, query, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 30_000 });
-        try {
-          const escapedUrl = (dbUrl as string).replace(/'/g, "'\\''");
-          // Use JSON output for structured data
-          const escapedQuery = (query as string).replace(/'/g, "'\\''");
-          const out = await session.exec(
-            `psql '${escapedUrl}' -c '${escapedQuery}' --csv 2>&1`
-          );
-          if (out.includes("command not found")) {
-            // Try via docker
-            const dockerOut = await session.exec(
-              `docker run --rm --network host postgres:16-alpine psql '${escapedUrl}' -c '${escapedQuery}' --csv 2>&1`
-            );
-            const result = parseCsvResult(dockerOut);
-            send(ws, { type: "vps:db:query:result", payload: { ok: !result.error, result, reqId } });
-          } else if (out.includes("ERROR") || out.includes("FATAL")) {
-            send(ws, { type: "vps:db:query:result", payload: { ok: false, error: out.trim(), reqId } });
-          } else {
-            const result = parseCsvResult(out);
-            send(ws, { type: "vps:db:query:result", payload: { ok: !result.error, result, reqId } });
-          }
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:query:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    // ── VPS Database Backups ─────────────────────────────
-    case "vps:db:backup:create": {
-      const { projectId, instanceId, dbUrl, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 120_000 });
-        try {
-          const escapedUrl = (dbUrl as string).replace(/'/g, "'\\''");
-          // /opt is root-owned; create dir via sudo and chown to ssh user so subsequent
-          // pg_dump/gzip redirection and rm can run without sudo.
-          await session.exec('sudo mkdir -p /opt/genie-backups && sudo chown "$(id -un):$(id -gn)" /opt/genie-backups');
-          const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-          const fileName = `backup-${ts}.sql.gz`;
-          const filePath = `/opt/genie-backups/${fileName}`;
-          // Try pg_dump directly, fallback to docker
-          const testPgDump = await session.exec("which pg_dump 2>/dev/null || echo 'notfound'");
-          let cmd: string;
-          if (testPgDump.trim() === "notfound") {
-            cmd = `docker run --rm --network host postgres:16-alpine pg_dump '${escapedUrl}' 2>&1 | gzip > '${filePath}'`;
-          } else {
-            cmd = `pg_dump '${escapedUrl}' 2>&1 | gzip > '${filePath}'`;
-          }
-          await session.exec(cmd);
-          // Verify file was created and has content
-          const sizeOut = await session.exec(`stat -c%s '${filePath}' 2>/dev/null || stat -f%z '${filePath}' 2>/dev/null || echo 0`);
-          const size = parseInt(sizeOut.trim()) || 0;
-          if (size < 20) {
-            await session.exec(`rm -f '${filePath}'`);
-            send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: "Backup failed — dump file is empty", reqId } });
-          } else {
-            send(ws, { type: "vps:db:backup:result", payload: { ok: true, fileName, size, reqId } });
-          }
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    case "vps:db:backup:list": {
-      const { projectId, instanceId, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 15_000 });
-        try {
-          await session.exec('sudo mkdir -p /opt/genie-backups && sudo chown "$(id -un):$(id -gn)" /opt/genie-backups');
-          const out = await session.exec("ls -lh --time-style=long-iso /opt/genie-backups/*.sql.gz 2>/dev/null || echo ''");
-          const backups = out.trim().split("\n").filter(Boolean).filter(l => !l.startsWith("total")).map((line) => {
-            const parts = line.split(/\s+/);
-            const size = parts[4] || "0";
-            const date = parts[5] || "";
-            const time = parts[6] || "";
-            const fullPath = parts[7] || "";
-            const name = fullPath.split("/").pop() || "";
-            return { name, size, date: `${date} ${time}`, path: fullPath };
-          }).filter(b => b.name);
-          send(ws, { type: "vps:db:backup:result", payload: { ok: true, backups, reqId } });
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    case "vps:db:backup:download": {
-      const { projectId, instanceId, fileName, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 60_000 });
-        try {
-          const safeName = (fileName as string).replace(/[^a-zA-Z0-9._-]/g, "");
-          const filePath = `/opt/genie-backups/${safeName}`;
-          const data = await session.exec(`base64 '${filePath}'`);
-          send(ws, { type: "vps:db:backup:result", payload: { ok: true, data: data.replace(/\s/g, ""), fileName: safeName, reqId } });
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
-      }
-      break;
-    }
-
-    case "vps:db:backup:delete": {
-      const { projectId, instanceId, fileName, reqId } = msg.payload;
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn, { timeoutMs: 15_000 });
-        try {
-          const safeName = (fileName as string).replace(/[^a-zA-Z0-9._-]/g, "");
-          await session.exec(`rm -f '/opt/genie-backups/${safeName}'`);
-          send(ws, { type: "vps:db:backup:result", payload: { ok: true, reqId } });
-        } finally { session.close(); }
-      } catch (err: unknown) {
-        send(ws, { type: "vps:db:backup:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       break;
     }
