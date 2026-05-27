@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
+import crypto from "node:crypto";
 import { Readable, Writable } from "node:stream";
 
 export interface SshConnectionConfig {
@@ -254,41 +255,121 @@ function loadPrivateKey(privateKey: SshConnectionConfig["privateKey"], privateKe
   }
 }
 
+// ── Bastion connection pool ─────────────────────────────────────────────────
+// Every Taz vxlan-bastion exec tunnels through the customer bastion. Opening a
+// fresh SSH connection to the bastion per exec made the Manage popup fire 15-20
+// bastion handshakes in a burst on mount, tripping the bastion's sshd
+// MaxStartups / fail2ban so most handshakes timed out ("waiting for handshake").
+// Instead we keep ONE live SSH connection per bastion identity and multiplex
+// every VM tunnel over it via forwardOut — a cheap channel, not a new handshake.
+// Refcounted with idle eviction; evicted immediately if the connection drops.
+type BastionConfig = NonNullable<SshConnectionConfig["bastion"]>;
+
+interface PooledBastion {
+  ready: Promise<Client>;
+  conn: Client | null;
+  refs: number;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const bastionPool = new Map<string, PooledBastion>();
+const BASTION_IDLE_MS = 60_000;
+
+/** Identity of a bastion connection: where + who + which key. The key material
+ *  is hashed so we never hold a secret as a Map key (and a rotated key yields a
+ *  fresh entry). */
+function bastionKey(b: BastionConfig): string {
+  const keyId = b.privateKey
+    ? crypto.createHash("sha256").update(b.privateKey).digest("hex").slice(0, 16)
+    : b.privateKeyPath;
+  return `${b.username}@${b.host}:${b.port ?? 22}|${keyId}`;
+}
+
+/** Acquire a (possibly shared) live connection to the bastion, taking one lease.
+ *  Concurrent callers for the same bastion await the same in-flight connection,
+ *  so a burst of execs produces a single bastion handshake. */
+function acquireBastion(b: BastionConfig, timeout: number): Promise<Client> {
+  const key = bastionKey(b);
+  const existing = bastionPool.get(key);
+  if (existing) {
+    existing.refs++;
+    if (existing.idleTimer) { clearTimeout(existing.idleTimer); existing.idleTimer = null; }
+    return existing.ready;
+  }
+  const entry: PooledBastion = { ready: undefined as unknown as Promise<Client>, conn: null, refs: 1, idleTimer: null };
+  entry.ready = new Promise<Client>((resolve, reject) => {
+    const c = new Client();
+    const bKey = loadPrivateKey(b.privateKey, b.privateKeyPath);
+    let settled = false;
+    c.on("ready", () => { settled = true; entry.conn = c; console.log(`[ssh] bastion connection opened: ${b.username}@${b.host}:${b.port ?? 22} (pooled, reused across execs)`); resolve(c); })
+      .on("error", (err) => {
+        bastionPool.delete(key); // let the next caller reconnect cleanly
+        if (!settled) reject(new Error(`SSH bastion ${b.username}@${b.host}:${b.port ?? 22} failed: ${err.message}`));
+      })
+      .on("close", () => { bastionPool.delete(key); })
+      .connect({
+        host: b.host,
+        port: b.port ?? 22,
+        username: b.username,
+        ...(bKey ? { privateKey: bKey } : process.env.SSH_AUTH_SOCK ? { agent: process.env.SSH_AUTH_SOCK } : {}),
+        readyTimeout: timeout,
+      });
+  });
+  bastionPool.set(key, entry);
+  return entry.ready;
+}
+
+/** Release one lease. When the last lease drops we keep the connection warm for
+ *  BASTION_IDLE_MS (so the next popup/exec reuses it) before closing. */
+function releaseBastion(b: BastionConfig): void {
+  const key = bastionKey(b);
+  const entry = bastionPool.get(key);
+  if (!entry) return;
+  entry.refs = Math.max(0, entry.refs - 1);
+  if (entry.refs === 0 && !entry.idleTimer) {
+    entry.idleTimer = setTimeout(() => {
+      bastionPool.delete(key);
+      try { entry.conn?.end(); } catch { /* ignore */ }
+      console.log(`[ssh] bastion connection closed (idle ${BASTION_IDLE_MS / 1000}s): ${key.split("|")[0]}`);
+    }, BASTION_IDLE_MS);
+  }
+}
+
 export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: number }): Promise<SshSession> {
   const timeout = opts?.timeoutMs ?? 30_000;
 
-  // If a bastion is configured, open it first and tunnel TCP to the inner host.
-  // ssh2's `sock` option on connect() accepts a net.Socket-shaped duplex stream;
-  // ssh2's forwardOut channel implements that interface.
-  let bastionConn: Client | null = null;
-  // ssh2's ConnectConfig.sock is typed as Readable but accepts any duplex
-  // stream — its forwardOut channel is a Duplex that satisfies the runtime
-  // contract. Cast at the .connect() call instead of fighting the type here.
+  // If a bastion is configured, reuse a pooled connection to it and open a fresh
+  // forwardOut tunnel to the inner host. We hold one bastion lease for the life
+  // of this session and release it on close/error (releaseBastionOnce). ssh2's
+  // `sock` option accepts the forwardOut channel (a Duplex) as the transport.
   let sock: NodeReadable | undefined;
+  let bastionLeased = false;
+  const releaseBastionOnce = (() => {
+    let released = false;
+    return () => {
+      if (released || !bastionLeased || !config.bastion) return;
+      released = true;
+      releaseBastion(config.bastion);
+    };
+  })();
+
   if (config.bastion) {
     const b = config.bastion;
-    bastionConn = await new Promise<Client>((resolve, reject) => {
-      const c = new Client();
-      const bKey = loadPrivateKey(b.privateKey, b.privateKeyPath);
-      c.on("ready", () => resolve(c))
-        .on("error", (err) => reject(new Error(`SSH bastion ${b.username}@${b.host}:${b.port ?? 22} failed: ${err.message}`)))
-        .connect({
-          host: b.host,
-          port: b.port ?? 22,
-          username: b.username,
-          ...(bKey ? { privateKey: bKey } : process.env.SSH_AUTH_SOCK ? { agent: process.env.SSH_AUTH_SOCK } : {}),
-          readyTimeout: timeout,
+    const bastionConn = await acquireBastion(b, timeout);
+    bastionLeased = true;
+    try {
+      sock = await new Promise<NodeReadable>((resolve, reject) => {
+        // srcIP/srcPort are arbitrary — the bastion doesn't actually open a
+        // listener; they're only used for logging on the bastion's sshd.
+        bastionConn.forwardOut("127.0.0.1", 0, config.host, config.port, (err, stream) => {
+          if (err) return reject(new Error(`Bastion forwardOut to ${config.host}:${config.port} failed: ${err.message}`));
+          resolve(stream as unknown as NodeReadable);
         });
-    });
-
-    sock = await new Promise<NodeReadable>((resolve, reject) => {
-      // srcIP/srcPort are arbitrary — the bastion doesn't actually open a
-      // listener; they're only used for logging on the bastion's sshd.
-      bastionConn!.forwardOut("127.0.0.1", 0, config.host, config.port, (err, stream) => {
-        if (err) return reject(new Error(`Bastion forwardOut to ${config.host}:${config.port} failed: ${err.message}`));
-        resolve(stream as unknown as NodeReadable);
       });
-    });
+    } catch (err) {
+      releaseBastionOnce(); // forwardOut failed — don't hold the lease
+      throw err;
+    }
   }
 
   return new Promise((resolve, reject) => {
@@ -298,17 +379,18 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
     conn
       .on("ready", () => {
         const session = makeSession(conn);
-        // Wrap close() so it also tears down the bastion when present —
-        // otherwise we'd leak one bastion socket per call.
+        // Wrap close() so it releases our bastion lease too. The VM connection
+        // (conn.end via origClose) and its forwardOut channel close, but the
+        // pooled bastion connection stays warm for the next exec.
         const origClose = session.close;
         session.close = () => {
           origClose();
-          if (bastionConn) try { bastionConn.end(); } catch { /* ignore */ }
+          releaseBastionOnce();
         };
         resolve(session);
       })
       .on("error", (err) => {
-        if (bastionConn) try { bastionConn.end(); } catch { /* ignore */ }
+        releaseBastionOnce();
         console.error(`[ssh] Connection to ${config.host}:${config.port}${config.bastion ? ` via ${config.bastion.username}@${config.bastion.host}` : ""} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));
       })
