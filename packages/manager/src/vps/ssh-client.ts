@@ -7,6 +7,7 @@ import path from "node:path";
 import net from "node:net";
 import crypto from "node:crypto";
 import { Readable, Writable } from "node:stream";
+import { sshConnOpened, sshConnClosed } from "./ssh-metrics.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -301,12 +302,12 @@ function acquireBastion(b: BastionConfig, timeout: number): Promise<Client> {
     const c = new Client();
     const bKey = loadPrivateKey(b.privateKey, b.privateKeyPath);
     let settled = false;
-    c.on("ready", () => { settled = true; entry.conn = c; console.log(`[ssh] bastion connection opened: ${b.username}@${b.host}:${b.port ?? 22} (pooled, reused across execs)`); resolve(c); })
+    c.on("ready", () => { settled = true; entry.conn = c; sshConnOpened(); console.log(`[ssh] bastion connection opened: ${b.username}@${b.host}:${b.port ?? 22} (pooled, reused across execs)`); resolve(c); })
       .on("error", (err) => {
         bastionPool.delete(key); // let the next caller reconnect cleanly
         if (!settled) reject(new Error(`SSH bastion ${b.username}@${b.host}:${b.port ?? 22} failed: ${err.message}`));
       })
-      .on("close", () => { bastionPool.delete(key); })
+      .on("close", () => { if (settled) sshConnClosed(); bastionPool.delete(key); })
       .connect({
         host: b.host,
         port: b.port ?? 22,
@@ -376,8 +377,11 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
     const conn = new Client();
     const privateKey = loadPrivateKey(config.privateKey, config.privateKeyPath);
 
+    let counted = false;
     conn
       .on("ready", () => {
+        counted = true;
+        sshConnOpened();
         const session = makeSession(conn);
         // Wrap close() so it releases our bastion lease too. The VM connection
         // (conn.end via origClose) and its forwardOut channel close, but the
@@ -389,6 +393,7 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
         };
         resolve(session);
       })
+      .on("close", () => { if (counted) { counted = false; sshConnClosed(); } })
       .on("error", (err) => {
         releaseBastionOnce();
         console.error(`[ssh] Connection to ${config.host}:${config.port}${config.bastion ? ` via ${config.bastion.username}@${config.bastion.host}` : ""} failed:`, err.message);

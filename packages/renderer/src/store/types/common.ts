@@ -131,6 +131,12 @@ export interface SystemState {
   cpu: number;
   mem: number;
   memory: MemoryInfo | null;
+  /** Manager-process health (from the server `stats` payload). Undefined until
+   *  the first stats frame arrives, or for non-admin clients that don't receive
+   *  stats. */
+  wsMessagesPerSec?: number;
+  wsConnections?: number;
+  sshConnections?: number;
 }
 
 export interface UiState {

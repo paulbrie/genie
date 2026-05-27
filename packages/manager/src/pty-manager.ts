@@ -3,6 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "ssh2";
+import { sshConnOpened, sshConnClosed } from "./vps/ssh-metrics.js";
 
 const MAX_SCROLLBACK = 100_000; // chars
 
@@ -403,8 +404,11 @@ export function spawnSshPty(
   }
 
   let bastionConn: Client | null = null;
+  let bastionCounted = false;
+  let connCounted = false;
   function endBastion(): void {
     if (bastionConn) { try { bastionConn.end(); } catch { /* ignore */ } bastionConn = null; }
+    if (bastionCounted) { bastionCounted = false; sshConnClosed(); }
   }
 
   function tryConnect(): void {
@@ -437,6 +441,7 @@ export function spawnSshPty(
       bastionConn = new Client();
       bastionConn
         .on("ready", () => {
+          if (!bastionCounted) { bastionCounted = true; sshConnOpened(); }
           if (cancelled) { endBastion(); return; }
           bastionConn!.forwardOut("127.0.0.1", 0, config.host, config.port, (err, stream) => {
             if (cancelled) { endBastion(); return; }
@@ -465,6 +470,7 @@ export function spawnSshPty(
 
     conn
       .on("ready", () => {
+        if (!connCounted) { connCounted = true; sshConnOpened(); }
         if (cancelled) { conn.end(); endBastion(); return; }
         const shellCmd = buildRemoteCommand(config);
         conn.exec(shellCmd, { pty: { cols: currentCols, rows: currentRows, term: "xterm-256color" } }, (err, stream) => {
@@ -497,6 +503,9 @@ export function spawnSshPty(
             conn.end();
           });
         });
+      })
+      .on("close", () => {
+        if (connCounted) { connCounted = false; sshConnClosed(); }
       })
       .on("error", (err) => {
         if (cancelled) return;

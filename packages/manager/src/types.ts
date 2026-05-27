@@ -162,10 +162,23 @@ export interface DockerInfo {
   containers: DockerContainerInfo[];
 }
 
+/** Manager-process health, surfaced in the sidebar so operators can watch
+ *  WebSocket throughput and outbound SSH load at a glance. */
+export interface ServerStats {
+  /** WebSocket frames (inbound + outbound) handled per second, averaged over
+   *  the monitoring interval. */
+  wsMessagesPerSec: number;
+  /** Currently-connected WebSocket clients. */
+  wsConnections: number;
+  /** Live outbound SSH connections the manager holds open (VM + bastion). */
+  sshConnections: number;
+}
+
 export interface StatsPayload {
   system: SystemStats;
   processes: ProcessInfo[];
   docker: DockerInfo;
+  server?: ServerStats;
 }
 
 // --- Chrome Extension types ---

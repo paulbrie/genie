@@ -204,6 +204,65 @@ export function SystemStats() {
           </div>
         </TooltipContent>
       </Tooltip>
+      {system.wsMessagesPerSec !== undefined && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-2 cursor-default">
+              <label className="w-[30px] text-md font-bold uppercase tracking-wide text-subtext0">
+                WS
+              </label>
+              <div className="flex-1 h-1.5 bg-surface0 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-teal rounded-full transition-[width] duration-500 ease-out"
+                  style={{ width: `${Math.min(100, system.wsMessagesPerSec)}%` }}
+                />
+              </div>
+              <span className="w-8 text-right text-md tabular-nums text-subtext1">
+                {system.wsMessagesPerSec}
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            <div className="flex flex-col gap-0.5 text-md max-w-[220px]">
+              <span>WebSocket frames/sec the manager handles (inbound + outbound).</span>
+              <span className="text-overlay0">
+                {system.wsConnections ?? 0} client{system.wsConnections === 1 ? "" : "s"} connected · bar scaled to 100/s.
+              </span>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {system.sshConnections !== undefined && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-2 cursor-default">
+              <label className="w-[30px] text-md font-bold uppercase tracking-wide text-subtext0">
+                SSH
+              </label>
+              <div className="flex-1 h-1.5 bg-surface0 rounded-full overflow-hidden">
+                <div
+                  className={
+                    "h-full rounded-full transition-[width] duration-500 ease-out "
+                    + (system.sshConnections >= 15 ? "bg-red" : system.sshConnections >= 8 ? "bg-yellow" : "bg-green")
+                  }
+                  style={{ width: `${Math.min(100, (system.sshConnections / 20) * 100)}%` }}
+                />
+              </div>
+              <span className="w-8 text-right text-md tabular-nums text-subtext1">
+                {system.sshConnections}
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            <div className="flex flex-col gap-0.5 text-md max-w-[220px]">
+              <span>Live outbound SSH connections the manager holds open (VMs + pooled bastions).</span>
+              <span className="text-overlay0">
+                Bar scaled to 20. Sustained spikes can trip a bastion&rsquo;s rate-limiter.
+              </span>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      )}
     </section>
   );
 }
