@@ -1,6 +1,8 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { CanvasAddon } from "@xterm/addon-canvas";
+// CanvasAddon is imported dynamically inside createTerminal — its module-load
+// code touches `self` (browser global), which crashes Next's SSR prerender of
+// the /extension page.
 import { wsSend } from "@/lib/ws";
 
 // Catppuccin Mocha theme for xterm
@@ -56,21 +58,27 @@ export function createTerminal(
   terminal.loadAddon(fitAddon);
   terminal.open(container);
 
-  // Swap xterm's default DOM renderer for the Canvas one. The DOM renderer
-  // creates a DOM node per glyph and chokes on chatty TUI output (Claude
-  // streaming, tmux redraws) — that's the freeze users were seeing. Canvas
-  // is ~10× faster and keeps the popup responsive under load. Wrapped in
-  // try/catch because the addon advertises a v5 peer range against our
-  // xterm v6 (the runtime API is compatible but if a future xterm break
-  // throws here, fall back to DOM so the terminal still works).
-  try {
-    terminal.loadAddon(new CanvasAddon());
+  // Swap xterm's default DOM renderer for the Canvas one (~10× faster than
+  // DOM for chatty TUI output like Claude streaming / tmux redraws — DOM
+  // renderer is the documented freeze culprit). Dynamic import because the
+  // canvas addon module touches `self` at evaluation time and would crash
+  // Next's SSR prerender if imported statically. Async upgrade is fine —
+  // the terminal renders with the default DOM renderer for the first frames
+  // and switches over the moment the chunk lands. Wrapped in try/catch in
+  // case of an xterm v5/v6 API drift; falls back to DOM if so.
+  void import("@xterm/addon-canvas").then(({ CanvasAddon }) => {
+    try {
+      terminal.loadAddon(new CanvasAddon());
+      // eslint-disable-next-line no-console
+      console.log(`[term-renderer] canvas addon loaded (sess=${sessionId})`);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[term-renderer] canvas addon failed, falling back to DOM (sess=${sessionId})`, err);
+    }
+  }).catch((err) => {
     // eslint-disable-next-line no-console
-    console.log(`[term-renderer] canvas addon loaded (sess=${sessionId})`);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[term-renderer] canvas addon failed, falling back to DOM (sess=${sessionId})`, err);
-  }
+    console.warn(`[term-renderer] canvas addon import failed (sess=${sessionId})`, err);
+  });
 
   terminal.parser.registerOscHandler(52, (data) => {
     const semi = data.indexOf(";");
