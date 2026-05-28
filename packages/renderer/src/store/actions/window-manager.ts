@@ -97,6 +97,12 @@ export function updateWindowPosition(id: string, pos: { x: number; y: number }):
   if (win) $windowManager.next(wmSetWindow(wm, { ...win, position: pos }));
 }
 
+export function updateWindowSize(id: string, size: { w: number; h: number }): void {
+  const wm = $windowManager.getValue();
+  const win = wm.windows[id];
+  if (win) $windowManager.next(wmSetWindow(wm, { ...win, size }));
+}
+
 export function setWindowBusy(id: string, busy: boolean): void {
   const wm = $windowManager.getValue();
   const win = wm.windows[id];

@@ -1,5 +1,6 @@
 import { $auth, $manager } from "@/store/subjects";
 import { logSent, logReceived } from "@/lib/ws-log";
+import { tryDevLoginRedirect } from "@/lib/dev-login";
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -80,6 +81,7 @@ export function setStoredToken(token: string | null) {
 
 export function connectWs(): void {
   if (typeof window === "undefined") return;
+  if (tryDevLoginRedirect()) return;
   if (ws && ws.readyState <= 1) return;
 
   ensureDispatcherLoaded();
@@ -171,11 +173,13 @@ export function disconnectWs(): void {
   ws = null;
 }
 
-export function wsSend(type: string, payload: unknown): void {
+export function wsSend(type: string, payload: unknown): boolean {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type, payload }));
     logSent(type, payload);
+    return true;
   }
+  return false;
 }
 
 export function triggerGoogleLogin(): void {

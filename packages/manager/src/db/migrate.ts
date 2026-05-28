@@ -138,3 +138,23 @@ export async function migrateOrgs(): Promise<void> {
 
   console.log(`[migrate] orgs migration applied (backfilled ${(orphanTeams as unknown as unknown[]).length} team(s))`);
 }
+
+/** Scalar VPS metric samples for historical charts. Idempotent. */
+export async function migrateVpsMetricSamples(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS vps_metric_samples (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    sampled_at TIMESTAMP NOT NULL,
+    cpu_percent REAL NOT NULL,
+    mem_used_bytes BIGINT NOT NULL,
+    mem_total_bytes BIGINT NOT NULL,
+    mem_percent REAL NOT NULL,
+    disk_used_bytes BIGINT NOT NULL,
+    disk_total_bytes BIGINT NOT NULL,
+    disk_percent REAL NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_lookup ON vps_metric_samples(project_id, instance_id, sampled_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_sampled_at ON vps_metric_samples(sampled_at)`);
+}

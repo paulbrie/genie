@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Bot, Send, Square, X, Minus, Maximize2, Minimize2, Pin, PinOff, ChevronDown } from "lucide-react";
+import { Bot, Send, Square, X, Minus, Maximize2, Minimize2, Pin, PinOff, ChevronDown, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AuthUser, ChatMessage, FloatingWindowState, NavKey, PinnedAssistantVm, ProjectDef, StreamingStep, ToolUse } from "@/store/types";
@@ -11,13 +11,15 @@ import { $activeNav, $admin, $auth, $chat, $fileEditor, $pinnedAssistantVm, $pro
 import { useDeepSubjectAll } from "@/lib/hooks";
 import type { AdminTazVm } from "@/store/types";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, closeWindow, focusWindow, loadAdminTazVms, minimizeWindow, openWindow, registerWindow, resetChat, sendChatMessage, setChatModel, setPinnedAssistantVm, stopChat, updateWindowPosition } from "@/store/actions";
+import { CHAT_MODELS, closeWindow, dismissChatConnectionError, focusWindow, loadAdminTazVms, minimizeWindow, newChat, openWindow, registerWindow, retryLastChatMessage, sendChatMessage, setChatModel, setPinnedAssistantVm, stopChat, updateWindowPosition, updateWindowSize } from "@/store/actions";
 import { wsSend } from "@/lib/ws";
 import { Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
 import { UsageLine } from "@/components/ui/usage-line";
+import { AutoTextarea } from "@/components/ui/auto-textarea";
+import { ChatErrorBubble } from "@/components/chat/chat-error-bubble";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 
 const WINDOW_ID = "genie-assistant";
@@ -354,7 +356,19 @@ function FloatingChatWindow({
   onMinimize: () => void;
 }) {
   const [chatState] = useSubject($chat);
-  const { messages: chatMessages, loading: chatLoading, streamingContent: chatStreaming, toolUses: chatToolUses, streamingSteps, statusText: chatStatusText, modelId: chatModelId, maxToolRounds, toolRoundsUsed } = chatState;
+  const {
+    messages: chatMessages,
+    loading: chatLoading,
+    streamingContent: chatStreaming,
+    toolUses: chatToolUses,
+    streamingSteps,
+    statusText: chatStatusText,
+    modelId: chatModelId,
+    maxToolRounds,
+    toolRoundsUsed,
+    connectionError,
+    resumedFrom,
+  } = chatState;
 
   // Subscribe to store values that affect context pills
   const [activeNav] = useSubject($activeNav);
@@ -366,10 +380,10 @@ function FloatingChatWindow({
   const [maximized, setMaximized] = useState(false);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /** Read clipboard items on paste, extract any images, push their data URLs as previews. */
-  function handlePaste(e: React.ClipboardEvent<HTMLInputElement>) {
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
     const newImages: Promise<string>[] = [];
@@ -426,8 +440,40 @@ function FloatingChatWindow({
     updateWindowPosition(WINDOW_ID, pos);
   }, []);
 
+  const handleResizeEnd = useCallback((size: { w: number; h: number }) => {
+    updateWindowSize(WINDOW_ID, size);
+  }, []);
+
+  // Persisted size, falling back to defaults the first time the popup opens.
+  // Read from the latest store value rather than memoizing — the layout-effect
+  // below re-applies it on maximize toggle.
+  const storedSize = windowState.size ?? { w: DEFAULT_W, h: DEFAULT_H };
+
   const { elRef, onPointerDown } = useDraggable(initial, handleDragEnd);
-  const { onResizePointerDown } = useResizable(elRef, { w: DEFAULT_W, h: DEFAULT_H });
+  const { onResizePointerDown } = useResizable(elRef, storedSize, undefined, handleResizeEnd);
+
+  // Apply position + size to the DOM directly so subsequent re-renders (every
+  // stream token, every focus change) DON'T touch left/top/width/height via
+  // React's `style` prop. Without this, each token re-render snapped the popup
+  // back to the hardcoded DEFAULT_W/H and the cascaded initial position,
+  // fighting the in-progress drag/resize and visibly cutting the stream.
+  // The hooks own these properties from here on; we only re-apply on mount and
+  // when leaving maximize so the user's last size/position is restored.
+  useLayoutEffect(() => {
+    if (maximized) return;
+    const el = elRef.current;
+    if (!el) return;
+    const pos = (storedPos.x >= 0 && storedPos.y >= 0) ? storedPos : initial;
+    el.style.left = `${pos.x}px`;
+    el.style.top = `${pos.y}px`;
+    el.style.width = `${storedSize.w}px`;
+    el.style.height = `${storedSize.h}px`;
+    // Deliberately depend only on `maximized` (and the ref): we want this to
+    // run on mount + on un-maximize, NOT on every storedPos/storedSize change
+    // (those changes ARE the hooks committing the post-drag value, and the DOM
+    // already reflects them — re-applying would be redundant).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maximized]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -436,6 +482,12 @@ function FloatingChatWindow({
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages, chatStreaming, chatToolUses, streamingSteps]);
+
+  function handleRetry() {
+    const context = buildAssistantContext();
+    const domSnapshot = document.body.innerText;
+    retryLastChatMessage(context, domSnapshot);
+  }
 
   function handleSend() {
     const text = input.trim();
@@ -449,9 +501,14 @@ function FloatingChatWindow({
     sendChatMessage(text, context, domSnapshot, images);
   }
 
+  // In normal mode, left/top/width/height live on the DOM (set by the layout
+  // effect above, then mutated by useDraggable/useResizable during a drag).
+  // React's `style` carries only zIndex so re-renders never overwrite them.
+  // Maximize is React-controlled (it's a one-shot snap to the viewport with
+  // no concurrent drag), so it keeps the full geometry in `style`.
   const containerStyle: React.CSSProperties = maximized
     ? { left: 0, top: 0, width: "100vw", height: "100vh", zIndex: windowState.zIndex }
-    : { left: initial.x, top: initial.y, width: DEFAULT_W, height: DEFAULT_H, zIndex: windowState.zIndex };
+    : { zIndex: windowState.zIndex };
 
   return createPortal(
     <div
@@ -466,14 +523,23 @@ function FloatingChatWindow({
         onPointerDown={maximized ? undefined : onPointerDown}
       >
         <div className="flex items-center gap-2 text-md font-semibold text-subtext0">
-          <Bot size={14} className="text-mauve" />
+          <Bot size={14} className="text-mauve" aria-hidden="true" />
           Genie Assistant
         </div>
         <div className="flex items-center gap-0.5">
           <button
+            onClick={() => newChat()}
+            className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"
+            title="New chat"
+            aria-label="New chat"
+          >
+            <SquarePen size={13} />
+          </button>
+          <button
             onClick={onMinimize}
             className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"
             title="Minimize"
+            aria-label="Minimize"
           >
             <Minus size={13} />
           </button>
@@ -481,6 +547,7 @@ function FloatingChatWindow({
             onClick={() => setMaximized((v) => !v)}
             className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"
             title={maximized ? "Restore" : "Maximize"}
+            aria-label={maximized ? "Restore window size" : "Maximize window"}
           >
             {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
@@ -488,6 +555,7 @@ function FloatingChatWindow({
             onClick={onClose}
             className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"
             title="Close"
+            aria-label="Close assistant"
           >
             <X size={13} />
           </button>
@@ -536,8 +604,43 @@ function FloatingChatWindow({
         </div>
       )}
 
+      {resumedFrom && (
+        <div className="flex items-center gap-2 px-3 py-1 border-b border-blue/20 bg-blue/10 text-[11px] shrink-0 text-blue">
+          <span>
+            Resumed Claude Code session · last active{" "}
+            {new Date(resumedFrom.lastActivity).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+          </span>
+        </div>
+      )}
+
+      {connectionError && (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-red/20 bg-red/10 text-[11px] shrink-0 text-red">
+          <span className="flex-1">{connectionError}</span>
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="shrink-0 px-1.5 py-0.5 rounded bg-red/20 hover:bg-red/30 border-none cursor-pointer text-red font-medium"
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            onClick={() => dismissChatConnectionError()}
+            className="shrink-0 p-0.5 bg-transparent border-none cursor-pointer text-red/70 hover:text-red"
+            aria-label="Dismiss connection error"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
+
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2 scrollbar-thin min-h-0">
+      <div
+        className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2 scrollbar-thin min-h-0"
+        role="log"
+        aria-live="polite"
+        aria-label="Assistant messages"
+      >
         {chatMessages.length === 0 && !chatStreaming && !chatLoading && (
           <div className="flex-1 flex items-center justify-center py-8">
             <p className="text-overlay0 text-md text-center">
@@ -547,7 +650,7 @@ function FloatingChatWindow({
         )}
 
         {chatMessages.map((msg: ChatMessage, i: number) => (
-          <div key={i} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
+          <div key={`${msg.role}-${i}-${msg.content.slice(0, 24)}`} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
             {msg.role === "user" ? (
               <div className="max-w-[90%] flex flex-col items-end gap-1">
                 {msg.images && msg.images.length > 0 && (
@@ -563,17 +666,16 @@ function FloatingChatWindow({
                   </div>
                 )}
                 {msg.content && (
-                  <div className="px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text bg-surface0 text-text rounded-br-sm whitespace-pre-wrap">
+                  <div className="px-2.5 py-1.5 rounded-lg text-md break-words chat-message-content bg-surface0 text-text rounded-br-sm whitespace-pre-wrap">
                     {msg.content}
                   </div>
                 )}
               </div>
+            ) : msg.isError || msg.content.startsWith("Error:") ? (
+              <ChatErrorBubble content={msg.content} onRetry={handleRetry} />
             ) : msg.steps ? (
               <div className={cn(
-                "max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text",
-                msg.content.startsWith("Error:")
-                  ? "bg-red/10 text-red border border-red/20 rounded-bl-sm"
-                  : "text-text rounded-bl-sm"
+                "max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text text-text rounded-bl-sm"
               )}>
                 {msg.steps.map((step, j) => (
                   <div key={j}>
@@ -602,12 +704,7 @@ function FloatingChatWindow({
                   </div>
                 )}
                 <div
-                  className={cn(
-                    "max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text",
-                    msg.content.startsWith("Error:")
-                      ? "bg-red/10 text-red border border-red/20 rounded-bl-sm"
-                      : "text-text rounded-bl-sm"
-                  )}
+                  className="max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text text-text rounded-bl-sm"
                 >
                   <div className="chat-markdown select-text cursor-text">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
@@ -696,27 +793,23 @@ function FloatingChatWindow({
             ))}
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <input
+        <div className="flex items-end gap-2">
+          <AutoTextarea
             ref={inputRef}
-            type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onPaste={handlePaste}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder={pendingImages.length > 0 ? "Add a question about the image…" : "Ask Genie anything..."}
+            onSubmit={handleSend}
+            placeholder={pendingImages.length > 0 ? "Add a question about the image…" : "Ask Genie anything…"}
+            aria-label="Message to Genie"
             className="flex-1 bg-surface0 border border-surface1 rounded-md px-2.5 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-mauve"
           />
           {chatLoading ? (
             <button
               onClick={stopChat}
-              className="p-1.5 rounded-md bg-red text-background hover:bg-red/80 transition-colors"
+              className="p-1.5 rounded-md bg-red text-background hover:bg-red/80 transition-colors shrink-0"
               title="Stop generating"
+              aria-label="Stop generating"
             >
               <Square size={12} />
             </button>
@@ -725,16 +818,18 @@ function FloatingChatWindow({
               onClick={handleSend}
               disabled={!input.trim() && pendingImages.length === 0}
               className={cn(
-                "p-1.5 rounded-md transition-colors",
+                "p-1.5 rounded-md transition-colors shrink-0",
                 !input.trim() && pendingImages.length === 0
                   ? "bg-surface0 text-overlay0 cursor-not-allowed"
                   : "bg-mauve text-background hover:bg-mauve/80"
               )}
+              aria-label="Send message"
             >
               <Send size={12} />
             </button>
           )}
         </div>
+        <p className="text-[10px] text-overlay0/80 px-0.5">Enter to send · Shift+Enter for new line</p>
       </div>
 
       {/* Resize handle */}
@@ -773,7 +868,6 @@ export function GenieAssistant() {
   }, []);
 
   const handleClose = useCallback(() => {
-    resetChat();
     closeWindow(WINDOW_ID);
   }, []);
 
@@ -802,6 +896,8 @@ export function GenieAssistant() {
               : "bg-mantle text-mauve border border-surface0 hover:bg-surface0"
           )}
           title="Genie Assistant"
+          aria-label={isOpen ? "Close Genie Assistant" : "Open Genie Assistant"}
+          aria-expanded={isOpen}
         >
           <Bot size={20} />
         </button>

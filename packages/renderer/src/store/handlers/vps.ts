@@ -5,6 +5,7 @@ import {
   $doTokenValid,
   $railwayTestResult,
   $vpsDeploy,
+  $vpsMonitor,
 } from "../subjects/vps";
 import type { VpsProcessInfo } from "../types/vps";
 import { ensureInstanceState, execCallbacks, updateInstanceState } from "../actions/vps";
@@ -130,12 +131,41 @@ export const handlers: HandlerMap = {
     }
   },
 
+  "vps:stats:update": (payload) => {
+    const { instanceId: statsInstId } = payload;
+    if (statsInstId) {
+      ensureInstanceState(statsInstId);
+      updateInstanceState(statsInstId, { stats: payload.stats, statsError: null });
+    }
+  },
+
   "vps:stats:error": (payload) => {
     const { instanceId: statsErrInstId } = payload;
     if (statsErrInstId) {
       ensureInstanceState(statsErrInstId);
       updateInstanceState(statsErrInstId, { statsError: payload.message });
     }
+  },
+
+  "vps:stats:history:result": (payload) => {
+    const { projectId, instanceId, samples, error } = payload;
+    if (!projectId || !instanceId) return;
+    const key = `${projectId}:${instanceId}`;
+    const prev = $vpsMonitor.getValue();
+    $vpsMonitor.next({
+      ...prev,
+      history: { ...prev.history, [key]: samples ?? [] },
+      error: error ?? prev.error,
+    });
+  },
+
+  "vps:monitor:load:result": (payload) => {
+    $vpsMonitor.next({
+      history: payload.history ?? {},
+      hours: payload.hours ?? 1,
+      loading: false,
+      error: payload.error ?? null,
+    });
   },
 
   "vps:process:kill:result": (payload) => {

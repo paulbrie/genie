@@ -59,7 +59,7 @@ export const DEFAULT_RECIPES: RecipeInput[] = [
     slug: "genie-standard",
     label: "Genie Standard Setup",
     icon: "Sparkles",
-    description: "Baseline Genie expects on every VPS: the 'genie' deploy user (passwordless sudo, same SSH key), Docker + compose, Node.js 20, Claude Code, /opt/project owned by genie.",
+    description: "Baseline Genie expects on every VPS: the 'genie' deploy user (passwordless sudo, same SSH key), Docker + compose, Node.js 20, Claude Code, /opt/project owned by genie, and a genie-stats systemd service (manager syncs the bundle after install).",
     // NOTE: we intentionally do NOT verify docker-group membership here.
     // `usermod -aG docker` only takes effect on the user's NEXT login, and
     // even a fresh SSH session can hold a stale group list (NSS cache,
@@ -76,7 +76,7 @@ export const DEFAULT_RECIPES: RecipeInput[] = [
     // exactly the bug "Genie button not green after refresh". -n is safe: the
     // install script itself relies on passwordless sudo, so if install
     // succeeded, `sudo -n` works.
-    checkScript: `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ]; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ] && systemctl list-unit-files --type=service 2>/dev/null | grep -q '^genie-stats.service'; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
@@ -185,14 +185,40 @@ sudo chown -R genie:genie /opt/project
 log "Adding $(whoami) and genie to docker group (no-op if already there)..."
 sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
 sudo usermod -aG docker genie 2>/dev/null || true
+log "Installing genie-stats systemd service (bundle synced by Genie after this recipe)..."
+sudo mkdir -p /usr/lib/node_modules/@genie/vps-stats
+sudo tee /etc/systemd/system/genie-stats.service > /dev/null << 'GENIE_STATS_UNIT'
+[Unit]
+Description=Genie VM stats publisher
+After=network-online.target
+ConditionPathExists=/usr/lib/node_modules/@genie/vps-stats/dist/daemon.js
+
+[Service]
+Type=simple
+User=genie
+Group=genie
+RuntimeDirectory=genie
+ExecStart=/usr/bin/node /usr/lib/node_modules/@genie/vps-stats/dist/daemon.js --interval 5 --output /run/genie/stats.jsonl
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+GENIE_STATS_UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable genie-stats.service > /dev/null 2>&1 || true
 log "Versions:"
 log "  Docker:  $(docker --version 2>/dev/null || echo MISSING)"
 log "  Node:    $(node --version 2>/dev/null || echo MISSING)"
 log "  Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"
 log "Genie standard setup complete. SSH in as: ssh genie@$(hostname -I 2>/dev/null | awk '{print $1}')"
-log "Note: @genie/vps-agent is uploaded on-demand by the manager — not installed here."`,
+log "Note: @genie/vps-agent is uploaded on-demand by the manager. genie-stats bundle is synced when this recipe finishes."`,
     uninstallScript: `set -e
 ${BASH_HELPERS}
+log "Stopping genie-stats service..."
+sudo systemctl disable --now genie-stats.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/genie-stats.service
+sudo systemctl daemon-reload 2>/dev/null || true
 log "Removing Claude Code (user-facing global)..."
 sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
 rm -rf "$HOME/.claude" 2>/dev/null || true
@@ -220,7 +246,9 @@ chmod 700 /home/genie/.ssh && chmod 600 /home/genie/.ssh/authorized_keys
 mkdir -p /opt/project && chown -R genie:genie /opt/project
 usermod -aG docker genie 2>/dev/null || true`,
     commands: [
-      { name: "Versions (all)", command: `echo "Docker:  $(docker --version 2>/dev/null || echo MISSING)"; echo "Node:    $(node --version 2>/dev/null || echo MISSING)"; echo "npm:     $(npm --version 2>/dev/null || echo MISSING)"; echo "Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"; echo "Agent:   $(command -v genie-agent 2>/dev/null || echo MISSING)"` },
+      { name: "Versions (all)", command: `echo "Docker:  $(docker --version 2>/dev/null || echo MISSING)"; echo "Node:    $(node --version 2>/dev/null || echo MISSING)"; echo "npm:     $(npm --version 2>/dev/null || echo MISSING)"; echo "Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"; echo "Agent:   $(command -v genie-agent 2>/dev/null || echo MISSING)"; echo "Stats:   $(systemctl is-active genie-stats 2>/dev/null || echo MISSING)"` },
+      { name: "genie-stats service status", command: "systemctl status genie-stats --no-pager 2>&1 | head -15 || echo '(unit not installed)'" },
+      { name: "Latest stats sample", command: "tail -1 /run/genie/stats.jsonl 2>/dev/null | head -c 500 || echo '(no stats yet — open Cloud view or re-run Standard Setup)'" },
       { name: "Show genie user", command: "id genie 2>/dev/null || echo '(no genie user)'" },
       { name: "Verify /opt/project ownership", command: "ls -ld /opt/project" },
       { name: "Test login as genie (whoami)", command: "sudo -H -u genie whoami" },

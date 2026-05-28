@@ -1,6 +1,7 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
-import { migrateOrgCredentials, migrateOrgs, migrateServerCredentials } from "./db/migrate.js";
+import { migrateOrgCredentials, migrateOrgs, migrateServerCredentials, migrateVpsMetricSamples } from "./db/migrate.js";
+import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-service.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
 import { createServer, shutdown } from "./ws-server.js";
@@ -68,6 +69,12 @@ try {
   console.error("[migrate] org_credentials migration failed:", err);
 }
 try {
+  await migrateVpsMetricSamples();
+} catch (err) {
+  console.error("[migrate] vps_metric_samples migration failed:", err);
+}
+startVpsMetricFlusher();
+try {
   const { inserted, updated } = await seedDefaultRecipes(DEFAULT_RECIPES);
   console.log(`[recipes] Seeded ${DEFAULT_RECIPES.length} built-in recipes (inserted=${inserted}, updated=${updated}).`);
 } catch (err) {
@@ -85,7 +92,7 @@ function gracefulShutdown(): void {
   stopSlackBot().catch(() => {});
   stopWireproxy();
   shutdown(wss);
-  process.exit(0);
+  void stopVpsMetricFlusher().finally(() => process.exit(0));
 }
 
 process.on("SIGINT", gracefulShutdown);

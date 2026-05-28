@@ -4,6 +4,7 @@ import {
   $doSnapshotsLoading,
   $railwayTestResult,
   $vpsDeploy,
+  $vpsMonitor,
 } from "../subjects/vps";
 import type { VpsConnectionConfig, VpsInstanceState } from "../types/vps";
 
@@ -116,6 +117,25 @@ export function disconnectVps(projectId: string, instanceId: string): void {
 
 export function fetchVpsStats(projectId: string, instanceId: string): void {
   wsSend("vps:stats", { projectId, instanceId });
+}
+
+/** Start persistent stats stream (daemon over SSH); updates arrive as vps:stats:update. */
+export function watchVpsStats(projectId: string, instanceId: string): void {
+  wsSend("vps:stats:watch", { projectId, instanceId });
+}
+
+export function unwatchVpsStats(projectId: string, instanceId: string): void {
+  wsSend("vps:stats:unwatch", { projectId, instanceId });
+}
+
+/** Load historical scalar metrics for all VMs the user can see (Monitor tab). */
+export function loadVpsMonitor(hours = 1): void {
+  $vpsMonitor.next({ ...$vpsMonitor.getValue(), loading: true, error: null, hours });
+  wsSend("vps:monitor:load", { hours });
+}
+
+export function fetchVpsStatsHistory(projectId: string, instanceId: string, hours = 1): void {
+  wsSend("vps:stats:history", { projectId, instanceId, hours });
 }
 
 export function killVpsProcess(projectId: string, instanceId: string, pid: number): void {

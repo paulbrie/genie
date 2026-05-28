@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, boolean, timestamp, index, uniqueIndex, integer, real, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, boolean, timestamp, index, uniqueIndex, integer, real, jsonb, bigint } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -558,3 +558,21 @@ export const cloudVmLocks = pgTable(
     index("idx_cloud_vm_locks_lookup").on(table.provider, table.vmId),
   ]
 );
+
+/** Scalar VPS resource samples (5s cadence when stats stream is active). */
+export const vpsMetricSamples = pgTable("vps_metric_samples", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  instanceId: text("instance_id").notNull(),
+  sampledAt: timestamp("sampled_at").notNull(),
+  cpuPercent: real("cpu_percent").notNull(),
+  memUsedBytes: bigint("mem_used_bytes", { mode: "number" }).notNull(),
+  memTotalBytes: bigint("mem_total_bytes", { mode: "number" }).notNull(),
+  memPercent: real("mem_percent").notNull(),
+  diskUsedBytes: bigint("disk_used_bytes", { mode: "number" }).notNull(),
+  diskTotalBytes: bigint("disk_total_bytes", { mode: "number" }).notNull(),
+  diskPercent: real("disk_percent").notNull(),
+}, (t) => [
+  index("idx_vps_metric_samples_lookup").on(t.projectId, t.instanceId, t.sampledAt),
+  index("idx_vps_metric_samples_sampled_at").on(t.sampledAt),
+]);

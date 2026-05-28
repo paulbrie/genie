@@ -4,7 +4,7 @@ import type { DirEntry } from "@/lib/genie-api";
 
 export type ProcessStatus = "running" | "stopped" | "crashed";
 
-export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "history" | "tracker" | "settings" | "admin" | "architecture" | "topology" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help" | "ssh";
+export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "history" | "tracker" | "settings" | "admin" | "architecture" | "topology" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help" | "ssh" | "monitor";
 
 /** Sub-tab for the `/clouds/*` route group (the unified DigitalOcean / TazCloud
  *  admin panel). The URL segment after `/clouds/` is one of these literals. */
@@ -118,6 +118,10 @@ export interface FloatingWindowState {
   title: string;
   icon: string;
   position: { x: number; y: number };
+  /** User's preferred size, persisted across re-mounts. Undefined → fall back
+   *  to the component's DEFAULT_W/DEFAULT_H. Written by useResizable's
+   *  onResizeEnd via updateWindowSize. */
+  size?: { w: number; h: number };
   zIndex: number;
   busy?: boolean;
 }

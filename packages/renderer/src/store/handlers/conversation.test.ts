@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-vi.mock("@/lib/ws", () => ({ wsSend: vi.fn() }));
+vi.mock("@/lib/ws", () => ({ wsSend: vi.fn(), onWsClose: vi.fn() }));
 
 import { handlers } from "./conversation";
 import { $conversationChat } from "../subjects/chat";
@@ -205,6 +205,23 @@ describe("chat:message:new", () => {
     expect($conversationChat.getValue().mentionNotifications).toEqual([]);
   });
 
+  it("does NOT add a toast for agent messages", () => {
+    $conversationChat.next({
+      ...FRESH,
+      activeConversationId: "c-other",
+      conversations: [{ id: "c-1", name: "Genie", type: "dm" } as never],
+    });
+
+    handlers["chat:message:new"]({
+      conversationId: "c-1",
+      message: {
+        id: "m-agent", senderId: "claude", senderName: "Genie", content: "hello", createdAt: "t", isAgent: true,
+      },
+    });
+
+    expect($conversationChat.getValue().mentionNotifications).toEqual([]);
+  });
+
   it("updates the conversation list preview (lastMessage + updatedAt)", () => {
     $conversationChat.next({
       ...FRESH,
@@ -343,8 +360,35 @@ describe("chat:mention / chat:reaction:updated / chat:message:edited / error", (
     const notifs = $conversationChat.getValue().mentionNotifications;
     expect(notifs).toHaveLength(1);
     expect(notifs[0]).toMatchObject({
-      conversationId: "c-1", senderName: "Bob", content: "hey @me", id: "m-1",
+      conversationId: "c-1", senderName: "Bob", content: "hey @me", id: "m-1", isMention: true,
     });
+  });
+
+  it("chat:mention upgrades an existing message toast instead of duplicating", () => {
+    $conversationChat.next({
+      ...FRESH,
+      activeConversationId: "c-other",
+      mentionNotifications: [{
+        id: "m-1",
+        conversationId: "c-1",
+        conversationName: "General",
+        senderName: "Bob",
+        content: "hey @me",
+        createdAt: "t",
+      }],
+    });
+
+    handlers["chat:mention"]({
+      conversationId: "c-1",
+      conversationName: "General",
+      senderName: "Bob",
+      content: "hey @me",
+      messageId: "m-1",
+    });
+
+    const notifs = $conversationChat.getValue().mentionNotifications;
+    expect(notifs).toHaveLength(1);
+    expect(notifs[0].isMention).toBe(true);
   });
 
   it("chat:mention is a no-op when the user IS viewing that conversation", () => {

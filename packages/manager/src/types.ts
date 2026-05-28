@@ -204,9 +204,18 @@ export interface DomActionParams {
   timeout?: number;
 }
 
+export interface DomActionRequestContext {
+  userId?: string;
+  sessionId?: string;
+  host?: string;
+  projectId?: string;
+  instanceId?: string;
+}
+
 export type DomActionExecutor = (
   action: DomAction,
   params: DomActionParams,
+  context?: DomActionRequestContext,
 ) => Promise<{ success: boolean; result: string }>;
 
 // --- VPS Agent stdio message types ---

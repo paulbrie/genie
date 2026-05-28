@@ -1,4 +1,4 @@
-import { wsSend } from "@/lib/ws";
+import { wsSend, onWsClose } from "@/lib/ws";
 import { $auth } from "../subjects/auth";
 import { $activeNav } from "../subjects/common";
 import { $conversationChat } from "../subjects/chat";
@@ -70,24 +70,28 @@ export const handlers: HandlerMap = {
         },
       });
 
-      // Show toast notification if message is from someone else
+      // Toast for messages from other human users (not Genie) while not viewing this conversation
       const currentUser = $auth.getValue().user;
-      if (currentUser && message.senderId !== currentUser.id) {
+      if (currentUser && message.senderId !== currentUser.id && !message.isAgent) {
         const conv = cc.conversations.find((c) => c.id === conversationId);
         const convName = conv?.name || (conv?.type === "dm" ? "DM" : "Chat");
-        $conversationChat.nextAssign({
-          mentionNotifications: [
-            ...cc.mentionNotifications,
-            {
-              id: message.id || `msg-${Date.now()}`,
-              conversationId,
-              conversationName: convName,
-              senderName: message.senderName,
-              content: message.content.slice(0, 100),
-              createdAt: message.createdAt,
-            },
-          ],
-        });
+        const notifId = message.id || `msg-${Date.now()}`;
+        const alreadyQueued = cc.mentionNotifications.some((n) => n.id === notifId);
+        if (!alreadyQueued) {
+          $conversationChat.nextAssign({
+            mentionNotifications: [
+              ...cc.mentionNotifications,
+              {
+                id: notifId,
+                conversationId,
+                conversationName: convName,
+                senderName: message.senderName,
+                content: message.content.slice(0, 100),
+                createdAt: message.createdAt,
+              },
+            ],
+          });
+        }
       }
     }
     // Update conversation list preview immutably
@@ -185,22 +189,36 @@ export const handlers: HandlerMap = {
   "chat:mention": (payload) => {
     const { conversationId, conversationName, senderName, content, messageId } = payload;
     const cc = $conversationChat.getValue();
-    // Only add notification if not currently viewing that conversation
-    if (cc.activeConversationId !== conversationId) {
-      $conversationChat.nextAssign({
-        mentionNotifications: [
-          ...cc.mentionNotifications,
-          {
-            id: messageId || `mention-${Date.now()}`,
-            conversationId,
-            conversationName,
-            senderName,
-            content,
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      });
+    const isViewing = cc.activeConversationId === conversationId && $activeNav.getValue() === "chat";
+    if (isViewing) return;
+
+    const id = messageId || `mention-${Date.now()}`;
+    const existing = cc.mentionNotifications.find((n) => n.id === id);
+    if (existing) {
+      if (!existing.isMention) {
+        $conversationChat.nextAssign({
+          mentionNotifications: cc.mentionNotifications.map((n) =>
+            n.id === id ? { ...n, isMention: true } : n,
+          ),
+        });
+      }
+      return;
     }
+
+    $conversationChat.nextAssign({
+      mentionNotifications: [
+        ...cc.mentionNotifications,
+        {
+          id,
+          conversationId,
+          conversationName,
+          senderName,
+          content,
+          createdAt: new Date().toISOString(),
+          isMention: true,
+        },
+      ],
+    });
   },
 
   "chat:reaction:updated": (payload) => {
@@ -255,3 +273,14 @@ export const handlers: HandlerMap = {
     }
   },
 };
+
+onWsClose(() => {
+  const cc = $conversationChat.getValue();
+  if (cc.streamingContent || cc.toolUses.length > 0) {
+    $conversationChat.nextAssign({
+      streamingContent: "",
+      streamingConversationId: null,
+      toolUses: [],
+    });
+  }
+});

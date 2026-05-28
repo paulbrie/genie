@@ -153,6 +153,18 @@ export function createMcpBrowserServer(
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
       const body = Buffer.concat(chunks).toString();
+      const headerUserId = req.headers["x-genie-user-id"];
+      const headerSessionId = req.headers["x-genie-session-id"];
+      const headerHost = req.headers["x-genie-host"];
+      const headerProjectId = req.headers["x-genie-project-id"];
+      const headerInstanceId = req.headers["x-genie-instance-id"];
+      const requestContext = {
+        userId: typeof headerUserId === "string" ? headerUserId : undefined,
+        sessionId: typeof headerSessionId === "string" ? headerSessionId : undefined,
+        host: typeof headerHost === "string" ? headerHost : undefined,
+        projectId: typeof headerProjectId === "string" ? headerProjectId : undefined,
+        instanceId: typeof headerInstanceId === "string" ? headerInstanceId : undefined,
+      };
 
       let parsed: Record<string, unknown>;
       try {
@@ -189,7 +201,7 @@ export function createMcpBrowserServer(
             result = jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
           } else {
             const toolArgs: DomActionParams = (params?.arguments ?? {}) as DomActionParams;
-            const domResult = await domExecutor(action, toolArgs);
+            const domResult = await domExecutor(action, toolArgs, requestContext);
             result = jsonRpcResponse(id, {
               content: [{ type: "text", text: domResult.result }],
               isError: !domResult.success,

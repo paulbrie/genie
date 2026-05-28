@@ -189,6 +189,16 @@ describe("vps:stats", () => {
     expect(inst.statsError).toBeNull();
   });
 
+  it(":update writes stats like :result (daemon stream push)", () => {
+    makeActiveDeploy({ statsError: "earlier failure" });
+
+    handlers["vps:stats:update"]({ instanceId: INST, stats: sampleStats });
+
+    const inst = $vpsDeploy.getValue().instances[INST];
+    expect(inst.stats).toEqual(sampleStats);
+    expect(inst.statsError).toBeNull();
+  });
+
   it(":error stores the message without clearing existing stats", () => {
     makeActiveDeploy({ stats: sampleStats });
 

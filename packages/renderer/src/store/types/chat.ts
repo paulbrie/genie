@@ -45,6 +45,14 @@ export interface ChatMessage {
    *  set on user messages — the manager forwards these to the model and they're
    *  rendered inline above the user's text bubble. */
   images?: string[];
+  /** Set on assistant messages that represent a failed turn. */
+  isError?: boolean;
+}
+
+export interface ChatSendMeta {
+  context?: string;
+  domSnapshot?: string;
+  images?: string[];
 }
 
 export interface ClaudeInfo {
@@ -92,6 +100,10 @@ export interface ChatState {
    *  manager sends before each turn that uses a saved session id. Cleared on
    *  newChat / resetChat / model switch. */
   resumedFrom: ResumedFrom | null;
+  /** Non-null when the last send failed or the connection dropped mid-turn. */
+  connectionError: string | null;
+  /** Metadata for the most recent user turn — used to retry after errors. */
+  lastSendMeta: ChatSendMeta | null;
 }
 
 /** A VM the assistant should pin its `ssh_exec` tool calls to. Selected from
@@ -173,6 +185,8 @@ export interface MentionNotification {
   senderName: string;
   content: string;
   createdAt: string;
+  /** True when the user was @mentioned (vs a general message toast). */
+  isMention?: boolean;
 }
 
 export interface ConversationChatState {

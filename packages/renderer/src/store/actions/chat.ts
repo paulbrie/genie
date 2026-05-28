@@ -1,6 +1,6 @@
-import { wsSend } from "@/lib/ws";
+import { wsSend, isWsConnected } from "@/lib/ws";
 import { $chat, $pinnedAssistantVm, persistPinnedAssistantVm } from "../subjects/chat";
-import type { ChatMessage, PinnedAssistantVm } from "../types/chat";
+import type { ChatMessage, ChatSendMeta, PinnedAssistantVm } from "../types/chat";
 
 // --- Chat actions ---
 
@@ -14,10 +14,23 @@ export const CHAT_MODELS: Record<ChatModelId, string> = {
   "kimi-k2": "Kimi K2.5",
 };
 
+function wireMessages(messages: ChatMessage[]) {
+  return messages.map((m: ChatMessage) => (
+    m.images && m.images.length > 0
+      ? { role: m.role, content: m.content, images: m.images }
+      : { role: m.role, content: m.content }
+  ));
+}
+
 export function setChatModel(modelId: ChatModelId): void {
   const c = $chat.getValue();
   if (c.modelId !== modelId) {
-    $chat.next({ messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [], statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null, sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null });
+    $chat.next({
+      messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [],
+      statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null,
+      sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null,
+      connectionError: null, lastSendMeta: null,
+    });
   }
 }
 
@@ -28,20 +41,120 @@ export function sendChatMessage(
   images?: string[],
 ): void {
   const c = $chat.getValue();
+  const sendMeta: ChatSendMeta = { context, domSnapshot, images };
   const userMsg: ChatMessage = images && images.length > 0
     ? { role: "user", content: text, images }
     : { role: "user", content: text };
   const newMessages = [...c.messages, userMsg];
-  $chat.next({ ...c, messages: newMessages, loading: true, streamingContent: "", streamingSteps: [], toolRoundsUsed: 0 });
-  // Forward `images` to the manager so the model sees them; keep `content`/`role`
-  // identical to the previous wire shape for messages without images.
-  const plain = newMessages.map((m: ChatMessage) => (
-    m.images && m.images.length > 0
-      ? { role: m.role, content: m.content, images: m.images }
-      : { role: m.role, content: m.content }
-  ));
+  $chat.next({
+    ...c,
+    messages: newMessages,
+    loading: true,
+    streamingContent: "",
+    streamingSteps: [],
+    toolRoundsUsed: 0,
+    connectionError: null,
+    lastSendMeta: sendMeta,
+  });
+
+  if (!isWsConnected()) {
+    failChatSend(newMessages, "Not connected to the server. Check that the manager is running.");
+    return;
+  }
+
   const pinnedVm = $pinnedAssistantVm.getValue();
-  wsSend("chat:send", { messages: plain, context, domSnapshot, modelId: c.modelId, pinnedVm });
+  const sent = wsSend("chat:send", {
+    messages: wireMessages(newMessages),
+    context,
+    domSnapshot,
+    modelId: c.modelId,
+    pinnedVm,
+  });
+  if (!sent) {
+    failChatSend(newMessages, "Could not send your message. The connection may have dropped.");
+  }
+}
+
+function failChatSend(messagesWithUser: ChatMessage[], error: string): void {
+  const c = $chat.getValue();
+  $chat.next({
+    ...c,
+    messages: messagesWithUser.slice(0, -1),
+    loading: false,
+    streamingContent: "",
+    streamingSteps: [],
+    toolUses: [],
+    statusText: "",
+    connectionError: error,
+  });
+}
+
+/** Resend the last user turn after a failed assistant response or disconnect. */
+export function retryLastChatMessage(context?: string, domSnapshot?: string): void {
+  const c = $chat.getValue();
+  let messages = [...c.messages];
+  const last = messages[messages.length - 1];
+  if (last?.role === "assistant" && (last.isError || last.content.startsWith("Error:"))) {
+    messages = messages.slice(0, -1);
+  }
+  if (messages.length === 0 || messages[messages.length - 1].role !== "user") return;
+
+  const meta = c.lastSendMeta;
+  const resolvedContext = context ?? meta?.context;
+  const resolvedSnapshot = domSnapshot ?? meta?.domSnapshot;
+
+  $chat.next({
+    ...c,
+    messages,
+    loading: true,
+    streamingContent: "",
+    streamingSteps: [],
+    toolUses: [],
+    toolRoundsUsed: 0,
+    connectionError: null,
+    statusText: "",
+    lastSendMeta: {
+      context: resolvedContext,
+      domSnapshot: resolvedSnapshot,
+      images: meta?.images,
+    },
+  });
+
+  if (!isWsConnected()) {
+    failChatSend(messages, "Not connected to the server. Check that the manager is running.");
+    return;
+  }
+
+  const pinnedVm = $pinnedAssistantVm.getValue();
+  const sent = wsSend("chat:send", {
+    messages: wireMessages(messages),
+    context: resolvedContext,
+    domSnapshot: resolvedSnapshot,
+    modelId: c.modelId,
+    pinnedVm,
+  });
+  if (!sent) {
+    failChatSend(messages, "Could not send your message. The connection may have dropped.");
+  }
+}
+
+export function dismissChatConnectionError(): void {
+  $chat.nextAssign({ connectionError: null });
+}
+
+export function handleChatWsDisconnect(reason: string): void {
+  const c = $chat.getValue();
+  if (!c.loading) return;
+  $chat.next({
+    ...c,
+    loading: false,
+    streamingContent: "",
+    streamingSteps: [],
+    toolUses: [],
+    statusText: "",
+    toolRoundsUsed: 0,
+    connectionError: reason || "Connection lost. Your message may not have completed.",
+  });
 }
 
 /** Set or clear the assistant's pinned VM. Persisted to localStorage so the
@@ -66,7 +179,12 @@ export function stopChat(): void {
 
 export function resetChat(): void {
   const modelId = $chat.getValue().modelId;
-  $chat.next({ messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [], statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null, sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null });
+  $chat.next({
+    messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [],
+    statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null,
+    sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null,
+    connectionError: null, lastSendMeta: null,
+  });
 }
 
 export function loadChatSessions(): void {
@@ -75,7 +193,7 @@ export function loadChatSessions(): void {
 }
 
 export function loadChatSession(sessionId: string): void {
-  $chat.nextAssign({ loading: true, activeSessionId: sessionId });
+  $chat.nextAssign({ loading: true, activeSessionId: sessionId, connectionError: null });
   wsSend("chat:session:load", { sessionId });
 }
 
@@ -83,6 +201,7 @@ export function newChat(): void {
   $chat.nextAssign({
     messages: [], loading: false, streamingContent: "", streamingSteps: [],
     toolUses: [], statusText: "", activeSessionId: null, resumedFrom: null,
+    connectionError: null, lastSendMeta: null,
   });
 }
 

@@ -1,5 +1,9 @@
+import { parseProbeOutput } from "@genie/vps-stats";
+import type { VpsProcessInfo, VpsStatsPayload } from "@genie/vps-stats";
 import { connectSsh, type SshConnectionConfig, type SshSession } from "./ssh-client.js";
 import { execCached } from "./ssh-session-cache.js";
+
+export type { VpsProcessInfo, VpsStatsPayload as VpsStats };
 
 export function remoteDir(_projectName: string): string {
   return "/opt/project";
@@ -205,32 +209,9 @@ export async function vpsStatus(
   }
 }
 
-export interface VpsProcessInfo {
-  pid: number;
-  ppid: number;
-  name: string;
-  cpu: number;
-  mem: number; // MB
-  user: string;
-  port: string;
-}
-
-export interface VpsStats {
-  cpuPercent: number;
-  memUsedBytes: number;
-  memTotalBytes: number;
-  memPercent: number;
-  diskUsedBytes: number;
-  diskTotalBytes: number;
-  diskPercent: number;
-  processes: VpsProcessInfo[];
-  openPorts: number[];
-  externalPorts: number[];
-}
-
 export async function vpsStats(
   config: SshConnectionConfig,
-): Promise<VpsStats> {
+): Promise<VpsStatsPayload> {
   // Stats probes ride a cached SSH session so the Clouds panels (which fan
   // out across every VM on every refresh tick) stop paying for a fresh TCP+SSH
   // handshake per probe. The cache handles redial on a dead session.
@@ -240,111 +221,7 @@ export async function vpsStats(
     `grep 'cpu ' /proc/stat; sleep 1; echo "===CPU2==="; grep 'cpu ' /proc/stat; echo "===MEM==="; cat /proc/meminfo; echo "===DISK==="; df -B1 / | tail -1; echo "===PROCS==="; ps -eo pid=,ppid=,user=,pcpu=,rss=,comm= --sort=-pcpu | head -50; echo "===PORTS==="; ss -tlnp 2>/dev/null || true`,
   );
 
-  let cpuPercent = 0;
-    let memUsedBytes = 0;
-    let memTotalBytes = 0;
-    let diskUsedBytes = 0;
-    let diskTotalBytes = 0;
-
-    // Parse two CPU samples and compute delta
-    const cpuLines = output.split("===CPU2===");
-    const parseCpu = (s: string) => {
-      const m = s.match(/^cpu\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m);
-      if (!m) return null;
-      const vals = m.slice(1).map(Number);
-      const total = vals.reduce((a, b) => a + b, 0);
-      const idle = vals[3] + vals[4]; // idle + iowait
-      return { total, idle };
-    };
-    const s1 = parseCpu(cpuLines[0]);
-    const s2 = cpuLines[1] ? parseCpu(cpuLines[1]) : null;
-    if (s1 && s2) {
-      const dTotal = s2.total - s1.total;
-      const dIdle = s2.idle - s1.idle;
-      cpuPercent = dTotal > 0 ? Math.round(((dTotal - dIdle) / dTotal) * 100) : 0;
-    }
-
-    // Parse memory from /proc/meminfo
-    const memTotal = output.match(/MemTotal:\s+(\d+)\s+kB/);
-    const memAvailable = output.match(/MemAvailable:\s+(\d+)\s+kB/);
-    if (memTotal) {
-      memTotalBytes = parseInt(memTotal[1]) * 1024;
-      const availBytes = memAvailable ? parseInt(memAvailable[1]) * 1024 : 0;
-      memUsedBytes = memTotalBytes - availBytes;
-    }
-
-    // Parse disk from df output: filesystem 1B-blocks used available use% mount
-    const diskLine = output.split("===DISK===")[1]?.trim();
-    if (diskLine) {
-      const parts = diskLine.split(/\s+/);
-      if (parts.length >= 4) {
-        diskTotalBytes = parseInt(parts[1]) || 0;
-        diskUsedBytes = parseInt(parts[2]) || 0;
-      }
-    }
-
-    const memPercent = memTotalBytes > 0 ? Math.round((memUsedBytes / memTotalBytes) * 100) : 0;
-    const diskPercent = diskTotalBytes > 0 ? Math.round((diskUsedBytes / diskTotalBytes) * 100) : 0;
-
-    // Parse ss output to build pid → port mapping and track external vs local binds
-    const pidPortMap = new Map<number, string>();
-    const externalPortSet = new Set<number>();
-    const allPortSet = new Set<number>();
-    const portsSection = output.split("===PORTS===")[1];
-    if (portsSection) {
-      for (const line of portsSection.trim().split("\n")) {
-        // ss -tlnp format: State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
-        const cols = line.trim().split(/\s+/);
-        if (cols.length < 5) continue;
-        const localAddr = cols[3]; // e.g. "0.0.0.0:22", "127.0.0.1:3000", "[::]:80", "[::1]:5432"
-        const portMatch = localAddr.match(/:(\d+)$/);
-        const pidMatch = line.match(/pid=(\d+)/);
-        if (portMatch) {
-          const port = parseInt(portMatch[1]);
-          allPortSet.add(port);
-          // External if bound to 0.0.0.0, *, or [::] (not 127.x or [::1])
-          const isExternal = localAddr.startsWith("0.0.0.0:") || localAddr.startsWith("*:") || localAddr.startsWith("[::]:") || localAddr.startsWith(":::") ;
-          if (isExternal) externalPortSet.add(port);
-          if (pidMatch) {
-            const pid = parseInt(pidMatch[1]);
-            const existing = pidPortMap.get(pid);
-            pidPortMap.set(pid, existing ? `${existing},${port}` : String(port));
-          }
-        }
-      }
-    }
-
-    // Parse ps output into VpsProcessInfo[]
-    const processes: VpsProcessInfo[] = [];
-    const procsSection = output.split("===PROCS===")[1]?.split("===PORTS===")[0];
-    if (procsSection) {
-      for (const line of procsSection.trim().split("\n")) {
-        if (!line.trim()) continue;
-        const parts = line.trim().split(/\s+/);
-        if (parts.length < 6) continue;
-        const pid = parseInt(parts[0]);
-        if (isNaN(pid)) continue;
-        const ppid = parseInt(parts[1]) || 0;
-        const user = parts[2];
-        const cpu = parseFloat(parts[3]) || 0;
-        const rssKb = parseInt(parts[4]) || 0;
-        const name = parts.slice(5).join(" ");
-        processes.push({
-          pid,
-          ppid,
-          name,
-          cpu,
-          mem: Math.round((rssKb / 1024) * 10) / 10, // KB → MB with 1 decimal
-          user,
-          port: pidPortMap.get(pid) || "",
-        });
-      }
-    }
-
-    const openPorts = [...allPortSet].sort((a, b) => a - b);
-    const externalPorts = [...externalPortSet].sort((a, b) => a - b);
-
-    return { cpuPercent, memUsedBytes, memTotalBytes, memPercent, diskUsedBytes, diskTotalBytes, diskPercent, processes, openPorts, externalPorts };
+  return parseProbeOutput(output);
 }
 
 export async function vpsLogs(

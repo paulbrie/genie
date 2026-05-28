@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import type { AuthState, ChatMessage, ChatSessionSummary, ChatUser, ConversationMessage as ConvMessage, ConversationSummary, ProjectDef, StreamingStep, TerminalShareInvite, ToolUse, VpsDeployState } from "@/store/types";
 import { $auth, $chat, $commandRunOutputs, $conversationChat, $projects, $terminal, $vpsDeploy } from "@/store/subjects";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, acceptTerminalShare, createGenieDm, createRoom, createTrackerIssue, declineTerminalShare, deleteChatSession, fetchVpsStats, leaveSharedTerminal, loadChatSession, loadChatSessions, loadChatUsers, loadConversations, newChat, renameChatSession, runProjectCommand, selectConversation, sendConversationMessage, setChatModel, setTrackerProject, shareTerminal, stopProjectCommand } from "@/store/actions";
+import { CHAT_MODELS, acceptTerminalShare, createGenieDm, createRoom, createTrackerIssue, declineTerminalShare, deleteChatSession, fetchVpsStats, leaveSharedTerminal, loadChatSession, loadChatSessions, loadChatUsers, loadConversations, newChat, renameChatSession, runProjectCommand, selectConversation, sendConversationMessage, setChatModel, setTrackerProject, shareTerminal, stopProjectCommand, unwatchVpsStats, watchVpsStats } from "@/store/actions";
 import dynamic from "next/dynamic";
 import type { BeforeMount } from "@monaco-editor/react";
 import { connectWs, setManagerRunning, wsSend, wsRequest, triggerGoogleLogin, logout, getWsUrl, isWsConnected } from "@/lib/ws";
@@ -307,18 +307,20 @@ function DropletPicker({
   const projectsWithoutVps = projects.filter((p) => p.vpsInstances.length === 0);
   const dropletKey = dropletsWithVps.map((p) => p.id).join(",");
 
-  // Fetch stats for all VPS instances on mount and every 15s
+  // Persistent stats streams for all VPS instances while this view is open
   useEffect(() => {
-    const fetchAll = () => {
+    for (const p of dropletsWithVps) {
+      for (const inst of p.vpsInstances) {
+        watchVpsStats(p.id, inst.id);
+      }
+    }
+    return () => {
       for (const p of dropletsWithVps) {
         for (const inst of p.vpsInstances) {
-          fetchVpsStats(p.id, inst.id);
+          unwatchVpsStats(p.id, inst.id);
         }
       }
     };
-    fetchAll();
-    const interval = setInterval(fetchAll, 15_000);
-    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dropletKey]);
 

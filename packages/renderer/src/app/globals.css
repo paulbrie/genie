@@ -162,6 +162,9 @@ body {
   line-height: 1.5;
   overflow-wrap: anywhere;
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 
   p { margin: 0.75em 0; line-height: 1.6; }
   p:first-child { margin-top: 0; }
@@ -257,4 +260,11 @@ body {
     border-top: 1px solid var(--color-surface1);
     margin: 0.5em 0;
   }
+}
+
+/* Plain-text chat bubbles (team chat own messages, assistant user bubbles) */
+.chat-message-content {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }

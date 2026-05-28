@@ -10,10 +10,10 @@ import {
   loadChatSession,
   loadChatSessions,
   loadPersistedTerminals,
+  openWindow,
   reattachPersistedTerminal,
   renameChatSession,
 } from "@/store/actions";
-import { useNavigate } from "@/lib/navigation";
 import { ViewHeader } from "@/components/ui/view-header";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -45,7 +45,7 @@ export function HistoryPanel() {
         subtitle={isSuperAdmin ? "All users" : "Your activity"}
       />
       <div className="flex items-center gap-1 px-4 border-b border-surface0 shrink-0">
-        <TabButton active={tab === "chats"} onClick={() => setTab("chats")} icon={<MessageSquare size={13} />} label="Chats" />
+        <TabButton active={tab === "chats"} onClick={() => setTab("chats")} icon={<MessageSquare size={13} />} label="Assistant" />
         <TabButton active={tab === "terminals"} onClick={() => setTab("terminals")} icon={<Terminal size={13} />} label="Terminals" />
       </div>
       <div className="flex-1 overflow-y-auto">
@@ -76,7 +76,6 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
 
 function ChatsTab({ isSuperAdmin }: { isSuperAdmin: boolean }) {
   const [chat] = useSubject($chat);
-  const { navigateToNav } = useNavigate();
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
@@ -87,7 +86,7 @@ function ChatsTab({ isSuperAdmin }: { isSuperAdmin: boolean }) {
 
   function openSession(sessionId: string): void {
     loadChatSession(sessionId);
-    navigateToNav("chat");
+    openWindow("genie-assistant");
   }
 
   function commitRename(sessionId: string): void {
@@ -107,7 +106,7 @@ function ChatsTab({ isSuperAdmin }: { isSuperAdmin: boolean }) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-overlay0 gap-2">
         <MessageSquare size={28} className="opacity-50" />
-        <p>No chat sessions yet</p>
+        <p>No assistant sessions yet</p>
       </div>
     );
   }

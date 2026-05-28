@@ -72,6 +72,10 @@ export function dismissMentionNotification(id: string): void {
   $conversationChat.nextAssign({ mentionNotifications: cc.mentionNotifications.filter((n) => n.id !== id) });
 }
 
+export function dismissAllMessageNotifications(): void {
+  $conversationChat.nextAssign({ mentionNotifications: [] });
+}
+
 export function dismissMentionsForConversation(conversationId: string): void {
   const cc = $conversationChat.getValue();
   $conversationChat.nextAssign({ mentionNotifications: cc.mentionNotifications.filter((n) => n.conversationId !== conversationId) });

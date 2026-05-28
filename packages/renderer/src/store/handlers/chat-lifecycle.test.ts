@@ -21,6 +21,8 @@ const FRESH: ChatState = {
   sessionsLoading: false,
   activeSessionId: null,
   resumedFrom: null,
+  connectionError: null,
+  lastSendMeta: null,
 };
 
 beforeEach(() => {
@@ -82,7 +84,7 @@ describe("chat:error", () => {
     handlers["chat:error"]({ message: "rate limit exceeded" });
 
     const v = $chat.getValue();
-    expect(v.messages).toEqual([{ role: "assistant", content: "Error: rate limit exceeded" }]);
+    expect(v.messages).toEqual([{ role: "assistant", content: "Error: rate limit exceeded", isError: true }]);
     expect(v.streamingContent).toBe("");
     expect(v.loading).toBe(false);
     expect(v.statusText).toBe("");

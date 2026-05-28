@@ -41,6 +41,14 @@ import { v4 as uuidv4 } from "uuid";
 import { connectSsh, pickWorkingSshUser, type SshSession } from "./vps/ssh-client.js";
 import type { StreamingChannel } from "./vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from "./vps/deploy-service.js";
+import { GENIE_STANDARD_RECIPE_SLUG, syncGenieStatsOnVm } from "./vps/ensure-vps-stats.js";
+import {
+  getCachedVpsStats,
+  unwatchVpsStats,
+  unwatchVpsStatsForClient,
+  watchVpsStats,
+} from "./vps/stats-stream.js";
+import { getBulkVpsMetricHistory, getVpsMetricHistory } from "./vps/vps-metric-service.js";
 import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
 import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules, getGenieKeyPath } from "./vps/do-provision.js";
@@ -52,8 +60,9 @@ import { setupMcpStreamTunnel, type McpStreamTunnel } from "./vps/mcp-stream-tun
 import { setupMcpSecurityTunnel, type McpSecurityTunnel } from "./vps/mcp-security-tunnel.js";
 import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tunnel.js";
 import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
-import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type AgentOutboundMessage, type StatsPayload } from "./types.js";
-import { getActiveSshConnections, listSshConnections, killSshConnection } from "./vps/ssh-metrics.js";
+import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type DomActionRequestContext, type AgentOutboundMessage, type StatsPayload } from "./types.js";
+import { getActiveSshConnections, listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "./vps/ssh-metrics.js";
+import { evictSession, evictAllSessionsForHost } from "./vps/ssh-session-cache.js";
 import * as settingsService from "./settings-service.js";
 import type { BaseImageConfig, BaseImageTemplate } from "./settings-service.js";
 import fs from "node:fs";
@@ -99,6 +108,8 @@ const activeCommandSessions = new Map<string, SshSession>();
 /** Active admin/VM exec SSH sessions keyed by execId, so admin:exec:cancel can
  *  abort an in-flight droplet/VM exec (e.g. the recipes Stop button). */
 const activeExecSessions = new Map<string, SshSession>();
+const dropletExecUserCache = new Map<string, { username: string; resolvedAt: number }>();
+const DROPLET_EXEC_USER_TTL_MS = 15 * 60_000;
 
 /** Running tally of WebSocket frames (inbound handled + outbound sent), used to
  *  derive a messages/sec rate for the sidebar server-health gauge. */
@@ -592,22 +603,41 @@ async function routeChatToVpsAgent(
 
   const dest = remoteDir(project.name);
 
-  // Ensure MCP tunnels are active for this VPS instance
+  const hostKey = tunnelKey(instance.connection.host);
+  const brokerSessionId = assistantSessionId || uuidv4();
+  registerDomBrokerSession(
+    brokerSessionId,
+    userId,
+    instance.connection.host,
+    project.id,
+    instance.id,
+  );
+
+  // Ensure shared MCP tunnels are active for this VPS instance
   {
-    const tKey = tunnelKey(userId, instance.connection.host);
-    let tunnel = persistentMcpTunnels.get(tKey);
-    const needsAnyTunnel = !tunnel?.streamTunnel || !tunnel?.securityTunnel || !tunnel?.notifyTunnel || !tunnel?.storageTunnel;
+    let tunnel = persistentMcpTunnels.get(hostKey);
+    const needsAnyTunnel = !tunnel || !tunnel.streamTunnel || !tunnel.securityTunnel || !tunnel.notifyTunnel || !tunnel.storageTunnel;
+    try {
+      // Use a dedicated SSH session for MCP tunnels (the chat session will be consumed by Claude Code)
+      const tunnelSsh = tunnel?.sshSession ?? await connectSsh(instance.connection, { timeoutMs: 30_000 });
 
-    if (needsAnyTunnel) {
-      try {
-        // Use a dedicated SSH session for MCP tunnels (the chat session will be consumed by Claude Code)
-        const tunnelSsh = tunnel?.sshSession ?? await connectSsh(instance.connection, { timeoutMs: 30_000 });
+      if (!tunnel) {
+        const mcpTunnel = await setupMcpTunnel(
+          tunnelSsh,
+          createDomActionExecutor(instance.connection.host),
+          { remotePort: MCP_BROWSER_REMOTE_PORT },
+        );
+        tunnel = {
+          sshSession: tunnelSsh,
+          mcpTunnel,
+          projectName: project.name,
+          instanceHost: instance.connection.host,
+          openedAt: Date.now(),
+        };
+        persistentMcpTunnels.set(hostKey, tunnel);
+      }
 
-        if (!tunnel) {
-          tunnel = { sshSession: tunnelSsh, mcpTunnel: null as any, projectName: project.name, instanceHost: instance.connection.host };
-          persistentMcpTunnels.set(tKey, tunnel);
-        }
-
+      if (needsAnyTunnel) {
         if (!tunnel.streamTunnel) {
           try {
             tunnel.streamTunnel = await setupMcpStreamTunnel(tunnelSsh, { projectId: project.id, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
@@ -645,39 +675,47 @@ async function routeChatToVpsAgent(
             console.error(`[claude-code] Storage tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
           }
         }
-
-        // Merge MCP servers into .mcp.json on the VPS
-        const mergeScript = [
-          `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
-          `echo "$existing" | node -e "`,
-          `  const fs = require('fs');`,
-          `  let input = '';`,
-          `  process.stdin.on('data', d => input += d);`,
-          `  process.stdin.on('end', () => {`,
-          `    const cfg = JSON.parse(input);`,
-          `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
-          ...(tunnel.streamTunnel ? [
-          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${tunnel.streamTunnel.socketPath}' } };`,
-          ] : []),
-          ...(tunnel.securityTunnel ? [
-          `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
-          ] : []),
-          ...(tunnel.notifyTunnel ? [
-          `    cfg.mcpServers['genie-notify'] = { type: 'http', url: 'http://127.0.0.1:${MCP_NOTIFY_REMOTE_PORT}/mcp' };`,
-          ] : []),
-          ...(tunnel.storageTunnel ? [
-          `    cfg.mcpServers['genie-storage'] = { type: 'http', url: 'http://127.0.0.1:${MCP_STORAGE_REMOTE_PORT}/mcp' };`,
-          ] : []),
-          `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
-          `  });`,
-          `"`,
-        ].join("\n");
-        await tunnelSsh.exec(mergeScript);
-
-        console.log(`[claude-code] MCP tunnels ready for ${project.name}`);
-      } catch (err: unknown) {
-        console.error(`[claude-code] Failed to set up MCP tunnels: ${(err instanceof Error ? err.message : String(err))}`);
       }
+
+      // Merge MCP servers into .mcp.json on the VPS (browser headers are bound to this chat session).
+      const browserHeadersJson = JSON.stringify({
+        "x-genie-user-id": userId,
+        "x-genie-session-id": brokerSessionId,
+        "x-genie-host": instance.connection.host,
+        "x-genie-project-id": project.id,
+        "x-genie-instance-id": instance.id,
+      });
+      const mergeScript = [
+        `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
+        `echo "$existing" | node -e "`,
+        `  const fs = require('fs');`,
+        `  let input = '';`,
+        `  process.stdin.on('data', d => input += d);`,
+        `  process.stdin.on('end', () => {`,
+        `    const cfg = JSON.parse(input);`,
+        `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
+        `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp', headers: ${browserHeadersJson} };`,
+        ...(tunnel.streamTunnel ? [
+          `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${tunnel.streamTunnel.socketPath}' } };`,
+        ] : []),
+        ...(tunnel.securityTunnel ? [
+          `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
+        ] : []),
+        ...(tunnel.notifyTunnel ? [
+          `    cfg.mcpServers['genie-notify'] = { type: 'http', url: 'http://127.0.0.1:${MCP_NOTIFY_REMOTE_PORT}/mcp' };`,
+        ] : []),
+        ...(tunnel.storageTunnel ? [
+          `    cfg.mcpServers['genie-storage'] = { type: 'http', url: 'http://127.0.0.1:${MCP_STORAGE_REMOTE_PORT}/mcp' };`,
+        ] : []),
+        `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
+        `  });`,
+        `"`,
+      ].join("\n");
+      await tunnelSsh.exec(mergeScript);
+
+      console.log(`[claude-code] MCP tunnels ready for ${project.name}`);
+    } catch (err: unknown) {
+      console.error(`[claude-code] Failed to set up MCP tunnels: ${(err instanceof Error ? err.message : String(err))}`);
     }
   }
 
@@ -743,7 +781,7 @@ async function routeChatToVpsAgent(
     }
 
     // Tell Claude about the tracker MCP tools
-    const tKey = tunnelKey(userId, serverIp);
+    const tKey = tunnelKey(serverIp);
     if (persistentMcpTunnels.get(tKey)?.streamTunnel) {
       systemContext += `\n\n=== Tracker ===\nYou have access to the project's issue tracker via MCP tools (genie-tracker server). Use tracker_list_issues to see all tickets, tracker_get_issue to read a specific ticket by its number, tracker_update_issue to change status/priority, and tracker_comment_on_issue to leave notes.\n\nWorkflow: set status to in_progress when you start working on a ticket. When you finish, leave a concise summary comment (bullet list of changes) using tracker_comment_on_issue, then set status to in_review (NEVER set to done — a human reviews and marks done).`;
     }
@@ -1175,12 +1213,20 @@ const pendingDomActions = new Map<string, {
 
 /** Find the Chrome extension WebSocket for a given user */
 function getExtensionClient(userId: string): WebSocket | null {
-  for (const [ws, state] of clients) {
-    if (state.userId === userId && state.clientType === "chrome-extension" && ws.readyState === ws.OPEN) {
-      return ws;
-    }
-  }
-  return null;
+  const ws = extensionClientsByUser.get(userId);
+  if (!ws || ws.readyState !== ws.OPEN) return null;
+  const state = clients.get(ws);
+  if (!state || state.userId !== userId || state.clientType !== "chrome-extension") return null;
+  return ws;
+}
+
+function registerExtensionClient(userId: string, ws: WebSocket): void {
+  extensionClientsByUser.set(userId, ws);
+}
+
+function unregisterExtensionClient(userId: string, ws: WebSocket): void {
+  const current = extensionClientsByUser.get(userId);
+  if (current === ws) extensionClientsByUser.delete(userId);
 }
 
 /** Send a DOM action request to the extension and await the result */
@@ -1201,9 +1247,100 @@ function requestDomAction(extensionWs: WebSocket, action: string, params: Record
   });
 }
 
-/** Create a domActionExecutor bound to a specific extension WS */
-function createDomActionExecutor(extensionWs: WebSocket): DomActionExecutor {
-  return async (action, params) => {
+/** Create a domActionExecutor bound directly to a specific extension socket. */
+function createDirectDomActionExecutor(extensionWs: WebSocket): DomActionExecutor {
+  return async (action, params) => requestDomAction(extensionWs, action, params as Record<string, unknown>);
+}
+
+interface DomBrokerSessionBinding {
+  userId: string;
+  host: string;
+  projectId: string;
+  instanceId: string;
+  lastUsedAt: number;
+}
+
+/** Active browser broker sessions keyed by chat session id. */
+const domBrokerSessions = new Map<string, DomBrokerSessionBinding>();
+/** Connected extension sockets keyed by authenticated user id. */
+const extensionClientsByUser = new Map<string, WebSocket>();
+
+const DOM_BROKER_SESSION_TTL_MS = 30 * 60_000;
+
+setInterval(() => {
+  const cutoff = Date.now() - DOM_BROKER_SESSION_TTL_MS;
+  for (const [sessionId, binding] of domBrokerSessions) {
+    if (binding.lastUsedAt < cutoff) domBrokerSessions.delete(sessionId);
+  }
+}, 60_000).unref();
+
+function registerDomBrokerSession(
+  sessionId: string,
+  userId: string,
+  host: string,
+  projectId: string,
+  instanceId: string,
+): void {
+  domBrokerSessions.set(sessionId, { userId, host, projectId, instanceId, lastUsedAt: Date.now() });
+}
+
+function clearDomBrokerSessionsForUser(userId: string): void {
+  for (const [sessionId, binding] of domBrokerSessions) {
+    if (binding.userId === userId) domBrokerSessions.delete(sessionId);
+  }
+}
+
+async function userCanAccessInstance(
+  userId: string,
+  projectId: string,
+  instanceId: string,
+  host: string,
+): Promise<boolean> {
+  if (!(await projectService.userCanSeeProject(userId, projectId))) return false;
+  const project = await projectService.getById(projectId);
+  const instance = project?.vpsInstances.find((v) => v.id === instanceId);
+  if (!instance) return false;
+  return instance.connection.host === host;
+}
+
+/** Shared broker: route host-scoped MCP browser calls to the correct user extension socket. */
+function createDomActionExecutor(host: string): DomActionExecutor {
+  return async (action, params, context?: DomActionRequestContext) => {
+    const sessionId = context?.sessionId;
+    const userId = context?.userId;
+    const projectId = context?.projectId;
+    const instanceId = context?.instanceId;
+    if (!sessionId || !userId || !projectId || !instanceId) {
+      return { success: false, result: "Missing DOM broker auth context (userId/sessionId/projectId/instanceId)." };
+    }
+
+    const binding = domBrokerSessions.get(sessionId);
+    if (!binding) {
+      return { success: false, result: `Unknown DOM broker session: ${sessionId}` };
+    }
+    if (binding.userId !== userId) {
+      return { success: false, result: "DOM broker session/user mismatch." };
+    }
+    if (binding.host !== host) {
+      return { success: false, result: "DOM broker session/host mismatch." };
+    }
+    if (binding.projectId !== projectId || binding.instanceId !== instanceId) {
+      return { success: false, result: "DOM broker session target mismatch." };
+    }
+    if (context?.host && context.host !== host) {
+      return { success: false, result: "DOM broker request host mismatch." };
+    }
+
+    if (!(await userCanAccessInstance(userId, projectId, instanceId, host))) {
+      return { success: false, result: "Access denied: user cannot control this VPS instance." };
+    }
+
+    const extensionWs = getExtensionClient(userId);
+    if (!extensionWs) {
+      return { success: false, result: "Chrome extension is not connected for this user." };
+    }
+
+    binding.lastUsedAt = Date.now();
     return requestDomAction(extensionWs, action, params as Record<string, unknown>);
   };
 }
@@ -1226,33 +1363,136 @@ interface PersistentMcpTunnel {
   streamTunnel?: McpStreamTunnel;
   projectName: string;
   instanceHost: string;
+  openedAt: number;
 }
 
-/** Multiple tunnels per userId, keyed by `userId:instanceHost` */
+/** Shared tunnels keyed by instance host (one tunnel per VPS host). */
 const persistentMcpTunnels = new Map<string, PersistentMcpTunnel>();
 
-function tunnelKey(userId: string, host: string): string {
-  return `${userId}:${host}`;
+function tunnelKey(host: string): string {
+  return host;
+}
+
+async function reconnectPersistentMcpTunnelForHost(host: string): Promise<void> {
+  closePersistentMcpTunnelForHost(host);
+
+  const projects = await projectService.getAll();
+  let targetProject: (typeof projects)[number] | null = null;
+  let targetInstance: (typeof projects)[number]["vpsInstances"][number] | null = null;
+  for (const project of projects) {
+    const instance = project.vpsInstances.find((v) => !v.deployFailed && v.connection.host === host);
+    if (instance) {
+      targetProject = project;
+      targetInstance = instance;
+      break;
+    }
+  }
+  if (!targetProject || !targetInstance) {
+    throw new Error(`No active VPS instance found for host ${host}`);
+  }
+
+  const sshSession = await connectSsh(targetInstance.connection, { timeoutMs: 30_000 });
+  const mcpTunnel = await setupMcpTunnel(
+    sshSession,
+    createDomActionExecutor(host),
+    { remotePort: MCP_BROWSER_REMOTE_PORT },
+  );
+
+  let streamTunnel: McpStreamTunnel | undefined;
+  try {
+    streamTunnel = await setupMcpStreamTunnel(sshSession, {
+      projectId: targetProject.id,
+      onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); },
+    });
+  } catch (err: unknown) {
+    console.error(`[mcp-persistent] Stream tunnel reconnect failed for ${targetProject.name}: ${(err instanceof Error ? err.message : String(err))}`);
+  }
+
+  let securityTunnel: McpSecurityTunnel | undefined;
+  try {
+    securityTunnel = await setupMcpSecurityTunnel(sshSession, { remotePort: MCP_SECURITY_REMOTE_PORT });
+  } catch (err: unknown) {
+    console.error(`[mcp-persistent] Security tunnel reconnect failed for ${targetProject.name}: ${(err instanceof Error ? err.message : String(err))}`);
+  }
+
+  let notifyTunnel: McpNotifyTunnel | undefined;
+  try {
+    notifyTunnel = await setupMcpNotifyTunnel(sshSession, (memberIds, conversationId, message) => {
+      broadcastToUsers(memberIds, { type: "chat:message:new", payload: { conversationId, message } });
+    }, { remotePort: MCP_NOTIFY_REMOTE_PORT });
+  } catch (err: unknown) {
+    console.error(`[mcp-persistent] Notify tunnel reconnect failed for ${targetProject.name}: ${(err instanceof Error ? err.message : String(err))}`);
+  }
+
+  let storageTunnel: McpStorageTunnel | undefined;
+  try {
+    storageTunnel = await setupMcpStorageTunnel(sshSession, targetProject.name, { remotePort: MCP_STORAGE_REMOTE_PORT });
+  } catch (err: unknown) {
+    console.error(`[mcp-persistent] Storage tunnel reconnect failed for ${targetProject.name}: ${(err instanceof Error ? err.message : String(err))}`);
+  }
+
+  persistentMcpTunnels.set(tunnelKey(host), {
+    sshSession,
+    mcpTunnel,
+    streamTunnel,
+    securityTunnel,
+    notifyTunnel,
+    storageTunnel,
+    projectName: targetProject.name,
+    instanceHost: host,
+    openedAt: Date.now(),
+  });
+
+  const dest = remoteDir(targetProject.name);
+  const mergeScript = [
+    `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
+    `echo "$existing" | node -e "`,
+    `  const fs = require('fs');`,
+    `  let input = '';`,
+    `  process.stdin.on('data', d => input += d);`,
+    `  process.stdin.on('end', () => {`,
+    `    const cfg = JSON.parse(input);`,
+    `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
+    `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
+    ...(streamTunnel ? [
+      `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
+    ] : []),
+    ...(securityTunnel ? [
+      `    cfg.mcpServers['genie-security'] = { type: 'http', url: 'http://127.0.0.1:${MCP_SECURITY_REMOTE_PORT}/mcp' };`,
+    ] : []),
+    ...(notifyTunnel ? [
+      `    cfg.mcpServers['genie-notify'] = { type: 'http', url: 'http://127.0.0.1:${MCP_NOTIFY_REMOTE_PORT}/mcp' };`,
+    ] : []),
+    ...(storageTunnel ? [
+      `    cfg.mcpServers['genie-storage'] = { type: 'http', url: 'http://127.0.0.1:${MCP_STORAGE_REMOTE_PORT}/mcp' };`,
+    ] : []),
+    `    fs.writeFileSync('${dest}/.mcp.json', JSON.stringify(cfg, null, 2));`,
+    `  });`,
+    `"`,
+  ].join("\n");
+  await sshSession.exec(mergeScript);
 }
 
 async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string): Promise<void> {
-  // Tear down all existing tunnels for this user
-  await teardownPersistentMcpTunnels(userId);
+  registerExtensionClient(userId, extensionWs);
 
-  // Find ALL projects with VPS instances
-  const projects = await projectService.getAll();
-  const domExecutor = createDomActionExecutor(extensionWs);
+  // Find all projects this user can access.
+  const projects = await projectService.getAllForUser(userId);
 
-  let tunnelCount = 0;
+  const seenHosts = new Set<string>();
+  let newTunnelCount = 0;
   for (const project of projects) {
     for (const instance of project.vpsInstances) {
       if (instance.deployFailed) continue;
-      const key = tunnelKey(userId, instance.connection.host);
+      const key = tunnelKey(instance.connection.host);
+      if (seenHosts.has(key)) continue;
+      seenHosts.add(key);
       const dest = remoteDir(project.name);
 
       try {
+        if (persistentMcpTunnels.has(key)) continue;
         const sshSession = await connectSsh(instance.connection, { timeoutMs: 30_000 });
-        const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
+        const mcpTunnel = await setupMcpTunnel(sshSession, createDomActionExecutor(instance.connection.host), { remotePort: MCP_BROWSER_REMOTE_PORT });
 
         // Set up stdio stream tunnel (carries tracker + future MCPs)
         let streamTunnel: McpStreamTunnel | undefined;
@@ -1292,9 +1532,10 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
           console.error(`[mcp-persistent] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
         }
 
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host });
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host, openedAt: Date.now() });
 
-        // Merge MCP servers into .mcp.json on the VPS
+        // Merge MCP servers into .mcp.json on the VPS. Browser headers are set per
+        // chat session in routeChatToVpsAgent, not here.
         const mergeScript = [
           `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
           `echo "$existing" | node -e "`,
@@ -1323,41 +1564,77 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
         ].join("\n");
         await sshSession.exec(mergeScript);
 
-        tunnelCount++;
-        console.log(`[mcp-persistent] Tunnel ready for user ${userId} → ${instance.connection.host}:${MCP_BROWSER_REMOTE_PORT} (${project.name})`);
+        newTunnelCount++;
+        console.log(`[mcp-persistent] Shared tunnel ready for host ${instance.connection.host}:${MCP_BROWSER_REMOTE_PORT} (${project.name})`);
       } catch (err: unknown) {
-        console.error(`[mcp-persistent] Failed tunnel to ${instance.connection.host} (${project.name}): ${(err instanceof Error ? err.message : String(err))}`);
+        console.error(`[mcp-persistent] Failed shared tunnel to ${instance.connection.host} (${project.name}): ${(err instanceof Error ? err.message : String(err))}`);
       }
     }
   }
 
-  if (tunnelCount === 0) {
+  if (seenHosts.size === 0) {
     console.log(`[mcp-persistent] No VPS instances found for user ${userId}`);
   } else {
-    console.log(`[mcp-persistent] ${tunnelCount} tunnel(s) established for user ${userId}`);
+    console.log(`[mcp-persistent] User ${userId} attached to ${seenHosts.size} host(s); ${newTunnelCount} new shared tunnel(s) created`);
   }
 }
 
 async function teardownPersistentMcpTunnels(userId: string): Promise<void> {
-  const prefix = `${userId}:`;
-  const toRemove: string[] = [];
-  for (const [key, tunnel] of persistentMcpTunnels) {
-    if (key.startsWith(prefix)) {
-      toRemove.push(key);
-      try { tunnel.streamTunnel?.close(); } catch {}
-      try { tunnel.securityTunnel?.close(); } catch {}
-      try { tunnel.notifyTunnel?.close(); } catch {}
-      try { tunnel.storageTunnel?.close(); } catch {}
-      try { tunnel.mcpTunnel.close(); } catch {}
-      try { tunnel.sshSession.close(); } catch {}
-    }
+  clearDomBrokerSessionsForUser(userId);
+  const ws = extensionClientsByUser.get(userId);
+  if (ws) unregisterExtensionClient(userId, ws);
+}
+
+function closePersistentMcpTunnel(tunnel: PersistentMcpTunnel): void {
+  try { tunnel.streamTunnel?.close(); } catch {}
+  try { tunnel.securityTunnel?.close(); } catch {}
+  try { tunnel.notifyTunnel?.close(); } catch {}
+  try { tunnel.storageTunnel?.close(); } catch {}
+  try { tunnel.mcpTunnel.close(); } catch {}
+  try { tunnel.sshSession.close(); } catch {}
+}
+
+function closeAllPersistentMcpTunnels(): void {
+  for (const [, tunnel] of persistentMcpTunnels) {
+    closePersistentMcpTunnel(tunnel);
   }
-  for (const key of toRemove) {
-    persistentMcpTunnels.delete(key);
+  persistentMcpTunnels.clear();
+}
+
+function closePersistentMcpTunnelForHost(host: string): boolean {
+  const tunnel = persistentMcpTunnels.get(host);
+  if (!tunnel) return false;
+  closePersistentMcpTunnel(tunnel);
+  persistentMcpTunnels.delete(host);
+  return true;
+}
+
+interface SshTunnelInfo {
+  host: string;
+  projectName: string;
+  openedAt: number;
+  browser: boolean;
+  stream: boolean;
+  security: boolean;
+  notify: boolean;
+  storage: boolean;
+}
+
+function listPersistentMcpTunnels(): SshTunnelInfo[] {
+  const out: SshTunnelInfo[] = [];
+  for (const [host, tunnel] of persistentMcpTunnels) {
+    out.push({
+      host,
+      projectName: tunnel.projectName,
+      openedAt: tunnel.openedAt,
+      browser: true,
+      stream: !!tunnel.streamTunnel,
+      security: !!tunnel.securityTunnel,
+      notify: !!tunnel.notifyTunnel,
+      storage: !!tunnel.storageTunnel,
+    });
   }
-  if (toRemove.length > 0) {
-    console.log(`[mcp-persistent] ${toRemove.length} tunnel(s) torn down for user ${userId}`);
-  }
+  return out.sort((a, b) => a.openedAt - b.openedAt);
 }
 
 // Outbound ACL gate. Returns true iff the recipient's role may receive `type`
@@ -2019,7 +2296,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           ? ws
           : getExtensionClient(userId);
         if (extensionWs && extensionWs.readyState === extensionWs.OPEN && clients.get(extensionWs)?.clientType === "chrome-extension") {
-          domActionExecutor = createDomActionExecutor(extensionWs);
+          domActionExecutor = createDirectDomActionExecutor(extensionWs);
         }
 
         const collectedToolUses: { name: string; input: unknown; result: string }[] = [];
@@ -2452,17 +2729,54 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "ssh:list": {
-      send(ws, { type: "ssh:list", payload: { sessions: listSshConnections() } });
+      send(ws, { type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels() } });
+      break;
+    }
+
+    case "ssh:tunnel:reconnect": {
+      const { host } = msg.payload as { host?: string };
+      if (!host || typeof host !== "string") {
+        send(ws, { type: "ssh:tunnel:reconnect:result", payload: { host, ok: false, error: "host is required" } });
+        break;
+      }
+      try {
+        await reconnectPersistentMcpTunnelForHost(host);
+        send(ws, { type: "ssh:tunnel:reconnect:result", payload: { host, ok: true } });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "ssh:tunnel:reconnect:result",
+          payload: { host, ok: false, error: err instanceof Error ? err.message : String(err) },
+        });
+      }
+      broadcast({ type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels() } });
       break;
     }
 
     case "ssh:kill": {
-      const id = msg.payload.id;
-      const ok = typeof id === "string" && killSshConnection(id);
-      send(ws, { type: "ssh:kill:result", payload: { id, ok } });
+      const { id, host: killHost } = msg.payload as { id?: string; host?: string };
+      let killed = 0;
+      if (typeof killHost === "string" && killHost) {
+        killed = killSshConnectionsForHost(killHost);
+        closePersistentMcpTunnelForHost(killHost);
+        evictAllSessionsForHost(killHost);
+      } else if (typeof id === "string") {
+        const info = getSshConnectionInfo(id);
+        if (killSshConnection(id)) {
+          killed = 1;
+          if (info) {
+            evictSession({
+              host: info.host,
+              port: info.port,
+              username: info.username,
+              privateKeyPath: "",
+            });
+          }
+        }
+      }
+      send(ws, { type: "ssh:kill:result", payload: { id, host: killHost, ok: killed > 0, killed } });
       // Push the updated list to every admin watching /ssh so kills made by
       // one operator show up in another's view without a manual refresh.
-      broadcast({ type: "ssh:list", payload: { sessions: listSshConnections() } });
+      broadcast({ type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels() } });
       break;
     }
 
@@ -3871,6 +4185,36 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "vps:stats:watch": {
+      const { projectId, instanceId } = msg.payload;
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "Not authorized for this project" } });
+        break;
+      }
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find((v) => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "No VPS deployment for this project/instance" } });
+        break;
+      }
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        watchVpsStats(ws, projectId, instanceId, conn, send);
+      } catch (err: unknown) {
+        send(ws, {
+          type: "vps:stats:error",
+          payload: { projectId, instanceId, message: err instanceof Error ? err.message : String(err) },
+        });
+      }
+      break;
+    }
+
+    case "vps:stats:unwatch": {
+      const { projectId, instanceId } = msg.payload;
+      unwatchVpsStats(ws, projectId, instanceId);
+      break;
+    }
+
     case "vps:stats": {
       const { projectId, instanceId } = msg.payload;
       if (!(await projectService.userCanSeeProject(userId, projectId))) {
@@ -3883,17 +4227,74 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "No VPS deployment for this project/instance" } });
         break;
       }
-      // Trigger a background sync if the droplet isn't in our known-alive set,
-      // but still attempt SSH — the DO API list may be stale or incomplete.
       const dropletId = vpsInst.digitalocean?.dropletId;
       if (dropletId && lastDropletSync > 0 && !knownAliveDropletIds.has(dropletId)) {
         void syncDropletStatuses();
+      }
+      const cached = getCachedVpsStats(projectId, instanceId);
+      if (cached) {
+        send(ws, { type: "vps:stats:result", payload: { projectId, instanceId, stats: cached } });
+        break;
       }
       try {
         const stats = await vpsStats(await getVpsConnection(projectId, instanceId));
         send(ws, { type: "vps:stats:result", payload: { projectId, instanceId, stats } });
       } catch (err: unknown) {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "vps:stats:history": {
+      const { projectId, instanceId, hours = 1 } = msg.payload;
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, {
+          type: "vps:stats:history:result",
+          payload: { projectId, instanceId, samples: [], error: "Not authorized for this project" },
+        });
+        break;
+      }
+      const project = await projectService.getById(projectId);
+      if (!project?.vpsInstances.some((v) => v.id === instanceId)) {
+        send(ws, {
+          type: "vps:stats:history:result",
+          payload: { projectId, instanceId, samples: [], error: "No VPS instance" },
+        });
+        break;
+      }
+      try {
+        const h = typeof hours === "number" && hours > 0 ? Math.min(hours, 168) : 1;
+        const samples = await getVpsMetricHistory(projectId, instanceId, h);
+        send(ws, { type: "vps:stats:history:result", payload: { projectId, instanceId, samples } });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "vps:stats:history:result",
+          payload: {
+            projectId,
+            instanceId,
+            samples: [],
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      break;
+    }
+
+    case "vps:monitor:load": {
+      const hoursRaw = msg.payload?.hours;
+      const hours = typeof hoursRaw === "number" && hoursRaw > 0 ? Math.min(hoursRaw, 168) : 1;
+      try {
+        const projects = await projectService.getAllForUser(userId);
+        const instances = projects.flatMap((p) =>
+          p.vpsInstances.map((v) => ({ projectId: p.id, instanceId: v.id })),
+        );
+        const history = await getBulkVpsMetricHistory(instances, hours);
+        send(ws, { type: "vps:monitor:load:result", payload: { history, hours } });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "vps:monitor:load:result",
+          payload: { history: {}, hours, error: err instanceof Error ? err.message : String(err) },
+        });
       }
       break;
     }
@@ -3934,21 +4335,21 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       const host = vpsInst.connection.host;
-      const key = tunnelKey(userId, host);
+      const key = tunnelKey(host);
+      const tunnelSessionId = `manual-${uuidv4()}`;
+      registerDomBrokerSession(tunnelSessionId, userId, host, projectId, instanceId);
       // Already has a tunnel?
       if (persistentMcpTunnels.has(key)) {
         send(ws, { type: "mcp:tunnel:result", payload: { projectId, instanceId, ok: true } });
         break;
       }
       try {
-        // Try to find existing extension WS for DOM actions, else use a stub
-        const extensionWs = getExtensionClient(userId);
-        const domExecutor: DomActionExecutor = extensionWs
-          ? createDomActionExecutor(extensionWs)
-          : async () => ({ success: false, result: "No browser extension connected. Install the Genie Chrome extension for browser automation." });
-
         const sshSession = await connectSsh(vpsInst.connection, { timeoutMs: 30_000 });
-        const mcpTunnel = await setupMcpTunnel(sshSession, domExecutor, { remotePort: MCP_BROWSER_REMOTE_PORT });
+        const mcpTunnel = await setupMcpTunnel(
+          sshSession,
+          createDomActionExecutor(host),
+          { remotePort: MCP_BROWSER_REMOTE_PORT },
+        );
 
         // Set up stdio stream tunnel (carries tracker + future MCPs)
         let streamTunnel: McpStreamTunnel | undefined;
@@ -3984,7 +4385,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           console.error(`[mcp-tunnel] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
         }
 
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: host });
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: host, openedAt: Date.now() });
 
         // Merge MCP servers into .mcp.json on the VPS
         const dest = remoteDir(project.name);
@@ -3997,7 +4398,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           `  process.stdin.on('end', () => {`,
           `    const cfg = JSON.parse(input);`,
           `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
-          `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
+          `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp', headers: ${JSON.stringify({ "x-genie-user-id": userId, "x-genie-session-id": tunnelSessionId, "x-genie-host": host, "x-genie-project-id": projectId, "x-genie-instance-id": instanceId })} };`,
           ...(streamTunnel ? [
           `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
           ] : []),
@@ -4156,6 +4557,21 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
               send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message: `Switched SSH user to '${VPS_SSH_USERNAME}'` } });
             }
           } catch { /* probe failure is non-fatal */ }
+        }
+
+        if (recipeId === GENIE_STANDARD_RECIPE_SLUG) {
+          try {
+            const conn = await getVpsConnection(projectId, instanceId);
+            await syncGenieStatsOnVm(conn, (message) => {
+              send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message } });
+            });
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            send(ws, {
+              type: "vps:recipe:progress",
+              payload: { projectId, instanceId, recipeId, message: `Warning: genie-stats sync failed: ${message}` },
+            });
+          }
         }
 
         send(ws, { type: "vps:recipe:done", payload: { projectId, instanceId, recipeId } });
@@ -4756,11 +5172,19 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         // Genie setup.sh runs); project-attached droplets have `genie`. Probe
         // so the admin exec panel works for both — matches the same pattern at
         // lines 3632/3666/4143.
-        const sshUser = await pickWorkingSshUser(
-          { host: pub.ip_address, port: 22, privateKeyPath: keyPath },
-          [VPS_SSH_USERNAME, "root"],
-        );
+        const cacheKey = pub.ip_address;
+        const cached = dropletExecUserCache.get(cacheKey);
+        const cachedValid = !!cached && (Date.now() - cached.resolvedAt) < DROPLET_EXEC_USER_TTL_MS;
+        const sshUser = cachedValid && cached
+          ? cached.username
+          : await pickWorkingSshUser(
+            { host: pub.ip_address, port: 22, privateKeyPath: keyPath },
+            [VPS_SSH_USERNAME, "root"],
+          );
         if (!sshUser) throw new Error(`Cannot SSH into droplet ${pub.ip_address} as '${VPS_SSH_USERNAME}' or 'root' with the Genie key`);
+        if (!cachedValid) {
+          dropletExecUserCache.set(cacheKey, { username: sshUser, resolvedAt: Date.now() });
+        }
         const session = await connectSsh({
           host: pub.ip_address,
           port: 22,
@@ -6679,11 +7103,14 @@ export async function createServer(): Promise<WebSocketServer> {
     if (await handleOAuthCallback(req, res)) return;
 
     // Dev-only login bypass — issues a JWT for an existing user by email and
-    // stores it in localStorage via a self-contained HTML page that redirects
-    // to /. Bound to loopback (127.0.0.1 / ::1) so it can't be reached from
-    // other hosts even if the dev server is exposed. Intended for UI automation
-    // (Chrome DevTools MCP) where Google OAuth can't be completed headlessly.
+    // redirects to the renderer with ?token=…. Loopback-only; disabled in
+    // production. Used by e2e tests and `/?login=email` on localhost:3000.
     if (req.url?.startsWith("/test-login") && req.method === "GET") {
+      if (process.env.NODE_ENV === "production") {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not found");
+        return;
+      }
       const remote = req.socket.remoteAddress ?? "";
       const isLoopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
       if (!isLoopback) {
@@ -6836,6 +7263,8 @@ export async function createServer(): Promise<WebSocketServer> {
     });
 
     ws.on("close", () => {
+      unwatchVpsStatsForClient(ws);
+
       // Abort any active chat stream for this connection
       const chatAbort = activeChatAbortControllers.get(ws);
       if (chatAbort) {
@@ -6889,6 +7318,7 @@ export function shutdown(wss: WebSocketServer): void {
     session.stop();
   }
   activeAgentSessions.clear();
+  closeAllPersistentMcpTunnels();
   for (const [ws] of clients) {
     ws.close();
   }

@@ -1,6 +1,8 @@
 import { $chat } from "../subjects/chat";
 import type { ChatMessageUsage, ToolUse } from "../types/chat";
 import type { HandlerMap } from "./types";
+import { onWsClose } from "@/lib/ws";
+import { handleChatWsDisconnect } from "../actions/chat";
 
 // --- Chat (1-on-1 AI) messages ---
 
@@ -115,6 +117,7 @@ export const handlers: HandlerMap = {
       messages: [...c.messages, {
         role: "assistant" as const,
         content: `Error: ${payload.message}`,
+        isError: true,
       }],
       streamingContent: "",
       streamingSteps: [],
@@ -196,3 +199,7 @@ export const handlers: HandlerMap = {
     });
   },
 };
+
+onWsClose((reason) => {
+  handleChatWsDisconnect(reason);
+});

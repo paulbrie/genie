@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useSubject } from "subjecto/react";
-import { Send, Bot, SmilePlus, Reply, Pencil, X, Copy, Terminal, Square } from "lucide-react";
+import { Send, Bot, SmilePlus, Reply, Pencil, X, Copy, Terminal, Square, MoreHorizontal } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AuthUser, ConversationMember, ConversationMessage, TerminalShareInvite, ToolUse } from "@/store/types";
@@ -11,6 +11,8 @@ import { acceptTerminalShare, cancelEditingMessage, loadOlderMessages, sendConve
 import { cn } from "@/lib/utils";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
+import { AutoTextarea } from "@/components/ui/auto-textarea";
+import { ChatErrorBubble } from "@/components/chat/chat-error-bubble";
 import {
   Tooltip,
   TooltipTrigger,
@@ -29,7 +31,7 @@ export function ConversationMessages() {
   const [mentionIndex, setMentionIndex] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const prevMessageCountRef = useRef(0);
 
@@ -145,7 +147,7 @@ export function ConversationMessages() {
     sendConversationMessage(text);
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (mentionQuery !== null && mentionSuggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -179,7 +181,14 @@ export function ConversationMessages() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Messages area */}
-      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto flex flex-col gap-2 px-4 py-3 scrollbar-thin">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto flex flex-col gap-2 px-4 py-3 scrollbar-thin"
+        role="log"
+        aria-live="polite"
+        aria-label="Conversation messages"
+      >
         {/* Loading older messages indicator */}
         {loadingOlder && (
           <div className="flex justify-center py-2">
@@ -233,7 +242,7 @@ export function ConversationMessages() {
             <div className="w-5 h-5 rounded-full bg-blue/20 flex items-center justify-center shrink-0 mt-0.5">
               <Bot size={12} className="text-blue" />
             </div>
-            <div className="text-md text-text">
+            <div className="text-md text-text chat-message-content">
               <div className="chat-markdown">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {streamingContent}
@@ -312,21 +321,22 @@ export function ConversationMessages() {
           </div>
         )}
 
-        <div className="flex items-center gap-2 px-4 py-2 border-t border-surface0">
-          <input
+        <div className="flex items-end gap-2 px-4 py-2 border-t border-surface0">
+          <AutoTextarea
             ref={inputRef}
-            type="text"
             value={input}
             onChange={(e) => handleInputChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={replyingTo ? "Type your reply..." : "Type a message..."}
+            placeholder={replyingTo ? "Type your reply…" : "Type a message…"}
+            aria-label="Message input"
             className="flex-1 bg-surface0 border border-surface1 rounded-md px-3 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-blue"
           />
           {isStreaming ? (
             <button
               onClick={() => activeConversationId && stopConversationChat(activeConversationId)}
-              className="p-1.5 rounded-md border-none cursor-pointer bg-red text-background hover:bg-red/80 transition-colors duration-150"
+              className="p-1.5 rounded-md border-none cursor-pointer bg-red text-background hover:bg-red/80 transition-colors duration-150 shrink-0"
               title="Stop generating"
+              aria-label="Stop generating"
             >
               <Square size={14} />
             </button>
@@ -335,16 +345,18 @@ export function ConversationMessages() {
               onClick={handleSend}
               disabled={!input.trim()}
               className={cn(
-                "p-1.5 rounded-md border-none cursor-pointer transition-colors duration-150",
+                "p-1.5 rounded-md border-none cursor-pointer transition-colors duration-150 shrink-0",
                 !input.trim()
                   ? "bg-surface0 text-overlay0 cursor-not-allowed"
                   : "bg-blue text-background hover:bg-blue/80"
               )}
+              aria-label="Send message"
             >
               <Send size={14} />
             </button>
           )}
         </div>
+        <p className="text-[10px] text-overlay0/80 px-4 pb-2">Enter to send · Shift+Enter for new line</p>
       </div>
     </div>
   );
@@ -426,10 +438,19 @@ function MessageRow({
 
   const reactionEntries = Object.entries(message.reactions || {});
 
+  if (message.senderId === "system" && message.content.startsWith("Error:")) {
+    return (
+      <div ref={(el) => setRef(message.id, el)} className="flex justify-start px-1">
+        <ChatErrorBubble content={message.content} />
+      </div>
+    );
+  }
+
   return (
     <div
       ref={(el) => setRef(message.id, el)}
-      className={cn("group relative flex items-start gap-2 rounded-md transition-colors duration-300", isOwnMessage && "flex-row-reverse")}
+      tabIndex={0}
+      className={cn("group relative flex items-start gap-2 rounded-md transition-colors duration-300 outline-none focus-visible:ring-1 focus-visible:ring-blue/40", isOwnMessage && "flex-row-reverse")}
       onContextMenu={handleContextMenu}
     >
       {/* Avatar */}
@@ -508,7 +529,7 @@ function MessageRow({
           /* Message content */
           <div
             className={cn(
-              "px-3 py-1.5 rounded-lg text-md break-words",
+              "px-3 py-1.5 rounded-lg text-md break-words chat-message-content",
               isOwnMessage
                 ? "bg-surface0 text-text rounded-br-sm whitespace-pre-wrap"
                 : "text-text rounded-bl-sm"
@@ -555,16 +576,26 @@ function MessageRow({
         )}
       </div>
 
-      {/* Hover toolbar */}
+      {/* Message actions toolbar */}
       <div className={cn(
-        "absolute top-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-mantle border border-surface0 rounded-md shadow-sm px-0.5 py-0.5 z-10",
+        "absolute top-0 flex items-center gap-0.5 bg-mantle border border-surface0 rounded-md shadow-sm px-0.5 py-0.5 z-10 transition-opacity",
+        "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 sm:group-focus:opacity-100",
         isOwnMessage ? "left-0 -translate-x-1/2" : "right-0 translate-x-1/2"
       )}>
+        <button
+          type="button"
+          onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+          className="p-1 bg-transparent border-none cursor-pointer text-overlay0 hover:text-text rounded hover:bg-surface0 transition-colors sm:hidden"
+          aria-label="Message actions"
+        >
+          <MoreHorizontal size={12} />
+        </button>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-              className="p-1 bg-transparent border-none cursor-pointer text-overlay0 hover:text-text rounded hover:bg-surface0 transition-colors"
+              className="p-1 bg-transparent border-none cursor-pointer text-overlay0 hover:text-text rounded hover:bg-surface0 transition-colors hidden sm:block"
+              aria-label="Add reaction"
             >
               <SmilePlus size={12} />
             </button>

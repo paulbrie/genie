@@ -31,10 +31,9 @@ const INIT: RecipeRuntimeState = { installed: null, checking: false, running: fa
 
 /** Cap how many SSH exec calls run concurrently against a single VM. The panel
  *  fires 8+ checks on mount; without a cap, small VMs (1 vCPU / 1 GB) drop
- *  connections during pubkey auth ("Connection lost before handshake"). 3 is the
- *  empirical sweet spot — fast enough that the badges populate in a couple of
- *  seconds, slow enough that sshd never trips MaxStartups. */
-const SSH_CONCURRENCY = 3;
+ *  connections during pubkey auth ("Connection lost before handshake"). Keep
+ *  this low so opening Manage doesn't create a burst of parallel SSH sessions. */
+const SSH_CONCURRENCY = 2;
 
 /** Tiny async semaphore. Returns a wrapped function that enforces an upper
  *  bound on concurrent in-flight calls. Excess calls queue FIFO. */

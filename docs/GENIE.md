@@ -99,7 +99,8 @@ For Next.js web apps, the setup enables real-time hot-reload when the VPS agent 
 
 After deployment, the manager can:
 - `vps:status` — `docker compose ps`
-- `vps:stats` — CPU, memory, disk, processes, open ports
+- `vps:stats:watch` / `vps:stats:unwatch` — persistent SSH stream to `@genie/vps-stats` daemon (NDJSON every 5s); pushes `vps:stats:update`
+- `vps:stats` — one-shot read (cache from stream, else SSH probe fallback)
 - `vps:logs` — `docker compose logs`
 - `vps:teardown` — `docker compose down` + `rm -rf`
 - `vps:disconnect` — Remove VPS from project without destroying

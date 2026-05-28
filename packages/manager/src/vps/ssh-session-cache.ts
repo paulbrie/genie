@@ -67,6 +67,17 @@ export function evictSession(cfg: SshConnectionConfig): void {
   cache.delete(key);
 }
 
+/** Drop every cached session targeting `host` (all ports/users). Used when
+ *  /ssh kills a pile of leaked connections so the stats cache can't revive
+ *  them on the next probe. */
+export function evictAllSessionsForHost(host: string): void {
+  for (const [key, entry] of cache) {
+    if (entry.cfg.host !== host) continue;
+    try { entry.session?.close(); } catch { /* ignore */ }
+    cache.delete(key);
+  }
+}
+
 /** Run `command` over the cached session and return its stdout/stderr. On
  *  failure (the cached session may have silently died between probes —
  *  network glitch, VM restart, idle SSH timeout) the entry is evicted and the

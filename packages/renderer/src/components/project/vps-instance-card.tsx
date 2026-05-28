@@ -12,7 +12,7 @@ import type {
 import { $vpsDeploy } from "@/store/subjects";
 import {
   addSshTerminalTab, checkVpsStatus, deployToProvider, disconnectVps, fetchVpsLogs,
-  fetchVpsStats, hibernateVps, killVpsProcess, loadDeployLogs, startMcpTunnel,
+  fetchVpsStats, hibernateVps, killVpsProcess, loadDeployLogs, startMcpTunnel, unwatchVpsStats, watchVpsStats,
   teardownVps, vpsExec, wakeVps,
 } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -376,7 +376,7 @@ const INSTANCE_TABS: { key: InstanceTab; label: string; icon: typeof Server }[] 
   { key: "files", label: "Files", icon: FileText },
   { key: "db", label: "DB", icon: Database },
   { key: "containers", label: "Containers", icon: Server },
-  { key: "chat", label: "Chat", icon: MessageSquare },
+  { key: "chat", label: "Team chat", icon: MessageSquare },
 ];
 
 /** Per-VPS-instance card. Top-level project page renders one of these for
@@ -415,12 +415,11 @@ export function VpsInstanceCard({
   const isFailed = !isHibernated && instance.deployFailed;
   const isReady = !isHibernated && !isFailed && !unreachable && !checking;
 
-  // Fetch stats on mount and every 5s for real-time data (skip for failed/hibernated)
+  // Persistent stats stream from VM daemon (skip for failed/hibernated)
   useEffect(() => {
     if (instance.deployFailed || isHibernated) return;
-    fetchVpsStats(project.id, instance.id);
-    const interval = setInterval(() => fetchVpsStats(project.id, instance.id), 5_000);
-    return () => clearInterval(interval);
+    watchVpsStats(project.id, instance.id);
+    return () => unwatchVpsStats(project.id, instance.id);
   }, [project.id, instance.id, instance.deployFailed, isHibernated]);
 
   return (
@@ -722,7 +721,7 @@ export function VpsInstanceCard({
 
       {isReady && activeTab === "chat" && (
         <div className="min-h-[400px] border border-surface0 rounded-lg overflow-hidden flex flex-col">
-          <ChatView />
+          <ChatView embedded />
         </div>
       )}
 

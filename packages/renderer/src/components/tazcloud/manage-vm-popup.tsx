@@ -10,15 +10,15 @@ import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import {
   Activity, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, Loader2,
-  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw,
+  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw, RotateCcw,
   Settings as SettingsIcon, Shield, Terminal, Trash2, X,
 } from "lucide-react";
-import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { $admin, $auth, $persistedTerminals, $projects, $ssh, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import {
   addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, focusWindow,
   hibernateVps, killPersistedTerminal, loadPersistedTerminals, minimizeWindow,
-  openWindow, reattachPersistedTerminal, registerWindow, updateWindowPosition, vpsExec,
+  openWindow, reattachPersistedTerminal, reconnectSshTunnelForHost, registerWindow, updateWindowPosition, vpsExec,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
@@ -477,7 +477,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   // plain "user" callers get silently dropped and would stall on the 15-min
   // client timeout. Non-admin callers route through user-level `vps:exec`.
   const [auth] = useSubject($auth);
+  const [ssh] = useSubject($ssh);
   const canUseAdminExec = (auth.user?.role ?? "user") !== "user";
+  const reconnectingTunnel = !!ssh.reconnectingHosts[vm.host];
 
   // Probe whether the 'genie' deploy user is set up (created + SSH key + sudo)
   // and prefer it over the image-default user. This matters because recipes
@@ -601,6 +603,15 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
                   )}
                 </p>
                 <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => reconnectSshTunnelForHost(vm.host)}
+                    disabled={reconnectingTunnel}
+                    className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-blue/30 text-md text-blue hover:bg-blue/10 transition-colors disabled:opacity-40 disabled:cursor-wait"
+                    title="Reconnect shared MCP tunnel for this host"
+                  >
+                    {reconnectingTunnel ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
+                    Tunnel
+                  </button>
                   <ClaudeManageButton vm={vm} />
                   <SshLaunchButton vm={vm} />
                 </div>

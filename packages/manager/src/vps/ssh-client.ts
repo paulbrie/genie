@@ -255,7 +255,7 @@ function makeSession(conn: Client): SshSession {
     },
 
     close() {
-      conn.end();
+      try { conn.destroy(); } catch { /* ignore */ }
     },
   };
 }
@@ -309,7 +309,7 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
           port: config.port,
           username: config.username,
           kind: "client",
-          end: () => conn.end(),
+          end: () => { try { conn.destroy(); } catch { /* ignore */ } },
           openerStack,
         });
         resolve(makeSession(conn));

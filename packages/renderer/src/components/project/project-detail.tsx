@@ -6,7 +6,7 @@ import { useDeepSubjectAll } from "@/lib/hooks";
 import type { BaseImageTemplate, DeployLogEntry, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
 import { $admin, $auth, $commandRunOutputs, $projects, $selectedProjectId, $vpsDeploy } from "@/store/subjects";
 import { $orgSettings } from "@/store/subjects/org-settings";
-import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadDeployLogs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, uninstallVpsRecipe, vpsExec, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadDeployLogs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, unwatchVpsStats, uninstallVpsRecipe, vpsExec, watchVpsStats, wakeVps } from "@/store/actions";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
@@ -55,7 +55,6 @@ import {
   Sparkles,
   Layers,
 } from "lucide-react";
-import { ChatView } from "@/components/chat/chat-view";
 import { DbExplorer } from "@/components/admin/db-explorer";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { ProjectFilesEditor } from "@/components/project/project-files-editor";
@@ -356,9 +355,8 @@ function DropletCard({
   const doInfo = inst.digitalocean;
 
   useEffect(() => {
-    fetchVpsStats(project.id, inst.id);
-    const interval = setInterval(() => fetchVpsStats(project.id, inst.id), 15_000);
-    return () => clearInterval(interval);
+    watchVpsStats(project.id, inst.id);
+    return () => unwatchVpsStats(project.id, inst.id);
   }, [project.id, inst.id]);
 
   return (

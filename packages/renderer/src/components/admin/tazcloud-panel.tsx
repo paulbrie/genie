@@ -6,7 +6,7 @@ import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
 import { $admin, $auth, $manager, $persistedTerminals, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
-import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadPersistedTerminals, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
+import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
@@ -14,6 +14,8 @@ import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-sy
 import { VpsResourceGauges } from "@/components/project/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
 import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
+import { CircularGauge } from "@/components/ui/circular-gauge";
+import type { VpsStats } from "@/store/types";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { DbExplorer } from "@/components/admin/db-explorer";
@@ -65,6 +67,45 @@ export function cardStatusPill(status: string) {
 // at the DNS level, so attaching a new VM is a one-field operation.
 const INGRESS_DOMAIN_SUFFIX = "cloud.teleporthq.ai";
 const INGRESS_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/** Panel-wide stats poll. SSH sessions are cached server-side; 60s keeps Taz
+ *  bastion rate-limits happy vs the old 30s cadence. */
+const TAZ_STATS_POLL_MS = 60_000;
+
+function VmCardStatsGauges({
+  stats,
+  statsLoading,
+  statsError,
+  vcpuLabel,
+}: {
+  stats: VpsStats | null | undefined;
+  statsLoading: boolean;
+  statsError: string | null | undefined;
+  vcpuLabel?: string;
+}) {
+  if (statsLoading && !stats) {
+    return (
+      <div className="flex items-center gap-2 mt-3 py-2 text-overlay0 text-xs">
+        <Loader2 size={12} className="animate-spin shrink-0" />
+        Probing…
+      </div>
+    );
+  }
+  if (statsError && !stats) {
+    return (
+      <div className="mt-3 py-2 px-2 text-xs text-red bg-red/10 rounded-md truncate" title={statsError}>
+        Unreachable
+      </div>
+    );
+  }
+  if (!stats) return null;
+  return (
+    <div className="flex items-center gap-3 mt-3 flex-wrap">
+      <CircularGauge label="CPU" percent={Math.round(stats.cpuPercent)} subtitle={vcpuLabel} size={44} strokeWidth={4} valueFontSize={12} showPercentSign />
+      <CircularGauge label="MEM" percent={Math.round(stats.memPercent)} subtitle={formatBytesShort(stats.memTotalBytes)} size={44} strokeWidth={4} valueFontSize={12} showPercentSign />
+      <CircularGauge label="DISK" percent={Math.round(stats.diskPercent)} subtitle={formatBytesShort(stats.diskTotalBytes)} size={44} strokeWidth={4} valueFontSize={12} showPercentSign />
+    </div>
+  );
+}
 
 // IMAGES / SIZES / imageDefaultUser / defaultSshUserFor / defaultVmName /
 // validateTazVmName moved to ./tazcloud/helpers.ts so taz-snapshots-section.tsx
@@ -144,9 +185,19 @@ export function TazCloudPanel() {
     // v2.0.0: projects are mandatory. Empty list on legacy v6 tenants — handled
     // gracefully in the UI (the Projects section just doesn't render).
     loadTazProjects();
-    // Per-VM stats used to fire an SSH probe at every VM on a 30s cadence —
-    // that's N handshakes per tick for a screen that mostly displays metadata.
-    // The Manage popup keeps a live probe for the one VM the admin opens.
+  }, [canAccess]);
+
+  // Live CPU/MEM/DISK for ACTIVE VMs. One batched admin:tazcloud:stats round-trip
+  // (POOL=4 server-side + cached SSH sessions) instead of per-card probes.
+  useEffect(() => {
+    if (!canAccess) return;
+    loadAdminTazcloudStats();
+    const id = window.setInterval(() => {
+      if (document.hidden) return;
+      if ($admin.getValue().tazcloud.vmStatsLoading) return;
+      loadAdminTazcloudStats();
+    }, TAZ_STATS_POLL_MS);
+    return () => window.clearInterval(id);
   }, [canAccess]);
 
   // Re-fire the one-shot loads when the WS reconnects (typically because
@@ -167,6 +218,7 @@ export function TazCloudPanel() {
       loadAdminTazVms();
       loadTazSnapshots();
       loadTazProjects();
+      loadAdminTazcloudStats();
     }
   }, [manager.running, canAccess]);
 
@@ -891,8 +943,10 @@ export function TazCloudPanel() {
               const isPending = pendingDelete === vm.id;
               const isDeleting = deleting.has(vm.id);
               const isRenaming = renamingId === vm.id;
-              // Per-VM stats live in the Manage popup; cards stay metadata-only
-              // to avoid SSH-probing every server on a refresh tick.
+              const vmStats = isActive ? admin.tazcloud.vmStats[vm.id] : null;
+              const vmStatsError = isActive ? admin.tazcloud.vmStatsErrors[vm.id] : null;
+              const vmStatsLoading =
+                isActive && admin.tazcloud.vmStatsLoading && !vmStats && !vmStatsError;
               // vCPU label from size slug if present (DO format); TazCloud sizes are word
               // labels (small/medium/...) so this gracefully no-ops.
               const vcpuMatch = vm.size?.match(/(\d+)vcpu/);
@@ -956,7 +1010,16 @@ export function TazCloudPanel() {
                           {cardStatusPill(vm.status)}
                         </div>
 
-                        {/* Non-active state surfaced here in place of the old stats block. */}
+                        {isActive && (
+                          <VmCardStatsGauges
+                            stats={vmStats}
+                            statsLoading={vmStatsLoading}
+                            statsError={vmStatsError}
+                            vcpuLabel={vcpuLabel}
+                          />
+                        )}
+
+                        {/* Non-active state */}
                         {!isActive && (
                           <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
                             VM is {vm.status.toLowerCase()}
@@ -1008,11 +1071,11 @@ export function TazCloudPanel() {
                           ) : (
                             <>
                               <button
-                                onClick={() => loadAdminTazVms()}
+                                onClick={() => loadAdminTazcloudStats()}
                                 className="p-1 text-overlay0 hover:text-text transition-colors"
-                                title="Refresh"
+                                title="Refresh stats"
                               >
-                                <RefreshCw size={13} />
+                                <RefreshCw size={13} className={cn(vmStatsLoading && "animate-spin")} />
                               </button>
                               {renderSshControls(vm, isActive)}
                               {renderActionsMenu(vm, isActive, isRenaming)}
@@ -1046,9 +1109,10 @@ export function TazCloudPanel() {
                       ip={vm.ipv6}
                       sizeSlug={vm.size}
                       provider="tazcloud"
-                      stats={null}
-                      statsLoading={false}
-                      onRefresh={() => loadAdminTazVms()}
+                      stats={vmStats}
+                      statsLoading={vmStatsLoading}
+                      statsError={vmStatsError}
+                      onRefresh={() => loadAdminTazcloudStats()}
                       onDelete={vm.ingress ? undefined : () => confirmDelete(vm.id)}
                     />
                   )}

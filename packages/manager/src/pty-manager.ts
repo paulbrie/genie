@@ -352,7 +352,7 @@ export function spawnSshPty(
     kill: () => {
       cancelled = true;
       channel?.close();
-      conn.end();
+      try { conn.destroy(); } catch { /* ignore */ }
     },
     onData: (cb) => { dataCallback = cb; },
     onExit: (cb) => { exitCallback = cb; },
@@ -407,6 +407,7 @@ export function spawnSshPty(
   function tryConnect(): void {
     if (cancelled) return;
     attempt++;
+    try { conn.destroy(); } catch { /* ignore — may be a fresh Client on first attempt */ }
     conn = new Client();
 
     // Same Railway/userspace-WG route as connectSsh — see ssh-client.ts. Hosts
@@ -442,7 +443,7 @@ export function spawnSshPty(
             port: config.port,
             username: config.username,
             kind: "pty",
-            end: () => conn.end(),
+            end: () => { try { conn.destroy(); } catch { /* ignore */ } },
             openerStack,
           });
         }

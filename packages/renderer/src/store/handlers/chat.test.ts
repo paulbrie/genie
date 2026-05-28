@@ -18,6 +18,8 @@ const FRESH: ChatState = {
   sessionsLoading: false,
   activeSessionId: null,
   resumedFrom: null,
+  connectionError: null,
+  lastSendMeta: null,
 };
 
 beforeEach(() => {

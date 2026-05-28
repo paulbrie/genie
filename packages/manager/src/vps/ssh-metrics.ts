@@ -5,8 +5,8 @@
 // action so a leak can be triaged live.
 //
 // Each open is paired with exactly one close at the instrumented sites; the
-// `end` thunk is what the /ssh kill action invokes — ssh2's `Client#end()`
-// triggers the `close` event which in turn calls `sshConnUnregister`.
+// `end` thunk is what the /ssh kill action invokes — uses Client#destroy()
+// so hung exec channels can't block teardown the way end() does.
 
 import crypto from "node:crypto";
 
@@ -106,17 +106,43 @@ export function listSshConnections(): SshConnectionInfo[] {
   return out.sort((a, b) => a.openedAt - b.openedAt);
 }
 
-/** Closes the underlying ssh2 client. The client's own `close` event will then
- *  fire sshConnUnregister, so the registry stays consistent without a second
- *  delete here. Returns false if no such id is tracked. */
+export function getSshConnectionInfo(id: string): SshConnectionInfo | null {
+  const entry = active.get(id);
+  if (!entry) return null;
+  return {
+    id: entry.id,
+    host: entry.host,
+    port: entry.port,
+    username: entry.username,
+    kind: entry.kind,
+    openedAt: entry.openedAt,
+    opener: entry.opener,
+  };
+}
+
+/** Force-close the underlying ssh2 client. Uses destroy() so hung exec channels
+ *  can't block teardown the way conn.end() does. Drop from the registry
+ *  immediately so /ssh reflects the kill even if the socket is slow to die. */
 export function killSshConnection(id: string): boolean {
   const entry = active.get(id);
   if (!entry) return false;
+  active.delete(id);
   try {
     entry.end();
   } catch {
-    // ssh2 throws if the socket is already half-closed; the close event will
-    // still fire from the other side, so swallow.
+    // ssh2 throws if the socket is already half-closed; swallow.
   }
   return true;
+}
+
+/** Kill every tracked connection to `host`. Returns how many were closed. */
+export function killSshConnectionsForHost(host: string): number {
+  const ids = [...active.values()]
+    .filter((e) => e.host === host)
+    .map((e) => e.id);
+  let killed = 0;
+  for (const id of ids) {
+    if (killSshConnection(id)) killed++;
+  }
+  return killed;
 }

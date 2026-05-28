@@ -6,6 +6,7 @@ import type {
   ProjectDef,
   TerminalState,
   VpsDeployState,
+  VpsMonitorState,
 } from "../types/vps";
 import type { FileEditorState, FileTemplatesState } from "../types/common";
 
@@ -29,6 +30,13 @@ export const $railwayTestResult = new Subject<{ ok: boolean; message: string } |
 export const $doSnapshots = new Subject<DoSnapshot[]>([]);
 export const $doSnapshotsLoading = new Subject<boolean>(false);
 export const $vpsDeploy = new DeepSubject<VpsDeployState>({ instances: {}, activeDeploys: {}, testResult: null, deployLogs: [] });
+
+export const $vpsMonitor = new Subject<VpsMonitorState>({
+  history: {},
+  hours: 1,
+  loading: false,
+  error: null,
+});
 
 export const $fileEditor = new Subject<FileEditorState>({
   projectId: null, files: [], selectedFile: null, content: null,

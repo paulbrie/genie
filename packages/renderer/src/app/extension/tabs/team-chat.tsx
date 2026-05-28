@@ -221,7 +221,7 @@ function ExtMessageRow({ msg, isOwn }: { msg: ConvMessage; isOwn: boolean }) {
             <span className="text-overlay0" style={{ fontSize: 10 }}>{timeStr}</span>
           </div>
         )}
-        <div className={`rounded-lg px-2.5 py-1.5 ${isOwn ? "bg-mauve/15 text-text" : msg.isAgent ? "bg-surface0 text-text" : "bg-surface0 text-text"}`}>
+        <div className={`rounded-lg px-2.5 py-1.5 chat-message-content ${isOwn ? "bg-mauve/15 text-text" : msg.isAgent ? "bg-surface0 text-text" : "bg-surface0 text-text"}`}>
           <div className="whitespace-pre-wrap break-words" style={{ fontSize: 13, lineHeight: 1.5 }}>{msg.content}</div>
         </div>
         {isOwn && (

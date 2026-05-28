@@ -40,6 +40,23 @@ export interface VpsStats {
   externalPorts: number[];
 }
 
+/** Scalar row from vps_metric_samples (Postgres history). */
+export interface VpsMetricSample {
+  sampledAt: string;
+  cpuPercent: number;
+  memPercent: number;
+  diskPercent: number;
+  memUsedBytes: number;
+  diskUsedBytes: number;
+}
+
+export interface VpsMonitorState {
+  history: Record<string, VpsMetricSample[]>;
+  hours: number;
+  loading: boolean;
+  error: string | null;
+}
+
 export interface DoDropletInfo {
   dropletId: number;
   ipAddress: string;
