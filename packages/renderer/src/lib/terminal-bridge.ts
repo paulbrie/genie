@@ -148,15 +148,28 @@ export function createTerminal(
       }
     });
   };
+  let lastW = -1;
+  let lastH = -1;
+  let unchangedRun = 0;
   const resizeObserver = new ResizeObserver((entries) => {
     observerFireCount++;
     const e = entries[0];
-    // eslint-disable-next-line no-console
-    console.log("[term-resize] observer fire", {
-      sessionId,
-      n: observerFireCount,
-      contentBox: e?.contentRect ? { w: Math.round(e.contentRect.width), h: Math.round(e.contentRect.height) } : null,
-    });
+    const w = e?.contentRect ? Math.round(e.contentRect.width) : -1;
+    const h = e?.contentRect ? Math.round(e.contentRect.height) : -1;
+    const changed = w !== lastW || h !== lastH;
+    if (changed) {
+      // eslint-disable-next-line no-console
+      console.log(`[term-resize] observer fire #${observerFireCount} w=${w} h=${h} dW=${w - lastW} dH=${h - lastH} (sess=${sessionId})`);
+      lastW = w;
+      lastH = h;
+      unchangedRun = 0;
+    } else {
+      unchangedRun++;
+      if (unchangedRun === 1 || unchangedRun === 5 || unchangedRun === 20) {
+        // eslint-disable-next-line no-console
+        console.warn(`[term-resize] observer fire #${observerFireCount} w=${w} h=${h} NO CHANGE (run=${unchangedRun}) — false fire (sess=${sessionId})`);
+      }
+    }
     if (settleTimer != null) clearTimeout(settleTimer);
     settleTimer = setTimeout(settledFit, SETTLE_MS);
   });
@@ -167,25 +180,24 @@ export function createTerminal(
   return terminal;
 }
 
-// [debug] sampled write counter — log roughly every 32nd write so a noisy
-// stream doesn't drown the console but a "frozen" terminal still shows it
-// IS receiving bytes (or that it isn't).
+// [debug] write timing — log roughly every 32nd write AND any write whose
+// synchronous portion takes >16ms (a dropped frame), so we can see if a
+// single chunk is blocking the main thread and making the popup look frozen.
 let __writeCount = 0;
 export function writeToTerminal(sessionId: string, data: string): void {
   const inst = instances.get(sessionId);
   __writeCount++;
-  if ((__writeCount & 31) === 0) {
-    // eslint-disable-next-line no-console
-    console.log("[term-write] sampled", {
-      sessionId,
-      bytes: data.length,
-      hasInstance: !!inst,
-      cols: inst?.terminal.cols,
-      rows: inst?.terminal.rows,
-      n: __writeCount,
-    });
-  }
+  const t0 = performance.now();
   inst?.terminal.write(data);
+  const dt = performance.now() - t0;
+  const sampled = (__writeCount & 31) === 0;
+  const slow = dt > 16;
+  if (sampled || slow) {
+    // eslint-disable-next-line no-console
+    (slow ? console.warn : console.log)(
+      `[term-write] ${slow ? "SLOW " : ""}n=${__writeCount} bytes=${data.length} sync=${dt.toFixed(1)}ms cols=${inst?.terminal.cols} rows=${inst?.terminal.rows} hasInstance=${!!inst} (sess=${sessionId})`,
+    );
+  }
 }
 
 export function focusTerminal(sessionId: string): void {
