@@ -23,14 +23,14 @@ describe("debug-api", () => {
 
   it("authorizeDebugAccess accepts GENIE_DEBUG_SECRET header", async () => {
     process.env.GENIE_DEBUG_SECRET = "test-debug-key";
-    const req = { headers: { "x-genie-debug-key": "test-debug-key" } } as http.IncomingMessage;
+    const req = { headers: { "x-genie-debug-key": "test-debug-key" } } as unknown as http.IncomingMessage;
     const result = await _debugApiTest.authorizeDebugAccess(req);
     expect(result).toEqual({ ok: true });
   });
 
   it("authorizeDebugAccess rejects missing auth", async () => {
     delete process.env.GENIE_DEBUG_SECRET;
-    const req = { headers: {} } as http.IncomingMessage;
+    const req = { headers: {} } as unknown as http.IncomingMessage;
     const result = await _debugApiTest.authorizeDebugAccess(req);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.status).toBe(401);
