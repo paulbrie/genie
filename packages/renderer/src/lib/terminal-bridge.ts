@@ -87,27 +87,78 @@ export function createTerminal(
     wsSend("terminal:data", { id: sessionId, data });
   });
 
-  // ResizeObserver for auto-fit. fit() can detach/reattach xterm's hidden
-  // helper textarea, which silently drops keyboard focus — so we have to
-  // restore it ourselves, or the user can no longer type the moment they
-  // resize the popup. Only restore when xterm OWNED focus going in, to avoid
-  // stealing focus from another popup whose own resize observer happens to
-  // fire as a side-effect of layout shifts.
-  const resizeObserver = new ResizeObserver(() => {
+  // ResizeObserver for auto-fit, debounced. Each pointermove during a popup
+  // resize fires the observer, and a per-frame fit() (a) thrashes xterm's
+  // renderer enough to look like a freeze in production, and (b) detaches the
+  // hidden helper textarea so fast that the focus-restore race keeps losing
+  // — once focus is lost mid-drag the next observer's hadFocus check is
+  // already false. Coalesce all observer fires from a drag into one fit
+  // after the resize settles for SETTLE_MS; the CSS still resizes the
+  // popup visually in real time, the terminal just reflows on release.
+  const SETTLE_MS = 80;
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  let observerFireCount = 0; // [debug] reset each settle window
+  const settledFit = () => {
+    const fires = observerFireCount;
+    observerFireCount = 0;
+    settleTimer = null;
     requestAnimationFrame(() => {
       try {
-        const hadFocus = !!terminal.element?.contains(document.activeElement);
+        const rect = container.getBoundingClientRect();
+        const beforeCols = terminal.cols;
+        const beforeRows = terminal.rows;
+        const active = document.activeElement;
+        const hadFocus = !!terminal.element?.contains(active);
+        // eslint-disable-next-line no-console
+        console.log("[term-resize] settledFit RUN", {
+          sessionId,
+          observerFires: fires,
+          container: { w: Math.round(rect.width), h: Math.round(rect.height) },
+          before: { cols: beforeCols, rows: beforeRows },
+          hadFocus,
+          activeTag: active?.tagName,
+          activeIsInTerminal: hadFocus,
+        });
         fitAddon.fit();
+        // eslint-disable-next-line no-console
+        console.log("[term-resize] fit() done", {
+          sessionId,
+          after: { cols: terminal.cols, rows: terminal.rows },
+          changed: beforeCols !== terminal.cols || beforeRows !== terminal.rows,
+        });
         wsSend("terminal:resize", {
           id: sessionId,
           cols: terminal.cols,
           rows: terminal.rows,
         });
-        if (hadFocus) terminal.focus();
-      } catch {
-        // ignore resize errors during teardown
+        if (hadFocus) {
+          terminal.focus();
+          const afterActive = document.activeElement;
+          const focusRestored = !!terminal.element?.contains(afterActive);
+          // eslint-disable-next-line no-console
+          console.log("[term-resize] focus restore", {
+            sessionId,
+            focusRestored,
+            activeTag: afterActive?.tagName,
+          });
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[term-resize] fit threw", { sessionId, err });
       }
     });
+  };
+  const resizeObserver = new ResizeObserver((entries) => {
+    observerFireCount++;
+    const e = entries[0];
+    // eslint-disable-next-line no-console
+    console.log("[term-resize] observer fire", {
+      sessionId,
+      n: observerFireCount,
+      contentBox: e?.contentRect ? { w: Math.round(e.contentRect.width), h: Math.round(e.contentRect.height) } : null,
+    });
+    if (settleTimer != null) clearTimeout(settleTimer);
+    settleTimer = setTimeout(settledFit, SETTLE_MS);
   });
   resizeObserver.observe(container);
 
@@ -116,8 +167,25 @@ export function createTerminal(
   return terminal;
 }
 
+// [debug] sampled write counter — log roughly every 32nd write so a noisy
+// stream doesn't drown the console but a "frozen" terminal still shows it
+// IS receiving bytes (or that it isn't).
+let __writeCount = 0;
 export function writeToTerminal(sessionId: string, data: string): void {
-  instances.get(sessionId)?.terminal.write(data);
+  const inst = instances.get(sessionId);
+  __writeCount++;
+  if ((__writeCount & 31) === 0) {
+    // eslint-disable-next-line no-console
+    console.log("[term-write] sampled", {
+      sessionId,
+      bytes: data.length,
+      hasInstance: !!inst,
+      cols: inst?.terminal.cols,
+      rows: inst?.terminal.rows,
+      n: __writeCount,
+    });
+  }
+  inst?.terminal.write(data);
 }
 
 export function focusTerminal(sessionId: string): void {
@@ -151,24 +219,57 @@ export function reattachTerminal(sessionId: string, newContainer: HTMLElement): 
     newContainer.appendChild(xtermElement);
   }
 
-  // Create new ResizeObserver on the new container. Mirrors the focus-restore
-  // dance in createTerminal — fit() can drop the hidden-textarea focus and
-  // leave the user unable to type after a resize.
-  const resizeObserver = new ResizeObserver(() => {
+  // Create new ResizeObserver on the new container — debounced + instrumented
+  // for the same reasons as in createTerminal.
+  const SETTLE_MS = 80;
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  let observerFireCount = 0;
+  const settledFit = () => {
+    const fires = observerFireCount;
+    observerFireCount = 0;
+    settleTimer = null;
     requestAnimationFrame(() => {
       try {
+        const rect = newContainer.getBoundingClientRect();
+        const before = { cols: inst.terminal.cols, rows: inst.terminal.rows };
         const hadFocus = !!inst.terminal.element?.contains(document.activeElement);
+        // eslint-disable-next-line no-console
+        console.log("[term-resize:reattach] settledFit RUN", {
+          sessionId,
+          observerFires: fires,
+          container: { w: Math.round(rect.width), h: Math.round(rect.height) },
+          before,
+          hadFocus,
+        });
         inst.fitAddon.fit();
+        // eslint-disable-next-line no-console
+        console.log("[term-resize:reattach] fit() done", {
+          sessionId,
+          after: { cols: inst.terminal.cols, rows: inst.terminal.rows },
+        });
         wsSend("terminal:resize", {
           id: sessionId,
           cols: inst.terminal.cols,
           rows: inst.terminal.rows,
         });
         if (hadFocus) inst.terminal.focus();
-      } catch {
-        // ignore resize errors during teardown
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[term-resize:reattach] fit threw", { sessionId, err });
       }
     });
+  };
+  const resizeObserver = new ResizeObserver((entries) => {
+    observerFireCount++;
+    const e = entries[0];
+    // eslint-disable-next-line no-console
+    console.log("[term-resize:reattach] observer fire", {
+      sessionId,
+      n: observerFireCount,
+      contentBox: e?.contentRect ? { w: Math.round(e.contentRect.width), h: Math.round(e.contentRect.height) } : null,
+    });
+    if (settleTimer != null) clearTimeout(settleTimer);
+    settleTimer = setTimeout(settledFit, SETTLE_MS);
   });
   resizeObserver.observe(newContainer);
   inst.resizeObserver = resizeObserver;

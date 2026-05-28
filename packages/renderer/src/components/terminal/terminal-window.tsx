@@ -108,8 +108,18 @@ function SingleTerminalWindow({
   // the popup to front and hand keyboard focus to xterm explicitly on grab.
   const handleResizePointerDown = useCallback(
     (e: React.PointerEvent) => {
+      const beforeActive = document.activeElement;
       focusWindow(windowId);
       focusXterm(tab.id);
+      const afterActive = document.activeElement;
+      // eslint-disable-next-line no-console
+      console.log("[term-resize] handle pointerdown", {
+        tabId: tab.id,
+        windowId,
+        beforeActiveTag: beforeActive?.tagName,
+        afterActiveTag: afterActive?.tagName,
+        afterIsTextarea: afterActive?.tagName === "TEXTAREA",
+      });
       onResizePointerDown(e);
     },
     [windowId, tab.id, onResizePointerDown],
@@ -293,12 +303,16 @@ function SingleTerminalWindow({
         </div>
       </div>
 
-      {/* Terminal container — stopPropagation so window chrome doesn't steal xterm focus */}
+      {/* Terminal container — stopPropagation keeps window chrome from
+       *  stealing xterm focus, but that also swallows the parent's
+       *  onPointerDown={focusWindow} bubble, so a click inside xterm wouldn't
+       *  bring the popup to front. Call focusWindow explicitly first. */}
       <div
         ref={containerRef}
         className="flex-1 min-h-0"
         onPointerDown={(e) => {
           e.stopPropagation();
+          focusWindow(windowId);
           focusXterm(tab.id);
         }}
       />
