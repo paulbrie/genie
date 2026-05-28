@@ -1,5 +1,6 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { CanvasAddon } from "@xterm/addon-canvas";
 import { wsSend } from "@/lib/ws";
 
 // Catppuccin Mocha theme for xterm
@@ -54,6 +55,22 @@ export function createTerminal(
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   terminal.open(container);
+
+  // Swap xterm's default DOM renderer for the Canvas one. The DOM renderer
+  // creates a DOM node per glyph and chokes on chatty TUI output (Claude
+  // streaming, tmux redraws) — that's the freeze users were seeing. Canvas
+  // is ~10× faster and keeps the popup responsive under load. Wrapped in
+  // try/catch because the addon advertises a v5 peer range against our
+  // xterm v6 (the runtime API is compatible but if a future xterm break
+  // throws here, fall back to DOM so the terminal still works).
+  try {
+    terminal.loadAddon(new CanvasAddon());
+    // eslint-disable-next-line no-console
+    console.log(`[term-renderer] canvas addon loaded (sess=${sessionId})`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[term-renderer] canvas addon failed, falling back to DOM (sess=${sessionId})`, err);
+  }
 
   terminal.parser.registerOscHandler(52, (data) => {
     const semi = data.indexOf(";");
