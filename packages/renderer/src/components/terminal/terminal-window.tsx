@@ -101,6 +101,20 @@ function SingleTerminalWindow({
     h: DEFAULT_H,
   });
 
+  // Wrap the resize handle's pointerdown: it stopPropagation's so the parent's
+  // focusWindow doesn't fire, AND preventDefault's so native focus doesn't move
+  // to xterm — net effect was that grabbing the resize handle left the popup
+  // un-focused and the user couldn't type even after the resize settled. Bring
+  // the popup to front and hand keyboard focus to xterm explicitly on grab.
+  const handleResizePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      focusWindow(windowId);
+      focusXterm(tab.id);
+      onResizePointerDown(e);
+    },
+    [windowId, tab.id, onResizePointerDown],
+  );
+
   // Mount xterm when container is ready
   useEffect(() => {
     if (!containerRef.current || mountedRef.current) return;
@@ -293,7 +307,7 @@ function SingleTerminalWindow({
       {!maximized && (
         <div
           className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
-          onPointerDown={onResizePointerDown}
+          onPointerDown={handleResizePointerDown}
         />
       )}
     </div>,

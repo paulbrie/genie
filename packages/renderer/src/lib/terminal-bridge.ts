@@ -87,16 +87,23 @@ export function createTerminal(
     wsSend("terminal:data", { id: sessionId, data });
   });
 
-  // ResizeObserver for auto-fit
+  // ResizeObserver for auto-fit. fit() can detach/reattach xterm's hidden
+  // helper textarea, which silently drops keyboard focus — so we have to
+  // restore it ourselves, or the user can no longer type the moment they
+  // resize the popup. Only restore when xterm OWNED focus going in, to avoid
+  // stealing focus from another popup whose own resize observer happens to
+  // fire as a side-effect of layout shifts.
   const resizeObserver = new ResizeObserver(() => {
     requestAnimationFrame(() => {
       try {
+        const hadFocus = !!terminal.element?.contains(document.activeElement);
         fitAddon.fit();
         wsSend("terminal:resize", {
           id: sessionId,
           cols: terminal.cols,
           rows: terminal.rows,
         });
+        if (hadFocus) terminal.focus();
       } catch {
         // ignore resize errors during teardown
       }
@@ -144,16 +151,20 @@ export function reattachTerminal(sessionId: string, newContainer: HTMLElement): 
     newContainer.appendChild(xtermElement);
   }
 
-  // Create new ResizeObserver on the new container
+  // Create new ResizeObserver on the new container. Mirrors the focus-restore
+  // dance in createTerminal — fit() can drop the hidden-textarea focus and
+  // leave the user unable to type after a resize.
   const resizeObserver = new ResizeObserver(() => {
     requestAnimationFrame(() => {
       try {
+        const hadFocus = !!inst.terminal.element?.contains(document.activeElement);
         inst.fitAddon.fit();
         wsSend("terminal:resize", {
           id: sessionId,
           cols: inst.terminal.cols,
           rows: inst.terminal.rows,
         });
+        if (hadFocus) inst.terminal.focus();
       } catch {
         // ignore resize errors during teardown
       }
