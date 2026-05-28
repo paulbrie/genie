@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { RefreshCw, ExternalLink, Copy, Check, Globe } from "lucide-react";
+import { RefreshCw, ExternalLink, Copy, Check, Globe, Loader2 } from "lucide-react";
+import type { VpsStats } from "@/store/types/vps";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CircularGauge } from "@/components/ui/circular-gauge";
@@ -193,22 +194,211 @@ function CopyButton({ value, title }: { value: string; title: string }) {
   );
 }
 
+export function isPrivateHostAddress(host: string): boolean {
+  return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
+}
+
+export interface VpsResourceBarStats {
+  cpuPercent: number;
+  memPercent: number;
+  diskPercent: number;
+  externalPorts: number[];
+  memUsedBytes?: number;
+  memTotalBytes?: number;
+  diskUsedBytes?: number;
+  diskTotalBytes?: number;
+}
+
+export function vpsStatsToBarStats(stats: VpsStats): VpsResourceBarStats {
+  return {
+    cpuPercent: stats.cpuPercent,
+    memPercent: stats.memPercent,
+    diskPercent: stats.diskPercent,
+    externalPorts: stats.externalPorts,
+    memUsedBytes: stats.memUsedBytes,
+    memTotalBytes: stats.memTotalBytes,
+    diskUsedBytes: stats.diskUsedBytes,
+    diskTotalBytes: stats.diskTotalBytes,
+  };
+}
+
+function sampleToBarStats(sample: Sample): VpsResourceBarStats {
+  return {
+    cpuPercent: sample.cpuPct ?? 0,
+    memPercent: sample.memPct ?? 0,
+    diskPercent: sample.diskPct ?? 0,
+    externalPorts: sample.externalPorts ?? [],
+    memUsedBytes: sample.memUsedBytes ?? undefined,
+    memTotalBytes: sample.memTotalBytes ?? undefined,
+    diskUsedBytes: sample.diskUsedKb != null ? sample.diskUsedKb * 1024 : undefined,
+    diskTotalBytes: sample.diskTotalKb != null ? sample.diskTotalKb * 1024 : undefined,
+  };
+}
+
+export interface VpsResourceBarProps {
+  host: string;
+  ipv6?: boolean;
+  isPrivateHost?: boolean;
+  domain?: { name: string; url?: string } | null;
+  appPort?: number;
+  stats?: VpsResourceBarStats | null;
+  statsLoading?: boolean;
+  statsError?: string | null;
+  onRefresh?: () => void;
+  refreshLoading?: boolean;
+  className?: string;
+}
+
+/** Domain / IP / port tags / CPU·MEM·DISK bar — shared by manage popup and Clouds cards. */
+export function VpsResourceBar({
+  host,
+  ipv6,
+  isPrivateHost: isPrivateHostProp,
+  domain,
+  appPort = 3000,
+  stats,
+  statsLoading = false,
+  statsError,
+  onRefresh,
+  refreshLoading = false,
+  className,
+}: VpsResourceBarProps) {
+  const isPrivateHost = isPrivateHostProp ?? isPrivateHostAddress(host);
+  const isV6 = ipv6 ?? host.includes(":");
+  const hostBracketed = isV6 ? `[${host}]` : host;
+  const ipUrl = `http://${hostBracketed}${appPort ? `:${appPort}` : ""}`;
+  const domainUrl = domain ? (domain.url || `https://${domain.name}`) : null;
+  const ports = stats?.externalPorts ?? [];
+  const gaugesDimmed = statsLoading && !stats;
+
+  return (
+    <section
+      className={cn(
+        "flex flex-col gap-1.5 py-2 px-3 bg-mantle rounded-lg border border-overlay0/20",
+        className,
+      )}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center gap-4">
+        <div className="flex flex-col gap-1 flex-1 min-w-0 justify-center">
+          {domainUrl ? (
+            <UrlRow
+              icon={<Globe size={12} className="text-green shrink-0" />}
+              label="Domain"
+              url={domainUrl}
+            />
+          ) : (
+            <div className="flex items-center gap-1.5 text-[11px] text-overlay0">
+              <Globe size={12} className="shrink-0" />
+              <span className="uppercase tracking-wide">Domain</span>
+              <span className="italic">no domain attached</span>
+            </div>
+          )}
+          {isPrivateHost ? (
+            <div className="flex items-center gap-1.5 text-[11px] text-overlay0 min-w-0">
+              <ExternalLink size={12} className="shrink-0" />
+              <span className="uppercase tracking-wide shrink-0">IP</span>
+              <span className="font-mono truncate text-overlay1" title={host}>{host}</span>
+              <span className="italic text-overlay0">private — reachable only via bastion / ingress</span>
+            </div>
+          ) : (
+            <UrlRow
+              icon={<ExternalLink size={12} className="text-blue shrink-0" />}
+              label="IP"
+              url={ipUrl}
+            />
+          )}
+          {ports.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[10px] uppercase tracking-wide text-overlay0 shrink-0">Ports</span>
+              {ports.map((port) => {
+                const url = `http://${hostBracketed}:${port}`;
+                return (
+                  <a
+                    key={port}
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-peach/20 text-peach text-[11px] font-mono hover:bg-peach/30 transition-colors"
+                    title={`Open ${url}`}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {port}
+                    <ExternalLink size={9} />
+                  </a>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className={cn("flex items-center gap-3 shrink-0", gaugesDimmed && "opacity-50")}>
+          {statsLoading && !stats ? (
+            <div className="flex items-center gap-2 text-overlay0 text-xs py-2 pr-2">
+              <Loader2 size={12} className="animate-spin shrink-0" />
+              Probing…
+            </div>
+          ) : (
+            <>
+              <Gauge
+                label="CPU"
+                pct={stats ? stats.cpuPercent : null}
+                detail="Total CPU usage."
+              />
+              <Gauge
+                label="MEM"
+                pct={stats ? stats.memPercent : null}
+                detail={
+                  stats?.memUsedBytes != null && stats.memTotalBytes != null
+                    ? `${fmtBytes(stats.memUsedBytes)} used of ${fmtBytes(stats.memTotalBytes)}`
+                    : "Memory usage."
+                }
+              />
+              <Gauge
+                label="DISK"
+                pct={stats ? stats.diskPercent : null}
+                detail={
+                  stats?.diskUsedBytes != null && stats.diskTotalBytes != null
+                    ? `${fmtBytes(stats.diskUsedBytes)} used of ${fmtBytes(stats.diskTotalBytes)} on /`
+                    : "Root filesystem usage."
+                }
+              />
+            </>
+          )}
+          {onRefresh && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRefresh();
+              }}
+              disabled={refreshLoading}
+              className="text-overlay0 hover:text-blue transition-colors disabled:opacity-50 self-center ml-1"
+              title="Refresh"
+            >
+              <RefreshCw size={11} className={cn(refreshLoading && "animate-spin")} />
+            </button>
+          )}
+        </div>
+      </div>
+      {statsError && !stats && (
+        <div className="text-[10px] text-red font-mono truncate" title={statsError}>
+          {statsError}
+        </div>
+      )}
+    </section>
+  );
+}
+
 interface VpsResourceGaugesProps {
   exec: ExecFn;
   host: string;
-  /** Optional default app port (e.g. 3000 for the Next.js dev server). */
   appPort?: number;
-  /** Optional custom domain (e.g. a TazCloud ingress). When provided, shown
-   *  above the raw IP URL since it's the user-friendly address. */
   domain?: { name: string; url?: string } | null;
-  /** True when `host` is a private RFC1918 address — the link to it would be
-   *  unreachable from the user's browser, so we render the host as plain text
-   *  instead of a clickable URL. */
   isPrivateHost?: boolean;
 }
 
-/** CPU / Memory / Disk gauges + the public connect URL for a VPS. Polls every
- *  ~5 s while mounted; the probe is a single SSH command so it's cheap. */
+/** CPU / Memory / Disk gauges + connect URLs. Polls via SSH while mounted. */
 export function VpsResourceGauges({ exec, host, appPort = 3000, domain, isPrivateHost = false }: VpsResourceGaugesProps) {
   const [sample, setSample] = useState<Sample | null>(null);
   const [loading, setLoading] = useState(false);
@@ -245,105 +435,18 @@ export function VpsResourceGauges({ exec, host, appPort = 3000, domain, isPrivat
     };
   }, [refresh]);
 
-  // IPv6 hosts must be wrapped in brackets for URLs.
-  const isV6 = host.includes(":");
-  const hostBracketed = isV6 ? `[${host}]` : host;
-  const ipUrl = `http://${hostBracketed}${appPort ? `:${appPort}` : ""}`;
-  const domainUrl = domain ? (domain.url || `https://${domain.name}`) : null;
-
   return (
-    <section className="flex flex-col gap-1.5 py-2 px-3 bg-mantle rounded-lg border border-overlay0/20">
-    <div className="flex items-center gap-4">
-      {/* URLs stack vertically on the left so they expand to fill width */}
-      <div className="flex flex-col gap-1 flex-1 min-w-0 justify-center">
-        {domainUrl ? (
-          <UrlRow
-            icon={<Globe size={12} className="text-green shrink-0" />}
-            label="Domain"
-            url={domainUrl}
-          />
-        ) : (
-          <div className="flex items-center gap-1.5 text-[11px] text-overlay0">
-            <Globe size={12} className="shrink-0" />
-            <span className="uppercase tracking-wide">Domain</span>
-            <span className="italic">no domain attached</span>
-          </div>
-        )}
-        {isPrivateHost ? (
-          <div className="flex items-center gap-1.5 text-[11px] text-overlay0 min-w-0">
-            <ExternalLink size={12} className="shrink-0" />
-            <span className="uppercase tracking-wide shrink-0">IP</span>
-            <span className="font-mono truncate text-overlay1" title={host}>{host}</span>
-            <span className="italic text-overlay0">private — reachable only via bastion / ingress</span>
-          </div>
-        ) : (
-          <UrlRow
-            icon={<ExternalLink size={12} className="text-blue shrink-0" />}
-            label="IP"
-            url={ipUrl}
-          />
-        )}
-        {sample?.externalPorts && sample.externalPorts.length > 0 && (
-          <div className="flex items-center gap-1 flex-wrap">
-            <span className="text-[10px] uppercase tracking-wide text-overlay0 shrink-0">Ports</span>
-            {sample.externalPorts.map((port) => {
-              const url = `http://${hostBracketed}:${port}`;
-              return (
-                <a
-                  key={port}
-                  href={url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-peach/20 text-peach text-[11px] font-mono hover:bg-peach/30 transition-colors"
-                  title={`Open ${url}`}
-                >
-                  {port}<ExternalLink size={9} />
-                </a>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Circular gauges sit on the right edge */}
-      <div className="flex items-center gap-3 shrink-0">
-        <Gauge
-          label="CPU"
-          pct={sample?.cpuPct ?? null}
-          detail="Total CPU usage (sampled over 0.4 s)."
-        />
-        <Gauge
-          label="MEM"
-          pct={sample?.memPct ?? null}
-          detail={
-            sample && sample.memUsedBytes != null && sample.memTotalBytes != null
-              ? `${fmtBytes(sample.memUsedBytes)} used of ${fmtBytes(sample.memTotalBytes)}`
-              : "Memory usage from /proc/meminfo (MemTotal − MemAvailable)."
-          }
-        />
-        <Gauge
-          label="DISK"
-          pct={sample?.diskPct ?? null}
-          detail={
-            sample && sample.diskUsedKb != null && sample.diskTotalKb != null
-              ? `${fmtKb(sample.diskUsedKb)} used of ${fmtKb(sample.diskTotalKb)} on /`
-              : "Root filesystem usage from `df -kP /`."
-          }
-        />
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className="text-overlay0 hover:text-blue transition-colors disabled:opacity-50 self-center ml-1"
-          title="Refresh"
-        >
-          <RefreshCw size={11} className={cn(loading && "animate-spin")} />
-        </button>
-      </div>
-
-    </div>
-      {error && <div className="text-[10px] text-red font-mono truncate">{error}</div>}
-    </section>
+    <VpsResourceBar
+      host={host}
+      ipv6={host.includes(":")}
+      isPrivateHost={isPrivateHost}
+      domain={domain}
+      appPort={appPort}
+      stats={sample ? sampleToBarStats(sample) : null}
+      statsError={error}
+      onRefresh={refresh}
+      refreshLoading={loading}
+    />
   );
 }
 

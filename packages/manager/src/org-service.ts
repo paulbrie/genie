@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
 import { getDb } from "./db/index.js";
-import { organizations, orgCredentials, orgMembers, teams, users } from "./db/schema.js";
+import { organizations, orgCredentials, orgMembers, teamInvites, teamMembers, teams, users } from "./db/schema.js";
 import { decryptPrivateKey, encryptPrivateKey, isPasteKeyEnabled, type EncryptedSecret } from "./vps/credential-crypto.js";
 import { createTazClient, type TazApiClient } from "./vps/tazcloud-api-client.js";
 
@@ -138,6 +139,13 @@ export async function addMember(orgId: string, userId: string, role: OrgRole = "
 
 export async function removeMember(orgId: string, userId: string): Promise<boolean> {
   const db = getDb();
+  const members = await getMembers(orgId);
+  const target = members.find((m) => m.userId === userId);
+  if (!target) return false;
+  if (target.role === "owner") {
+    const ownerCount = members.filter((m) => m.role === "owner").length;
+    if (ownerCount <= 1) throw new Error("Cannot remove the last owner of this organization");
+  }
   const res = await db
     .delete(orgMembers)
     .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)))
@@ -147,6 +155,13 @@ export async function removeMember(orgId: string, userId: string): Promise<boole
 
 export async function setMemberRole(orgId: string, userId: string, role: OrgRole): Promise<OrgMemberDef | null> {
   const db = getDb();
+  const members = await getMembers(orgId);
+  const target = members.find((m) => m.userId === userId);
+  if (!target) return null;
+  if (target.role === "owner" && role !== "owner") {
+    const ownerCount = members.filter((m) => m.role === "owner").length;
+    if (ownerCount <= 1) throw new Error("Cannot demote the last owner of this organization");
+  }
   const [updated] = await db
     .update(orgMembers)
     .set({ role })
@@ -410,4 +425,208 @@ export async function getTazClientForOrg(orgId: string): Promise<TazApiClient | 
  *  Used by ssh-client / pty-manager when connecting to org-pool VMs. */
 export async function getTazSshKeyForOrg(orgId: string): Promise<string | null> {
   return readCredential(orgId, "tazcloud-ssh-key");
+}
+
+// ─── Org-scoped teams + invite links ─────────────────────────────────────────
+
+export interface OrgTeamDef {
+  id: string;
+  name: string;
+  orgId: string | null;
+  createdAt: Date;
+}
+
+export interface OrgTeamMemberDef {
+  id: string;
+  teamId: string;
+  userId: string;
+  role: string;
+  joinedAt: Date;
+  userName?: string;
+  userEmail?: string;
+  userAvatarUrl?: string | null;
+}
+
+export interface TeamInviteDef {
+  id: string;
+  orgId: string;
+  teamId: string;
+  token: string;
+  createdBy: string | null;
+  createdAt: Date;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+  url: string;
+}
+
+export interface InvitePreview {
+  orgName: string;
+  teamName: string;
+  expired: boolean;
+  revoked: boolean;
+}
+
+function inviteUrl(token: string): string {
+  const base = process.env.FRONTEND_URL || "https://genie.teleporthq.ai";
+  return `${base.replace(/\/$/, "")}/invite/${token}`;
+}
+
+async function assertTeamInOrg(orgId: string, teamId: string): Promise<typeof teams.$inferSelect> {
+  const db = getDb();
+  const [team] = await db.select().from(teams).where(and(eq(teams.id, teamId), eq(teams.orgId, orgId))).limit(1);
+  if (!team) throw new Error("Team not found in this organization");
+  return team;
+}
+
+export async function createTeamForOrg(orgId: string, name: string): Promise<OrgTeamDef> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Team name is required");
+  const db = getDb();
+  const [team] = await db.insert(teams).values({ name: trimmed, orgId }).returning();
+  return team;
+}
+
+export async function updateTeamForOrg(orgId: string, teamId: string, name: string): Promise<OrgTeamDef | null> {
+  await assertTeamInOrg(orgId, teamId);
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Team name is required");
+  const db = getDb();
+  const [team] = await db.update(teams).set({ name: trimmed }).where(eq(teams.id, teamId)).returning();
+  return team || null;
+}
+
+export async function deleteTeamForOrg(orgId: string, teamId: string): Promise<boolean> {
+  await assertTeamInOrg(orgId, teamId);
+  const db = getDb();
+  await db.delete(teamMembers).where(eq(teamMembers.teamId, teamId));
+  await db.delete(teamInvites).where(eq(teamInvites.teamId, teamId));
+  const res = await db.delete(teams).where(eq(teams.id, teamId)).returning({ id: teams.id });
+  return res.length > 0;
+}
+
+export async function getTeamMembersForOrg(orgId: string): Promise<OrgTeamMemberDef[]> {
+  const db = getDb();
+  const orgTeamIds = await db.select({ id: teams.id }).from(teams).where(eq(teams.orgId, orgId));
+  if (orgTeamIds.length === 0) return [];
+  const ids = orgTeamIds.map((t) => t.id);
+  const rows = await db
+    .select({
+      id: teamMembers.id,
+      teamId: teamMembers.teamId,
+      userId: teamMembers.userId,
+      role: teamMembers.role,
+      joinedAt: teamMembers.joinedAt,
+      userName: users.name,
+      userEmail: users.email,
+      userAvatarUrl: users.avatarUrl,
+    })
+    .from(teamMembers)
+    .innerJoin(users, eq(teamMembers.userId, users.id))
+    .where(inArray(teamMembers.teamId, ids))
+    .orderBy(teamMembers.joinedAt);
+  return rows as OrgTeamMemberDef[];
+}
+
+export async function removeTeamMemberForOrg(orgId: string, memberId: string): Promise<boolean> {
+  const db = getDb();
+  const [row] = await db.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.id, memberId)).limit(1);
+  if (!row) return false;
+  await assertTeamInOrg(orgId, row.teamId);
+  const res = await db.delete(teamMembers).where(eq(teamMembers.id, memberId)).returning({ id: teamMembers.id });
+  return res.length > 0;
+}
+
+function isInviteActive(invite: { expiresAt: Date | null; revokedAt: Date | null }): boolean {
+  if (invite.revokedAt) return false;
+  if (invite.expiresAt && invite.expiresAt.getTime() <= Date.now()) return false;
+  return true;
+}
+
+export async function createTeamInvite(orgId: string, teamId: string, createdBy: string): Promise<TeamInviteDef> {
+  await assertTeamInOrg(orgId, teamId);
+  const token = randomBytes(32).toString("base64url");
+  const db = getDb();
+  const [invite] = await db
+    .insert(teamInvites)
+    .values({ orgId, teamId, token, createdBy })
+    .returning();
+  return { ...invite, url: inviteUrl(invite.token) };
+}
+
+export async function listTeamInvites(orgId: string): Promise<TeamInviteDef[]> {
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(teamInvites)
+    .where(eq(teamInvites.orgId, orgId))
+    .orderBy(desc(teamInvites.createdAt));
+  return rows.map((r) => ({ ...r, url: inviteUrl(r.token) }));
+}
+
+export async function revokeTeamInvite(orgId: string, inviteId: string): Promise<boolean> {
+  const db = getDb();
+  const [invite] = await db
+    .select()
+    .from(teamInvites)
+    .where(and(eq(teamInvites.id, inviteId), eq(teamInvites.orgId, orgId)))
+    .limit(1);
+  if (!invite) return false;
+  if (invite.revokedAt) return true;
+  const [updated] = await db
+    .update(teamInvites)
+    .set({ revokedAt: new Date() })
+    .where(eq(teamInvites.id, inviteId))
+    .returning({ id: teamInvites.id });
+  return !!updated;
+}
+
+export async function getInvitePreview(token: string): Promise<InvitePreview | null> {
+  const db = getDb();
+  const [invite] = await db.select().from(teamInvites).where(eq(teamInvites.token, token)).limit(1);
+  if (!invite) return null;
+  const org = await getOrg(invite.orgId);
+  const [team] = await db.select().from(teams).where(eq(teams.id, invite.teamId)).limit(1);
+  if (!org || !team) return null;
+  const expired = invite.expiresAt ? invite.expiresAt.getTime() <= Date.now() : false;
+  return {
+    orgName: org.name,
+    teamName: team.name,
+    expired,
+    revoked: !!invite.revokedAt,
+  };
+}
+
+/** Add the user to the org + team and mark them validated. Idempotent for
+ *  membership rows — re-using the same link won't downgrade roles. */
+export async function acceptTeamInvite(token: string, userId: string): Promise<{
+  orgId: string;
+  teamId: string;
+  orgName: string;
+  teamName: string;
+} | null> {
+  const db = getDb();
+  const [invite] = await db.select().from(teamInvites).where(eq(teamInvites.token, token)).limit(1);
+  if (!invite || !isInviteActive(invite)) return null;
+
+  const org = await getOrg(invite.orgId);
+  const [team] = await db.select().from(teams).where(and(eq(teams.id, invite.teamId), eq(teams.orgId, invite.orgId))).limit(1);
+  if (!org || !team) return null;
+
+  await db
+    .insert(orgMembers)
+    .values({ orgId: invite.orgId, userId, role: "member" })
+    .onConflictDoNothing();
+
+  const [existingTm] = await db
+    .select({ id: teamMembers.id })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.teamId, invite.teamId), eq(teamMembers.userId, userId)))
+    .limit(1);
+  if (!existingTm) {
+    await db.insert(teamMembers).values({ teamId: invite.teamId, userId, role: "member" });
+  }
+
+  await db.update(users).set({ validated: true }).where(eq(users.id, userId));
+
+  return { orgId: invite.orgId, teamId: invite.teamId, orgName: org.name, teamName: team.name };
 }

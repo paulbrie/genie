@@ -215,10 +215,14 @@ export async function vpsStats(
   // Stats probes ride a cached SSH session so the Clouds panels (which fan
   // out across every VM on every refresh tick) stop paying for a fresh TCP+SSH
   // handshake per probe. The cache handles redial on a dead session.
-  // Two /proc/stat samples 1s apart for real-time CPU, plus memory, disk, processes and ports.
+  // Two /proc/stat samples 0.4s apart for CPU, plus memory, disk, and listening
+  // ports. Avoid `ss -tlnp` — resolving PIDs can hang for 30s+ on busy VMs as
+  // a non-root user; `-H` (no header) matches the Manage popup probe that works.
   const output = await execCached(
     config,
-    `grep 'cpu ' /proc/stat; sleep 1; echo "===CPU2==="; grep 'cpu ' /proc/stat; echo "===MEM==="; cat /proc/meminfo; echo "===DISK==="; df -B1 / | tail -1; echo "===PROCS==="; ps -eo pid=,ppid=,user=,pcpu=,rss=,comm= --sort=-pcpu | head -50; echo "===PORTS==="; ss -tlnp 2>/dev/null || true`,
+    `grep 'cpu ' /proc/stat; sleep 0.4; echo "===CPU2==="; grep 'cpu ' /proc/stat; echo "===MEM==="; grep -E "^(MemTotal|MemAvailable):" /proc/meminfo; echo "===DISK==="; df -B1 / | tail -1; echo "===PORTS==="; ss -tlnH 2>/dev/null || true`,
+    undefined,
+    { timeoutMs: 15_000 },
   );
 
   return parseProbeOutput(output);

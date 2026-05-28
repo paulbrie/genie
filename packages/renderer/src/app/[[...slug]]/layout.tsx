@@ -8,6 +8,7 @@ import { $auth, $terminal } from "@/store/subjects";
 import { acceptTerminalShare, declineTerminalShare, loadUiState, stopImpersonating } from "@/store/actions";
 import { connectWs, setManagerRunning } from "@/lib/ws";
 import { Sidebar } from "@/components/ui/sidebar";
+import { SuperadminTopBar } from "@/components/ui/superadmin-top-bar";
 import { WindowToolbar } from "@/components/ui/window-toolbar";
 import { FileExplorerPanel } from "@/components/file-explorer";
 import { WsLogDrawer } from "@/components/ui/ws-log-drawer";
@@ -50,6 +51,7 @@ export default function AppShellLayout({
   return (
     <div className="flex flex-col h-screen">
       <ImpersonationBanner />
+      <SuperadminTopBar />
       <div className="flex flex-row flex-1 min-h-0">
         <Sidebar wsLogOpen={wsLogOpen} onToggleWsLog={toggleWsLog} />
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">

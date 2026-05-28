@@ -201,6 +201,16 @@ export function createAdminTazVm(opts: { name: string; size: string; image?: str
 
 // --- TazCloud project actions (v2.0.0+) ---
 
+/** Fetch base OS images (and sizes) from TazCloud `/v1/capabilities`. */
+export function loadTazCapabilities(): void {
+  batch(() => {
+    const t = $admin.getValue().tazcloud;
+    t.capabilitiesLoading = true;
+    t.capabilitiesError = null;
+  });
+  wsSend("admin:tazcloud:capabilities", {});
+}
+
 /** Fetch all TazCloud projects (VXLAN tenant projects). Empty on legacy v6
  *  tenants — the server returns an empty list, not an error. */
 export function loadTazProjects(): void {

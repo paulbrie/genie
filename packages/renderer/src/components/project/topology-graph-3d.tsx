@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, Suspense } from "react";
+import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import {
   OrbitControls,
@@ -13,9 +13,9 @@ import {
 } from "@react-three/drei";
 import * as THREE from "three";
 import { useSubject } from "subjecto/react";
-import { $projects, $presenceSessions, $auth } from "@/store/subjects";
-import { useEffect } from "react";
-import { requestPresenceDetail } from "@/store/actions";
+import { useDeepSubjectAll } from "@/lib/hooks";
+import { $projects, $presenceSessions, $auth, $vpsDeploy } from "@/store/subjects";
+import { requestPresenceDetail, unwatchVpsStats, watchVpsStats } from "@/store/actions";
 import type { ProjectDef, VpsInstance } from "@/store/types/vps";
 import type { PresenceSession } from "@/store/types/common";
 
@@ -51,10 +51,12 @@ const USER_ORBIT_HEIGHT_RANGE = 1.2;
 
 interface ServerNode {
   id: string;
+  projectId: string;
   label: string;
   position: THREE.Vector3;
   provider: "digitalocean" | "tazcloud" | "local";
   ip?: string;
+  ipv6?: boolean;
 }
 
 interface ProjectNode {
@@ -132,12 +134,15 @@ function buildGraph(projects: ProjectDef[], sessions: PresenceSession[]): Graph 
         .multiplyScalar(Math.cos(sAngle) * SERVER_ORBIT)
         .add(tangent.clone().multiplyScalar(Math.sin(sAngle) * SERVER_ORBIT * 0.6));
       const sPos = pos.clone().add(localOffset).add(new THREE.Vector3(0, 0.9 + j * 0.4, 0));
+      const ipv6 = Boolean(vps.tazcloud?.ipv6);
       return {
         id: vps.id,
+        projectId: p.id,
         label: vps.label || `${provider} VM`,
         position: sPos,
         provider,
         ip,
+        ipv6,
       };
     });
 
@@ -361,9 +366,11 @@ function ProjectNodeMesh({
 function ServerMesh({
   server,
   highlighted,
+  externalPorts,
 }: {
   server: ServerNode;
   highlighted: boolean;
+  externalPorts: number[];
 }) {
   const ref = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
@@ -402,7 +409,7 @@ function ServerMesh({
         />
       </mesh>
 
-      {(hovered || highlighted) && (
+      {(hovered || highlighted || externalPorts.length > 0) && (
         <Html position={[0, 0.5, 0]} center distanceFactor={8} zIndexRange={[1, 0]}>
           <div
             style={{
@@ -413,13 +420,44 @@ function ServerMesh({
               padding: "3px 7px",
               borderRadius: 4,
               border: `1px solid ${color}`,
-              pointerEvents: "none",
+              pointerEvents: externalPorts.length > 0 ? "auto" : "none",
               whiteSpace: "nowrap",
             }}
           >
             <div style={{ color: C.text, fontWeight: 600 }}>{server.label}</div>
             {server.ip && (
               <div style={{ color: C.subtext, marginTop: 1 }}>{server.ip}</div>
+            )}
+            {externalPorts.length > 0 && server.ip && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4, maxWidth: 140 }}>
+                {externalPorts.map((port) => {
+                  const url = server.ipv6
+                    ? `http://[${server.ip}]:${port}`
+                    : `http://${server.ip}:${port}`;
+                  return (
+                    <a
+                      key={port}
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 2,
+                        padding: "1px 4px",
+                        borderRadius: 3,
+                        background: "rgba(250,179,135,0.2)",
+                        color: C.peach,
+                        fontSize: 9,
+                        textDecoration: "none",
+                      }}
+                      title={`Open ${url}`}
+                    >
+                      {port}
+                    </a>
+                  );
+                })}
+              </div>
             )}
           </div>
         </Html>
@@ -588,7 +626,15 @@ function RingFloor() {
 
 // --- Scene ---
 
-function Scene({ graph, currentUserId }: { graph: Graph; currentUserId: string | null }) {
+function Scene({
+  graph,
+  currentUserId,
+  serverPorts,
+}: {
+  graph: Graph;
+  currentUserId: string | null;
+  serverPorts: Map<string, number[]>;
+}) {
   return (
     <>
       {/* Image-based lighting — gives metallic/rough materials proper reflections
@@ -698,6 +744,7 @@ function Scene({ graph, currentUserId }: { graph: Graph; currentUserId: string |
             key={s.id}
             server={s}
             highlighted={false}
+            externalPorts={serverPorts.get(s.id) ?? []}
           />
         )),
       )}
@@ -765,12 +812,49 @@ export function TopologyGraph3D() {
   const [projects] = useSubject($projects);
   const [sessions] = useSubject($presenceSessions);
   const [auth] = useSubject($auth);
+  const vpsDeploy = useDeepSubjectAll($vpsDeploy);
 
   useEffect(() => {
     requestPresenceDetail();
   }, []);
 
+  const watchKey = useMemo(
+    () =>
+      projects
+        .flatMap((p) =>
+          (p.vpsInstances ?? [])
+            .filter((i) => !i.hibernate && !i.deployFailed)
+            .map((i) => `${p.id}:${i.id}`),
+        )
+        .sort()
+        .join("|"),
+    [projects],
+  );
+
+  useEffect(() => {
+    if (!watchKey) return;
+    for (const pair of watchKey.split("|")) {
+      const [projectId, instanceId] = pair.split(":");
+      watchVpsStats(projectId, instanceId);
+    }
+    return () => {
+      for (const pair of watchKey.split("|")) {
+        const [projectId, instanceId] = pair.split(":");
+        unwatchVpsStats(projectId, instanceId);
+      }
+    };
+  }, [watchKey]);
+
   const graph = useMemo(() => buildGraph(projects, sessions), [projects, sessions]);
+
+  const serverPorts = useMemo(() => {
+    const map = new Map<string, number[]>();
+    for (const server of graph.allServers) {
+      const ports = vpsDeploy.instances[server.id]?.stats?.externalPorts;
+      if (ports?.length) map.set(server.id, ports);
+    }
+    return map;
+  }, [graph.allServers, vpsDeploy.instances]);
 
   const counts = {
     projects: graph.projects.length,
@@ -796,7 +880,11 @@ export function TopologyGraph3D() {
         <fog attach="fog" args={[C.bg, 18, 45]} />
 
         <Suspense fallback={null}>
-          <Scene graph={graph} currentUserId={auth.user?.id ?? null} />
+          <Scene
+            graph={graph}
+            currentUserId={auth.user?.id ?? null}
+            serverPorts={serverPorts}
+          />
         </Suspense>
 
         <OrbitControls

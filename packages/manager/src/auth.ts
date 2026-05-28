@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import { eq, isNull, and } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { users } from "./db/schema.js";
-import { ensureDefaultOrgFor } from "./org-service.js";
+import { acceptTeamInvite, ensureDefaultOrgFor } from "./org-service.js";
 
 const JWT_SECRET = process.env.GENIE_JWT_SECRET || process.env.ANTHROPIC_API_KEY || "genie-secret-fallback";
 const JWT_EXPIRY = "30d";
@@ -64,6 +64,7 @@ interface PendingOAuth {
   onSuccess: (user: typeof users.$inferSelect, token: string) => void;
   onError: (message: string) => void;
   timeout: ReturnType<typeof setTimeout>;
+  inviteToken?: string;
 }
 
 let pendingOAuth: PendingOAuth | null = null;
@@ -71,6 +72,7 @@ let pendingOAuth: PendingOAuth | null = null;
 export function initiateOAuth(
   onSuccess: (user: typeof users.$inferSelect, token: string) => void,
   onError: (message: string) => void,
+  inviteToken?: string,
 ): string {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -98,7 +100,7 @@ export function initiateOAuth(
     onError("OAuth timed out");
   }, 120000);
 
-  pendingOAuth = { oauth2Client, onSuccess, onError, timeout };
+  pendingOAuth = { oauth2Client, onSuccess, onError, timeout, inviteToken: inviteToken?.trim() || undefined };
 
   return authUrl;
 }
@@ -119,7 +121,7 @@ export async function handleOAuthCallback(
     return true;
   }
 
-  const { oauth2Client, onSuccess, onError, timeout } = pendingOAuth;
+  const { oauth2Client, onSuccess, onError, timeout, inviteToken } = pendingOAuth;
   pendingOAuth = null;
   clearTimeout(timeout);
 
@@ -228,6 +230,20 @@ export async function handleOAuthCallback(
         } catch (emailErr) {
           console.error("[auth] Failed to send new-user notification:", emailErr);
         }
+      }
+    }
+
+    // Accept a pending team invite (from sign-up via invite link). Validates
+    // the user and adds them to the org + team before the validation gate.
+    if (inviteToken) {
+      try {
+        const accepted = await acceptTeamInvite(inviteToken, user.id);
+        if (accepted) {
+          const [refreshed] = await db.select().from(users).where(eq(users.id, user.id)).limit(1);
+          if (refreshed) user = refreshed;
+        }
+      } catch (inviteErr) {
+        console.error("[auth] Failed to accept team invite during OAuth:", inviteErr);
       }
     }
 

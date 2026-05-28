@@ -15,6 +15,7 @@ import {
   focusTerminal,
   refitTerminal,
 } from "@/lib/terminal-bridge";
+import { buildTerminalSshSpawnPayload } from "@/lib/terminal-spawn";
 import { wsSend } from "@/lib/ws";
 import { cn } from "@/lib/utils";
 import {
@@ -135,29 +136,8 @@ export function TerminalBottomPanel() {
           // The manager looks up the row and spawns SSH+tmux against the right host.
           wsSend("terminal:reattach", { id: tab.id, cols: term.cols, rows: term.rows });
         } else if (tab.ssh) {
-          wsSend("terminal:ssh:spawn", {
-            id: tab.id,
-            cols: term.cols,
-            rows: term.rows,
-            host: tab.ssh.host,
-            port: tab.ssh.port,
-            username: tab.ssh.username,
-            privateKeyPath: tab.ssh.privateKeyPath,
-            title: tab.title,
-            command: tab.command,
-          });
-          if (tab.command) {
-            const cmdToSend = tab.command;
-            const tabId = tab.id;
-            const onData = (e: Event) => {
-              const detail = (e as CustomEvent).detail;
-              if (detail?.id === tabId) {
-                window.removeEventListener("genie:terminal:data", onData);
-                setTimeout(() => wsSend("terminal:data", { id: tabId, data: cmdToSend + "\n" }), 300);
-              }
-            };
-            window.addEventListener("genie:terminal:data", onData);
-          }
+          const payload = buildTerminalSshSpawnPayload(tab, term.cols, term.rows);
+          if (payload) wsSend("terminal:ssh:spawn", payload);
         } else {
           wsSend("terminal:spawn", {
             id: tab.id,

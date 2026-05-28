@@ -181,6 +181,7 @@ export const handlers: HandlerMap = {
           isPrivateHost: typeof vm.ssh_host === "string" && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(vm.ssh_host),
           image: vm.image,
           size: vm.size,
+          tazProjectId: vm.project_id ?? null,
           projectId: pm?.projectId || null,
           projectName: pm?.projectName || null,
           locked: vm.locked === true,
@@ -392,6 +393,23 @@ export const handlers: HandlerMap = {
   },
 
   // --- TazCloud project (v2.0.0) handlers ---
+
+  "admin:tazcloud:capabilities": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    if (payload.error) {
+      batch(() => {
+        t.capabilitiesError = payload.error;
+        t.capabilityImages = [];
+        t.capabilitiesLoading = false;
+      });
+      return;
+    }
+    batch(() => {
+      t.capabilityImages = payload.images || [];
+      t.capabilitiesError = null;
+      t.capabilitiesLoading = false;
+    });
+  },
 
   "admin:tazcloud:project:list": (payload) => {
     const t = $admin.getValue().tazcloud;

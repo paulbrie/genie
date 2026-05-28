@@ -21,6 +21,18 @@ interface Entry {
 
 const cache = new Map<string, Entry>();
 
+/** ssh2 allows multiple channels per connection, but overlapping execs on one
+ *  cached session (stats fan-out + bundle upload) can stall probes for 30s+ on
+ *  busy VMs. Serialize exec per cached session. */
+const execTail = new WeakMap<SshSession, Promise<unknown>>();
+
+function execSerialized<T>(session: SshSession, run: () => Promise<T>): Promise<T> {
+  const prev = execTail.get(session) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(run);
+  execTail.set(session, next);
+  return next;
+}
+
 function keyOf(cfg: SshConnectionConfig): string {
   return `${cfg.host}:${cfg.port}:${cfg.username}`;
 }
@@ -91,11 +103,13 @@ export async function execCached(
 ): Promise<string> {
   try {
     const session = await getCachedSession(cfg);
-    return await session.exec(command, onData, opts);
+    return await execSerialized(session, () => session.exec(command, onData, opts));
   } catch (err) {
     evictSession(cfg);
+    // A timed-out exec won't succeed on immediate retry — skip the second attempt.
+    if (err instanceof Error && err.message.includes("timed out")) throw err;
     const session = await getCachedSession(cfg);
-    return await session.exec(command, onData, opts);
+    return await execSerialized(session, () => session.exec(command, onData, opts));
   }
 }
 

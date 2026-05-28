@@ -12,7 +12,7 @@ beforeEach(() => {
   v.sshKey = { exists: false, publicKey: null, fingerprint: null, createdAt: null, history: [], loading: true, regenerating: true };
   v.ai = { subTab: "costs", costs: [], loading: false, error: null, settings: { defaultModel: "claude-sonnet", maxToolRounds: 10 }, settingsLoading: false };
   v.prodlogs = { deployments: [], logs: [], selectedDeploymentId: null, logType: "deploy", loading: false, logsLoading: false };
-  v.tazcloud = { vms: [], loading: false, error: null, creating: false, createError: null, projects: [], projectsLoading: false, projectsError: null, projectCreating: false, projectError: null, vmStats: {}, vmStatsErrors: {}, vmStatsLoading: false, snapshots: [], snapshotsLoading: false, snapshotsError: null, snapshotCreating: {}, snapshotCreateError: null, ingressBusy: {}, ingressError: null };
+  v.tazcloud = { vms: [], loading: false, error: null, creating: false, createError: null, projects: [], projectsLoading: false, projectsError: null, projectCreating: false, projectError: null, capabilityImages: [], capabilitiesLoading: false, capabilitiesError: null, vmStats: {}, vmStatsErrors: {}, vmStatsLoading: false, snapshots: [], snapshotsLoading: false, snapshotsError: null, snapshotCreating: {}, snapshotCreateError: null, ingressBusy: {}, ingressError: null };
 });
 
 describe("admin:baseimage", () => {

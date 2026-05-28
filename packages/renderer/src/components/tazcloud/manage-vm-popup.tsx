@@ -16,7 +16,7 @@ import {
 import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import {
-  addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, focusWindow,
+  addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, focusWindow, launchClaudeSshTab,
   hibernateVps, killPersistedTerminal, loadPersistedTerminals, minimizeWindow,
   openWindow, reattachPersistedTerminal, registerWindow, updateWindowPosition, vpsExec,
 } from "@/store/actions";
@@ -31,7 +31,7 @@ import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { imageDefaultUser } from "./helpers";
-import { VmHostConnectionsPanel } from "./vm-host-connections-panel";
+import { VmHostConnectionsPanel, useVmHostSshRegistry } from "./vm-host-connections-panel";
 
 const MANAGE_VM_WINDOW_PREFIX = "manage-vm-";
 /** Default size + cascade offset for any Manage popup variant. Exported so the
@@ -151,7 +151,7 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
 
   const launch = () => {
     if (pending) return;
-    addSshTerminalTab(
+    launchClaudeSshTab(
       {
         host: vm.host,
         port: 22,
@@ -159,12 +159,6 @@ function ClaudeManageButton({ vm }: { vm: ManageVm }) {
         privateKeyPath: sshKeyPathFor(vm),
       },
       `Claude ${sshUser}@${vm.name}`,
-      // Start in /opt/project — that's the canonical project root that
-      // Genie Standard Setup chowns to genie and that every recipe (Next.js
-      // scaffold, MCP config, .git-credentials target) operates on. Without
-      // the cd, claude opens in the SSH user's home (/home/genie) and any
-      // /init produces a CLAUDE.md in the wrong place.
-      "cd /opt/project && claude --dangerously-skip-permissions",
     );
   };
 
@@ -243,6 +237,35 @@ function SshLaunchButton({ vm }: { vm: ManageVm }) {
   );
 }
 
+
+/** Live SSH session + MCP tunnel counts for the title bar (admin-only registry). */
+function ManageVmTitleBarStats({ host }: { host: string }) {
+  const { sessions, tunnels, canViewRegistry } = useVmHostSshRegistry(host);
+
+  if (!canViewRegistry || !host) return null;
+
+  const sessionCount = sessions.length;
+  const tunnelCount = tunnels.length;
+  const title = `${sessionCount} live SSH connection${sessionCount === 1 ? "" : "s"}, ${tunnelCount} MCP tunnel${tunnelCount === 1 ? "" : "s"}`;
+
+  return (
+    <span
+      className="shrink-0 px-1.5 py-0.5 rounded text-xs font-mono tabular-nums bg-surface0/60 text-overlay1 inline-flex items-center gap-1.5"
+      title={title}
+    >
+      <span className="inline-flex items-center gap-0.5">
+        <Terminal size={11} className="shrink-0" />
+        {sessionCount}
+      </span>
+      <span className="text-surface1">·</span>
+      <span className="inline-flex items-center gap-0.5">
+        <Plug size={11} className="shrink-0" />
+        {tunnelCount}
+      </span>
+    </span>
+  );
+}
+
 /** Draggable popup wrapper around ManageVmInline. Replaces the modal so admins
  *  can keep multiple manage panels open side-by-side and still see the VM list
  *  beneath them. Uses the shared window-manager so it cascades against other
@@ -316,6 +339,7 @@ export function ManageVmPopup({ vm, windowId, windowState }: {
         <span className="text-text font-medium text-md">Manage</span>
         <span className="text-overlay0 text-md font-mono truncate">{vm.name}</span>
         <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-medium bg-surface0 text-subtext0">{providerLabel(vm.provider)}</span>
+        <ManageVmTitleBarStats host={vm.host} />
         <div className="flex-1" />
         <button onClick={() => minimizeWindow(windowId)} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1" title="Minimize">
           <Minus size={14} />
@@ -463,7 +487,7 @@ interface ManageVmInlineProps {
   vm: ManageVm;
 }
 
-type ManageTab = "manage" | "connections" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
+type ManageTab = "manage" | "ssh" | "tunnels" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -543,6 +567,17 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   }, [projects, vm.projectId, vm.id, vm.provider, vm.instanceId]);
 
   const hasProject = !!linked;
+  const { sessions, tunnels, canViewRegistry } = useVmHostSshRegistry(vm.host);
+
+  const connectionPanelProps = {
+    host: vm.host,
+    provider: vm.provider,
+    sshUser: user,
+    projectName: linked?.project.name ?? null,
+    isPrivateHost: vm.isPrivateHost,
+    ingress: vm.ingress,
+    connection: vm.connection,
+  };
 
   // `vps:exec` resolves the SSH connection from the project, so it needs
   // linkage; without it we have no choice but the admin path even for "user".
@@ -552,7 +587,18 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
   const tabs: { key: ManageTab; label: string; icon: typeof SettingsIcon; enabled: boolean; reason?: string }[] = [
     { key: "manage", label: "Manage", icon: SettingsIcon, enabled: true },
-    { key: "connections", label: "Connections", icon: Plug, enabled: true },
+    {
+      key: "ssh",
+      label: canViewRegistry ? `Connections (${sessions.length})` : "Connections",
+      icon: Terminal,
+      enabled: true,
+    },
+    {
+      key: "tunnels",
+      label: canViewRegistry ? `Tunnels (${tunnels.length})` : "Tunnels",
+      icon: Plug,
+      enabled: true,
+    },
     { key: "firewall", label: "Firewall", icon: Shield, enabled: true },
     { key: "ports", label: "Ports", icon: Network, enabled: true },
     { key: "processes", label: "Processes", icon: Cpu, enabled: true },
@@ -563,8 +609,8 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   ];
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-1 border-b border-surface0 pb-2">
+    <div className="flex flex-col gap-3 min-w-0">
+      <div className="flex flex-wrap items-center gap-1 border-b border-surface0 pb-2">
         {tabs.map((t) => {
           const Icon = t.icon;
           const isActive = tab === t.key;
@@ -575,12 +621,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
               disabled={!t.enabled}
               title={t.enabled ? undefined : t.reason}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 text-md rounded-md border-none cursor-pointer transition-colors",
+                "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-md rounded-md border-none cursor-pointer transition-colors shrink-0 whitespace-nowrap",
                 isActive ? "bg-surface0 text-text" : "bg-transparent text-overlay0 hover:text-subtext0 hover:bg-mantle",
                 !t.enabled && "opacity-40 cursor-not-allowed hover:bg-transparent hover:text-overlay0",
               )}
             >
-              <Icon size={14} />
+              <Icon size={14} className="shrink-0" />
               {t.label}
             </button>
           );
@@ -631,16 +677,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         </>
       )}
 
-      {tab === "connections" && (
-        <VmHostConnectionsPanel
-          host={vm.host}
-          provider={vm.provider}
-          sshUser={user}
-          projectName={linked?.project.name ?? null}
-          isPrivateHost={vm.isPrivateHost}
-          ingress={vm.ingress}
-          connection={vm.connection}
-        />
+      {tab === "ssh" && (
+        <VmHostConnectionsPanel {...connectionPanelProps} view="ssh" />
+      )}
+
+      {tab === "tunnels" && (
+        <VmHostConnectionsPanel {...connectionPanelProps} view="tunnels" />
       )}
 
       {tab === "commands" && linked && (

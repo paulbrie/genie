@@ -46,7 +46,7 @@ function ClaudeLogo({ size = 16 }: { size?: number }) {
   );
 }
 
-function ClaudeTabButton({ icon, openCommandTerminal }: { icon: React.ReactNode; openCommandTerminal: (title: string, cmd: string) => void }) {
+function ClaudeTabButton({ icon, openClaudeTerminal }: { icon: React.ReactNode; openClaudeTerminal: (title: string, resume?: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -62,7 +62,7 @@ function ClaudeTabButton({ icon, openCommandTerminal }: { icon: React.ReactNode;
   return (
     <div className="relative flex items-center" ref={ref}>
       <button
-        onClick={() => openCommandTerminal("Claude", "claude --dangerously-skip-permissions")}
+        onClick={() => openClaudeTerminal("Claude")}
         className="flex items-center gap-1.5 px-3 py-2 transition-colors text-overlay1 hover:text-text"
         style={{ fontSize: 13 }}
       >
@@ -78,7 +78,7 @@ function ClaudeTabButton({ icon, openCommandTerminal }: { icon: React.ReactNode;
       {open && (
         <div className="absolute top-full left-0 mt-0.5 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[130px] z-50">
           <button
-            onClick={() => { openCommandTerminal("Claude", "claude --dangerously-skip-permissions"); setOpen(false); }}
+            onClick={() => { openClaudeTerminal("Claude"); setOpen(false); }}
             className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 transition-colors text-left"
             style={{ fontSize: 12 }}
           >
@@ -86,7 +86,7 @@ function ClaudeTabButton({ icon, openCommandTerminal }: { icon: React.ReactNode;
             New
           </button>
           <button
-            onClick={() => { openCommandTerminal("Claude (resume)", "claude --dangerously-skip-permissions --resume"); setOpen(false); }}
+            onClick={() => { openClaudeTerminal("Claude (resume)", true); setOpen(false); }}
             className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 transition-colors text-left"
             style={{ fontSize: 12 }}
           >
@@ -505,7 +505,22 @@ export default function ExtensionPage() {
     setTermTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, exited: true } : t)));
   }, []);
 
-  /** Open a regular SSH terminal tab that will inject a command after connection */
+  /** Open Claude Code on the project VPS (server-side tmux launch). */
+  const openClaudeTerminal = useCallback((label: string, resume?: boolean) => {
+    const id = crypto.randomUUID();
+    const num = termNumRef.current++;
+    const openCount = termTabs.filter((t) => t.windowStatus === "open").length;
+    const x = Math.max(20, Math.floor(window.innerWidth / 2 - TERM_WIN_W / 2) + openCount * TERM_CASCADE);
+    const y = Math.max(20, Math.floor(window.innerHeight / 2 - TERM_WIN_H / 2) + openCount * TERM_CASCADE);
+    const z = ++termZIndexRef.current;
+    const tab: TerminalTabDef = {
+      id, sessionId: id, label: label || `Claude ${num}`, exited: false,
+      claudeLaunch: { resume }, windowStatus: "open", windowPos: { x, y }, windowZIndex: z, focused: true,
+    };
+    setTermTabs((prev) => [...prev.map((t) => ({ ...t, focused: false })), tab]);
+  }, [termTabs]);
+
+  /** Open a shell terminal that injects a recipe command after connect. */
   const openCommandTerminal = useCallback((commandName: string, command: string) => {
     const id = crypto.randomUUID();
     const num = termNumRef.current++;
@@ -522,7 +537,12 @@ export default function ExtensionPage() {
     function handleCmdTerminal(e: Event) {
       const detail = (e as CustomEvent).detail;
       if (detail?.commandName && detail?.command) {
-        openCommandTerminal(detail.commandName, detail.command);
+        const cmd = String(detail.command);
+        if (cmd.trim().startsWith("claude")) {
+          openClaudeTerminal(detail.commandName, cmd.includes("--resume"));
+        } else {
+          openCommandTerminal(detail.commandName, cmd);
+        }
       }
     }
     function handleShareViewers(e: Event) {
@@ -555,7 +575,7 @@ export default function ExtensionPage() {
       window.removeEventListener("genie:terminal:share:kicked", handleKicked);
       window.removeEventListener("genie:terminal:scrollback", handleScrollback);
     };
-  }, [openCommandTerminal]);
+  }, [openClaudeTerminal, openCommandTerminal]);
 
   // Extension context from parent iframe
   const extensionCtx = useRef<{
@@ -872,7 +892,7 @@ export default function ExtensionPage() {
         {TABS.map((tab) => {
           if (tab.requiresVps && !hasVps) return null;
           if (tab.action && tab.id === "claude") {
-            return <ClaudeTabButton key={tab.id} icon={tab.icon} openCommandTerminal={openCommandTerminal} />;
+            return <ClaudeTabButton key={tab.id} icon={tab.icon} openClaudeTerminal={openClaudeTerminal} />;
           }
           return (
             <button

@@ -1,6 +1,6 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
-import { migrateOrgCredentials, migrateOrgs, migrateServerCredentials, migrateVpsMetricSamples } from "./db/migrate.js";
+import { migrateOrgCredentials, migrateOrgs, migrateServerCredentials, migrateTeamInvites, migrateVpsMetricSamples } from "./db/migrate.js";
 import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-service.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
@@ -67,6 +67,11 @@ try {
   await migrateOrgCredentials();
 } catch (err) {
   console.error("[migrate] org_credentials migration failed:", err);
+}
+try {
+  await migrateTeamInvites();
+} catch (err) {
+  console.error("[migrate] team_invites migration failed:", err);
 }
 try {
   await migrateVpsMetricSamples();

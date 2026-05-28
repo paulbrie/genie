@@ -16,6 +16,7 @@ import {
   focusTerminal as focusXterm,
   refitTerminal,
 } from "@/lib/terminal-bridge";
+import { buildTerminalSshSpawnPayload } from "@/lib/terminal-spawn";
 import { wsSend } from "@/lib/ws";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { useIsWindowFocused } from "@/lib/hooks";
@@ -124,29 +125,10 @@ function SingleTerminalWindow({
           window.dispatchEvent(new CustomEvent("genie:terminal:data", {
             detail: { id: tab.id, data: `\x1b[2mConnecting to ${tab.ssh.username || "genie"}@${tab.ssh.host}:${tab.ssh.port || 22}...\x1b[0m\r\n` },
           }));
-          wsSend("terminal:ssh:spawn", {
-            id: tab.id,
-            cols: term.cols,
-            rows: term.rows,
-            host: tab.ssh.host,
-            port: tab.ssh.port,
-            username: tab.ssh.username,
-            privateKeyPath: tab.ssh.privateKeyPath,
-            title: tab.title,
-            command: tab.command,
-          });
-          if (tab.command) {
-            const cmdToSend = tab.command;
-            const tabId = tab.id;
-            const onData = (e: Event) => {
-              const detail = (e as CustomEvent).detail;
-              if (detail?.id === tabId) {
-                window.removeEventListener("genie:terminal:data", onData);
-                setTimeout(() => wsSend("terminal:data", { id: tabId, data: cmdToSend + "\n" }), 300);
-              }
-            };
-            window.addEventListener("genie:terminal:data", onData);
-          }
+          // initialCommand runs server-side inside tmux — do not also type it
+          // into the PTY from the client or Claude will show it in its prompt.
+          const payload = buildTerminalSshSpawnPayload(tab, term.cols, term.rows);
+          if (payload) wsSend("terminal:ssh:spawn", payload);
         } else {
           wsSend("terminal:spawn", {
             id: tab.id,

@@ -155,11 +155,22 @@ function registerSession(id: string, proc: PtyHandle, ownerId?: string): void {
   });
 }
 
+export type PtyLaunchKind = "shell" | "claude";
+
+export interface ClaudeLaunchSpec {
+  cwd?: string;
+  resume?: boolean;
+}
+
 export interface SshPtyConfig {
   host: string;
   port: number;
   username: string;
   privateKeyPath: string;
+  /** Structured launch (preferred). When `launchKind` is `claude`, use `claude`. */
+  launchKind?: PtyLaunchKind;
+  claude?: ClaudeLaunchSpec;
+  /** Legacy shell command string; still accepted for recipe terminals and old rows. */
   initialCommand?: string;
   /** When set, the remote command is wrapped in
    *  `tmux attach -t ${tmuxSessionName} || tmux new -s ${tmuxSessionName} '<cmd>'`
@@ -174,6 +185,136 @@ function shSingleQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+export const DEFAULT_PROJECT_DIR = "/opt/project";
+
+const CLAUDE_BASE = "claude --dangerously-skip-permissions";
+
+/** Persisted label for History / notifications (no `cd` prefix). */
+export function claudeCommandLabel(resume?: boolean): string {
+  return resume ? `${CLAUDE_BASE} --resume` : CLAUDE_BASE;
+}
+
+function claudeInnerFromSpec(spec: ClaudeLaunchSpec): { startDir: string; inner: string } {
+  let inner = CLAUDE_BASE;
+  if (spec.resume) inner += " --resume";
+  return { startDir: spec.cwd?.trim() || DEFAULT_PROJECT_DIR, inner };
+}
+
+/** Map WS `terminal:ssh:spawn` / `vps:terminal:spawn` launch fields onto PTY config. */
+export function sshPtyLaunchFromSpawnMessage(input: {
+  kind?: PtyLaunchKind;
+  command?: string;
+  cwd?: string;
+  claudeResume?: boolean;
+}): Pick<SshPtyConfig, "launchKind" | "claude" | "initialCommand"> {
+  if (input.kind === "claude") {
+    return {
+      launchKind: "claude",
+      claude: {
+        cwd: input.cwd?.trim() || DEFAULT_PROJECT_DIR,
+        resume: !!input.claudeResume,
+      },
+    };
+  }
+  if (input.kind === "shell") {
+    return { launchKind: "shell", initialCommand: input.command };
+  }
+  // Legacy clients: infer from command string.
+  const cmd = input.command?.trim();
+  if (cmd && (cmd.startsWith("claude") || /^cd\s+\S+\s*&&\s*claude/.test(cmd))) {
+    const cdThen = cmd.match(/^cd\s+(\S+)\s*&&\s*(.+)$/);
+    if (cdThen) {
+      return {
+        launchKind: "claude",
+        claude: { cwd: cdThen[1], resume: cdThen[2].includes("--resume") },
+      };
+    }
+    return {
+      launchKind: "claude",
+      claude: { cwd: DEFAULT_PROJECT_DIR, resume: cmd.includes("--resume") },
+    };
+  }
+  return { initialCommand: input.command };
+}
+
+export function isClaudeTerminalSpawn(input: {
+  kind?: PtyLaunchKind;
+  command?: string;
+  title?: string;
+}): boolean {
+  if (input.kind === "claude") return true;
+  const cmd = input.command?.trim();
+  if (cmd?.startsWith("claude") || (cmd && /^cd\s+\S+\s*&&\s*claude/.test(cmd))) return true;
+  return input.title?.toLowerCase().startsWith("claude") ?? false;
+}
+
+export function persistCommandLabelForSpawn(input: {
+  kind?: PtyLaunchKind;
+  command?: string;
+  title?: string;
+  claudeResume?: boolean;
+}): string | null {
+  if (input.kind === "claude" || isClaudeTerminalSpawn(input)) {
+    return claudeCommandLabel(!!input.claudeResume || (input.command?.includes("--resume") ?? false));
+  }
+  return input.command || input.title || null;
+}
+
+/** Reconstruct structured launch from a persisted session row. */
+export function ptyLaunchFieldsFromPersisted(row: {
+  kind: string;
+  commandLabel: string | null;
+}): Pick<SshPtyConfig, "launchKind" | "claude" | "initialCommand"> {
+  const label = row.commandLabel?.trim() ?? "";
+  if (row.kind === "claude" || label.startsWith("claude") || /^cd\s+\S+\s*&&\s*claude/.test(label)) {
+    const cdThen = label.match(/^cd\s+(\S+)\s*&&\s*(.+)$/);
+    if (cdThen) {
+      return {
+        launchKind: "claude",
+        claude: { cwd: cdThen[1], resume: cdThen[2].includes("--resume") },
+      };
+    }
+    return {
+      launchKind: "claude",
+      claude: { cwd: DEFAULT_PROJECT_DIR, resume: label.includes("--resume") },
+    };
+  }
+  return { initialCommand: row.commandLabel || undefined };
+}
+
+/** How a brand-new tmux session starts. */
+function resolveTmuxInnerCommand(config: SshPtyConfig): {
+  startDir?: string;
+  inner: string;
+} {
+  const defaultShell = `cd ${DEFAULT_PROJECT_DIR} 2>/dev/null || true; exec $SHELL -l`;
+
+  if (config.launchKind === "claude" && config.claude) {
+    return claudeInnerFromSpec(config.claude);
+  }
+
+  const initialCommand = config.initialCommand;
+  if (!initialCommand?.trim()) {
+    return { inner: defaultShell };
+  }
+
+  // Legacy clients that still send `cd … && claude …` as one shell string.
+  const trimmed = initialCommand.trim();
+  const cdThen = trimmed.match(/^cd\s+(\S+)\s*&&\s*(.+)$/);
+  if (cdThen) {
+    const rest = cdThen[2].trim();
+    if (rest.startsWith("claude")) {
+      return { startDir: cdThen[1], inner: rest };
+    }
+  }
+
+  if (trimmed.startsWith("claude")) {
+    return { startDir: DEFAULT_PROJECT_DIR, inner: trimmed };
+  }
+
+  return { inner: trimmed };
+}
+
 /** Compose the remote command we send to ssh.exec(). When tmuxSessionName is
  *  set the inner command is wrapped so process state outlives the SSH channel. */
 function buildRemoteCommand(config: SshPtyConfig): string {
@@ -186,13 +327,16 @@ function buildRemoteCommand(config: SshPtyConfig): string {
   //     non-interactive `bash -c "claude"` can't grab the terminal, so claude
   //     exits immediately (the bug behind "[Process exited with code 0]").
   if (!config.tmuxSessionName) {
+    if (config.launchKind === "claude" && config.claude) {
+      const { inner } = claudeInnerFromSpec(config.claude);
+      return `exec $SHELL -ilc ${shSingleQuote(inner)}`;
+    }
     if (!config.initialCommand) return 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
     return `exec $SHELL -ilc ${shSingleQuote(config.initialCommand)}`;
   }
-  // tmux path: tmux already supplies a proper PTY + job control, so the raw
-  // command works inside it without the interactive-shell wrapper.
-  const inner = config.initialCommand || 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
-  const name = config.tmuxSessionName;
+  const { startDir, inner } = resolveTmuxInnerCommand(config);
+  const name = config.tmuxSessionName!;
+  const cdFlag = startDir ? ` -c ${shSingleQuote(startDir)}` : "";
   // Genie-defined tmux defaults. `set-option -g` is the new-session default;
   // existing sessions keep their own copy, so we also `-t ${name}` when the
   // session already exists. Idempotent; starts the tmux server if needed.
@@ -236,7 +380,7 @@ function buildRemoteCommand(config: SshPtyConfig): string {
     `  ${setForExisting};`,
     `  exec tmux attach -t ${name};`,
     `fi`,
-    `exec tmux new -s ${name} ${shSingleQuote(inner)}`,
+    `exec tmux new${cdFlag} -s ${name} ${shSingleQuote(inner)}`,
   ].join('\n');
 }
 
@@ -457,8 +601,10 @@ export function spawnSshPty(
             return;
           }
           channel = stream;
+          // PTY sessions multiplex stderr into the primary stream — ssh2 often
+          // delivers identical bytes on both `data` and `stderr`, which doubled
+          // every prompt/escape sequence in the xterm pane.
           stream.on("data", (data: Buffer) => dataCallback?.(data.toString()));
-          stream.stderr.on("data", (data: Buffer) => dataCallback?.(data.toString()));
           // ssh2 reports the real exit status via the 'exit' event (code OR a
           // terminating signal); the 'close' event carries no code, so the old
           // `close(code)` read was always undefined → reported as 0 for every

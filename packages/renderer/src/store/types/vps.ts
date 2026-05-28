@@ -214,9 +214,19 @@ export interface SshConfig {
   privateKeyPath?: string;
 }
 
+export type TerminalLaunchKind = "shell" | "claude";
+
+export interface ClaudeLaunchOptions {
+  cwd?: string;
+  resume?: boolean;
+}
+
 export interface TerminalTab {
   id: string;
   title: string;
+  /** Explicit launch mode; Claude uses server-side tmux `-c` + `claude` (no shell string). */
+  kind?: TerminalLaunchKind;
+  claudeLaunch?: ClaudeLaunchOptions;
   command?: string;
   cwd?: string;
   projectId?: string;

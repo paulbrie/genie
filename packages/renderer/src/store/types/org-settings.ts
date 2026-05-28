@@ -33,6 +33,28 @@ export interface OrgTeam {
   createdAt: string;
 }
 
+export interface OrgTeamMember {
+  id: string;
+  teamId: string;
+  userId: string;
+  role: string;
+  joinedAt: string;
+  userName?: string;
+  userEmail?: string;
+  userAvatarUrl?: string | null;
+}
+
+export interface OrgTeamInvite {
+  id: string;
+  orgId: string;
+  teamId: string;
+  token: string;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  url: string;
+}
+
 /** Flattened team row for the project Settings team picker — comes back as
  *  part of org:list-mine so a non-admin org-admin can assign a project to one
  *  of their orgs' teams without us needing admin-only `admin:teams:list`. */
@@ -65,10 +87,17 @@ export interface OrgSettingsState {
     org: { id: string; name: string } | null;
     members: OrgMember[];
     teams: OrgTeam[];
+    teamMembers: OrgTeamMember[];
+    invites: OrgTeamInvite[];
     credentials: OrgCredentialStatus;
     loading: boolean;
     error: string | null;
   };
+
+  teamsBusy: boolean;
+  membersBusy: boolean;
+  inviteAcceptError: string | null;
+  inviteAccepted: boolean;
 
   /** Cloud servers in this org's pool — fetched via the org's own Taz token. */
   vms: {
@@ -85,6 +114,15 @@ export interface OrgSettingsState {
   /** Form state for the "set credentials" panel. */
   credentialsSaving: boolean;
   credentialsError: string | null;
+
+  /** Ephemeral SSH key generation for the credentials form. */
+  keyGen: {
+    generating: boolean;
+    error: string | null;
+    privateKey: string | null;
+    publicKey: string | null;
+    fingerprint: string | null;
+  };
 }
 
 export const INITIAL_ORG_SETTINGS_STATE: OrgSettingsState = {
@@ -99,11 +137,18 @@ export const INITIAL_ORG_SETTINGS_STATE: OrgSettingsState = {
     org: null,
     members: [],
     teams: [],
+    teamMembers: [],
+    invites: [],
     credentials: { "tazcloud-token": false, "tazcloud-ssh-key": false },
     loading: false,
     error: null,
   },
+  teamsBusy: false,
+  membersBusy: false,
+  inviteAcceptError: null,
+  inviteAccepted: false,
   vms: { list: [], raw: [], loading: false, error: null, creating: false, createError: null, deleting: {} },
   credentialsSaving: false,
   credentialsError: null,
+  keyGen: { generating: false, error: null, privateKey: null, publicKey: null, fingerprint: null },
 };

@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { Maximize2, Minimize2, Minus, Plus, Share2, Terminal, X } from "lucide-react";
+import { GENIE_PROJECT_DIR } from "@/lib/terminal-spawn";
 import { wsSend } from "@/lib/ws";
 import { $auth, $conversationChat } from "@/store/subjects";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
@@ -41,7 +42,9 @@ export interface TerminalTabDef {
   sessionId: string;
   label: string;
   exited: boolean;
-  /** Command to inject into the terminal after SSH connects */
+  /** Server-side Claude launch (tmux `-c` + `claude`; no client inject). */
+  claudeLaunch?: { resume?: boolean };
+  /** Non-Claude command to inject after shell prompt (recipe terminals). */
   injectCommand?: string;
   /** If set, this is a shared terminal from another user */
   shared?: boolean;
@@ -63,6 +66,7 @@ function SingleTerminal({
   sessionId,
   visible,
   onExit,
+  claudeLaunch,
   injectCommand,
   shared,
 }: {
@@ -70,6 +74,7 @@ function SingleTerminal({
   sessionId: string;
   visible: boolean;
   onExit: () => void;
+  claudeLaunch?: { resume?: boolean };
   injectCommand?: string;
   shared?: boolean;
 }) {
@@ -98,6 +103,9 @@ function SingleTerminal({
         instanceId: inst.id,
         cols: term.cols,
         rows: term.rows,
+        kind: claudeLaunch ? "claude" : "shell",
+        cwd: claudeLaunch ? GENIE_PROJECT_DIR : undefined,
+        claudeResume: claudeLaunch?.resume,
       });
     }
 
@@ -139,7 +147,7 @@ function SingleTerminal({
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instId, project.id, sessionId, shared]);
+  }, [instId, project.id, sessionId, shared, claudeLaunch?.resume]);
 
   return (
     <div className="h-full w-full bg-[#1e1e2e]" style={{ display: visible ? "block" : "none" }}>
@@ -281,7 +289,7 @@ export function FloatingTerminalWindow({
         className="flex items-center gap-2 px-3 py-1.5 border-b border-surface0 cursor-grab active:cursor-grabbing select-none shrink-0 bg-mantle"
         onPointerDown={(e) => { onFocus(tab.id); if (!maximized) onPointerDown(e); }}
       >
-        <Terminal size={12} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : tab.injectCommand ? "text-mauve" : "text-green"} />
+        <Terminal size={12} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : (tab.claudeLaunch || tab.injectCommand) ? "text-mauve" : "text-green"} />
         <span className="text-md text-subtext0 font-medium truncate flex-1">{tab.label}</span>
         {tab.shared && tab.ownerId && (
           <OwnerAvatar ownerId={tab.ownerId} />
@@ -321,6 +329,7 @@ export function FloatingTerminalWindow({
           sessionId={tab.sessionId}
           visible={true}
           onExit={() => onMarkExited(tab.id)}
+          claudeLaunch={tab.claudeLaunch}
           injectCommand={tab.injectCommand}
           shared={tab.shared}
         />
@@ -381,7 +390,7 @@ export function TerminalListPanel({
             key={tab.id}
             className="flex items-center gap-2 px-3 py-2 bg-mantle rounded-lg border border-surface0 hover:border-surface1 transition-colors"
           >
-            <Terminal size={13} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : tab.injectCommand ? "text-mauve" : "text-green"} />
+            <Terminal size={13} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : (tab.claudeLaunch || tab.injectCommand) ? "text-mauve" : "text-green"} />
             <span className="flex-1 text-text truncate" style={{ fontSize: 13 }}>{tab.label}</span>
             {tab.exited && <span className="text-red" style={{ fontSize: 11 }}>exited</span>}
             {tab.windowStatus === "minimized" && (

@@ -16,7 +16,26 @@ import * as projectManager from "./project-manager.js";
 import { startMonitoring, stopMonitoring, setMonitoringInterval, getDockerBin } from "./monitor.js";
 import { handleChat, type ChatModelId } from "./chat.js";
 import { startLogCapture, getLogBuffer, clearLogBuffer, getErrorBuffer, clearErrorBuffer } from "./log-capture.js";
-import { setPtyEventCallback, spawnPty, spawnSshPty, writePty, resizePty, closePty, closeAllPtys, getSessionAccess, getScrollback, addCollaborator, removeCollaborator, isAuthorized, removeCollaboratorFromAll, getUserSessionDetails } from "./pty-manager.js";
+import {
+  setPtyEventCallback,
+  spawnPty,
+  spawnSshPty,
+  writePty,
+  resizePty,
+  closePty,
+  closeAllPtys,
+  getSessionAccess,
+  getScrollback,
+  addCollaborator,
+  removeCollaborator,
+  isAuthorized,
+  removeCollaboratorFromAll,
+  getUserSessionDetails,
+  sshPtyLaunchFromSpawnMessage,
+  ptyLaunchFieldsFromPersisted,
+  isClaudeTerminalSpawn,
+  persistCommandLabelForSpawn,
+} from "./pty-manager.js";
 import { createPtySession, forgetPtySession, listPtySessions, touchPtySession } from "./pty-session-service.js";
 
 // Per-pty-session activity-write throttle so rapid keystrokes don't hammer the
@@ -24,6 +43,7 @@ import { createPtySession, forgetPtySession, listPtySessions, touchPtySession } 
 // minute per session.
 const ptyActivityLastWriteAt = new Map<string, number>();
 import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth.js";
+import { handleDebugServerLogs } from "./debug-api.js";
 import * as assistantLogService from "./assistant-log-service.js";
 import { getResumeState, saveResumeSessionId, pruneStaleSessions } from "./assistant-session-state-service.js";
 import * as chatService from "./chat-service.js";
@@ -52,7 +72,7 @@ import {
 import { getBulkVpsMetricHistory, getVpsMetricHistory } from "./vps/vps-metric-service.js";
 import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
 import { createDoClient } from "./vps/do-api-client.js";
-import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules, getGenieKeyPath } from "./vps/do-provision.js";
+import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, generateEd25519KeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules, getGenieKeyPath } from "./vps/do-provision.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
 import { createTazClient, defaultSshUserForVm, sshUserForImage } from "./vps/tazcloud-api-client.js";
 import { createBaseImage } from "./vps/do-base-image.js";
@@ -212,6 +232,9 @@ function isBlockedSshHost(host: string): boolean {
 /** Set of droplet IDs known to be alive (refreshed periodically via DO API) */
 let knownAliveDropletIds: Set<number> = new Set();
 let lastDropletSync = 0;
+
+/** Coalesce concurrent `admin:tazcloud:stats` requests into one probe round. */
+let tazcloudStatsInflight: Promise<{ stats: Record<string, unknown>; errors: Record<string, string> }> | null = null;
 
 // --- VPS Agent sessions ---
 
@@ -1899,6 +1922,7 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
   switch (msg.type) {
     case "auth:google:start": {
       try {
+        const { inviteToken } = msg.payload as { inviteToken?: string };
         const authUrl = initiateOAuth(
           async (user, token) => {
             const state = clients.get(ws);
@@ -1919,6 +1943,7 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
           (message) => {
             send(ws, { type: "auth:error", payload: { message } });
           },
+          inviteToken,
         );
         send(ws, { type: "auth:google:url", payload: { url: authUrl } });
       } catch (err: unknown) {
@@ -2886,8 +2911,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             port: conn.port || 22,
             username: conn.username,
             privateKeyPath: conn.privateKeyPath,
-            initialCommand: row.commandLabel || undefined,
             tmuxSessionName: id,
+            ...ptyLaunchFieldsFromPersisted(row),
           }, userId);
         } else if (row.sshConfig) {
           const cfg = row.sshConfig as { host: string; port?: number; username?: string; privateKeyPath?: string };
@@ -2896,8 +2921,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             port: cfg.port || 22,
             username: cfg.username || VPS_SSH_USERNAME,
             privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519",
-            initialCommand: row.commandLabel || undefined,
             tmuxSessionName: id,
+            ...ptyLaunchFieldsFromPersisted(row),
           }, userId);
         } else {
           send(ws, { type: "terminal:error", payload: { id, message: "Session has no connection details" } });
@@ -4991,12 +5016,20 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       // SSH-probe every ACTIVE TazCloud VM for runtime port info, regardless of
       // project linkage. Mirrors admin:droplets:stats but uses the project-
       // independent credential path from admin:tazcloud:exec.
-      try {
+      const reply = (payload: { stats: Record<string, unknown>; errors: Record<string, string> }) => {
+        send(ws, { type: "admin:tazcloud:stats", payload });
+      };
+      if (tazcloudStatsInflight) {
+        void tazcloudStatsInflight.then(reply).catch(() => {
+          reply({ stats: {}, errors: {} });
+        });
+        break;
+      }
+      tazcloudStatsInflight = (async () => {
         const tazToken = process.env.TAZCLOUD_API_TOKEN;
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazToken || !tazPrivateKey) {
-          send(ws, { type: "admin:tazcloud:stats", payload: { stats: {}, errors: {} } });
-          break;
+          return { stats: {}, errors: {} };
         }
         const tazClient = createTazClient(tazToken);
         const vms = await tazClient.listVms();
@@ -5011,20 +5044,12 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const results: Record<string, unknown> = {};
         const errors: Record<string, string> = {};
         const targets = vms.filter((vm) => vm.status === "ACTIVE" && vm.ssh_host);
-        // Bounded concurrency: firing an SSH handshake at every VM at once
-        // trips the Taz network's connection rate-limit (the burst that the
-        // WireGuard tunnel was meant to relieve for single connections, see
-        // taz_v2_bastion_throttle), so a slice of VMs would silently fail to
-        // probe. Cap parallelism so the cards fill in reliably.
         const POOL = 4;
         let cursor = 0;
         const probe = async (): Promise<void> => {
           while (cursor < targets.length) {
             const vm = targets[cursor++];
             try {
-              // Linked VMs always have a `genie` user (provision step creates
-              // it). Unlinked legacy VMs only have the image-default user.
-              // Unlinked v2 VMs (no public ipv6) ship with `genie` already.
               const username = linked.has(vm.id) || !vm.ipv6
                 ? VPS_SSH_USERNAME
                 : sshUserForImage(vm.image || "ubuntu-22");
@@ -5036,9 +5061,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
               });
               results[vm.id] = stats;
             } catch (err: unknown) {
-              // Surface the failure instead of swallowing it: record it per-VM
-              // for the card and log it so it lands in the superadmin error
-              // stream (/logs → "errors") for diagnosis.
               const message = err instanceof Error ? err.message : String(err);
               errors[vm.id] = message;
               console.error(`[tazcloud:stats] probe failed for VM ${vm.id} (${vm.ssh_host}): ${message}`);
@@ -5046,10 +5068,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         };
         await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, () => probe()));
-        send(ws, { type: "admin:tazcloud:stats", payload: { stats: results, errors } });
+        return { stats: results, errors };
+      })().finally(() => {
+        tazcloudStatsInflight = null;
+      });
+      try {
+        reply(await tazcloudStatsInflight);
       } catch (err: unknown) {
         console.error(`[tazcloud:stats] handler failed: ${err instanceof Error ? err.message : String(err)}`);
-        send(ws, { type: "admin:tazcloud:stats", payload: { stats: {}, errors: {} } });
+        reply({ stats: {}, errors: {} });
       }
       break;
     }
@@ -5254,6 +5281,24 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "admin:tazcloud:deleted", payload: { vmId } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:tazcloud:capabilities": {
+      try {
+        const tazToken = process.env.TAZCLOUD_API_TOKEN;
+        if (!tazToken) {
+          send(ws, { type: "admin:tazcloud:capabilities", payload: { images: [], sizes: [], error: "TAZCLOUD_API_TOKEN not configured" } });
+          break;
+        }
+        const caps = await createTazClient(tazToken).getCapabilities();
+        send(ws, { type: "admin:tazcloud:capabilities", payload: { images: caps.images ?? [], sizes: caps.sizes ?? [] } });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "admin:tazcloud:capabilities",
+          payload: { images: [], sizes: [], error: err instanceof Error ? err.message : String(err) },
+        });
       }
       break;
     }
@@ -5925,28 +5970,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "admin:sshkey:regenerate": {
       try {
-        // Generate new key pair using ssh-keygen with temp files
-        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "genie-ssh-"));
-        const tmpKeyPath = path.join(tmpDir, "genie_ed25519");
-        try {
-          const execFileAsync = promisify(execFile);
-          await execFileAsync("ssh-keygen", ["-t", "ed25519", "-f", tmpKeyPath, "-N", "", "-C", "genie-deploy"]);
-          const privateKey = fs.readFileSync(tmpKeyPath, "utf-8");
-          const publicKey = fs.readFileSync(`${tmpKeyPath}.pub`, "utf-8");
+        const { privateKey, publicKey } = await generateEd25519KeyPair("genie-deploy");
+        await settingsService.saveGenieKeyPair(privateKey, publicKey);
+        writeKeyToDisk(privateKey, publicKey);
 
-          // Save to DB
-          await settingsService.saveGenieKeyPair(privateKey, publicKey);
-
-          // Write to disk cache
-          writeKeyToDisk(privateKey, publicKey);
-
-          const fingerprint = sshKeyFingerprint(publicKey);
-          const history = await settingsService.getGenieKeyHistory();
-          const createdAt = await settingsService.getGlobalSetting<string>("genieKeyCreatedAt");
-          send(ws, { type: "admin:sshkey:result", payload: { exists: true, publicKey, fingerprint, createdAt, history } });
-        } finally {
-          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-        }
+        const fingerprint = sshKeyFingerprint(publicKey);
+        const history = await settingsService.getGenieKeyHistory();
+        const createdAt = await settingsService.getGlobalSetting<string>("genieKeyCreatedAt");
+        send(ws, { type: "admin:sshkey:result", payload: { exists: true, publicKey, fingerprint, createdAt, history } });
       } catch (err: unknown) {
         send(ws, { type: "admin:sshkey:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -6411,12 +6442,181 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (!org) { send(ws, { type: "org:error", payload: { orgId, message: "Org not found" } }); break; }
         const members = await orgService.getMembers(orgId);
         const credentials = await orgService.getCredentialStatus(orgId);
-        // Teams that belong to this org.
         const orgTeams = await getDb().select().from(teams).where(eq(teams.orgId, orgId));
-        send(ws, { type: "org:get", payload: { org, members, teams: orgTeams, credentials } });
+        const teamMembersList = await orgService.getTeamMembersForOrg(orgId);
+        const invites = await orgService.listTeamInvites(orgId);
+        send(ws, {
+          type: "org:get",
+          payload: { org, members, teams: orgTeams, teamMembers: teamMembersList, invites, credentials },
+        });
       } catch (err) {
         console.error("[org:get]", err);
         send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:teams:create": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, name } = msg.payload as { orgId: string; name: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const team = await orgService.createTeamForOrg(orgId, name);
+        send(ws, { type: "org:teams:created", payload: { orgId, team } });
+      } catch (err) {
+        console.error("[org:teams:create]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:teams:update": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, teamId, name } = msg.payload as { orgId: string; teamId: string; name: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const team = await orgService.updateTeamForOrg(orgId, teamId, name);
+        if (!team) { send(ws, { type: "org:error", payload: { orgId, message: "Team not found" } }); break; }
+        send(ws, { type: "org:teams:updated", payload: { orgId, team } });
+      } catch (err) {
+        console.error("[org:teams:update]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:teams:delete": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, teamId } = msg.payload as { orgId: string; teamId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        await orgService.deleteTeamForOrg(orgId, teamId);
+        send(ws, { type: "org:teams:deleted", payload: { orgId, teamId } });
+      } catch (err) {
+        console.error("[org:teams:delete]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:teams:remove-member": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, memberId } = msg.payload as { orgId: string; memberId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        await orgService.removeTeamMemberForOrg(orgId, memberId);
+        send(ws, { type: "org:teams:member-removed", payload: { orgId, memberId } });
+      } catch (err) {
+        console.error("[org:teams:remove-member]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:invite:create": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, teamId } = msg.payload as { orgId: string; teamId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const invite = await orgService.createTeamInvite(orgId, teamId, callerId);
+        send(ws, { type: "org:invite:created", payload: { orgId, invite } });
+      } catch (err) {
+        console.error("[org:invite:create]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:invite:revoke": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, inviteId } = msg.payload as { orgId: string; inviteId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        await orgService.revokeTeamInvite(orgId, inviteId);
+        send(ws, { type: "org:invite:revoked", payload: { orgId, inviteId } });
+      } catch (err) {
+        console.error("[org:invite:revoke]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:invite:accept": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { token } = msg.payload as { token: string };
+        const result = await orgService.acceptTeamInvite(token, callerId);
+        if (!result) {
+          send(ws, { type: "org:invite:accept:error", payload: { message: "Invite link is invalid, expired, or revoked" } });
+          break;
+        }
+        send(ws, { type: "org:invite:accepted", payload: result });
+      } catch (err) {
+        console.error("[org:invite:accept]", err);
+        send(ws, { type: "org:invite:accept:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:members:remove": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, userId } = msg.payload as { orgId: string; userId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        await orgService.removeMember(orgId, userId);
+        send(ws, { type: "org:members:removed", payload: { orgId, userId } });
+      } catch (err) {
+        console.error("[org:members:remove]", err);
+        send(ws, { type: "org:error", payload: { orgId: (msg.payload as { orgId?: string }).orgId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:members:set-role": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, userId, role } = msg.payload as { orgId: string; userId: string; role: orgService.OrgRole };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const member = await orgService.setMemberRole(orgId, userId, role);
+        if (!member) { send(ws, { type: "org:error", payload: { orgId, message: "Member not found" } }); break; }
+        send(ws, { type: "org:members:role-updated", payload: { orgId, member } });
+      } catch (err) {
+        console.error("[org:members:set-role]", err);
+        send(ws, { type: "org:error", payload: { orgId: (msg.payload as { orgId?: string }).orgId, message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -6465,6 +6665,28 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "org:cloud:taz:credentials:status", payload: { orgId, credentials } });
       } catch (err) {
         console.error("[org:cloud:taz:credentials:clear]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:ssh-key:generate": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId } = msg.payload as { orgId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const { privateKey, publicKey } = await generateEd25519KeyPair("genie-org-taz");
+        const fingerprint = sshKeyFingerprint(publicKey);
+        send(ws, {
+          type: "org:ssh-key:generated",
+          payload: { orgId, privateKey, publicKey: publicKey.trim(), fingerprint },
+        });
+      } catch (err) {
+        console.error("[org:ssh-key:generate]", err);
         send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
@@ -6922,33 +7144,35 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "vps:terminal:spawn": {
-      const { id, projectId, instanceId, cols, rows, command, kind } = msg.payload as {
+      const { id, projectId, instanceId, cols, rows, command, kind, cwd, claudeResume } = msg.payload as {
         id: string; projectId: string; instanceId: string;
         cols?: number; rows?: number;
         command?: string; kind?: "shell" | "claude";
+        cwd?: string; claudeResume?: boolean;
       };
       try {
         const conn = await getVpsConnection(projectId, instanceId);
+        const launch = sshPtyLaunchFromSpawnMessage({ kind, command, cwd, claudeResume });
         spawnSshPty(id, cols || 80, rows || 24, {
           host: conn.host,
           port: conn.port || 22,
           username: conn.username,
           privateKeyPath: conn.privateKeyPath,
-          initialCommand: command,
           tmuxSessionName: id,
+          ...launch,
         }, userId);
         // Persist for the History/Terminals tab so it survives Manager restart.
         // Best-effort: a DB failure here shouldn't block the user opening a terminal.
         if (userId) {
-          const inferredKind: "shell" | "claude" = kind || (command?.trim().startsWith("claude") ? "claude" : "shell");
+          const isClaude = isClaudeTerminalSpawn({ kind, command });
           await createPtySession({
             id,
             ownerId: userId,
-            kind: inferredKind,
+            kind: isClaude ? "claude" : "shell",
             projectId,
             instanceId,
             vpsHost: conn.host,
-            commandLabel: command || null,
+            commandLabel: persistCommandLabelForSpawn({ kind, command, claudeResume }),
           }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
         }
       } catch (err: unknown) {
@@ -6958,31 +7182,33 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "terminal:ssh:spawn": {
-      const { id, host, port, username, privateKeyPath, cols, rows, title, command } = msg.payload as {
+      const { id, host, port, username, privateKeyPath, cols, rows, title, command, kind, cwd, claudeResume } = msg.payload as {
         id: string; host: string; port?: number; username?: string; privateKeyPath?: string;
         cols?: number; rows?: number; title?: string; command?: string;
+        kind?: "shell" | "claude"; cwd?: string; claudeResume?: boolean;
       };
       const resolvedUser = username || VPS_SSH_USERNAME;
       const resolvedKey = privateKeyPath || "~/.genie/ssh/genie_ed25519";
       const resolvedPort = port || 22;
+      const launch = sshPtyLaunchFromSpawnMessage({ kind, command, cwd, claudeResume });
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: resolvedPort,
         username: resolvedUser,
         privateKeyPath: resolvedKey,
-        initialCommand: command,
         tmuxSessionName: id,
+        ...launch,
       }, userId);
       // Persist for the History/Terminals tab. Direct SSH carries its own
       // connection details since there's no project/instance to look them up from.
       if (userId) {
-        const isClaudeKind = (command?.trim().startsWith("claude") ?? false) || (title?.toLowerCase().startsWith("claude") ?? false);
+        const isClaudeKind = isClaudeTerminalSpawn({ kind, command, title });
         await createPtySession({
           id,
           ownerId: userId,
           kind: isClaudeKind ? "claude" : "shell",
           vpsHost: host,
-          commandLabel: command || title || null,
+          commandLabel: persistCommandLabelForSpawn({ kind, command, title, claudeResume }),
           sshConfig: { host, port: resolvedPort, username: resolvedUser, privateKeyPath: resolvedKey, title },
         }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
       }
@@ -6990,9 +7216,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       // a missing SENDGRID_API_KEY makes this a silent no-op.
       const actor = clients.get(ws)?.user;
       const actorLabel = actor ? `${actor.name} <${actor.email}>` : "Unknown user";
-      // "Claude Terminal" is just an SSH session that auto-runs `claude` after connect —
-      // detect via the command or the user-facing title set by the renderer.
-      const isClaude = (command?.trim().startsWith("claude") ?? false) || (title?.toLowerCase().startsWith("claude") ?? false);
+      const isClaude = isClaudeTerminalSpawn({ kind, command, title });
       const kindLabel = isClaude ? "Claude Terminal" : "SSH Terminal";
       const lines = [
         `${actorLabel} started a ${kindLabel}.`,
@@ -7157,6 +7381,26 @@ export async function createServer(): Promise<WebSocketServer> {
       } catch (err) {
         res.writeHead(500, { "Content-Type": "text/plain" });
         res.end(`dev-login error: ${(err instanceof Error ? err.message : String(err))}`);
+      }
+      return;
+    }
+
+    if (await handleDebugServerLogs(req, res)) return;
+
+    const inviteMatch = req.url?.match(/^\/api\/public\/invite\/([A-Za-z0-9_-]+)$/);
+    if (inviteMatch && req.method === "GET") {
+      try {
+        const preview = await orgService.getInvitePreview(inviteMatch[1]);
+        if (!preview) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Not found" }));
+        } else {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(preview));
+        }
+      } catch (err: unknown) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: (err instanceof Error ? err.message : String(err)) }));
       }
       return;
     }

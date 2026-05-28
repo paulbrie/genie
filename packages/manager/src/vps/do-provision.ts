@@ -77,6 +77,21 @@ export function getGenieKeyPubPath(): string {
   return `${getGenieKeyPath()}.pub`;
 }
 
+/** Generate a passphrase-free ed25519 key pair via ssh-keygen (temp files, not persisted). */
+export async function generateEd25519KeyPair(comment = "genie-deploy"): Promise<{ privateKey: string; publicKey: string }> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "genie-ssh-"));
+  const tmpKeyPath = path.join(tmpDir, "key_ed25519");
+  try {
+    await execFileAsync("ssh-keygen", ["-t", "ed25519", "-f", tmpKeyPath, "-N", "", "-C", comment]);
+    return {
+      privateKey: fs.readFileSync(tmpKeyPath, "utf-8"),
+      publicKey: fs.readFileSync(`${tmpKeyPath}.pub`, "utf-8"),
+    };
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 /**
  * Ensure the Genie SSH key pair exists in DB (source of truth).
  * Generates a new key pair if none is stored, saves to DB, and writes to disk cache.
@@ -90,27 +105,10 @@ export async function ensureGenieKeyPair(): Promise<{ privateKey: string; public
     return stored;
   }
 
-  // 2. Generate a new key pair using ssh-keygen with temp files
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "genie-ssh-"));
-  const tmpKeyPath = path.join(tmpDir, "genie_ed25519");
-  try {
-    await execFileAsync("ssh-keygen", ["-t", "ed25519", "-f", tmpKeyPath, "-N", "", "-C", "genie-deploy"]);
-    const privateKey = fs.readFileSync(tmpKeyPath, "utf-8");
-    const publicKey = fs.readFileSync(`${tmpKeyPath}.pub`, "utf-8");
-
-    // 3. Store in DB
-    await saveGenieKeyPair(privateKey, publicKey);
-
-    // 4. Write to disk cache
-    await writeKeyToDisk(privateKey, publicKey);
-
-    return { privateKey, publicKey };
-  } finally {
-    // Clean up temp files
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
-  }
+  const { privateKey, publicKey } = await generateEd25519KeyPair("genie-deploy");
+  await saveGenieKeyPair(privateKey, publicKey);
+  await writeKeyToDisk(privateKey, publicKey);
+  return { privateKey, publicKey };
 }
 
 /**

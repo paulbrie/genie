@@ -5,17 +5,17 @@ import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink } from "lucide-react";
 import type { AdminDroplet, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
-import { addSshTerminalTab, createAdminDroplet, disconnectVps, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, createAdminDroplet, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { wsRequest } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
-import { CopyableIp } from "@/components/ui/copyable-ip";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
-import { cardStatusPill, VmCardStatsGauges } from "@/components/admin/tazcloud-panel";
+import { cardStatusPill } from "@/components/admin/tazcloud-panel";
+import { VpsResourceBar, vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
 import { CloudMetricSparklines } from "@/components/cloud/cloud-metric-sparklines";
 import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
 import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
@@ -493,8 +493,6 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                 const dropletStatsError = streamStats ? null : streamError;
                 const dropletStatsLoading = isActive && !dropletStats && !dropletStatsError && !link;
                 const historyKey = link ? vpsMetricKey(link.projectId, link.instanceId) : null;
-                const vcpuMatch = d.size?.match(/(\d+)vcpu/);
-                const vcpuLabel = vcpuMatch ? `${vcpuMatch[1]}v` : undefined;
                 const rowOnClick = (e: React.MouseEvent) => {
                   if (!isActive || isRenaming || isPending || resizeFormOpen) return;
                   const target = e.target as HTMLElement;
@@ -588,32 +586,23 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                                 </span>
                               )}
                             </div>
-                            {d.ip && (
-                              <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                <span className="min-w-0 truncate">
-                                  <CopyableIp ip={d.ip} className="text-xs text-overlay0 font-mono" />
-                                </span>
-                                <a
-                                  href={`http://${d.ip}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-overlay0 hover:text-blue transition-colors shrink-0"
-                                  title="Open in browser"
-                                >
-                                  <ExternalLink size={10} />
-                                </a>
-                              </div>
-                            )}
                           </div>
                           {cardStatusPill(d.status)}
                         </div>
 
-                        {isActive && (
-                          <VmCardStatsGauges
-                            stats={dropletStats}
+                        {isActive && d.ip && (
+                          <VpsResourceBar
+                            className="mt-3"
+                            host={d.ip}
+                            isPrivateHost={isPrivateHostAddress(d.ip)}
+                            stats={dropletStats ? vpsStatsToBarStats(dropletStats) : null}
                             statsLoading={dropletStatsLoading}
-                            statsError={dropletStatsError}
-                            vcpuLabel={vcpuLabel}
+                            statsError={dropletStatsError ?? undefined}
+                            onRefresh={() => {
+                              if (link) fetchVpsStats(link.projectId, link.instanceId);
+                              else loadAdminDropletStats();
+                            }}
+                            refreshLoading={dropletStatsLoading}
                           />
                         )}
 
@@ -649,13 +638,6 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
 
                         <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
                           <div className="flex-1" />
-                          <button
-                            onClick={() => loadAdminDropletStats()}
-                            className="p-1 text-overlay0 hover:text-text transition-colors"
-                            title="Refresh stats"
-                          >
-                            <RefreshCw size={13} />
-                          </button>
                           {renderSshButton(d, isActive)}
                           {renderActionsMenu(d, isActive, isRenaming)}
                         </div>

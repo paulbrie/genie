@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { Eye, EyeOff, Loader2, Plus, RefreshCw, Trash2, Lock, ExternalLink, Server, KeyRound } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Eye, EyeOff, Loader2, Plus, RefreshCw, Trash2, Lock, ExternalLink, Server, KeyRound, Copy, Check } from "lucide-react";
 import { $orgSettings } from "@/store/subjects/org-settings";
 import {
+  clearGeneratedOrgSshKey,
   clearOrgTazCredentials,
   createOrgVm,
   deleteOrgVm,
+  generateOrgSshKey,
   loadOrgVms,
   setOrgTazCredentials,
 } from "@/store/actions/org-settings";
@@ -41,14 +43,27 @@ function CredentialsForm({ orgId }: { orgId: string }) {
   const state = useDeepSubjectAll($orgSettings);
   const [token, setToken] = useState("");
   const [sshKey, setSshKey] = useState("");
+  const [generatedPublicKey, setGeneratedPublicKey] = useState<string | null>(null);
+  const [generatedFingerprint, setGeneratedFingerprint] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [copiedPublicKey, setCopiedPublicKey] = useState(false);
 
   const hasToken = state.current.credentials["tazcloud-token"];
   const hasKey = state.current.credentials["tazcloud-ssh-key"];
   const partial = hasToken !== hasKey;
 
   const canSave = (!hasToken && token.trim().length > 0) || (!hasKey && sshKey.trim().length > 0);
+
+  useEffect(() => {
+    const kg = state.keyGen;
+    if (!kg.privateKey || !kg.publicKey) return;
+    setSshKey(kg.privateKey);
+    setGeneratedPublicKey(kg.publicKey);
+    setGeneratedFingerprint(kg.fingerprint);
+    setShowKey(true);
+    clearGeneratedOrgSshKey();
+  }, [state.keyGen.privateKey, state.keyGen.publicKey, state.keyGen.fingerprint]);
 
   function save() {
     setOrgTazCredentials(
@@ -58,6 +73,16 @@ function CredentialsForm({ orgId }: { orgId: string }) {
     );
     setToken("");
     setSshKey("");
+    setGeneratedPublicKey(null);
+    setGeneratedFingerprint(null);
+  }
+
+  function copyPublicKey() {
+    if (!generatedPublicKey) return;
+    navigator.clipboard?.writeText(generatedPublicKey).then(() => {
+      setCopiedPublicKey(true);
+      setTimeout(() => setCopiedPublicKey(false), 2000);
+    });
   }
 
   return (
@@ -102,7 +127,21 @@ function CredentialsForm({ orgId }: { orgId: string }) {
 
         {!hasKey ? (
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-overlay1">SSH private key (Genie deploy key on Taz VMs)</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs text-overlay1">SSH private key (Genie deploy key on Taz VMs)</label>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => generateOrgSshKey(orgId)}
+                disabled={state.keyGen.generating}
+                title="Generate a new ed25519 key pair"
+              >
+                {state.keyGen.generating
+                  ? <Loader2 size={13} className="animate-spin mr-1.5" />
+                  : <KeyRound size={13} className="mr-1.5" />}
+                Generate key pair
+              </Button>
+            </div>
             <div className="relative">
               <textarea
                 value={showKey ? sshKey : sshKey ? "••••••••" : ""}
@@ -122,6 +161,32 @@ function CredentialsForm({ orgId }: { orgId: string }) {
                 {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
             </div>
+            {state.keyGen.error && (
+              <div className="text-xs text-red bg-red/10 border border-red/30 rounded px-2 py-1.5">
+                {state.keyGen.error}
+              </div>
+            )}
+            {generatedPublicKey && (
+              <div className="flex flex-col gap-1 mt-1">
+                <span className="text-xs text-overlay1">Public key — register this on the Taz bastion</span>
+                <div className="flex items-start gap-2">
+                  <pre className="flex-1 bg-background text-text border border-surface1 rounded-md px-2 py-1.5 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all select-text">
+                    {generatedPublicKey}
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={copyPublicKey}
+                    className="shrink-0 p-1.5 text-overlay0 hover:text-text bg-background border border-surface1 rounded-md transition-colors"
+                    title="Copy public key"
+                  >
+                    {copiedPublicKey ? <Check size={13} className="text-green" /> : <Copy size={13} />}
+                  </button>
+                </div>
+                {generatedFingerprint && (
+                  <p className="text-xs text-overlay0 font-mono">Fingerprint: {generatedFingerprint}</p>
+                )}
+              </div>
+            )}
             <p className="text-xs text-overlay0">
               Same key whose public half is registered on the Taz bastion as a Genie deploy key.
               Used for SSH-via-WireGuard from the manager.

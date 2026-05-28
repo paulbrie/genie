@@ -6,30 +6,27 @@ import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
 import { $admin, $auth, $manager, $persistedTerminals, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState, VpsMonitorState } from "@/store/types";
-import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
+import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, fetchVpsStats, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazCapabilities, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
-import { VpsResourceGauges } from "@/components/project/vps-resource-gauges";
+import { VpsResourceBar, vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
-import { CircularGauge } from "@/components/ui/circular-gauge";
 import { CloudMetricSparklines } from "@/components/cloud/cloud-metric-sparklines";
 import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
-import type { VpsStats } from "@/store/types";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { DbExplorer } from "@/components/admin/db-explorer";
 import { CommandsTab } from "@/components/project/project-detail";
 import { $projects } from "@/store/subjects";
 import { FolderTree, Database as DatabaseIcon, PlayCircle, Network, Cpu } from "lucide-react";
-import { CopyableIp } from "@/components/ui/copyable-ip";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
-import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmName, imageDefaultUser, validateTazVmName } from "../tazcloud/helpers";
+import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmBootSource, defaultVmName, imageDefaultUser, parseVmBootSource, validateTazVmName } from "../tazcloud/helpers";
 import { TazSnapshotsSection } from "../tazcloud/taz-snapshots-section";
 import { openManageVmWindow } from "../tazcloud/manage-vm-popup";
 
@@ -72,42 +69,6 @@ const INGRESS_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
  *  bastion rate-limits happy vs the old 30s cadence. */
 const TAZ_STATS_POLL_MS = 60_000;
 
-export function VmCardStatsGauges({
-  stats,
-  statsLoading,
-  statsError,
-  vcpuLabel,
-}: {
-  stats: VpsStats | null | undefined;
-  statsLoading: boolean;
-  statsError: string | null | undefined;
-  vcpuLabel?: string;
-}) {
-  if (statsLoading && !stats) {
-    return (
-      <div className="flex items-center gap-2 mt-3 py-2 text-overlay0 text-xs">
-        <Loader2 size={12} className="animate-spin shrink-0" />
-        Probing…
-      </div>
-    );
-  }
-  if (statsError && !stats) {
-    return (
-      <div className="mt-3 py-2 px-2 text-xs text-red bg-red/10 rounded-md truncate" title={statsError}>
-        Unreachable
-      </div>
-    );
-  }
-  if (!stats) return null;
-  return (
-    <div className="flex items-center gap-3 mt-3 flex-wrap">
-      <CircularGauge label="CPU" percent={Math.round(stats.cpuPercent)} subtitle={vcpuLabel} size={44} strokeWidth={4} valueFontSize={12} showPercentSign />
-      <CircularGauge label="MEM" percent={Math.round(stats.memPercent)} subtitle={formatBytesShort(stats.memTotalBytes)} size={44} strokeWidth={4} valueFontSize={12} showPercentSign />
-      <CircularGauge label="DISK" percent={Math.round(stats.diskPercent)} subtitle={formatBytesShort(stats.diskTotalBytes)} size={44} strokeWidth={4} valueFontSize={12} showPercentSign />
-    </div>
-  );
-}
-
 // IMAGES / SIZES / imageDefaultUser / defaultSshUserFor / defaultVmName /
 // validateTazVmName moved to ./tazcloud/helpers.ts so taz-snapshots-section.tsx
 // and the manage popup cluster can reuse them without re-importing the whole
@@ -125,7 +86,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
   const [deployOpen, setDeployOpen] = useState(false);
   const [vmName, setVmName] = useState(defaultVmName());
-  const [vmImage, setVmImage] = useState("ubuntu-22");
+  const [vmBootSource, setVmBootSource] = useState(defaultVmBootSource());
   const [vmSize, setVmSize] = useState("small");
   /** v2.0.0 only — selected Taz project for the create form. Empty string means
    *  "let the server auto-pick" (works when the tenant has exactly one project). */
@@ -169,10 +130,20 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   const canAccess = role === "superadmin" || role === "tazcloud";
   const isSuperAdmin = role === "superadmin";
 
+  const baseImages = useMemo(
+    () => (admin.tazcloud.capabilityImages.length > 0 ? admin.tazcloud.capabilityImages : IMAGES),
+    [admin.tazcloud.capabilityImages],
+  );
+  const bootSnapshots = useMemo(
+    () => admin.tazcloud.snapshots.filter((s) => s.status === "active"),
+    [admin.tazcloud.snapshots],
+  );
+
   useEffect(() => {
     if (!canAccess) return;
     loadAdminTazVms();
     loadTazSnapshots();
+    loadTazCapabilities();
     // v2.0.0: projects are mandatory. Empty list on legacy v6 tenants — handled
     // gracefully in the UI (the Projects section just doesn't render).
     loadTazProjects();
@@ -209,6 +180,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
       loadAdminTazVms();
       loadTazSnapshots();
       loadTazProjects();
+      loadTazCapabilities();
       loadAdminTazcloudStats();
     }
   }, [manager.running, canAccess]);
@@ -247,6 +219,53 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
 
   const { vms, loading, error, creating, createError } = admin.tazcloud;
 
+  const vxlanVmGroups = useMemo(() => {
+    const projects = admin.tazcloud.projects;
+    if (projects.length === 0) return null;
+
+    const q = vmSearch.trim().toLowerCase();
+    const filtered = q ? vms.filter((v) => v.name.toLowerCase().includes(q)) : vms;
+    const byVxlan = new Map<string, AdminTazVm[]>();
+    const unassigned: AdminTazVm[] = [];
+
+    for (const vm of filtered) {
+      if (vm.tazProjectId) {
+        const list = byVxlan.get(vm.tazProjectId) ?? [];
+        list.push(vm);
+        byVxlan.set(vm.tazProjectId, list);
+      } else {
+        unassigned.push(vm);
+      }
+    }
+
+    type VmGroup = { id: string; name: string; subnetCidr?: string; vms: AdminTazVm[] };
+    const groups: VmGroup[] = [];
+
+    for (const p of projects) {
+      if (!q || (byVxlan.get(p.id)?.length ?? 0) > 0) {
+        groups.push({
+          id: p.id,
+          name: p.name,
+          subnetCidr: p.subnetCidr,
+          vms: byVxlan.get(p.id) ?? [],
+        });
+      }
+      byVxlan.delete(p.id);
+    }
+
+    for (const [id, sectionVms] of byVxlan) {
+      if (sectionVms.length > 0) {
+        groups.push({ id, name: id.slice(0, 8), vms: sectionVms });
+      }
+    }
+
+    if (unassigned.length > 0) {
+      groups.push({ id: "__unassigned", name: "Unassigned", vms: unassigned });
+    }
+
+    return groups;
+  }, [admin.tazcloud.projects, vms, vmSearch]);
+
   function confirmDelete(vmId: string) {
     setPendingDelete(vmId);
   }
@@ -254,10 +273,14 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   function submitCreate() {
     const trimmed = vmName.trim();
     if (validateTazVmName(trimmed)) return;
+    const source = parseVmBootSource(vmBootSource);
+    if (!source) return;
     createAdminTazVm({
       name: trimmed,
-      image: vmImage,
       size: vmSize,
+      ...(source.kind === "snapshot"
+        ? { snapshot_id: source.snapshotId }
+        : { image: source.image }),
       // Omit `project_id` when blank — the server auto-picks the only project,
       // or errors with the list of available IDs on multi-project tenants.
       ...(vmProjectId ? { project_id: vmProjectId } : {}),
@@ -277,6 +300,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
       setDeployOpen(false);
     } else {
       setVmName(defaultVmName());
+      setVmBootSource(defaultVmBootSource(baseImages));
       setDeployOpen(true);
     }
   }
@@ -401,8 +425,24 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-md text-overlay0">Image</label>
-            <Select value={vmImage} onChange={(e) => setVmImage(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-              {IMAGES.map((img) => <option key={img} value={img}>{img}</option>)}
+            <Select
+              value={vmBootSource}
+              onChange={(e) => setVmBootSource(e.target.value)}
+              disabled={creating}
+              className="py-1.5 text-md font-sans"
+            >
+              <optgroup label="Base images">
+                {baseImages.map((img) => (
+                  <option key={img} value={`base:${img}`}>{img}</option>
+                ))}
+              </optgroup>
+              {bootSnapshots.length > 0 && (
+                <optgroup label="Snapshots">
+                  {bootSnapshots.map((s) => (
+                    <option key={s.id} value={`snapshot:${s.id}`}>{s.name}</option>
+                  ))}
+                </optgroup>
+              )}
             </Select>
           </div>
           <div className="flex flex-col gap-1">
@@ -510,7 +550,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
               </div>
             )}
             {admin.tazcloud.projects.map((p) => {
-              const vmCount = p.vmCount ?? vms.filter((v) => v.projectId === p.id).length;
+              const vmCount = p.vmCount ?? vms.filter((v) => v.tazProjectId === p.id).length;
               const isPending = pendingProjectDelete === p.id;
               return (
                 <div key={p.id} className="px-3 py-2 flex items-center gap-3 text-md">
@@ -553,7 +593,10 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
       <div>
         {(() => {
           const q = vmSearch.trim().toLowerCase();
-          const visibleVms = q ? vms.filter((v) => v.name.toLowerCase().includes(q)) : vms;
+          const flatVisibleVms = q ? vms.filter((v) => v.name.toLowerCase().includes(q)) : vms;
+          const visibleVmCount = vxlanVmGroups
+            ? vxlanVmGroups.reduce((n, g) => n + g.vms.length, 0)
+            : flatVisibleVms.length;
           if (loading && vms.length === 0) {
             return (
               <div className="flex items-center justify-center text-overlay0 py-12">
@@ -570,7 +613,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
               </div>
             );
           }
-          if (visibleVms.length === 0) {
+          if (visibleVmCount === 0) {
             return (
               <div className="text-center text-overlay0 py-12">
                 <p className="text-md">No VMs match &ldquo;{vmSearch}&rdquo;.</p>
@@ -899,9 +942,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
               </div>
             );
           };
-          return (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-            {visibleVms.map((vm) => {
+          const renderVmCard = (vm: AdminTazVm) => {
               const isActive = vm.status === "ACTIVE";
               const isPending = pendingDelete === vm.id;
               const isDeleting = deleting.has(vm.id);
@@ -913,12 +954,8 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
               const streamError = link ? vpsDeploy.instances[link.instanceId]?.statsError ?? null : null;
               const vmStats = streamStats ?? adminStats;
               const vmStatsError = streamStats ? null : (streamError ?? adminStatsError);
-              const vmStatsLoading =
-                isActive && !vmStats && !vmStatsError
-                && (link ? false : admin.tazcloud.vmStatsLoading);
+              const vmStatsLoading = isActive && !vmStats && !vmStatsError;
               const historyKey = link ? vpsMetricKey(link.projectId, link.instanceId) : null;
-              const vcpuMatch = vm.size?.match(/(\d+)vcpu/);
-              const vcpuLabel = vcpuMatch ? `${vcpuMatch[1]}v` : undefined;
               const cardOnClick = (e: React.MouseEvent) => {
                 if (!isActive || isRenaming || isPending || isDeleting) return;
                 const target = e.target as HTMLElement;
@@ -951,32 +988,29 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                               </span>
                             )}
                           </div>
-                          {vm.ipv6 && (
-                            <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                              <span className="min-w-0 truncate">
-                                <CopyableIp ip={vm.ipv6} className="text-xs text-overlay0 font-mono" />
-                              </span>
-                              <a
-                                href={`http://[${vm.ipv6}]`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-overlay0 hover:text-blue transition-colors shrink-0"
-                                title="Open in browser"
-                              >
-                                <ExternalLink size={10} />
-                              </a>
-                            </div>
-                          )}
                         </div>
                         {cardStatusPill(vm.status)}
                       </div>
 
-                      {isActive && (
-                        <VmCardStatsGauges
-                          stats={vmStats}
+                      {isActive && vm.ipv6 && (
+                        <VpsResourceBar
+                          className="mt-3"
+                          host={vm.ipv6}
+                          ipv6
+                          isPrivateHost={vm.isPrivateHost ?? isPrivateHostAddress(vm.ipv6)}
+                          domain={
+                            vm.ingress
+                              ? { name: vm.ingress.domain, url: vm.ingress.url }
+                              : null
+                          }
+                          stats={vmStats ? vpsStatsToBarStats(vmStats) : null}
                           statsLoading={vmStatsLoading}
-                          statsError={vmStatsError}
-                          vcpuLabel={vcpuLabel}
+                          statsError={vmStatsError ?? undefined}
+                          onRefresh={() => {
+                            if (link) fetchVpsStats(link.projectId, link.instanceId);
+                            else loadAdminTazcloudStats();
+                          }}
+                          refreshLoading={vmStatsLoading}
                         />
                       )}
 
@@ -1006,7 +1040,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                             <span className="text-subtext0">{vm.size}</span>
                           </>
                         )}
-                        <span className="text-overlay0">Project</span>
+                        <span className="text-overlay0">Genie</span>
                         <span className="truncate">
                           {vm.projectName ? (
                             <span className="text-blue">{vm.projectName}</span>
@@ -1033,13 +1067,6 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                           </span>
                         ) : (
                           <>
-                            <button
-                              onClick={() => loadAdminTazcloudStats()}
-                              className="p-1 text-overlay0 hover:text-text transition-colors"
-                              title="Refresh stats"
-                            >
-                              <RefreshCw size={13} className={cn(vmStatsLoading && "animate-spin")} />
-                            </button>
                             {renderSshControls(vm, isActive)}
                             {renderActionsMenu(vm, isActive, isRenaming)}
                           </>
@@ -1060,9 +1087,40 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                   {ingressFormFor === vm.id && renderIngressForm(vm.id)}
                 </div>
               );
-            })}
-          </div>
+          };
+          const renderVmGrid = (vmList: AdminTazVm[]) => (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+              {vmList.map(renderVmCard)}
+            </div>
           );
+          if (vxlanVmGroups) {
+            return (
+              <div className="space-y-5">
+                {vxlanVmGroups.map((group) => (
+                  <section key={group.id}>
+                    <div className="flex items-center gap-2 mb-2 px-0.5">
+                      <Network size={13} className="text-blue shrink-0" />
+                      <span className="text-md font-medium text-text">{group.name}</span>
+                      {group.subnetCidr && (
+                        <span className="text-overlay0 font-mono text-xs">{group.subnetCidr}</span>
+                      )}
+                      <span className="text-xs text-overlay0">
+                        {group.vms.length} VM{group.vms.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    {group.vms.length === 0 ? (
+                      <div className="text-md text-overlay0 italic py-4 px-1 border border-dashed border-overlay0/20 rounded-lg">
+                        No VMs in this VXLAN.
+                      </div>
+                    ) : (
+                      renderVmGrid(group.vms)
+                    )}
+                  </section>
+                ))}
+              </div>
+            );
+          }
+          return renderVmGrid(flatVisibleVms);
         })()}
       </div>
 

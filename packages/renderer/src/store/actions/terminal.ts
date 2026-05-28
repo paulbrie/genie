@@ -4,7 +4,18 @@ import { WINDOW_PREFIX } from "@/components/terminal/terminal-window";
 import { $persistedTerminals, $terminal } from "../subjects/vps";
 import { $windowManager } from "../subjects/common";
 import { openWindow } from "./window-manager";
-import type { PersistedTerminalSession, SshConfig, TerminalShareInvite, TerminalTab } from "../types/vps";
+import {
+  claudeCommandLabel,
+  defaultClaudeTabTitle,
+  GENIE_PROJECT_DIR,
+} from "@/lib/terminal-spawn";
+import type {
+  ClaudeLaunchOptions,
+  PersistedTerminalSession,
+  SshConfig,
+  TerminalShareInvite,
+  TerminalTab,
+} from "../types/vps";
 
 // --- Terminal actions ---
 
@@ -33,11 +44,37 @@ export function addTerminalTab(cwd?: string, title?: string, command?: string): 
 export function addSshTerminalTab(ssh: SshConfig, title?: string, command?: string): string {
   tabCounter.value++;
   const id = `tab-${Date.now()}-${tabCounter.value}`;
-  const tab: TerminalTab = { id, title: title ?? `SSH ${ssh.host}`, ssh, command };
+  const tab: TerminalTab = { id, title: title ?? `SSH ${ssh.host}`, ssh, kind: "shell", command };
   const t = $terminal.getValue();
   $terminal.next({ ...t, tabs: [...t.tabs, tab], activeTabId: id, bottomPanelOpen: true });
   return id;
 }
+
+/** Open an SSH terminal that starts Claude Code in `/opt/project` via server tmux. */
+export function launchClaudeSshTab(
+  ssh: SshConfig,
+  title?: string,
+  opts?: ClaudeLaunchOptions,
+): string {
+  tabCounter.value++;
+  const id = `tab-${Date.now()}-${tabCounter.value}`;
+  const tab: TerminalTab = {
+    id,
+    title: title ?? defaultClaudeTabTitle(ssh),
+    ssh,
+    kind: "claude",
+    claudeLaunch: {
+      cwd: opts?.cwd ?? GENIE_PROJECT_DIR,
+      resume: opts?.resume,
+    },
+  };
+  const t = $terminal.getValue();
+  $terminal.next({ ...t, tabs: [...t.tabs, tab], activeTabId: id, bottomPanelOpen: true });
+  return id;
+}
+
+/** Label stored on the server for History / reattach (no `cd` compound command). */
+export { claudeCommandLabel };
 
 export function removeTerminalTab(id: string): void {
   const t = $terminal.getValue();

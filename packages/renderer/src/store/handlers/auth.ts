@@ -1,4 +1,6 @@
 import { disconnectWs, getStoredToken, sendAuthToken, setStoredToken } from "@/lib/ws";
+import { acceptOrgInvite } from "../actions/org-settings";
+import { clearPendingInviteToken, getPendingInviteToken } from "@/lib/invite";
 import { $auth } from "../subjects/auth";
 import { broadcastWindows } from "../actions/window-manager";
 import type { HandlerMap } from "./types";
@@ -21,11 +23,12 @@ export const handlers: HandlerMap = {
     const { token, user, impersonatedBy, pasteKeyEnabled, geniePublicKey } = payload;
     $auth.next({ status: "authenticated", user, token, impersonatedBy: impersonatedBy ?? null, pasteKeyEnabled: !!pasteKeyEnabled, geniePublicKey: geniePublicKey ?? null });
     setStoredToken(token);
-    // Re-broadcast any windows that are still open: on a reconnect the manager
-    // rebuilds this session with an empty openWindows list, and broadcastWindows
-    // only fires on visibility changes — so without this the admin Connected
-    // Users panel would show no popups until the user next toggles one.
     broadcastWindows();
+    const pendingInvite = getPendingInviteToken();
+    if (pendingInvite) {
+      clearPendingInviteToken();
+      acceptOrgInvite(pendingInvite);
+    }
   },
 
   "auth:failed": (_payload) => {

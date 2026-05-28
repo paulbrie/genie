@@ -1,6 +1,6 @@
 import { batch } from "subjecto";
 import { $orgSettings } from "../subjects/org-settings";
-import { loadOrgVms } from "../actions/org-settings";
+import { loadOrgDetail, loadOrgVms, loadMyOrgs } from "../actions/org-settings";
 import type { AdminTazVm } from "../types/admin";
 import type { HandlerMap } from "./types";
 
@@ -16,6 +16,7 @@ function toAdminTazVm(vm: any): AdminTazVm {
     isPrivateHost: typeof vm.ssh_host === "string" && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(vm.ssh_host),
     image: vm.image,
     size: vm.size,
+    tazProjectId: vm.project_id ?? null,
     projectId: null,        // org-pool VMs aren't bound to a Genie project (yet).
     projectName: null,
     locked: vm.locked === true,
@@ -51,7 +52,11 @@ export const handlers: HandlerMap = {
       v.current.org = payload.org;
       v.current.members = payload.members || [];
       v.current.teams = payload.teams || [];
+      v.current.teamMembers = payload.teamMembers || [];
+      v.current.invites = payload.invites || [];
       v.current.credentials = payload.credentials || { "tazcloud-token": false, "tazcloud-ssh-key": false };
+      v.teamsBusy = false;
+      v.membersBusy = false;
     });
     // Auto-fetch the VM list when credentials are present, so the Cloud tab
     // doesn't show an empty list while the user wonders if it's still loading.
@@ -77,9 +82,27 @@ export const handlers: HandlerMap = {
         // Most likely a credentials/VM op error — surface where the user is looking.
         v.credentialsError = message;
         v.credentialsSaving = false;
+        v.teamsBusy = false;
+        v.membersBusy = false;
         v.vms.createError = message;
         v.vms.creating = false;
+        if (v.keyGen.generating) {
+          v.keyGen.generating = false;
+          v.keyGen.error = message;
+        }
       }
+    });
+  },
+
+  "org:ssh-key:generated": (payload) => {
+    batch(() => {
+      const v = $orgSettings.getValue();
+      v.keyGen.generating = false;
+      v.keyGen.error = null;
+      if (v.selectedOrgId !== payload.orgId) return;
+      v.keyGen.privateKey = payload.privateKey;
+      v.keyGen.publicKey = payload.publicKey;
+      v.keyGen.fingerprint = payload.fingerprint ?? null;
     });
   },
 
@@ -147,5 +170,62 @@ export const handlers: HandlerMap = {
       delete v.vms.deleting[payload.vmId];
       v.vms.error = payload.message || "Failed to delete VM";
     });
+  },
+
+  "org:teams:created": (payload) => {
+    batch(() => { $orgSettings.getValue().teamsBusy = false; });
+    loadOrgDetail(payload.orgId);
+    loadMyOrgs();
+  },
+
+  "org:teams:updated": (payload) => {
+    batch(() => { $orgSettings.getValue().teamsBusy = false; });
+    loadOrgDetail(payload.orgId);
+    loadMyOrgs();
+  },
+
+  "org:teams:deleted": (payload) => {
+    batch(() => { $orgSettings.getValue().teamsBusy = false; });
+    loadOrgDetail(payload.orgId);
+    loadMyOrgs();
+  },
+
+  "org:teams:member-removed": (payload) => {
+    batch(() => { $orgSettings.getValue().teamsBusy = false; });
+    loadOrgDetail(payload.orgId);
+  },
+
+  "org:invite:created": (payload) => {
+    batch(() => { $orgSettings.getValue().teamsBusy = false; });
+    loadOrgDetail(payload.orgId);
+  },
+
+  "org:invite:revoked": (payload) => {
+    batch(() => { $orgSettings.getValue().teamsBusy = false; });
+    loadOrgDetail(payload.orgId);
+  },
+
+  "org:invite:accepted": (payload) => {
+    batch(() => {
+      const v = $orgSettings.getValue();
+      v.inviteAcceptError = null;
+      v.inviteAccepted = true;
+    });
+    loadMyOrgs();
+    if (payload.orgId) loadOrgDetail(payload.orgId);
+  },
+
+  "org:invite:accept:error": (payload) => {
+    $orgSettings.getValue().inviteAcceptError = payload.message || "Failed to accept invite";
+  },
+
+  "org:members:removed": (payload) => {
+    batch(() => { $orgSettings.getValue().membersBusy = false; });
+    loadOrgDetail(payload.orgId);
+  },
+
+  "org:members:role-updated": (payload) => {
+    batch(() => { $orgSettings.getValue().membersBusy = false; });
+    loadOrgDetail(payload.orgId);
   },
 };

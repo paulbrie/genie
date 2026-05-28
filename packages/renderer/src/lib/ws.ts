@@ -182,8 +182,8 @@ export function wsSend(type: string, payload: unknown): boolean {
   return false;
 }
 
-export function triggerGoogleLogin(): void {
-  wsSend("auth:google:start", {});
+export function triggerGoogleLogin(inviteToken?: string): void {
+  wsSend("auth:google:start", inviteToken ? { inviteToken } : {});
 }
 
 export function sendAuthToken(token: string): void {

@@ -41,6 +41,9 @@ export interface AdminTazVm {
   isPrivateHost?: boolean;
   image?: string;
   size?: string;
+  /** v2.0.0 TazCloud VXLAN project this VM belongs to (API `project_id`). */
+  tazProjectId: string | null;
+  /** Genie project this VM is attached to, if any. */
   projectId: string | null;
   projectName: string | null;
   /** Deletion lock — when true, only a superadmin can delete this VM (typed-name confirm). Default false. */
@@ -100,6 +103,10 @@ export interface AdminTazState {
   projectCreating: boolean;
   /** Latest project create/delete error (banner-style). */
   projectError: string | null;
+  /** Base OS images from `GET /v1/capabilities`. Falls back to hardcoded list when empty. */
+  capabilityImages: string[];
+  capabilitiesLoading: boolean;
+  capabilitiesError: string | null;
   /** Per-VM stats keyed by vmId. Populated by `admin:tazcloud:stats`. */
   vmStats: Record<string, VpsStats>;
   /** Per-VM stats-probe error keyed by vmId. Set when an SSH probe fails so the

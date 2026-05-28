@@ -129,8 +129,8 @@ export function HelpPanel() {
                 <h4 className="font-semibold text-text">superadmin</h4>
               </div>
               <p className="text-subtext0 text-md">
-                Full app access. Sees the <strong className="text-text">Recipes</strong> and <strong className="text-text">Clouds</strong> sidebar
-                items, can manage system-wide settings, and can impersonate other users.
+                Full app access. Sees <strong className="text-text">Recipes</strong> and <strong className="text-text">Clouds</strong> in the
+                admin top bar (plus Connected Users, Logs, History, Topology), can manage system-wide settings, and can impersonate other users.
               </p>
             </div>
 
@@ -141,7 +141,8 @@ export function HelpPanel() {
               </div>
               <p className="text-subtext0 text-md">
                 Counts as admin for permission checks across chat, projects, and the WebSocket API.
-                Does not get superadmin-only sidebar items.
+                Sees <strong className="text-text">Connected Users</strong>, <strong className="text-text">Logs</strong>, <strong className="text-text">History</strong>, and <strong className="text-text">Topology</strong> in the
+                admin top bar — not Recipes or Clouds (superadmin-only).
               </p>
             </div>
 

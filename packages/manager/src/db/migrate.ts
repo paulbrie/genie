@@ -139,6 +139,24 @@ export async function migrateOrgs(): Promise<void> {
   console.log(`[migrate] orgs migration applied (backfilled ${(orphanTeams as unknown as unknown[]).length} team(s))`);
 }
 
+/** Reusable team invite links (org + team membership on accept). Idempotent. */
+export async function migrateTeamInvites(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS team_invites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    expires_at TIMESTAMP,
+    revoked_at TIMESTAMP
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_team_invites_token ON team_invites(token)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_team_invites_team ON team_invites(team_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_team_invites_org ON team_invites(org_id)`);
+}
+
 /** Scalar VPS metric samples for historical charts. Idempotent. */
 export async function migrateVpsMetricSamples(): Promise<void> {
   const db = getDb();

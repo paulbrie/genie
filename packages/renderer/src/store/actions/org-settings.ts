@@ -27,6 +27,8 @@ export function loadOrgDetail(orgId: string): void {
     v.current.org = null;
     v.current.members = [];
     v.current.teams = [];
+    v.current.teamMembers = [];
+    v.current.invites = [];
     v.vms.list = [];
     v.vms.raw = [];
   });
@@ -57,6 +59,28 @@ export function clearOrgTazCredentials(orgId: string): void {
   wsSend("org:cloud:taz:credentials:clear", { orgId });
 }
 
+export function generateOrgSshKey(orgId: string): void {
+  batch(() => {
+    const v = $orgSettings.getValue();
+    v.keyGen.generating = true;
+    v.keyGen.error = null;
+    v.keyGen.privateKey = null;
+    v.keyGen.publicKey = null;
+    v.keyGen.fingerprint = null;
+  });
+  wsSend("org:ssh-key:generate", { orgId });
+}
+
+export function clearGeneratedOrgSshKey(): void {
+  batch(() => {
+    const v = $orgSettings.getValue();
+    v.keyGen.privateKey = null;
+    v.keyGen.publicKey = null;
+    v.keyGen.fingerprint = null;
+    v.keyGen.error = null;
+  });
+}
+
 // ── Org-pool VMs ─────────────────────────────────────────────────────────────
 
 export function loadOrgVms(orgId: string): void {
@@ -80,4 +104,57 @@ export function createOrgVm(orgId: string, opts: { name: string; image?: string;
 export function deleteOrgVm(orgId: string, vmId: string): void {
   $orgSettings.getValue().vms.deleting[vmId] = true;
   wsSend("org:cloud:taz:vms:delete", { orgId, vmId });
+}
+
+// ── Teams ─────────────────────────────────────────────────────────────────────
+
+export function createOrgTeam(orgId: string, name: string): void {
+  $orgSettings.getValue().teamsBusy = true;
+  wsSend("org:teams:create", { orgId, name });
+}
+
+export function updateOrgTeam(orgId: string, teamId: string, name: string): void {
+  $orgSettings.getValue().teamsBusy = true;
+  wsSend("org:teams:update", { orgId, teamId, name });
+}
+
+export function deleteOrgTeam(orgId: string, teamId: string): void {
+  $orgSettings.getValue().teamsBusy = true;
+  wsSend("org:teams:delete", { orgId, teamId });
+}
+
+export function removeOrgTeamMember(orgId: string, memberId: string): void {
+  $orgSettings.getValue().teamsBusy = true;
+  wsSend("org:teams:remove-member", { orgId, memberId });
+}
+
+export function createOrgTeamInvite(orgId: string, teamId: string): void {
+  $orgSettings.getValue().teamsBusy = true;
+  wsSend("org:invite:create", { orgId, teamId });
+}
+
+export function revokeOrgTeamInvite(orgId: string, inviteId: string): void {
+  $orgSettings.getValue().teamsBusy = true;
+  wsSend("org:invite:revoke", { orgId, inviteId });
+}
+
+export function acceptOrgInvite(token: string): void {
+  batch(() => {
+    const v = $orgSettings.getValue();
+    v.inviteAcceptError = null;
+    v.inviteAccepted = false;
+  });
+  wsSend("org:invite:accept", { token });
+}
+
+// ── Org members ───────────────────────────────────────────────────────────────
+
+export function removeOrgMember(orgId: string, userId: string): void {
+  $orgSettings.getValue().membersBusy = true;
+  wsSend("org:members:remove", { orgId, userId });
+}
+
+export function setOrgMemberRole(orgId: string, userId: string, role: "owner" | "admin" | "member"): void {
+  $orgSettings.getValue().membersBusy = true;
+  wsSend("org:members:set-role", { orgId, userId, role });
 }

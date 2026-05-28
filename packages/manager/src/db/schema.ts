@@ -447,6 +447,26 @@ export const teamMembers = pgTable(
   ]
 );
 
+/** Reusable invite links that add users to an org + team on accept. */
+export const teamInvites = pgTable(
+  "team_invites",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }).notNull(),
+    teamId: uuid("team_id").references(() => teams.id, { onDelete: "cascade" }).notNull(),
+    token: text("token").notNull().unique(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    expiresAt: timestamp("expires_at"),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (table) => [
+    index("idx_team_invites_token").on(table.token),
+    index("idx_team_invites_team").on(table.teamId),
+    index("idx_team_invites_org").on(table.orgId),
+  ]
+);
+
 /**
  * Per-project ACL. A user sees a project iff they are listed here OR they
  * are an owner/admin of the project's org (via teams → orgs → org_members).
