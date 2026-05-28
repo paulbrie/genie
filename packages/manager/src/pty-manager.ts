@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "ssh2";
-import { sshConnRegister, sshConnUnregister } from "./vps/ssh-metrics.js";
+import { sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./vps/ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./vps/socks-dial.js";
 
 const MAX_SCROLLBACK = 100_000; // chars
@@ -400,6 +400,9 @@ export function spawnSshPty(
   }
 
   let registryId: string | null = null;
+  // Capture the caller's stack synchronously — the `ready` event fires from
+  // inside ssh2's event loop where the original caller has long unwound.
+  const openerStack = captureSshOpenerStack();
 
   function tryConnect(): void {
     if (cancelled) return;
@@ -440,6 +443,7 @@ export function spawnSshPty(
             username: config.username,
             kind: "pty",
             end: () => conn.end(),
+            openerStack,
           });
         }
         if (cancelled) { conn.end(); return; }

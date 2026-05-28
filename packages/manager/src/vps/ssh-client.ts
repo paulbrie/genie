@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
-import { sshConnRegister, sshConnUnregister } from "./ssh-metrics.js";
+import { sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
 
 export interface SshConnectionConfig {
@@ -292,6 +292,11 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
     }
   }
 
+  // Capture the caller's stack NOW, while we're still on it. By the time
+  // ssh2 fires `ready` (async, from inside its own event loop) the original
+  // call frames have unwound and a late capture in sshConnRegister would only
+  // see "Client.emit (node:events…)" — useless for the /ssh Opener column.
+  const openerStack = captureSshOpenerStack();
   return new Promise((resolve, reject) => {
     const conn = new Client();
     const privateKey = loadPrivateKey(config.privateKey, config.privateKeyPath);
@@ -305,6 +310,7 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
           username: config.username,
           kind: "client",
           end: () => conn.end(),
+          openerStack,
         });
         resolve(makeSession(conn));
       })

@@ -4752,10 +4752,19 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const pub = droplet.networks?.v4?.find((n) => n.type === "public");
         if (!pub?.ip_address) throw new Error(`Droplet ${dropletId} has no public IPv4`);
         const keyPath = await ensureGenieKeyOnDisk();
+        // Bare droplets created via admin:droplets:create only have `root` (no
+        // Genie setup.sh runs); project-attached droplets have `genie`. Probe
+        // so the admin exec panel works for both — matches the same pattern at
+        // lines 3632/3666/4143.
+        const sshUser = await pickWorkingSshUser(
+          { host: pub.ip_address, port: 22, privateKeyPath: keyPath },
+          [VPS_SSH_USERNAME, "root"],
+        );
+        if (!sshUser) throw new Error(`Cannot SSH into droplet ${pub.ip_address} as '${VPS_SSH_USERNAME}' or 'root' with the Genie key`);
         const session = await connectSsh({
           host: pub.ip_address,
           port: 22,
-          username: VPS_SSH_USERNAME,
+          username: sshUser,
           privateKeyPath: keyPath,
         });
         activeExecSessions.set(execId, session);
@@ -5053,6 +5062,33 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "admin:droplets:created", payload: { droplet } });
       } catch (err: unknown) {
         send(ws, { type: "admin:droplets:create:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:droplets:resolve-ssh-user": {
+      // Probe whichever sudo-capable user the renderer should use to open a
+      // terminal / exec for this droplet. Bare droplets (from
+      // admin:droplets:create with no Genie setup.sh) only have `root`;
+      // project-attached droplets have `genie`. The renderer's Connect button
+      // calls this before addSshTerminalTab so it picks the working user
+      // instead of hardcoding "genie" and showing "auth failed" for bare ones.
+      const { dropletId, reqId } = msg.payload as { dropletId: number; reqId?: string };
+      try {
+        const doToken = await settingsService.getGlobalDoToken();
+        if (!doToken) throw new Error("DigitalOcean API token not configured");
+        const doClient = createDoClient(doToken);
+        const droplet = await doClient.getDroplet(dropletId);
+        const pub = droplet.networks?.v4?.find((n) => n.type === "public");
+        if (!pub?.ip_address) throw new Error(`Droplet ${dropletId} has no public IPv4 yet`);
+        const keyPath = await ensureGenieKeyOnDisk();
+        const username = await pickWorkingSshUser(
+          { host: pub.ip_address, port: 22, privateKeyPath: keyPath },
+          [VPS_SSH_USERNAME, "root"],
+        );
+        send(ws, { type: "admin:droplets:resolve-ssh-user", payload: { reqId, dropletId, ip: pub.ip_address, username } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:droplets:resolve-ssh-user", payload: { reqId, dropletId, ip: null, username: null, error: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }

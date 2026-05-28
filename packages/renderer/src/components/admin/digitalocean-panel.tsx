@@ -5,18 +5,18 @@ import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, LayoutGrid, List as ListIcon, Trash2, Terminal, ExternalLink } from "lucide-react";
 import type { AdminDroplet } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $windowManager } from "@/store/subjects";
-import { addSshTerminalTab, createAdminDroplet, disconnectVps, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, createAdminDroplet, disconnectVps, focusWindow, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { wsRequest } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
-import { CircularGauge } from "@/components/ui/circular-gauge";
 import { CopyableIp } from "@/components/ui/copyable-ip";
 import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
-import { cardStatusPill, formatBytesShort } from "@/components/admin/tazcloud-panel";
+import { cardStatusPill } from "@/components/admin/tazcloud-panel";
 import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
 
 // Confirmation type for the inline delete UI on each row.
@@ -107,10 +107,8 @@ export function DigitalOceanPanel() {
   useEffect(() => {
     if (!isSuperAdmin) return;
     loadAdminDroplets();
-    loadAdminDropletStats();
-    // Poll stats so the CPU/MEM/DISK gauges stay live.
-    const id = setInterval(loadAdminDropletStats, 10_000);
-    return () => clearInterval(id);
+    // Per-droplet stats live in the Manage popup; the panel itself stays
+    // metadata-only so we don't SSH-probe every droplet on a 10s cadence.
   }, [isSuperAdmin]);
 
   // Re-fire the one-shot droplet list when the WS reconnects (typically
@@ -126,7 +124,6 @@ export function DigitalOceanPanel() {
     wasManagerRunningRef.current = manager.running;
     if (!wasRunning && manager.running) {
       loadAdminDroplets();
-      loadAdminDropletStats();
     }
   }, [manager.running, isSuperAdmin]);
 
@@ -152,7 +149,7 @@ export function DigitalOceanPanel() {
     );
   }
 
-  const { droplets, dropletsLoading: loading, dropletsError: error, dropletsCreating: creating, dropletsCreateError: createError, dropletStats } = admin;
+  const { droplets, dropletsLoading: loading, dropletsError: error, dropletsCreating: creating, dropletsCreateError: createError } = admin;
 
   function toggleDeploy() {
     if (deployOpen) {
@@ -242,7 +239,7 @@ export function DigitalOceanPanel() {
           <Plus size={14} className="mr-1" />
           {deployOpen ? "Cancel" : "Deploy Droplet"}
         </Button>
-        <Button size="sm" onClick={() => { loadAdminDroplets(); loadAdminDropletStats(); }} disabled={loading}>
+        <Button size="sm" onClick={() => loadAdminDroplets()} disabled={loading}>
           <RefreshCw size={14} className={cn("mr-1", loading && "animate-spin")} />
           Refresh
         </Button>
@@ -353,14 +350,31 @@ export function DigitalOceanPanel() {
             </div>
           );
 
-          // SSH split-button equivalent for DO. Only one user makes sense
-          // (`genie`), so this is a single button rather than a dropdown.
+          // SSH button. Project-attached droplets have `genie`; bare droplets
+          // from admin:droplets:create only have `root` (no Genie setup.sh
+          // runs). Ask the manager which one actually works before opening the
+          // terminal, otherwise we get auth-failed on every fresh droplet.
           const renderSshButton = (d: AdminDroplet, isActive: boolean) => (
             <button
-              onClick={() => { if (d.ip) addSshTerminalTab({ host: d.ip, username: "genie", port: 22 }, `SSH genie@${d.name}`); }}
+              onClick={async () => {
+                if (!d.ip) return;
+                try {
+                  const res = await wsRequest<{ username: string | null; error?: string }>(
+                    "admin:droplets:resolve-ssh-user",
+                    { dropletId: d.id },
+                  );
+                  const user = res.username ?? "root";
+                  addSshTerminalTab({ host: d.ip, username: user, port: 22 }, `SSH ${user}@${d.name}`);
+                } catch {
+                  // resolve timed out (manager busy / droplet just booting) —
+                  // fall back to root since that's the only user a bare
+                  // droplet has, and project droplets recover by retrying.
+                  addSshTerminalTab({ host: d.ip, username: "root", port: 22 }, `SSH root@${d.name}`);
+                }
+              }}
               disabled={!isActive || !d.ip}
               className="text-overlay0 hover:text-blue transition-colors p-1 disabled:opacity-40 disabled:cursor-not-allowed"
-              title={isActive && d.ip ? `SSH to genie@${d.ip}` : "Droplet is not active"}
+              title={isActive && d.ip ? `SSH to ${d.ip}` : "Droplet is not active"}
             >
               <Terminal size={13} />
             </button>
@@ -497,14 +511,11 @@ export function DigitalOceanPanel() {
                 const isActive = d.status === "active";
                 const isPending = pendingDelete === d.id;
                 const isRenaming = renamingId === d.id;
-                const stats = dropletStats[d.id];
                 const resizeState = admin.dropletResize[d.id];
                 const resizing = !!resizeState && !resizeState.done && !resizeState.error;
                 const resizeFormOpen = resizeDraftFor === d.id;
-                const statsLoading = isActive && !stats;
-                // vCPU label from DO size slug (e.g. "s-2vcpu-4gb" → "2v").
-                const vcpuMatch = d.size?.match(/(\d+)vcpu/);
-                const vcpuLabel = vcpuMatch ? `${vcpuMatch[1]}v` : undefined;
+                // Per-droplet stats live in the Manage popup; cards stay
+                // metadata-only to avoid SSH-probing every droplet on refresh.
                 const rowOnClick = (e: React.MouseEvent) => {
                   if (!isActive || isRenaming || isPending || resizeFormOpen) return;
                   const target = e.target as HTMLElement;
@@ -623,39 +634,8 @@ export function DigitalOceanPanel() {
                             {cardStatusPill(d.status)}
                           </div>
 
-                          {/* Stats gauges. */}
-                          {stats && (
-                            <div className="flex items-center justify-around gap-2 mt-3 py-2 bg-base/40 rounded-md">
-                              <CircularGauge
-                                size={44}
-                                label="CPU"
-                                percent={stats.cpuPercent}
-                                showPercentSign
-                                subtitle={vcpuLabel}
-                              />
-                              <CircularGauge
-                                size={44}
-                                label="MEM"
-                                percent={stats.memPercent}
-                                showPercentSign
-                                subtitle={`${formatBytesShort(stats.memUsedBytes)} / ${formatBytesShort(stats.memTotalBytes)}`}
-                              />
-                              <CircularGauge
-                                size={44}
-                                label="DISK"
-                                percent={stats.diskPercent}
-                                showPercentSign
-                                subtitle={`${formatBytesShort(stats.diskUsedBytes)} / ${formatBytesShort(stats.diskTotalBytes)}`}
-                              />
-                            </div>
-                          )}
-                          {!stats && statsLoading && (
-                            <div className="flex items-center justify-center gap-2 mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
-                              <Loader2 size={12} className="animate-spin" />
-                              Checking stats…
-                            </div>
-                          )}
-                          {!stats && !statsLoading && !isActive && (
+                          {/* Non-active state surfaced here in place of the old stats block. */}
+                          {!isActive && (
                             <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
                               Droplet is {d.status.toLowerCase()}
                             </div>
@@ -679,30 +659,13 @@ export function DigitalOceanPanel() {
                             <span className="text-subtext0 font-mono truncate" title={String(d.id)}>{String(d.id).slice(0, 8)}…</span>
                           </div>
 
-                          {/* Footer: open ports + action cluster. */}
+                          {/* Footer: action cluster on the right. The external-port
+                              chips that used to live here depended on the per-card SSH
+                              probe and went away with it; the Manage popup shows them. */}
                           <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
-                            {stats && stats.externalPorts.length > 0 ? (
-                              <div className="flex items-center gap-1 flex-wrap min-w-0">
-                                {stats.externalPorts.map((port) => {
-                                  const url = `http://${d.ip}:${port}`;
-                                  return (
-                                    <a
-                                      key={port}
-                                      href={url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-peach/20 text-peach text-xs font-mono hover:bg-peach/30 transition-colors"
-                                      title={`Open ${url}`}
-                                    >
-                                      {port}<ExternalLink size={9} />
-                                    </a>
-                                  );
-                                })}
-                              </div>
-                            ) : <div />}
                             <div className="flex-1" />
                             <button
-                              onClick={() => { loadAdminDroplets(); loadAdminDropletStats(); }}
+                              onClick={() => loadAdminDroplets()}
                               className="p-1 text-overlay0 hover:text-text transition-colors"
                               title="Refresh"
                             >
@@ -738,9 +701,9 @@ export function DigitalOceanPanel() {
                         region={d.region}
                         sizeSlug={d.size}
                         provider="digitalocean"
-                        stats={stats ?? null}
-                        statsLoading={statsLoading}
-                        onRefresh={() => { loadAdminDroplets(); loadAdminDropletStats(); }}
+                        stats={null}
+                        statsLoading={false}
+                        onRefresh={() => loadAdminDroplets()}
                       />
                     )}
                     <div className="flex items-center gap-3 mt-1 text-md text-overlay0 flex-wrap">

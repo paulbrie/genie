@@ -30,10 +30,10 @@ interface Entry extends SshConnectionInfo {
 
 const active = new Map<string, Entry>();
 
-function captureOpener(): string {
-  // Skip register frame + connectSsh/pty frame to reach the caller. Stack frames
-  // are best-effort; bundling may flatten them — falls back to "unknown".
-  const stack = new Error().stack ?? "";
+/** Walk the current stack (or a pre-captured one) to find the first frame that
+ *  isn't internal ssh plumbing. Best-effort; bundling may flatten frames. */
+function captureOpener(preCapturedStack?: string): string {
+  const stack = preCapturedStack ?? (new Error().stack ?? "");
   const lines = stack.split("\n").slice(1);
   for (const raw of lines) {
     const line = raw.trim();
@@ -48,12 +48,25 @@ function captureOpener(): string {
   return "unknown";
 }
 
+/** Capture a stack trace at the call site — meant to be invoked SYNCHRONOUSLY
+ *  by connectSsh / spawnSshPty before they hand control to ssh2's Client. By
+ *  the time the `ready` event fires the original caller has unwound, so a
+ *  late capture inside sshConnRegister sees only `Client.emit (node:events…)`,
+ *  which is useless for the /ssh panel's Opener column. */
+export function captureSshOpenerStack(): string {
+  return new Error().stack ?? "";
+}
+
 export function sshConnRegister(args: {
   host: string;
   port: number;
   username: string;
   kind: "client" | "pty";
   end: () => void;
+  /** Stack captured at the connectSsh() call site (see captureSshOpenerStack);
+   *  falls back to a register-time capture, which is what we used to do but
+   *  loses the original caller because ssh2 fires `ready` asynchronously. */
+  openerStack?: string;
 }): string {
   const id = crypto.randomUUID();
   active.set(id, {
@@ -63,7 +76,7 @@ export function sshConnRegister(args: {
     username: args.username,
     kind: args.kind,
     openedAt: Date.now(),
-    opener: captureOpener(),
+    opener: captureOpener(args.openerStack),
     end: args.end,
   });
   return id;
