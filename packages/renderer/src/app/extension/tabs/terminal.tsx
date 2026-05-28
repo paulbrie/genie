@@ -91,23 +91,22 @@ function SingleTerminal({
     if (!shared && !inst) return;
     mountedRef.current = true;
 
-    const term = createTerminal(containerRef.current, sessionId);
-
-    if (shared) {
-      // Request scrollback replay for shared terminals
-      wsSend("terminal:share:replay", { sessionId });
-    } else if (inst) {
-      wsSend("vps:terminal:spawn", {
-        id: sessionId,
-        projectId: project.id,
-        instanceId: inst.id,
-        cols: term.cols,
-        rows: term.rows,
-        kind: claudeLaunch ? "claude" : "shell",
-        cwd: claudeLaunch ? GENIE_PROJECT_DIR : undefined,
-        claudeResume: claudeLaunch?.resume,
-      });
-    }
+    createTerminal(containerRef.current, sessionId, ({ cols, rows }) => {
+      if (shared) {
+        wsSend("terminal:share:replay", { sessionId });
+      } else if (inst) {
+        wsSend("vps:terminal:spawn", {
+          id: sessionId,
+          projectId: project.id,
+          instanceId: inst.id,
+          cols,
+          rows,
+          kind: claudeLaunch ? "claude" : "shell",
+          cwd: claudeLaunch ? GENIE_PROJECT_DIR : undefined,
+          claudeResume: claudeLaunch?.resume,
+        });
+      }
+    });
 
     function handleData(e: Event) {
       const detail = (e as CustomEvent).detail;

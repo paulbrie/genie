@@ -2,7 +2,7 @@ import { getDb } from "./db/index.js";
 import { ptySessions } from "./db/schema.js";
 import { and, desc, eq, sql } from "drizzle-orm";
 
-export type PtySessionKind = "shell" | "claude";
+export type PtySessionKind = "shell" | "claude" | "claude-tmux";
 
 export interface PtySessionRecord {
   id: string;

@@ -545,7 +545,7 @@ export const cloudVmAliases = pgTable(
 export const ptySessions = pgTable("pty_sessions", {
   id: text("id").primaryKey(),                                // = tmux session name = renderer tab id
   ownerId: text("owner_id").notNull(),
-  kind: text("kind", { enum: ["shell", "claude"] }).default("shell").notNull(),
+  kind: text("kind", { enum: ["shell", "claude", "claude-tmux"] }).default("shell").notNull(),
   projectId: text("project_id"),                              // nullable for direct-SSH terminals
   instanceId: text("instance_id"),
   vpsHost: text("vps_host").notNull(),                        // for display + filtering

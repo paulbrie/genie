@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
-import { sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./ssh-metrics.js";
+import { dbgSsh } from "../debug-ssh-log.js";
+import { getActiveSshConnections, sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
 
 export interface SshConnectionConfig {
@@ -56,16 +57,27 @@ function resolveHome(p: string): string {
   return p;
 }
 
-function makeSession(conn: Client): SshSession {
+function makeSession(conn: Client, onClose?: () => void, onSessionClosed?: () => void): SshSession {
+  /** Reject in-flight execs when the TCP session drops — otherwise a dead
+   *  connection can leave promises pending until the 15m manager timeout. */
+  const pendingExecAbort = new Set<(err: Error) => void>();
+  conn.on("close", () => {
+    for (const abort of pendingExecAbort) abort(new Error("SSH connection closed"));
+    pendingExecAbort.clear();
+  });
+
   return {
     exec(cmd: string, onData?: (data: string) => void, opts?: { timeoutMs?: number; idleTimeoutMs?: number }): Promise<string> {
       return new Promise((res, rej) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         let idleTimer: ReturnType<typeof setTimeout> | undefined;
         let settled = false;
+        const abortOnClose = (err: Error) => settle(() => rej(err));
+        pendingExecAbort.add(abortOnClose);
         function settle(fn: () => void) {
           if (settled) return;
           settled = true;
+          pendingExecAbort.delete(abortOnClose);
           if (timer) clearTimeout(timer);
           if (idleTimer) clearTimeout(idleTimer);
           fn();
@@ -255,6 +267,8 @@ function makeSession(conn: Client): SshSession {
     },
 
     close() {
+      onSessionClosed?.();
+      onClose?.();
       try { conn.destroy(); } catch { /* ignore */ }
     },
   };
@@ -272,7 +286,10 @@ function loadPrivateKey(privateKey: SshConnectionConfig["privateKey"], privateKe
   }
 }
 
-export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs?: number }): Promise<SshSession> {
+export async function connectSsh(
+  config: SshConnectionConfig,
+  opts?: { timeoutMs?: number; /** Clear cached session slot when this connection closes. */ onSessionClosed?: () => void },
+): Promise<SshSession> {
   const timeout = opts?.timeoutMs ?? 30_000;
 
   // On Railway (and other hosts without kernel WireGuard) Taz private addresses
@@ -297,11 +314,28 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
   // call frames have unwound and a late capture in sshConnRegister would only
   // see "Client.emit (node:events…)" — useless for the /ssh Opener column.
   const openerStack = captureSshOpenerStack();
+  const openerHint = openerStack.split("\n")[2]?.trim().slice(0, 100) ?? "?";
+  // #region agent log
+  dbgSsh("ssh-client.ts:connectSsh", "connectSsh called", "H3", {
+    host: config.host,
+    username: config.username,
+    activeSsh: getActiveSshConnections(),
+    openerHint,
+  });
+  // #endregion
   return new Promise((resolve, reject) => {
     const conn = new Client();
     const privateKey = loadPrivateKey(config.privateKey, config.privateKeyPath);
 
     let registryId: string | null = null;
+    let unregistered = false;
+    const unregister = () => {
+      if (registryId && !unregistered) {
+        sshConnUnregister(registryId);
+        unregistered = true;
+        registryId = null;
+      }
+    };
     conn
       .on("ready", () => {
         registryId = sshConnRegister({
@@ -309,12 +343,15 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
           port: config.port,
           username: config.username,
           kind: "client",
-          end: () => { try { conn.destroy(); } catch { /* ignore */ } },
+          end: () => { unregister(); try { conn.destroy(); } catch { /* ignore */ } },
           openerStack,
         });
-        resolve(makeSession(conn));
+        resolve(makeSession(conn, unregister, opts?.onSessionClosed));
       })
-      .on("close", () => { if (registryId) { sshConnUnregister(registryId); registryId = null; } })
+      .on("close", () => {
+        unregister();
+        opts?.onSessionClosed?.();
+      })
       .on("error", (err) => {
         console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));

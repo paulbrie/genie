@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "concurrently -k \"npm run dev:manager\" \"npm run dev:renderer\"",
     "dev:renderer": "cd packages/renderer && next dev",
-    "dev:manager": "npx tsx watch packages/manager/src/index.ts",
+    "dev:manager": "node scripts/free-port-9876.mjs && npx tsx watch packages/manager/src/index.ts",
     "build": "npm run build:vps-stats && npm run build:vps-agent && npm run build:manager && npm run build:renderer && npm run build:extension",
     "build:vps-agent": "tsc -p packages/vps-agent/tsconfig.json",
     "build:vps-stats": "tsc -p packages/vps-stats/tsconfig.json",

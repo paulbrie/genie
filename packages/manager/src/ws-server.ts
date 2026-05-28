@@ -35,6 +35,8 @@ import {
   ptyLaunchFieldsFromPersisted,
   isClaudeTerminalSpawn,
   persistCommandLabelForSpawn,
+  persistedKindForSpawn,
+  sshPtyTmuxPolicy,
 } from "./pty-manager.js";
 import { createPtySession, forgetPtySession, listPtySessions, touchPtySession } from "./pty-session-service.js";
 
@@ -58,7 +60,7 @@ import { getDb } from "./db/index.js";
 import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers } from "./db/schema.js";
 import { eq, desc, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
-import { connectSsh, pickWorkingSshUser, type SshSession } from "./vps/ssh-client.js";
+import { connectSsh, pickWorkingSshUser, type SshConnectionConfig, type SshSession } from "./vps/ssh-client.js";
 import type { StreamingChannel } from "./vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from "./vps/deploy-service.js";
 import { GENIE_STANDARD_RECIPE_SLUG, syncGenieStatsOnVm } from "./vps/ensure-vps-stats.js";
@@ -83,7 +85,16 @@ import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tun
 import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
 import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type DomActionRequestContext, type AgentOutboundMessage, type StatsPayload } from "./types.js";
 import { getActiveSshConnections, listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "./vps/ssh-metrics.js";
-import { evictSession, evictAllSessionsForHost } from "./vps/ssh-session-cache.js";
+import { dbgSsh } from "./debug-ssh-log.js";
+import {
+  ensureServerTunnel,
+  evictSession,
+  evictAllSessionsForHost,
+  execCached,
+  releaseServerTunnel,
+  serverTunnelKey,
+} from "./vps/ssh-session-cache.js";
+import { sshStatsPostbackEnabled, sshStatsProbeEnabled } from "./vps/ssh-stats-disabled.js";
 import * as settingsService from "./settings-service.js";
 import type { BaseImageConfig, BaseImageTemplate } from "./settings-service.js";
 import fs from "node:fs";
@@ -126,9 +137,9 @@ const activeTazAbortControllers = new Map<string, AbortController>();
 /** Active SSH sessions for inline project commands (key: projectId:commandId) */
 const activeCommandSessions = new Map<string, SshSession>();
 
-/** Active admin/VM exec SSH sessions keyed by execId, so admin:exec:cancel can
- *  abort an in-flight droplet/VM exec (e.g. the recipes Stop button). */
-const activeExecSessions = new Map<string, SshSession>();
+/** In-flight admin/VM exec targets keyed by execId — admin:exec:cancel evicts the
+ *  cached SSH session for that host so the running channel dies. */
+const activeExecTargets = new Map<string, SshConnectionConfig>();
 const dropletExecUserCache = new Map<string, { username: string; resolvedAt: number }>();
 const DROPLET_EXEC_USER_TTL_MS = 15 * 60_000;
 
@@ -2911,7 +2922,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             port: conn.port || 22,
             username: conn.username,
             privateKeyPath: conn.privateKeyPath,
-            tmuxSessionName: id,
+            ...sshPtyTmuxPolicy(id, { kind: row.kind, mode: "reattach" }),
             ...ptyLaunchFieldsFromPersisted(row),
           }, userId);
         } else if (row.sshConfig) {
@@ -2921,7 +2932,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             port: cfg.port || 22,
             username: cfg.username || VPS_SSH_USERNAME,
             privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519",
-            tmuxSessionName: id,
+            ...sshPtyTmuxPolicy(id, { kind: row.kind, mode: "reattach" }),
             ...ptyLaunchFieldsFromPersisted(row),
           }, userId);
         } else {
@@ -4213,6 +4224,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "vps:stats:watch": {
+      if (!sshStatsPostbackEnabled()) break;
       const { projectId, instanceId } = msg.payload;
       if (!(await projectService.userCanSeeProject(userId, projectId))) {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "Not authorized for this project" } });
@@ -4243,6 +4255,11 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "vps:stats": {
+      if (!sshStatsProbeEnabled()) {
+        const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
+        send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "SSH stats probe disabled" } });
+        break;
+      }
       const { projectId, instanceId } = msg.payload;
       if (!(await projectService.userCanSeeProject(userId, projectId))) {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "Not authorized for this project" } });
@@ -4464,15 +4481,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       try {
-        const session = await connectSsh(vpsInst.connection);
-        try {
-          const output = await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, undefined, { timeoutMs: 15_000 });
-          const lastLine = output.trim().split("\n").pop()?.trim();
-          const installed = lastLine === "INSTALLED";
-          send(ws, { type: "vps:recipe:check:result", payload: { projectId, instanceId, recipeId, installed } });
-        } finally {
-          session.close();
-        }
+        const output = await execCached(
+          vpsInst.connection,
+          `cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`,
+          undefined,
+          { timeoutMs: 15_000 },
+        );
+        const lastLine = output.trim().split("\n").pop()?.trim();
+        const installed = lastLine === "INSTALLED";
+        send(ws, { type: "vps:recipe:check:result", payload: { projectId, instanceId, recipeId, installed } });
       } catch {
         send(ws, { type: "vps:recipe:check:result", payload: { projectId, instanceId, recipeId, installed: false } });
       }
@@ -4495,13 +4512,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       try {
-        const session = await connectSsh(execConn);
-        try {
-          const output = await session.exec(`${command} 2>&1`, undefined, { timeoutMs: 30_000 });
-          send(ws, { type: "vps:exec:result", payload: { execId, output } });
-        } finally {
-          session.close();
-        }
+        const output = await execCached(execConn, `${command} 2>&1`, undefined, { timeoutMs: 30_000 });
+        send(ws, { type: "vps:exec:result", payload: { execId, output } });
       } catch (err: unknown) {
         send(ws, { type: "vps:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
       }
@@ -4519,15 +4531,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       try {
-        const session = await connectSsh(vpsInst.connection);
-        try {
-          await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, (chunk) => {
+        await execCached(
+          vpsInst.connection,
+          `cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`,
+          (chunk) => {
             const line = chunk.trimEnd();
             if (line) send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message: line } });
-          }, { timeoutMs: 300_000, idleTimeoutMs: 60_000 });
-        } finally {
-          session.close();
-        }
+          },
+          { timeoutMs: 300_000, idleTimeoutMs: 60_000 },
+        );
         send(ws, { type: "vps:recipe:uninstall:done", payload: { projectId, instanceId, recipeId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: (err instanceof Error ? err.message : String(err)) } });
@@ -4550,15 +4562,15 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         // install script itself as `export NAME=...` lines, set by the renderer
         // from a per-apply modal. No env injection here — settings no longer
         // store these tokens. See admin-recipes-panel.tsx → buildInstallCommand.
-        const session = await connectSsh(vpsInst.connection);
-        try {
-          await session.exec(`cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`, (chunk) => {
+        await execCached(
+          vpsInst.connection,
+          `cat << 'GENIE_RECIPE_EOF' | bash 2>&1\n${script}\nGENIE_RECIPE_EOF`,
+          (chunk) => {
             const line = chunk.trimEnd();
             if (line) send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message: line } });
-          }, { timeoutMs: 600_000, idleTimeoutMs: 120_000 });
-        } finally {
-          session.close();
-        }
+          },
+          { timeoutMs: 600_000, idleTimeoutMs: 120_000 },
+        );
 
         // Defensive: a recipe (notably Genie Standard Setup) may have just
         // created the `genie` user and chowned /opt/project to it. If the stored
@@ -4577,6 +4589,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
               [VPS_SSH_USERNAME],
             );
             if (probed === VPS_SSH_USERNAME) {
+              evictSession(vpsInst.connection);
               await projectService.updateVpsInstance(projectId, instanceId, {
                 connection: { ...vpsInst.connection, username: VPS_SSH_USERNAME },
               });
@@ -5013,6 +5026,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "admin:tazcloud:stats": {
+      if (!sshStatsProbeEnabled()) {
+        send(ws, { type: "admin:tazcloud:stats", payload: { stats: {}, errors: {} } });
+        break;
+      }
       // SSH-probe every ACTIVE TazCloud VM for runtime port info, regardless of
       // project linkage. Mirrors admin:droplets:stats but uses the project-
       // independent credential path from admin:tazcloud:exec.
@@ -5081,6 +5098,127 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "admin:server:tunnel:ensure": {
+      const payload = msg.payload as {
+        provider?: "tazcloud" | "do" | "ssh";
+        vmId?: string;
+        host?: string;
+        sshUser?: string;
+        projectId?: string;
+        instanceId?: string;
+        dropletId?: number;
+      };
+      try {
+        let sshConfig: SshConnectionConfig;
+        if (payload.projectId && payload.instanceId) {
+          if (!(await projectService.userCanSeeProject(userId, payload.projectId))) {
+            throw new Error("Not authorized for this project");
+          }
+          sshConfig = await getVpsConnection(payload.projectId, payload.instanceId);
+        } else if (payload.provider === "do" && payload.dropletId != null) {
+          if (!isPrivilegedRole(state.role) && !(await projectService.userCanAccessVm(userId, { dropletId: payload.dropletId }))) {
+            throw new Error("Not authorized for this server");
+          }
+          const projects = await projectService.getAll();
+          let conn: SshConnectionConfig | undefined;
+          for (const p of projects) {
+            for (const v of p.vpsInstances) {
+              if (v.digitalocean?.dropletId === payload.dropletId && v.connection?.host) {
+                conn = v.connection;
+                break;
+              }
+            }
+            if (conn) break;
+          }
+          if (!conn) throw new Error("Droplet not linked in Genie");
+          sshConfig = { ...conn, username: payload.sshUser || "genie" };
+        } else {
+          const vmId = payload.vmId;
+          if (!vmId) throw new Error("vmId required");
+          if (!isPrivilegedRole(state.role) && !(await projectService.userCanAccessVm(userId, { vmId }))) {
+            throw new Error("Not authorized for this server");
+          }
+          const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
+          if (!tazPrivateKey) throw new Error("TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager");
+          let host = payload.host;
+          if (!host) {
+            const tazToken = process.env.TAZCLOUD_API_TOKEN;
+            if (tazToken) {
+              const tazClient = createTazClient(tazToken);
+              const vm = await tazClient.getVm(vmId);
+              host = vm?.ssh_host;
+            }
+          }
+          if (!host) throw new Error(`VM ${vmId} has no ssh_host`);
+          sshConfig = {
+            host,
+            port: 22,
+            username: payload.sshUser || "genie",
+            privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey),
+          };
+        }
+        await ensureServerTunnel(sshConfig);
+        send(ws, {
+          type: "admin:server:tunnel:ready",
+          payload: {
+            reqId: (payload as { reqId?: string }).reqId,
+            key: serverTunnelKey(sshConfig),
+            host: sshConfig.host,
+            username: sshConfig.username,
+          },
+        });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "admin:server:tunnel:error",
+          payload: {
+            reqId: (payload as { reqId?: string }).reqId,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      break;
+    }
+
+    case "admin:server:tunnel:release": {
+      const payload = msg.payload as {
+        provider?: "tazcloud" | "do" | "ssh";
+        vmId?: string;
+        host?: string;
+        sshUser?: string;
+        projectId?: string;
+        instanceId?: string;
+        dropletId?: number;
+      };
+      try {
+        if (payload.projectId && payload.instanceId) {
+          releaseServerTunnel(await getVpsConnection(payload.projectId, payload.instanceId));
+        } else if (payload.provider === "do" && payload.dropletId != null) {
+          const projects = await projectService.getAll();
+          for (const p of projects) {
+            for (const v of p.vpsInstances) {
+              if (v.digitalocean?.dropletId === payload.dropletId && v.connection?.host) {
+                releaseServerTunnel({ ...v.connection, username: payload.sshUser || "genie" });
+                break;
+              }
+            }
+          }
+        } else if (payload.vmId && payload.host) {
+          const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
+          if (tazPrivateKey) {
+            releaseServerTunnel({
+              host: payload.host,
+              port: 22,
+              username: payload.sshUser || "genie",
+              privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey),
+            });
+          }
+        }
+      } catch {
+        /* best-effort release */
+      }
+      break;
+    }
+
     case "admin:tazcloud:exec": {
       // Run an arbitrary SSH command on a TazCloud VM. Renderer passes `host` so we
       // don't hit the TazCloud API on every command — previously every recipe check
@@ -5110,26 +5248,33 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         }
         if (!host) throw new Error(`VM ${vmId} has no ssh_host`);
         const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
-        const session = await connectSsh({
+        const sshConfig: SshConnectionConfig = {
           host,
           port: 22,
           username: sshUser || "ubuntu",
           privateKeyPath: keyPath,
+        };
+        // #region agent log
+        dbgSsh("ws-server.ts:admin:tazcloud:exec", "exec start", "H5", {
+          execId,
+          host,
+          username: sshConfig.username,
+          cmdLen: command.length,
+          activeSsh: getActiveSshConnections(),
         });
-        activeExecSessions.set(execId, session);
+        // #endregion
+        activeExecTargets.set(execId, sshConfig);
         // Secrets (GIT_TOKEN etc.) are baked into the script by the renderer
         // per-apply — see admin-recipes-panel.tsx → buildInstallCommand. We no
         // longer inject them from settings here.
         const shQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
         try {
-          // Generous timeouts — recipe installs (apt + downloads) can take several
-          // minutes. idleTimeoutMs is bumped to 10 minutes since recipe scripts
-          // often redirect apt output to /dev/null and may go silent for a while.
-          const output = await session.exec(`bash -c ${shQuote(`${command} 2>&1`)}`, (chunk) => {
+          await ensureServerTunnel(sshConfig);
+          const output = await execCached(sshConfig, `bash -c ${shQuote(`${command} 2>&1`)}`, (chunk) => {
             send(ws, { type: "admin:tazcloud:exec:progress", payload: { execId, chunk } });
           }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
           send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output } });
-        } finally { session.close(); activeExecSessions.delete(execId); }
+        } finally { activeExecTargets.delete(execId); }
       } catch (err: unknown) {
         send(ws, { type: "admin:tazcloud:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
       }
@@ -5214,21 +5359,21 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (!cachedValid) {
           dropletExecUserCache.set(cacheKey, { username: sshUser, resolvedAt: Date.now() });
         }
-        const session = await connectSsh({
+        const sshConfig: SshConnectionConfig = {
           host: pub.ip_address,
           port: 22,
           username: sshUser,
           privateKeyPath: keyPath,
-        });
-        activeExecSessions.set(execId, session);
+        };
+        activeExecTargets.set(execId, sshConfig);
         // Secrets baked into the script per-apply; no settings-based injection.
         const shQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
         try {
-          const output = await session.exec(`bash -c ${shQuote(`${command} 2>&1`)}`, (chunk) => {
+          const output = await execCached(sshConfig, `bash -c ${shQuote(`${command} 2>&1`)}`, (chunk) => {
             send(ws, { type: "admin:droplets:exec:progress", payload: { execId, chunk } });
           }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });
           send(ws, { type: "admin:droplets:exec:result", payload: { execId, output } });
-        } finally { session.close(); activeExecSessions.delete(execId); }
+        } finally { activeExecTargets.delete(execId); }
       } catch (err: unknown) {
         send(ws, { type: "admin:droplets:exec:result", payload: { execId, output: (err instanceof Error ? err.message : String(err)), error: true } });
       }
@@ -5241,10 +5386,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       // needed — closing the SSH session makes the exec promise reject and emit
       // its error result. No-op if the exec already finished.
       const { execId } = msg.payload as { execId: string };
-      const session = activeExecSessions.get(execId);
-      if (session) {
-        activeExecSessions.delete(execId);
-        try { session.close(); } catch { /* already closed */ }
+      const target = activeExecTargets.get(execId);
+      if (target) {
+        activeExecTargets.delete(execId);
+        evictSession(target);
       }
       break;
     }
@@ -5590,6 +5735,10 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "admin:droplets:stats": {
+      if (!sshStatsProbeEnabled()) {
+        send(ws, { type: "admin:droplets:stats", payload: { stats: {} } });
+        break;
+      }
       try {
         const projects = await projectService.getAll();
         // Build dropletId → connection map from project VPS instances
@@ -7147,7 +7296,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const { id, projectId, instanceId, cols, rows, command, kind, cwd, claudeResume } = msg.payload as {
         id: string; projectId: string; instanceId: string;
         cols?: number; rows?: number;
-        command?: string; kind?: "shell" | "claude";
+        command?: string; kind?: "shell" | "claude" | "claude-tmux";
         cwd?: string; claudeResume?: boolean;
       };
       try {
@@ -7158,17 +7307,16 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           port: conn.port || 22,
           username: conn.username,
           privateKeyPath: conn.privateKeyPath,
-          tmuxSessionName: id,
+          ...sshPtyTmuxPolicy(id, { kind, mode: "spawn" }),
           ...launch,
         }, userId);
         // Persist for the History/Terminals tab so it survives Manager restart.
         // Best-effort: a DB failure here shouldn't block the user opening a terminal.
         if (userId) {
-          const isClaude = isClaudeTerminalSpawn({ kind, command });
           await createPtySession({
             id,
             ownerId: userId,
-            kind: isClaude ? "claude" : "shell",
+            kind: persistedKindForSpawn({ kind, command }),
             projectId,
             instanceId,
             vpsHost: conn.host,
@@ -7185,28 +7333,30 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const { id, host, port, username, privateKeyPath, cols, rows, title, command, kind, cwd, claudeResume } = msg.payload as {
         id: string; host: string; port?: number; username?: string; privateKeyPath?: string;
         cols?: number; rows?: number; title?: string; command?: string;
-        kind?: "shell" | "claude"; cwd?: string; claudeResume?: boolean;
+        kind?: "shell" | "claude" | "claude-tmux"; cwd?: string; claudeResume?: boolean;
       };
       const resolvedUser = username || VPS_SSH_USERNAME;
       const resolvedKey = privateKeyPath || "~/.genie/ssh/genie_ed25519";
       const resolvedPort = port || 22;
       const launch = sshPtyLaunchFromSpawnMessage({ kind, command, cwd, claudeResume });
+      const isClaudeKind = isClaudeTerminalSpawn({ kind, command, title });
+      // Claude: direct PTY (no tmux). Claude+tmux + Shell: wrapped in tmux so a
+      // reattach from the Sessions tab can grab the same process.
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: resolvedPort,
         username: resolvedUser,
         privateKeyPath: resolvedKey,
-        tmuxSessionName: id,
+        ...sshPtyTmuxPolicy(id, { kind, mode: "spawn" }),
         ...launch,
       }, userId);
       // Persist for the History/Terminals tab. Direct SSH carries its own
       // connection details since there's no project/instance to look them up from.
       if (userId) {
-        const isClaudeKind = isClaudeTerminalSpawn({ kind, command, title });
         await createPtySession({
           id,
           ownerId: userId,
-          kind: isClaudeKind ? "claude" : "shell",
+          kind: persistedKindForSpawn({ kind, command, title }),
           vpsHost: host,
           commandLabel: persistCommandLabelForSpawn({ kind, command, title, claudeResume }),
           sshConfig: { host, port: resolvedPort, username: resolvedUser, privateKeyPath: resolvedKey, title },
@@ -7216,8 +7366,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       // a missing SENDGRID_API_KEY makes this a silent no-op.
       const actor = clients.get(ws)?.user;
       const actorLabel = actor ? `${actor.name} <${actor.email}>` : "Unknown user";
-      const isClaude = isClaudeTerminalSpawn({ kind, command, title });
-      const kindLabel = isClaude ? "Claude Terminal" : "SSH Terminal";
+      const kindLabel = kind === "claude-tmux" ? "Claude Terminal (tmux)" : (isClaudeKind ? "Claude Terminal" : "SSH Terminal");
       const lines = [
         `${actorLabel} started a ${kindLabel}.`,
         ``,
@@ -7461,7 +7610,7 @@ export async function createServer(): Promise<WebSocketServer> {
     const sessionId = (event.payload as Record<string, unknown> | undefined)?.id as string | undefined;
     if (sessionId) {
       const access = getSessionAccess(sessionId);
-      if (access) {
+      if (access?.ownerId) {
         broadcastToUsers([access.ownerId, ...access.collaboratorIds], event as WsMessage);
         return;
       }

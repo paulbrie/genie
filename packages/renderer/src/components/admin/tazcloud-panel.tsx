@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
-import { $admin, $auth, $manager, $persistedTerminals, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { $admin, $auth, $manager, $persistedTerminals, $ssh, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, fetchVpsStats, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazCapabilities, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
@@ -29,6 +29,9 @@ import { ErrorMessage } from "@/components/ui/error-message";
 import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmBootSource, defaultVmName, imageDefaultUser, parseVmBootSource, validateTazVmName } from "../tazcloud/helpers";
 import { TazSnapshotsSection } from "../tazcloud/taz-snapshots-section";
 import { openManageVmWindow } from "../tazcloud/manage-vm-popup";
+import { ServerTunnelIndicator } from "../tazcloud/server-tunnel-indicator";
+import { VM_HOST_SSH_REFRESH_MS } from "../tazcloud/vm-host-connections-panel";
+import { loadSshSessions } from "@/store/actions/ssh";
 
 export function formatBytesShort(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);
@@ -78,6 +81,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   const admin = useDeepSubjectAll($admin);
   const vpsDeploy = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
   const [auth] = useSubject($auth);
+  const [ssh] = useSubject($ssh);
   // Used by the per-row "Detach from project" action to resolve the project's
   // internal vpsInstance id (which the server's `vps:disconnect` handler needs)
   // from the admin-view `vm.id` (which is the TazCloud-side VM id).
@@ -149,18 +153,16 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
     loadTazProjects();
   }, [canAccess]);
 
-  // Live CPU/MEM/DISK for ACTIVE VMs. One batched admin:tazcloud:stats round-trip
-  // (POOL=4 server-side + cached SSH sessions) instead of per-card probes.
+  // Live SSH registry — drives per-VM tunnel icon on each card.
   useEffect(() => {
     if (!canAccess) return;
-    loadAdminTazcloudStats();
-    const id = window.setInterval(() => {
-      if (document.hidden) return;
-      if ($admin.getValue().tazcloud.vmStatsLoading) return;
-      loadAdminTazcloudStats();
-    }, TAZ_STATS_POLL_MS);
+    loadSshSessions();
+    const id = window.setInterval(loadSshSessions, VM_HOST_SSH_REFRESH_MS);
     return () => window.clearInterval(id);
   }, [canAccess]);
+
+  // Linked VMs: live gauges via daemon postback (useCloudsMonitor → watchVpsStats).
+  // Unlinked VMs: no fleet SSH probe unless NEXT_PUBLIC_GENIE_SSH_STATS_PROBE=1.
 
   // Re-fire the one-shot loads when the WS reconnects (typically because
   // `tsx watch` restarted the dev manager). Without this the VM/snapshot/
@@ -181,7 +183,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
       loadTazSnapshots();
       loadTazProjects();
       loadTazCapabilities();
-      loadAdminTazcloudStats();
+      loadSshSessions();
     }
   }, [manager.running, canAccess]);
 
@@ -977,6 +979,13 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5 min-w-0">
                             <span className="font-semibold text-text truncate" title={vm.name}>{vm.name}</span>
+                            {isActive && vm.ipv6 && (
+                              <ServerTunnelIndicator
+                                host={vm.ipv6}
+                                sessions={ssh.sessions}
+                                loading={ssh.loading && ssh.sessions.length === 0}
+                              />
+                            )}
                             {vm.locked && (
                               <span
                                 className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red/15 text-red border border-red/30"

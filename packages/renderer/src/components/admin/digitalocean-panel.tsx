@@ -101,12 +101,6 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
   useEffect(() => {
     if (!isSuperAdmin) return;
     loadAdminDroplets();
-    loadAdminDropletStats();
-    const id = window.setInterval(() => {
-      if (document.hidden) return;
-      loadAdminDropletStats();
-    }, DO_STATS_POLL_MS);
-    return () => window.clearInterval(id);
   }, [isSuperAdmin]);
 
   // Re-fire the one-shot droplet list when the WS reconnects (typically
@@ -122,7 +116,6 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
     wasManagerRunningRef.current = manager.running;
     if (!wasRunning && manager.running) {
       loadAdminDroplets();
-      loadAdminDropletStats();
     }
   }, [manager.running, isSuperAdmin]);
 

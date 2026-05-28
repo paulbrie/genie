@@ -7,28 +7,35 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { batch } from "subjecto";
 import { useSubject } from "subjecto/react";
 import {
-  Activity, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, Loader2,
+  Activity, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, Link2, Loader2,
   Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw,
-  Settings as SettingsIcon, Shield, Terminal, Trash2, X,
+  Settings as SettingsIcon, Shield, Sparkles, Terminal, Trash2, X,
 } from "lucide-react";
 import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import {
-  addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, focusWindow, launchClaudeSshTab,
-  hibernateVps, killPersistedTerminal, loadPersistedTerminals, minimizeWindow,
-  openWindow, reattachPersistedTerminal, registerWindow, updateWindowPosition, vpsExec,
+  addSshTerminalTab, adminDropletExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
+  ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, launchClaudeSshTab, launchClaudeTmuxSshTab, loadRecipes,
+  releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, loadPersistedTerminals,
+  minimizeWindow, openWindow, reattachPersistedTerminal, registerWindow, unwatchVpsStats,
+  updateWindowPosition, vpsExec, watchVpsStats,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
-import { VpsResourceGauges } from "@/components/project/vps-resource-gauges";
+import { VpsResourceBar, VpsResourceGauges, vpsStatsToBarStats } from "@/components/project/vps-resource-gauges";
+import { clientSessionsForHost } from "@/components/tazcloud/server-tunnel-indicator";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { DbExplorer } from "@/components/admin/db-explorer";
+import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
+import { sshStatsPostbackEnabled, sshStatsProbeEnabled } from "@/lib/ssh-stats-enabled";
+import type { AdminServerTunnelPayload } from "@/store/actions/admin";
 import { Button } from "@/components/ui/button";
 import { imageDefaultUser } from "./helpers";
 import { VmHostConnectionsPanel, useVmHostSshRegistry } from "./vm-host-connections-panel";
@@ -113,65 +120,169 @@ function makeVmExec(vm: ManageVm, sshUser: string) {
     adminDropletExec(Number(vm.id), command, onChunk, signal);
 }
 
-/** Claude Terminal button for the Manage tab. For TazCloud VMs we probe whether
- *  the genie deploy user is set up before deciding which SSH user to run as —
- *  on a fresh VM, only the image-default user exists. DigitalOcean droplets are
- *  provisioned by Genie itself with the genie user, so no probe is needed there. */
-function ClaudeManageButton({ vm }: { vm: ManageVm }) {
-  // v2.0.0 vxlan-bastion VMs ship with `genie` baked into the image and no
-  // image-default user — so we both know the right SSH user up-front (genie)
-  // and must probe AS genie. Probing as `ubuntu`/`debian` would auth-fail
-  // before the script runs.
-  const isV2 = vm.isPrivateHost === true;
-  const isSsh = vm.provider === "ssh";
-  // `null` while probing; `true` if genie is ready; `false` otherwise. For DO
-  // and generic ssh servers there's no admin probe — use the connection user.
-  const [genieReady, setGenieReady] = useState<boolean | null>(vm.provider === "do" || isSsh ? true : null);
+const GENIE_STANDARD_RECIPE_ID = "genie-standard";
+
+function parseGenieStandardInstalled(output: string): boolean {
+  return output.includes("INSTALLED") && !output.includes("NOT_INSTALLED");
+}
+
+type VmExecFn = ReturnType<typeof makeVmExec>;
+
+/** Run the Genie Standard Setup recipe check (store-backed when linked). */
+function useGenieStandardCheck(opts: {
+  vm: ManageVm;
+  linked: { project: { id: string }; instance: { id: string } } | null;
+  exec: VmExecFn | ((command: string) => Promise<{ output: string; error?: boolean }>);
+  enabled: boolean;
+}) {
+  const allRecipes = useAllRecipes();
+  const recipe = allRecipes.find((r) => r.id === GENIE_STANDARD_RECIPE_ID);
+  const vpsDeploy = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
+  const storeRecipe = opts.linked
+    ? vpsDeploy.instances[opts.linked.instance.id]?.recipes?.[GENIE_STANDARD_RECIPE_ID]
+    : undefined;
+  const [local, setLocal] = useState<{ checking: boolean; installed: boolean | null }>({
+    checking: false,
+    installed: opts.vm.provider === "do" ? true : null,
+  });
+
+  useEffect(() => { loadRecipes(); }, []);
+
+  const checking = opts.linked ? (storeRecipe?.checking ?? false) : local.checking;
+  const installed = opts.linked
+    ? (storeRecipe?.installed ?? null)
+    : (opts.vm.provider === "do" ? true : local.installed);
+
+  const runCheck = useCallback(() => {
+    if (!opts.enabled || !recipe) return;
+    if (opts.linked) {
+      checkVpsRecipe(opts.linked.project.id, opts.linked.instance.id, recipe.id, recipe.checkScript);
+      return;
+    }
+    if (opts.vm.provider === "do") return;
+    setLocal({ checking: true, installed: null });
+    void Promise.resolve(opts.exec(recipe.checkScript))
+      .then((res) => {
+        setLocal({
+          checking: false,
+          installed: parseGenieStandardInstalled(res.output),
+        });
+      })
+      .catch(() => setLocal({ checking: false, installed: false }));
+  }, [opts.enabled, opts.linked, opts.exec, opts.vm.provider, recipe]);
 
   useEffect(() => {
-    if (vm.provider === "do" || isSsh) { setGenieReady(true); return; }
-    let cancelled = false;
-    const probeUser = isV2 ? "genie" : imageDefaultUser(vm.image);
-    // -n: non-interactive sudo so it fails fast if a password is required.
-    // The /home/genie/.ssh dir is mode 700, hence the sudo.
-    const script = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v claude >/dev/null 2>&1; then echo "GENIE_READY"; else echo "NO_GENIE"; fi`;
-    adminTazcloudExec(vm.id, probeUser, script, vm.host).then((res) => {
-      if (cancelled) return;
-      const last = res.output.trim().split("\n").pop()?.trim();
-      setGenieReady(last === "GENIE_READY");
-    });
-    return () => { cancelled = true; };
-  }, [vm.id, vm.image, vm.host, vm.provider, isV2]);
+    if (!checking || !opts.linked) return;
+    const instanceId = opts.linked.instance.id;
+    const t = window.setTimeout(() => {
+      batch(() => {
+        const inst = $vpsDeploy.getValue().instances[instanceId];
+        const r = inst?.recipes?.[GENIE_STANDARD_RECIPE_ID];
+        if (r?.checking) {
+          r.checking = false;
+          if (r.installed === null) r.installed = false;
+        }
+      });
+    }, 20_000);
+    return () => window.clearTimeout(t);
+  }, [checking, opts.linked?.instance.id]);
 
-  const pending = genieReady === null;
-  // On v2, fall back to `genie` even if the probe failed — `imageDefault` users
-  // (ubuntu/debian/almalinux) don't exist there at all. Generic ssh: the user
-  // the server was connected as.
-  const sshUser = isSsh ? (vm.connection?.username || "root") : genieReady ? "genie" : (isV2 ? "genie" : imageDefaultUser(vm.image));
+  useEffect(() => {
+    if (!checking || opts.linked) return;
+    const t = window.setTimeout(() => {
+      setLocal((prev) => (prev.checking ? { checking: false, installed: prev.installed ?? false } : prev));
+    }, 20_000);
+    return () => window.clearTimeout(t);
+  }, [checking, opts.linked]);
 
-  const launch = () => {
-    if (pending) return;
-    launchClaudeSshTab(
-      {
-        host: vm.host,
-        port: 22,
-        username: sshUser,
-        privateKeyPath: sshKeyPathFor(vm),
-      },
-      `Claude ${sshUser}@${vm.name}`,
-    );
-  };
+  return { checking, installed, runCheck, recipe };
+}
+
+function CheckGenieSetupButton({
+  checking,
+  installed,
+  onCheck,
+  disabled,
+}: {
+  checking: boolean;
+  installed: boolean | null;
+  onCheck: () => void;
+  disabled?: boolean;
+}) {
+  const label = checking
+    ? "Checking…"
+    : installed === true
+      ? "Genie OK"
+      : installed === false
+        ? "Setup missing"
+        : "Check Genie Setup";
 
   return (
     <button
-      onClick={launch}
-      disabled={pending}
-      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors disabled:opacity-40 disabled:cursor-wait"
-      title={pending ? "Checking Genie Setup…" : `Launch Claude Terminal — ${sshUser}@${vm.host}`}
+      type="button"
+      onClick={onCheck}
+      disabled={disabled || checking}
+      className={cn(
+        "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-40 disabled:cursor-wait",
+        installed === true && "border-green/30 text-green hover:bg-green/10",
+        installed === false && "border-yellow/30 text-yellow hover:bg-yellow/10",
+        installed === null && "border-overlay0/30 text-overlay1 hover:bg-surface0",
+      )}
+      title={
+        checking
+          ? "Checking Genie Standard Setup…"
+          : installed === true
+            ? "Genie Standard Setup is installed (genie user, Docker, Node, Claude, /opt/project, stats daemon)"
+            : installed === false
+              ? "Genie Standard Setup is not fully installed — click to re-check or install from Add-ons"
+              : "Check whether Genie Standard Setup has been applied on this VM"
+      }
     >
-      {pending ? <Loader2 size={11} className="animate-spin" /> : <ClaudeLogo size={11} />}
-      Claude
+      {checking ? (
+        <Loader2 size={11} className="animate-spin shrink-0" />
+      ) : installed === true ? (
+        <Check size={11} className="shrink-0" />
+      ) : (
+        <Sparkles size={11} className="shrink-0" />
+      )}
+      {label}
     </button>
+  );
+}
+
+/** Claude Terminal — uses the SSH user already resolved for this popup (no extra probe).
+ *  Two variants:
+ *    • "Claude"      → direct PTY exec; dies if the SSH channel drops.
+ *    • "Claude+tmux" → wrapped in a tmux session named after the tab id, so the
+ *                      process survives WS/SSH drops and reappears in the
+ *                      Sessions tab for reattach. */
+function ClaudeManageButton({ vm, sshUser }: { vm: ManageVm; sshUser: string }) {
+  const ssh = {
+    host: vm.host,
+    port: 22,
+    username: sshUser,
+    privateKeyPath: sshKeyPathFor(vm),
+  };
+  const baseTitle = `Claude ${sshUser}@${vm.name}`;
+  return (
+    <div className="flex items-stretch">
+      <button
+        onClick={() => launchClaudeSshTab(ssh, baseTitle)}
+        className="flex items-center gap-1.5 px-2 py-0.5 rounded-l border border-r-0 border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
+        title={`Launch Claude Terminal (direct PTY, no tmux) — ${sshUser}@${vm.host}`}
+      >
+        <ClaudeLogo size={11} />
+        Claude
+      </button>
+      <button
+        onClick={() => launchClaudeTmuxSshTab(ssh, `${baseTitle} (tmux)`)}
+        className="flex items-center gap-1.5 px-2 py-0.5 rounded-r border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
+        title={`Launch Claude Terminal inside tmux (survives SSH drops; reattach from Sessions) — ${sshUser}@${vm.host}`}
+      >
+        <ClaudeLogo size={11} />
+        +tmux
+      </button>
+    </div>
   );
 }
 
@@ -238,30 +349,48 @@ function SshLaunchButton({ vm }: { vm: ManageVm }) {
 }
 
 
-/** Live SSH session + MCP tunnel counts for the title bar (admin-only registry). */
+/** Live SSH tunnel (client) + PTY shells + MCP tunnels for the title bar. */
 function ManageVmTitleBarStats({ host }: { host: string }) {
   const { sessions, tunnels, canViewRegistry } = useVmHostSshRegistry(host);
 
   if (!canViewRegistry || !host) return null;
 
-  const sessionCount = sessions.length;
-  const tunnelCount = tunnels.length;
-  const title = `${sessionCount} live SSH connection${sessionCount === 1 ? "" : "s"}, ${tunnelCount} MCP tunnel${tunnelCount === 1 ? "" : "s"}`;
+  const clientCount = clientSessionsForHost(host, sessions);
+  const ptyCount = sessions.filter((s) => s.kind === "pty").length;
+  const mcpCount = tunnels.length;
+  const title = [
+    `${clientCount} SSH tunnel${clientCount === 1 ? "" : "s"} (programmatic client)`,
+    `${ptyCount} terminal shell${ptyCount === 1 ? "" : "s"}`,
+    `${mcpCount} MCP tunnel${mcpCount === 1 ? "" : "s"}`,
+  ].join(" · ");
 
   return (
     <span
       className="shrink-0 px-1.5 py-0.5 rounded text-xs font-mono tabular-nums bg-surface0/60 text-overlay1 inline-flex items-center gap-1.5"
       title={title}
     >
-      <span className="inline-flex items-center gap-0.5">
-        <Terminal size={11} className="shrink-0" />
-        {sessionCount}
+      <span className={cn("inline-flex items-center gap-0.5", clientCount > 0 && "text-green")}>
+        <Link2 size={11} className="shrink-0" />
+        {clientCount}
       </span>
-      <span className="text-surface1">·</span>
-      <span className="inline-flex items-center gap-0.5">
-        <Plug size={11} className="shrink-0" />
-        {tunnelCount}
-      </span>
+      {ptyCount > 0 && (
+        <>
+          <span className="text-surface1">·</span>
+          <span className="inline-flex items-center gap-0.5">
+            <Terminal size={11} className="shrink-0" />
+            {ptyCount}
+          </span>
+        </>
+      )}
+      {mcpCount > 0 && (
+        <>
+          <span className="text-surface1">·</span>
+          <span className="inline-flex items-center gap-0.5">
+            <Plug size={11} className="shrink-0" />
+            {mcpCount}
+          </span>
+        </>
+      )}
     </span>
   );
 }
@@ -508,8 +637,8 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   // and prefer it over the image-default user. This matters because recipes
   // like "Next.js (latest)" write to /opt/project, which Genie Standard Setup
   // chowns to genie — running them as `ubuntu` then `sudo -u genie` is fragile
-  // (login-shell quirks, npm cache paths, etc). Same probe + fallback pattern
-  // ClaudeManageButton uses. DigitalOcean droplets are provisioned with genie
+  // (login-shell quirks, npm cache paths, etc). Claude uses `claudeSshUser`
+  // derived from this plus Genie Standard Setup when known. DigitalOcean droplets are provisioned with genie
   // from the start, so we skip the probe and pin the user there.
   const imageDefault = imageDefaultUser(vm.image);
   // v2.0.0 vxlan-bastion: only `genie` exists on the image (no ubuntu/debian/
@@ -534,14 +663,16 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     if (isV2) { setResolvedUser("genie"); return; }
     let cancelled = false;
     const probe = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys; then echo "GENIE"; else echo "DEFAULT"; fi`;
-    adminTazcloudExec(vm.id, imageDefault, probe, vm.host).then((res) => {
-      if (cancelled) return;
-      const last = res.output.trim().split("\n").pop()?.trim();
-      setResolvedUser(last === "GENIE" ? "genie" : imageDefault);
-    }).catch(() => {
-      if (!cancelled) setResolvedUser(imageDefault);
-    });
-    return () => { cancelled = true; };
+    const t = window.setTimeout(() => {
+      adminTazcloudExec(vm.id, imageDefault, probe, vm.host).then((res) => {
+        if (cancelled) return;
+        const last = res.output.trim().split("\n").pop()?.trim();
+        setResolvedUser(last === "GENIE" ? "genie" : imageDefault);
+      }).catch(() => {
+        if (!cancelled) setResolvedUser(imageDefault);
+      });
+    }, 300);
+    return () => { cancelled = true; window.clearTimeout(t); };
   }, [vm.id, vm.host, vm.provider, vm.connection?.username, imageDefault, canUseAdminExec, isV2]);
 
   const user = resolvedUser ?? imageDefault;
@@ -567,7 +698,73 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   }, [projects, vm.projectId, vm.id, vm.provider, vm.instanceId]);
 
   const hasProject = !!linked;
+  const vpsDeploy = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
+  const streamStats = linked ? vpsDeploy.instances[linked.instance.id]?.stats ?? null : null;
+  const streamError = linked ? vpsDeploy.instances[linked.instance.id]?.statsError ?? null : null;
+
+  useEffect(() => {
+    if (!sshStatsPostbackEnabled() || !linked) return;
+    const projectId = linked.project.id;
+    const instanceId = linked.instance.id;
+    const t = window.setTimeout(() => watchVpsStats(projectId, instanceId), 8000);
+    return () => {
+      window.clearTimeout(t);
+      unwatchVpsStats(projectId, instanceId);
+    };
+  }, [linked?.project.id, linked?.instance.id]);
+
+  const [tunnelState, setTunnelState] = useState<"idle" | "connecting" | "ready" | "error">("idle");
+  const [tunnelError, setTunnelError] = useState<string | null>(null);
+
+  const tunnelPayload = useMemo((): AdminServerTunnelPayload | null => {
+    if (resolvedUser === null) return null;
+    if (!canUseAdminExec && linked) {
+      return { projectId: linked.project.id, instanceId: linked.instance.id };
+    }
+    if (vm.provider === "tazcloud") {
+      return { provider: "tazcloud", vmId: vm.id, host: vm.host, sshUser: user };
+    }
+    if (vm.provider === "do") {
+      return { provider: "do", dropletId: Number(vm.id), sshUser: user };
+    }
+    if (vm.provider === "ssh" && linked) {
+      return { projectId: linked.project.id, instanceId: linked.instance.id };
+    }
+    return null;
+  }, [resolvedUser, canUseAdminExec, linked, vm.id, vm.host, vm.provider, user]);
+
+  const tunnelPayloadKey = tunnelPayload
+    ? ("projectId" in tunnelPayload
+      ? `${tunnelPayload.projectId}:${tunnelPayload.instanceId}`
+      : "dropletId" in tunnelPayload
+        ? `do:${tunnelPayload.dropletId}:${tunnelPayload.sshUser}`
+        : `taz:${tunnelPayload.vmId}:${tunnelPayload.host}:${tunnelPayload.sshUser}`)
+    : "";
+
+  useEffect(() => {
+    if (!tunnelPayload) return;
+    let cancelled = false;
+    setTunnelState("connecting");
+    setTunnelError(null);
+    void ensureAdminServerTunnelAsync(tunnelPayload)
+      .then(() => {
+        if (!cancelled) setTunnelState("ready");
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setTunnelState("error");
+          setTunnelError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+      releaseAdminServerTunnel(tunnelPayload);
+      setTunnelState("idle");
+    };
+  }, [tunnelPayloadKey, tunnelPayload]);
+
   const { sessions, tunnels, canViewRegistry } = useVmHostSshRegistry(vm.host);
+  const sshClientCount = clientSessionsForHost(vm.host, sessions);
 
   const connectionPanelProps = {
     host: vm.host,
@@ -585,17 +782,31 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     ? (command: string) => vpsExec(linked.project.id, linked.instance.id, command)
     : makeVmExec(vm, user);
 
+  const genieSetup = useGenieStandardCheck({
+    vm,
+    linked,
+    exec,
+    enabled: tunnelState === "ready",
+  });
+
+  const claudeSshUser = useMemo(() => {
+    if (vm.provider === "ssh") return vm.connection?.username || "root";
+    if (vm.provider === "do" || isV2) return "genie";
+    if (genieSetup.installed === true) return "genie";
+    return user;
+  }, [vm.provider, vm.connection?.username, isV2, genieSetup.installed, user]);
+
   const tabs: { key: ManageTab; label: string; icon: typeof SettingsIcon; enabled: boolean; reason?: string }[] = [
     { key: "manage", label: "Manage", icon: SettingsIcon, enabled: true },
     {
       key: "ssh",
-      label: canViewRegistry ? `Connections (${sessions.length})` : "Connections",
-      icon: Terminal,
+      label: canViewRegistry ? `SSH tunnel (${sshClientCount})` : "SSH tunnel",
+      icon: Link2,
       enabled: true,
     },
     {
       key: "tunnels",
-      label: canViewRegistry ? `Tunnels (${tunnels.length})` : "Tunnels",
+      label: canViewRegistry ? `MCP (${tunnels.length})` : "MCP",
       icon: Plug,
       enabled: true,
     },
@@ -637,25 +848,71 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         <div className="flex items-center gap-2 text-overlay0 text-md py-4">
           <Loader2 size={14} className="animate-spin" /> Detecting SSH user…
         </div>
+      ) : tunnelState === "connecting" ? (
+        <div className="flex items-center gap-2 text-overlay0 text-md py-4">
+          <Loader2 size={14} className="animate-spin" /> Opening SSH tunnel…
+        </div>
+      ) : tunnelState === "error" ? (
+        <div className="text-red text-md py-4">
+          SSH tunnel failed: {tunnelError ?? "unknown error"}
+        </div>
       ) : (
         <>
           {tab === "manage" && (
             <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-end gap-2">
-                <ClaudeManageButton vm={vm} />
-                <SshLaunchButton vm={vm} />
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-green font-mono">
+                  SSH tunnel · {user}@{vm.host}
+                </span>
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <CheckGenieSetupButton
+                    checking={genieSetup.checking}
+                    installed={genieSetup.installed}
+                    onCheck={genieSetup.runCheck}
+                    disabled={!genieSetup.recipe}
+                  />
+                  <ClaudeManageButton vm={vm} sshUser={claudeSshUser} />
+                  <SshLaunchButton vm={vm} />
+                </div>
               </div>
               {vm.provider === "do" && linked && (
                 <DropletSleepControl projectId={linked.project.id} instanceId={linked.instance.id} />
               )}
-              <VpsResourceGauges
-                exec={exec}
-                host={vm.host}
-                domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
-                isPrivateHost={vm.isPrivateHost}
-              />
-              <AdminRecipesPanel exec={exec} />
-              <AdminSystemPanel exec={exec} view="services" />
+              {sshStatsPostbackEnabled() && linked ? (
+                <VpsResourceBar
+                  host={vm.host}
+                  ipv6={vm.host.includes(":")}
+                  isPrivateHost={vm.isPrivateHost}
+                  domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
+                  stats={streamStats ? vpsStatsToBarStats(streamStats) : null}
+                  statsLoading={!streamStats && !streamError}
+                  statsError={streamError ?? undefined}
+                  onRefresh={
+                    sshStatsProbeEnabled()
+                      ? () => fetchVpsStats(linked.project.id, linked.instance.id)
+                      : undefined
+                  }
+                  refreshLoading={sshStatsProbeEnabled() && !streamStats && !streamError}
+                />
+              ) : sshStatsProbeEnabled() ? (
+                <VpsResourceGauges
+                  exec={exec}
+                  host={vm.host}
+                  domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
+                  isPrivateHost={vm.isPrivateHost}
+                />
+              ) : (
+                <VpsResourceBar
+                  host={vm.host}
+                  ipv6={vm.host.includes(":")}
+                  isPrivateHost={vm.isPrivateHost}
+                  domain={vm.ingress ? { name: vm.ingress.domain, url: vm.ingress.url } : null}
+                  stats={null}
+                  statsError={null}
+                />
+              )}
+              <AdminRecipesPanel exec={exec} deferAutoCheckMs={8000} />
+              <AdminSystemPanel exec={exec} view="services" deferRefreshMs={5000} />
             </div>
           )}
 
@@ -664,7 +921,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
           )}
 
           {tab === "ports" && (
-            <AdminSystemPanel exec={exec} view="ports" />
+            <AdminSystemPanel exec={exec} view="ports" deferRefreshMs={5000} />
           )}
 
           {tab === "processes" && (
@@ -838,10 +1095,13 @@ function VmSessionsTab({ vmHost }: { vmHost: string }) {
           {sessions.map((s) => {
             const age = now - new Date(s.lastActivity).getTime();
             const stale = age > SESSION_STALE_MS;
-            const title = s.commandLabel || (s.kind === "claude" ? "Claude" : "Shell");
+            const isClaude = s.kind === "claude" || s.kind === "claude-tmux";
+            const baseLabel = isClaude ? "Claude" : "Shell";
+            const tmuxSuffix = s.kind === "claude-tmux" ? " (tmux)" : "";
+            const title = s.commandLabel ? `${s.commandLabel}${tmuxSuffix}` : `${baseLabel}${tmuxSuffix}`;
             return (
               <li key={s.id} className="flex items-center gap-3 px-3 py-2 hover:bg-surface0/40 transition-colors">
-                <Terminal size={14} className={cn("shrink-0", s.kind === "claude" ? "text-mauve" : "text-overlay1")} />
+                <Terminal size={14} className={cn("shrink-0", isClaude ? "text-mauve" : "text-overlay1")} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-text font-medium truncate" style={{ fontSize: 13 }}>{title}</span>

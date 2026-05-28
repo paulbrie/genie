@@ -34,6 +34,7 @@ export function buildTerminalSshSpawnPayload(
 ): TerminalSshSpawnPayload | null {
   if (!tab.ssh) return null;
   const kind: TerminalLaunchKind = tab.kind ?? "shell";
+  const isClaude = kind === "claude" || kind === "claude-tmux";
   return {
     id: tab.id,
     cols,
@@ -45,8 +46,8 @@ export function buildTerminalSshSpawnPayload(
     title: tab.title,
     kind,
     command: kind === "shell" ? tab.command : undefined,
-    cwd: kind === "claude" ? (tab.claudeLaunch?.cwd ?? GENIE_PROJECT_DIR) : tab.cwd,
-    claudeResume: kind === "claude" ? !!tab.claudeLaunch?.resume : undefined,
+    cwd: isClaude ? (tab.claudeLaunch?.cwd ?? GENIE_PROJECT_DIR) : tab.cwd,
+    claudeResume: isClaude ? !!tab.claudeLaunch?.resume : undefined,
   };
 }
 

@@ -90,7 +90,16 @@ function parseServices(output: string): SystemdService[] {
   return services;
 }
 
-export function AdminSystemPanel({ exec, view = "both" }: { exec: ExecFn; view?: "both" | "services" | "ports" }) {
+export function AdminSystemPanel({
+  exec,
+  view = "both",
+  deferRefreshMs = 0,
+}: {
+  exec: ExecFn;
+  view?: "both" | "services" | "ports";
+  /** Delay the mount refresh so interactive terminals can connect first. */
+  deferRefreshMs?: number;
+}) {
   const [ports, setPorts] = useState<ListeningPort[] | null>(null);
   const [services, setServices] = useState<SystemdService[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -111,23 +120,38 @@ export function AdminSystemPanel({ exec, view = "both" }: { exec: ExecFn; view?:
     setLoading(true);
     setError(null);
     try {
-      // Run both probes in parallel (separate SSH sessions per exec call).
+      const needPorts = view === "both" || view === "ports";
+      const needServices = view === "both" || view === "services";
       const [portsRes, svcRes] = await Promise.all([
-        exec("sudo ss -tulnH 2>/dev/null || ss -tulnH"),
-        // `--all` returns inactive units too, so the panel can toggle between "Running only" and "All".
-        exec("sudo systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null"),
+        needPorts
+          ? exec("sudo ss -tulnH 2>/dev/null || ss -tulnH")
+          : Promise.resolve({ output: "", error: false }),
+        needServices
+          ? exec("sudo systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null")
+          : Promise.resolve({ output: "", error: false }),
       ]);
-      if (portsRes.error) setError(`ports: ${portsRes.output.slice(0, 200)}`);
-      else setPorts(parsePorts(portsRes.output));
-      if (svcRes.error) setError((prev) => (prev ? `${prev}; ` : "") + `services: ${svcRes.output.slice(0, 200)}`);
-      else setServices(parseServices(svcRes.output));
+      if (needPorts) {
+        if (portsRes.error) setError(`ports: ${portsRes.output.slice(0, 200)}`);
+        else setPorts(parsePorts(portsRes.output));
+      }
+      if (needServices) {
+        if (svcRes.error) setError((prev) => (prev ? `${prev}; ` : "") + `services: ${svcRes.output.slice(0, 200)}`);
+        else setServices(parseServices(svcRes.output));
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
     setLoading(false);
-  }, [exec]);
+  }, [exec, view]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    if (deferRefreshMs <= 0) {
+      refresh();
+      return;
+    }
+    const t = window.setTimeout(() => refresh(), deferRefreshMs);
+    return () => window.clearTimeout(t);
+  }, [refresh, deferRefreshMs]);
 
   // Toggle full-width when only one half is rendered so the chosen card uses
   // the available space instead of squishing into the half-width grid column.

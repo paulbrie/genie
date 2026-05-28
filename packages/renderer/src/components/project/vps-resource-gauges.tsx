@@ -404,8 +404,11 @@ export function VpsResourceGauges({ exec, host, appPort = 3000, domain, isPrivat
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const inFlightRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
@@ -422,13 +425,14 @@ export function VpsResourceGauges({ exec, host, appPort = 3000, domain, isPrivat
     } catch (err: unknown) {
       if (!ac.signal.aborted) setError(err instanceof Error ? err.message : String(err));
     } finally {
+      inFlightRef.current = false;
       if (!ac.signal.aborted) setLoading(false);
     }
   }, [exec]);
 
   useEffect(() => {
     refresh();
-    const id = window.setInterval(refresh, 5000);
+    const id = window.setInterval(refresh, 15_000);
     return () => {
       window.clearInterval(id);
       abortRef.current?.abort();

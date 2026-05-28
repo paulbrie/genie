@@ -1,6 +1,11 @@
 import { type WebSocket, WebSocket as Ws } from "ws";
 import type { VpsStatsPayload } from "@genie/vps-stats";
-import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
+import type { SshConnectionConfig } from "./ssh-client.js";
+import {
+  evictAllSessionsForHost,
+  evictSession,
+  getCachedSession,
+} from "./ssh-session-cache.js";
 import {
   ensureVpsStats,
   isGenieStatsServiceActive,
@@ -8,7 +13,8 @@ import {
   vpsStatsTailCommand,
 } from "./ensure-vps-stats.js";
 import { enqueueVpsMetricSample } from "./vps-metric-service.js";
-import { evictAllSessionsForHost } from "./ssh-session-cache.js";
+import { dbgSsh } from "../debug-ssh-log.js";
+import { getActiveSshConnections } from "./ssh-metrics.js";
 
 export const STATS_STALE_MS = 15_000;
 
@@ -176,19 +182,14 @@ async function runHostTransportLoop(
   const { config } = transport;
 
   while (!transport.abort.stop && transportHasWatchers(transport)) {
-    let sshSession: Awaited<ReturnType<typeof connectSsh>> | undefined;
-    let channel: Awaited<ReturnType<Awaited<ReturnType<typeof connectSsh>>["execStreaming"]>> | undefined;
+    let sshSession: Awaited<ReturnType<typeof getCachedSession>> | undefined;
+    let channel: Awaited<ReturnType<Awaited<ReturnType<typeof getCachedSession>>["execStreaming"]>> | undefined;
     let lineBuffer = "";
     let acquiredSlot = false;
 
     const teardownTransport = () => {
       try {
         channel?.close();
-      } catch {
-        /* */
-      }
-      try {
-        sshSession?.close();
       } catch {
         /* */
       }
@@ -201,7 +202,14 @@ async function runHostTransportLoop(
       acquiredSlot = true;
       await ensureVpsStats(config);
       const useSystemd = await isGenieStatsServiceActive(config);
-      sshSession = await connectSsh(config, { timeoutMs: 30_000 });
+      // #region agent log
+      dbgSsh("stats-stream.ts:loop", "stats stream connectSsh", "H3", {
+        host: config.host,
+        username: config.username,
+        activeSsh: getActiveSshConnections(),
+      });
+      // #endregion
+      sshSession = await getCachedSession(config);
       const streamCmd = useSystemd ? vpsStatsTailCommand() : vpsStatsDaemonCommand(5);
       channel = await sshSession.execStreaming(streamCmd);
 
@@ -245,6 +253,7 @@ async function runHostTransportLoop(
   }
 
   hostTransports.delete(ck);
+  evictSession(config);
 }
 
 function ensureHostTransport(

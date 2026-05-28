@@ -57,6 +57,20 @@ export function TerminalPanel() {
     }
   }, [tabs.length]);
 
+  // Prune mountedIds for tabs that have left state (e.g. closed from a
+  // floating window's X). Without this, re-adding the same id (Sessions →
+  // Resume) would skip the spawn/reattach effect below.
+  useEffect(() => {
+    const present = new Set(tabs.map((t) => t.id));
+    for (const id of Array.from(mountedIds.current)) {
+      if (!present.has(id)) {
+        mountedIds.current.delete(id);
+        containerRefs.current.delete(id);
+        disposeTerminal(id);
+      }
+    }
+  }, [tabs]);
+
   // Initialize terminal for new tabs
   useEffect(() => {
     for (const tab of tabs) {
@@ -65,22 +79,22 @@ export function TerminalPanel() {
       if (!container) continue;
 
       mountedIds.current.add(tab.id);
-      const term = createTerminal(container, tab.id);
-      if (tab.reattach) {
-        // Persisted server-side session: ask the manager to reattach by id.
-        wsSend("terminal:reattach", { id: tab.id, cols: term.cols, rows: term.rows });
-      } else if (tab.ssh) {
-        const payload = buildTerminalSshSpawnPayload(tab, term.cols, term.rows);
-        if (payload) wsSend("terminal:ssh:spawn", payload);
-      } else {
-        wsSend("terminal:spawn", {
-          id: tab.id,
-          cols: term.cols,
-          rows: term.rows,
-          command: tab.command,
-          cwd: tab.cwd,
-        });
-      }
+      createTerminal(container, tab.id, ({ cols, rows }) => {
+        if (tab.reattach) {
+          wsSend("terminal:reattach", { id: tab.id, cols, rows });
+        } else if (tab.ssh) {
+          const payload = buildTerminalSshSpawnPayload(tab, cols, rows);
+          if (payload) wsSend("terminal:ssh:spawn", payload);
+        } else {
+          wsSend("terminal:spawn", {
+            id: tab.id,
+            cols,
+            rows,
+            command: tab.command,
+            cwd: tab.cwd,
+          });
+        }
+      });
     }
   }, [tabs]);
 

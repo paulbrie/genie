@@ -9,6 +9,7 @@
 // so hung exec channels can't block teardown the way end() does.
 
 import crypto from "node:crypto";
+import { dbgSsh } from "../debug-ssh-log.js";
 
 export interface SshConnectionInfo {
   id: string;
@@ -79,11 +80,26 @@ export function sshConnRegister(args: {
     opener: captureOpener(args.openerStack),
     end: args.end,
   });
+  // #region agent log
+  dbgSsh("ssh-metrics.ts:register", "ssh registered", "H3", {
+    id,
+    host: args.host,
+    username: args.username,
+    kind: args.kind,
+    activeCount: active.size,
+    opener: captureOpener(args.openerStack).slice(0, 80),
+  });
+  // #endregion
   return id;
 }
 
 export function sshConnUnregister(id: string): void {
-  active.delete(id);
+  const had = active.delete(id);
+  if (had) {
+    // #region agent log
+    dbgSsh("ssh-metrics.ts:unregister", "ssh unregistered", "H11", { id, activeCount: active.size });
+    // #endregion
+  }
 }
 
 export function getActiveSshConnections(): number {
@@ -144,5 +160,8 @@ export function killSshConnectionsForHost(host: string): number {
   for (const id of ids) {
     if (killSshConnection(id)) killed++;
   }
+  // #region agent log
+  dbgSsh("ssh-metrics.ts:killHost", "kill host", "H4", { host, killed, activeCount: active.size });
+  // #endregion
   return killed;
 }

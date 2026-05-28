@@ -1,5 +1,6 @@
 import { batch } from "subjecto";
-import { wsSend, onWsClose } from "@/lib/ws";
+import { sshStatsProbeEnabled } from "@/lib/ssh-stats-enabled";
+import { wsRequest, wsSend, onWsClose } from "@/lib/ws";
 import { $admin } from "../subjects/admin";
 import type {
   AdminUser,
@@ -143,6 +144,7 @@ export function deleteAdminTazVm(vmId: string): void {
 }
 
 export function loadAdminDropletStats(): void {
+  if (!sshStatsProbeEnabled()) return;
   wsSend("admin:droplets:stats", {});
 }
 
@@ -182,8 +184,41 @@ export function resizeAdminDroplet(dropletId: number, size: string, disk: boolea
 /** SSH-probe every ACTIVE TazCloud VM for runtime port info. Mirrors the
  *  droplet stats poll. */
 export function loadAdminTazcloudStats(): void {
+  if (!sshStatsProbeEnabled()) {
+    batch(() => { $admin.getValue().tazcloud.vmStatsLoading = false; });
+    return;
+  }
   $admin.getValue().tazcloud.vmStatsLoading = true;
   wsSend("admin:tazcloud:stats", {});
+}
+
+export type AdminServerTunnelPayload =
+  | { provider: "tazcloud"; vmId: string; host: string; sshUser: string }
+  | { provider: "do"; dropletId: number; sshUser: string }
+  | { projectId: string; instanceId: string };
+
+/** Open exactly one manager-side SSH tunnel for this server (pinned until release). */
+export function ensureAdminServerTunnel(payload: AdminServerTunnelPayload): void {
+  wsSend("admin:server:tunnel:ensure", payload);
+}
+
+export function ensureAdminServerTunnelAsync(
+  payload: AdminServerTunnelPayload,
+  timeoutMs = 60_000,
+): Promise<{ key: string; host: string; username: string }> {
+  return wsRequest<{ key?: string; host?: string; username?: string; message?: string }>(
+    "admin:server:tunnel:ensure",
+    payload,
+    timeoutMs,
+  ).then((p) => {
+    if (p.message && !p.key) throw new Error(p.message);
+    if (!p.key || !p.host || !p.username) throw new Error("SSH tunnel failed");
+    return { key: p.key, host: p.host, username: p.username };
+  });
+}
+
+export function releaseAdminServerTunnel(payload: AdminServerTunnelPayload): void {
+  wsSend("admin:server:tunnel:release", payload);
 }
 
 /** Create a bare TazCloud VM. Mirrors `createAdminDroplet`. Pass `snapshot_id`

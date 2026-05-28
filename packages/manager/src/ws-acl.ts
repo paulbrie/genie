@@ -165,6 +165,10 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   "admin:tazcloud:exec": { send: "user", notes: "handler enforces project ownership for non-admins" },
   "admin:tazcloud:exec:result": { receive: "user" },
   "admin:tazcloud:exec:progress": { receive: "user" },
+  "admin:server:tunnel:ensure": { send: "user", notes: "open one SSH tunnel per server (handler enforces access)" },
+  "admin:server:tunnel:ready": { receive: "user" },
+  "admin:server:tunnel:error": { receive: "user" },
+  "admin:server:tunnel:release": { send: "user" },
   // Cancel an in-flight exec by execId (a random uuid only the initiator knows),
   // so the recipes Stop button works for any role.
   "admin:exec:cancel": { send: "user" },

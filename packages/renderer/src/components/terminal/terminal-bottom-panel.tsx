@@ -110,6 +110,22 @@ export function TerminalBottomPanel() {
     }
   }, [bottomPanelOpen, hidden, tabs.length]);
 
+  // Prune mountedIds for tabs that have left state (e.g. closed from a
+  // floating window's X — `removeTerminalTab` updates state but doesn't touch
+  // this component's per-instance Set). Without this, re-adding a tab with the
+  // same id (Sessions → Resume) would hit the `mountedIds.has(tab.id)` skip in
+  // the next effect and never spawn/reattach.
+  useEffect(() => {
+    const present = new Set(tabs.map((t) => t.id));
+    for (const id of Array.from(mountedIds.current)) {
+      if (!present.has(id)) {
+        mountedIds.current.delete(id);
+        containerRefs.current.delete(id);
+        disposeTerminal(id);
+      }
+    }
+  }, [tabs]);
+
   // Initialize terminal for new tabs
   useEffect(() => {
     if (!bottomPanelOpen || hidden) return;
@@ -127,27 +143,24 @@ export function TerminalBottomPanel() {
         continue;
       }
 
-      const term = createTerminal(container, tab.id);
-      // Only spawn for fresh (non-shared, non-restored) tabs
-      const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
-      if (!tab.shared && !isRestored) {
+      createTerminal(container, tab.id, ({ cols, rows }) => {
+        const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
+        if (tab.shared || isRestored) return;
         if (tab.reattach) {
-          // Persisted server-side session: ask the manager to reattach by id.
-          // The manager looks up the row and spawns SSH+tmux against the right host.
-          wsSend("terminal:reattach", { id: tab.id, cols: term.cols, rows: term.rows });
+          wsSend("terminal:reattach", { id: tab.id, cols, rows });
         } else if (tab.ssh) {
-          const payload = buildTerminalSshSpawnPayload(tab, term.cols, term.rows);
+          const payload = buildTerminalSshSpawnPayload(tab, cols, rows);
           if (payload) wsSend("terminal:ssh:spawn", payload);
         } else {
           wsSend("terminal:spawn", {
             id: tab.id,
-            cols: term.cols,
-            rows: term.rows,
+            cols,
+            rows,
             command: tab.command,
             cwd: tab.cwd,
           });
         }
-      }
+      });
     }
   }, [tabs, bottomPanelOpen, hidden]);
 

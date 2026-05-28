@@ -1,4 +1,5 @@
 import { batch } from "subjecto";
+import { sshStatsPostbackEnabled, sshStatsProbeEnabled } from "@/lib/ssh-stats-enabled";
 import { wsSend } from "@/lib/ws";
 import {
   $doSnapshotsLoading,
@@ -116,11 +117,13 @@ export function disconnectVps(projectId: string, instanceId: string): void {
 }
 
 export function fetchVpsStats(projectId: string, instanceId: string): void {
+  if (!sshStatsProbeEnabled()) return;
   wsSend("vps:stats", { projectId, instanceId });
 }
 
 /** Start persistent stats stream (daemon over SSH); updates arrive as vps:stats:update. */
 export function watchVpsStats(projectId: string, instanceId: string): void {
+  if (!sshStatsPostbackEnabled()) return;
   wsSend("vps:stats:watch", { projectId, instanceId });
 }
 

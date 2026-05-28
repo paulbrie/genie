@@ -50,11 +50,30 @@ export function addSshTerminalTab(ssh: SshConfig, title?: string, command?: stri
   return id;
 }
 
-/** Open an SSH terminal that starts Claude Code in `/opt/project` via server tmux. */
+/** Open an SSH terminal that starts Claude Code in `/opt/project` (direct PTY, no tmux). */
 export function launchClaudeSshTab(
   ssh: SshConfig,
   title?: string,
   opts?: ClaudeLaunchOptions,
+): string {
+  return launchClaudeTabInternal(ssh, "claude", title, opts);
+}
+
+/** Same as launchClaudeSshTab, but wraps Claude in a tmux session so the
+ *  process survives WS / SSH drops and can be reattached from the Sessions tab. */
+export function launchClaudeTmuxSshTab(
+  ssh: SshConfig,
+  title?: string,
+  opts?: ClaudeLaunchOptions,
+): string {
+  return launchClaudeTabInternal(ssh, "claude-tmux", title, opts);
+}
+
+function launchClaudeTabInternal(
+  ssh: SshConfig,
+  kind: "claude" | "claude-tmux",
+  title: string | undefined,
+  opts: ClaudeLaunchOptions | undefined,
 ): string {
   tabCounter.value++;
   const id = `tab-${Date.now()}-${tabCounter.value}`;
@@ -62,7 +81,7 @@ export function launchClaudeSshTab(
     id,
     title: title ?? defaultClaudeTabTitle(ssh),
     ssh,
-    kind: "claude",
+    kind,
     claudeLaunch: {
       cwd: opts?.cwd ?? GENIE_PROJECT_DIR,
       resume: opts?.resume,
@@ -149,7 +168,8 @@ export function loadPersistedTerminals(filters?: Partial<{ projectId: string | n
  *  terminal-bottom-panel) branch on `tab.reattach` and send
  *  `terminal:reattach { id, cols, rows }` instead of a fresh spawn. */
 export function reattachPersistedTerminal(record: PersistedTerminalSession): void {
-  const title = record.commandLabel || (record.kind === "claude" ? "Claude" : "SSH") + ` · ${record.vpsHost}`;
+  const isClaudeKind = record.kind === "claude" || record.kind === "claude-tmux";
+  const title = record.commandLabel || `${isClaudeKind ? "Claude" : "SSH"} · ${record.vpsHost}`;
   const newTab: TerminalTab = {
     id: record.id,
     title,

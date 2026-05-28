@@ -33,7 +33,9 @@ const INIT: RecipeRuntimeState = { installed: null, checking: false, running: fa
  *  fires 8+ checks on mount; without a cap, small VMs (1 vCPU / 1 GB) drop
  *  connections during pubkey auth ("Connection lost before handshake"). Keep
  *  this low so opening Manage doesn't create a burst of parallel SSH sessions. */
-const SSH_CONCURRENCY = 2;
+/** One SSH exec at a time per VM — the Manage popup already fires gauges,
+ *  services, and user probes; extra parallelism only multiplies handshakes. */
+const SSH_CONCURRENCY = 1;
 
 /** Tiny async semaphore. Returns a wrapped function that enforces an upper
  *  bound on concurrent in-flight calls. Excess calls queue FIFO. */
@@ -83,7 +85,14 @@ function StreamingOutput({ text, running }: { text: string; running: boolean }) 
 /** Admin-scoped Add Services panel: works without a project linkage by taking an
  *  exec callback. State is kept locally per-mount (no global store), so navigating
  *  away resets it — appropriate for ad-hoc admin use. */
-export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
+export function AdminRecipesPanel({
+  exec,
+  deferAutoCheckMs = 600,
+}: {
+  exec: ExecFn;
+  /** Delay auto-check burst so SSH terminals / Claude can connect first. */
+  deferAutoCheckMs?: number;
+}) {
   // Combined built-in + user recipes — user-created entries override built-ins
   // with the same slug (so "chrome-custom" never shadows the built-in "chrome",
   // but editing a recipe with slug="chrome" would).
@@ -198,13 +207,20 @@ export function AdminRecipesPanel({ exec }: { exec: ExecFn }) {
   // checked when they first appear in ALL_RECIPES.
   const autoCheckedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    for (const r of ALL_RECIPES) {
-      if (autoCheckedRef.current.has(r.id)) continue;
-      autoCheckedRef.current.add(r.id);
-      void check(r);
-    }
+    if (ALL_RECIPES.length === 0) return;
+    // Let gauges / SSH-user probes grab the shared cached session first.
+    const t = window.setTimeout(() => {
+      for (const r of ALL_RECIPES) {
+        // Genie Standard Setup is checked from the Manage tab header button.
+        if (r.id === "genie-standard") continue;
+        if (autoCheckedRef.current.has(r.id)) continue;
+        autoCheckedRef.current.add(r.id);
+        void check(r);
+      }
+    }, deferAutoCheckMs);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ALL_RECIPES.length]);
+  }, [ALL_RECIPES.length, deferAutoCheckMs]);
 
   async function install(recipe: VpsRecipeDef, secrets?: Record<string, string>) {
     update(recipe.id, { running: true, error: null, output: "" });

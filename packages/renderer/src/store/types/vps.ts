@@ -214,7 +214,7 @@ export interface SshConfig {
   privateKeyPath?: string;
 }
 
-export type TerminalLaunchKind = "shell" | "claude";
+export type TerminalLaunchKind = "shell" | "claude" | "claude-tmux";
 
 export interface ClaudeLaunchOptions {
   cwd?: string;
@@ -245,7 +245,7 @@ export interface TerminalTab {
 export interface PersistedTerminalSession {
   id: string;
   ownerId: string;
-  kind: "shell" | "claude";
+  kind: "shell" | "claude" | "claude-tmux";
   projectId: string | null;
   instanceId: string | null;
   vpsHost: string;

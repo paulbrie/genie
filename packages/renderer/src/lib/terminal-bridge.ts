@@ -39,7 +39,8 @@ const instances = new Map<string, TerminalInstance>();
 
 export function createTerminal(
   container: HTMLElement,
-  sessionId: string
+  sessionId: string,
+  onFitted?: (size: { cols: number; rows: number }) => void,
 ): Terminal {
   const terminal = new Terminal({
     theme: THEME,
@@ -69,10 +70,16 @@ export function createTerminal(
     return true;
   });
 
-  // Initial fit + focus
+  // Initial fit + focus (keyboard goes to the remote PTY via onData only — do not
+  // inject CSI focus sequences here; they get echoed by bash and corrupt TUIs).
   requestAnimationFrame(() => {
-    fitAddon.fit();
+    try {
+      fitAddon.fit();
+    } catch {
+      // ignore during teardown
+    }
     terminal.focus();
+    onFitted?.({ cols: terminal.cols, rows: terminal.rows });
   });
 
   // Wire input to WS

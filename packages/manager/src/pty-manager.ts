@@ -5,6 +5,7 @@ import path from "node:path";
 import { Client } from "ssh2";
 import { sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./vps/ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./vps/socks-dial.js";
+import type { PtySessionKind } from "./pty-session-service.js";
 
 const MAX_SCROLLBACK = 100_000; // chars
 
@@ -155,7 +156,7 @@ function registerSession(id: string, proc: PtyHandle, ownerId?: string): void {
   });
 }
 
-export type PtyLaunchKind = "shell" | "claude";
+export type PtyLaunchKind = "shell" | "claude" | "claude-tmux";
 
 export interface ClaudeLaunchSpec {
   cwd?: string;
@@ -172,12 +173,34 @@ export interface SshPtyConfig {
   claude?: ClaudeLaunchSpec;
   /** Legacy shell command string; still accepted for recipe terminals and old rows. */
   initialCommand?: string;
-  /** When set, the remote command is wrapped in
-   *  `tmux attach -t ${tmuxSessionName} || tmux new -s ${tmuxSessionName} '<cmd>'`
-   *  so the underlying process survives SSH channel drops + Manager restarts.
-   *  A subsequent spawn with the same name will reattach instead of starting
-   *  a fresh shell. Requires `tmux` on the VPS. */
+  /** When set, the remote command is wrapped in tmux so process state survives
+   *  SSH channel drops. Requires `tmux` on the VPS. */
   tmuxSessionName?: string;
+  /** When true (History reattach for shell tabs), attach to an existing tmux
+   *  session with `tmuxSessionName` if present. Fresh spawns default to false
+   *  and always kill any same-named session before starting a new one. */
+  tmuxAttachExisting?: boolean;
+  /** Kill a leftover tmux session with this name before a non-tmux command
+   *  (used for Claude, which never runs inside tmux). */
+  clearStaleTmuxSession?: string;
+}
+
+/** tmux policy:
+ *    • `claude`      → direct PTY, no tmux (kill any stale session with this id first).
+ *    • `claude-tmux` → wrap in tmux just like `shell` so the process survives drops
+ *                      and a Sessions-tab reattach picks it back up.
+ *    • `shell`       → spawn replaces stale sessions; reattach attaches to existing. */
+export function sshPtyTmuxPolicy(
+  sessionId: string,
+  opts: { kind?: PtyLaunchKind | string; mode: "spawn" | "reattach" },
+): Pick<SshPtyConfig, "tmuxSessionName" | "tmuxAttachExisting" | "clearStaleTmuxSession"> {
+  if (opts.kind === "claude") {
+    return { clearStaleTmuxSession: sessionId };
+  }
+  if (opts.mode === "reattach") {
+    return { tmuxSessionName: sessionId, tmuxAttachExisting: true };
+  }
+  return { tmuxSessionName: sessionId, tmuxAttachExisting: false };
 }
 
 /** Quote a string for safe use inside POSIX-shell single-quotes. */
@@ -200,6 +223,28 @@ function claudeInnerFromSpec(spec: ClaudeLaunchSpec): { startDir: string; inner:
   return { startDir: spec.cwd?.trim() || DEFAULT_PROJECT_DIR, inner };
 }
 
+/** Direct PTY exec for Claude (no nested login shell / tmux). */
+function claudeDirectExecCommand(config: SshPtyConfig, spec: ClaudeLaunchSpec): string {
+  const { startDir, inner: claudeCmd } = claudeInnerFromSpec(spec);
+  const stalePrefix = config.clearStaleTmuxSession
+    ? `tmux kill-session -t ${config.clearStaleTmuxSession} 2>/dev/null || true; `
+    : "";
+  return `${stalePrefix}cd ${startDir} 2>/dev/null || true; export TERM=xterm-256color; exec ${claudeCmd}`;
+}
+
+/** tmux inner command — login shell + exec claude. */
+function claudeLoginShellCommand(spec: ClaudeLaunchSpec): string {
+  const { startDir, inner: claudeCmd } = claudeInnerFromSpec(spec);
+  const compound = `cd ${startDir} 2>/dev/null || true; ${claudeCmd}`;
+  return `exec $SHELL -ilc ${shSingleQuote(compound)}`;
+}
+
+/** ssh `exec` runs one command string — multi-line tmux scripts need a shell wrapper. */
+function wrapRemoteShellScript(script: string): string {
+  if (!script.includes("\n")) return script;
+  return `exec bash -lc ${shSingleQuote(script)}`;
+}
+
 /** Map WS `terminal:ssh:spawn` / `vps:terminal:spawn` launch fields onto PTY config. */
 export function sshPtyLaunchFromSpawnMessage(input: {
   kind?: PtyLaunchKind;
@@ -207,9 +252,9 @@ export function sshPtyLaunchFromSpawnMessage(input: {
   cwd?: string;
   claudeResume?: boolean;
 }): Pick<SshPtyConfig, "launchKind" | "claude" | "initialCommand"> {
-  if (input.kind === "claude") {
+  if (input.kind === "claude" || input.kind === "claude-tmux") {
     return {
-      launchKind: "claude",
+      launchKind: input.kind,
       claude: {
         cwd: input.cwd?.trim() || DEFAULT_PROJECT_DIR,
         resume: !!input.claudeResume,
@@ -242,10 +287,22 @@ export function isClaudeTerminalSpawn(input: {
   command?: string;
   title?: string;
 }): boolean {
-  if (input.kind === "claude") return true;
+  if (input.kind === "claude" || input.kind === "claude-tmux") return true;
   const cmd = input.command?.trim();
   if (cmd?.startsWith("claude") || (cmd && /^cd\s+\S+\s*&&\s*claude/.test(cmd))) return true;
   return input.title?.toLowerCase().startsWith("claude") ?? false;
+}
+
+/** What goes into pty_sessions.kind for this spawn — preserves the tmux variant
+ *  so a Sessions-tab reattach knows to use tmux attach instead of a fresh PTY. */
+export function persistedKindForSpawn(input: {
+  kind?: PtyLaunchKind;
+  command?: string;
+  title?: string;
+}): PtySessionKind {
+  if (input.kind === "claude-tmux") return "claude-tmux";
+  if (isClaudeTerminalSpawn(input)) return "claude";
+  return "shell";
 }
 
 export function persistCommandLabelForSpawn(input: {
@@ -254,7 +311,7 @@ export function persistCommandLabelForSpawn(input: {
   title?: string;
   claudeResume?: boolean;
 }): string | null {
-  if (input.kind === "claude" || isClaudeTerminalSpawn(input)) {
+  if (isClaudeTerminalSpawn(input)) {
     return claudeCommandLabel(!!input.claudeResume || (input.command?.includes("--resume") ?? false));
   }
   return input.command || input.title || null;
@@ -266,16 +323,18 @@ export function ptyLaunchFieldsFromPersisted(row: {
   commandLabel: string | null;
 }): Pick<SshPtyConfig, "launchKind" | "claude" | "initialCommand"> {
   const label = row.commandLabel?.trim() ?? "";
-  if (row.kind === "claude" || label.startsWith("claude") || /^cd\s+\S+\s*&&\s*claude/.test(label)) {
+  if (row.kind === "claude" || row.kind === "claude-tmux"
+      || label.startsWith("claude") || /^cd\s+\S+\s*&&\s*claude/.test(label)) {
+    const launchKind: PtyLaunchKind = row.kind === "claude-tmux" ? "claude-tmux" : "claude";
     const cdThen = label.match(/^cd\s+(\S+)\s*&&\s*(.+)$/);
     if (cdThen) {
       return {
-        launchKind: "claude",
+        launchKind,
         claude: { cwd: cdThen[1], resume: cdThen[2].includes("--resume") },
       };
     }
     return {
-      launchKind: "claude",
+      launchKind,
       claude: { cwd: DEFAULT_PROJECT_DIR, resume: label.includes("--resume") },
     };
   }
@@ -289,8 +348,8 @@ function resolveTmuxInnerCommand(config: SshPtyConfig): {
 } {
   const defaultShell = `cd ${DEFAULT_PROJECT_DIR} 2>/dev/null || true; exec $SHELL -l`;
 
-  if (config.launchKind === "claude" && config.claude) {
-    return claudeInnerFromSpec(config.claude);
+  if ((config.launchKind === "claude" || config.launchKind === "claude-tmux") && config.claude) {
+    return { inner: claudeLoginShellCommand(config.claude) };
   }
 
   const initialCommand = config.initialCommand;
@@ -304,12 +363,14 @@ function resolveTmuxInnerCommand(config: SshPtyConfig): {
   if (cdThen) {
     const rest = cdThen[2].trim();
     if (rest.startsWith("claude")) {
-      return { startDir: cdThen[1], inner: rest };
+      const compound = `cd ${cdThen[1]} 2>/dev/null || true; ${rest}`;
+      return { inner: `exec $SHELL -ilc ${shSingleQuote(compound)}` };
     }
   }
 
   if (trimmed.startsWith("claude")) {
-    return { startDir: DEFAULT_PROJECT_DIR, inner: trimmed };
+    const compound = `cd ${DEFAULT_PROJECT_DIR} 2>/dev/null || true; ${trimmed}`;
+    return { inner: `exec $SHELL -ilc ${shSingleQuote(compound)}` };
   }
 
   return { inner: trimmed };
@@ -326,13 +387,22 @@ function buildRemoteCommand(config: SshPtyConfig): string {
   //     `claude` behave exactly as if typed in an SSH session. A plain
   //     non-interactive `bash -c "claude"` can't grab the terminal, so claude
   //     exits immediately (the bug behind "[Process exited with code 0]").
+  const killStaleTmux = (name: string) => `tmux kill-session -t ${name} 2>/dev/null || true; `;
+
   if (!config.tmuxSessionName) {
+    const stalePrefix = config.clearStaleTmuxSession
+      ? killStaleTmux(config.clearStaleTmuxSession)
+      : "";
+    // Note: launchKind "claude-tmux" should always reach the tmux branch (the
+    // policy sets tmuxSessionName for it). This direct-exec path is only for
+    // launchKind "claude" — explicit direct-PTY-no-tmux variant.
     if (config.launchKind === "claude" && config.claude) {
-      const { inner } = claudeInnerFromSpec(config.claude);
-      return `exec $SHELL -ilc ${shSingleQuote(inner)}`;
+      return claudeDirectExecCommand(config, config.claude);
     }
-    if (!config.initialCommand) return 'cd /opt/project 2>/dev/null || true; exec $SHELL -l';
-    return `exec $SHELL -ilc ${shSingleQuote(config.initialCommand)}`;
+    if (!config.initialCommand) {
+      return `${stalePrefix}cd /opt/project 2>/dev/null || true; exec $SHELL -l`;
+    }
+    return `${stalePrefix}exec $SHELL -ilc ${shSingleQuote(config.initialCommand)}`;
   }
   const { startDir, inner } = resolveTmuxInnerCommand(config);
   const name = config.tmuxSessionName!;
@@ -372,16 +442,25 @@ function buildRemoteCommand(config: SshPtyConfig): string {
     `tmux set-option -t ${name} status off 2>/dev/null || true`,
     `tmux set-option -t ${name} mouse on 2>/dev/null || true`,
   ].join('; ');
-  // Bash script: apply globals, then either attach (with per-session overrides
-  // for already-running sessions) or create fresh.
-  return [
+  const freshTmux = [
     setGlobal,
+    killStaleTmux(name).trimEnd(),
+    `exec tmux new${cdFlag} -s ${name} ${shSingleQuote(inner)}`,
+  ].join('\n');
+
+  if (config.tmuxAttachExisting !== true) {
+    return wrapRemoteShellScript(freshTmux);
+  }
+
+  const attachOrNew = [
     `if tmux has-session -t ${name} 2>/dev/null; then`,
     `  ${setForExisting};`,
     `  exec tmux attach -t ${name};`,
     `fi`,
     `exec tmux new${cdFlag} -s ${name} ${shSingleQuote(inner)}`,
   ].join('\n');
+
+  return wrapRemoteShellScript([setGlobal, attachOrNew].join('\n'));
 }
 
 function resolveHome(p: string): string {
@@ -476,18 +555,29 @@ export function spawnSshPty(
   config: SshPtyConfig,
   ownerId?: string,
 ): void {
-  if (sessions.has(id)) return;
+  // Replace a stale in-memory session (React strict-mode remount, respawn, etc.).
+  if (sessions.has(id)) closePty(id);
 
   let conn = new Client();
   let dataCallback: ((data: string) => void) | null = null;
   let exitCallback: ((info: { exitCode: number }) => void) | null = null;
   let channel: import("ssh2").ClientChannel | null = null;
+  const pendingWrites: string[] = [];
   let currentCols = cols;
   let currentRows = rows;
   let cancelled = false;
 
+  const flushPendingWrites = () => {
+    if (!channel) return;
+    for (const chunk of pendingWrites) channel.write(chunk);
+    pendingWrites.length = 0;
+  };
+
   const proc: PtyHandle = {
-    write: (data) => channel?.write(data),
+    write: (data) => {
+      if (channel) channel.write(data);
+      else pendingWrites.push(data);
+    },
     resize: (c, r) => {
       currentCols = c;
       currentRows = r;
@@ -601,9 +691,8 @@ export function spawnSshPty(
             return;
           }
           channel = stream;
-          // PTY sessions multiplex stderr into the primary stream — ssh2 often
-          // delivers identical bytes on both `data` and `stderr`, which doubled
-          // every prompt/escape sequence in the xterm pane.
+          stream.setWindow(currentRows, currentCols, currentRows * 16, currentCols * 8);
+          flushPendingWrites();
           stream.on("data", (data: Buffer) => dataCallback?.(data.toString()));
           // ssh2 reports the real exit status via the 'exit' event (code OR a
           // terminating signal); the 'close' event carries no code, so the old
@@ -729,6 +818,7 @@ export function removeCollaborator(sessionId: string, userId: string): void {
 export function isAuthorized(sessionId: string, userId: string): boolean {
   const session = sessions.get(sessionId);
   if (!session) return true; // allow if session not tracked
+  if (!session.ownerId) return true;
   return session.ownerId === userId || session.collaboratorIds.has(userId);
 }
 

@@ -109,38 +109,49 @@ function SingleTerminalWindow({
     if (hasTerminal(tab.id)) {
       reattachTerminal(tab.id, containerRef.current);
     } else {
-      const term = createTerminal(containerRef.current, tab.id);
-      const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
-      if (!tab.shared && !isRestored) {
+      const spawnWhenFitted = (cols: number, rows: number) => {
+        const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
+        if (tab.shared || isRestored) return;
         if (tab.reattach) {
-          // Persisted server-side session: ask the manager to reattach by id.
-          // The manager looks up the row and spawns SSH+tmux against the right host.
           window.dispatchEvent(new CustomEvent("genie:terminal:data", {
             detail: { id: tab.id, data: `\x1b[2mReattaching to ${tab.id}...\x1b[0m\r\n` },
           }));
-          wsSend("terminal:reattach", { id: tab.id, cols: term.cols, rows: term.rows });
+          wsSend("terminal:reattach", { id: tab.id, cols, rows });
         } else if (tab.ssh) {
-          // Show feedback so the pane isn't blank during connect (especially over
-          // slow links or when IPv6 is hanging at TCP timeout).
           window.dispatchEvent(new CustomEvent("genie:terminal:data", {
             detail: { id: tab.id, data: `\x1b[2mConnecting to ${tab.ssh.username || "genie"}@${tab.ssh.host}:${tab.ssh.port || 22}...\x1b[0m\r\n` },
           }));
-          // initialCommand runs server-side inside tmux — do not also type it
-          // into the PTY from the client or Claude will show it in its prompt.
-          const payload = buildTerminalSshSpawnPayload(tab, term.cols, term.rows);
+          const payload = buildTerminalSshSpawnPayload(tab, cols, rows);
           if (payload) wsSend("terminal:ssh:spawn", payload);
         } else {
           wsSend("terminal:spawn", {
             id: tab.id,
-            cols: term.cols,
-            rows: term.rows,
+            cols,
+            rows,
             command: tab.command,
             cwd: tab.cwd,
           });
         }
-      }
+      };
+
+      createTerminal(containerRef.current, tab.id, ({ cols, rows }) => {
+        spawnWhenFitted(cols, rows);
+      });
     }
   }, [tab]);
+
+  // Focus xterm when output arrives so keystrokes reach Claude without an extra click.
+  useEffect(() => {
+    let didFocus = false;
+    const onData = (e: Event) => {
+      const detail = (e as CustomEvent<{ id: string }>).detail;
+      if (detail.id !== tab.id || didFocus) return;
+      didFocus = true;
+      requestAnimationFrame(() => focusXterm(tab.id));
+    };
+    window.addEventListener("genie:terminal:data", onData);
+    return () => window.removeEventListener("genie:terminal:data", onData);
+  }, [tab.id]);
 
   // Refit when window becomes visible (restored from minimize)
   useEffect(() => {
@@ -268,8 +279,15 @@ function SingleTerminalWindow({
         </div>
       </div>
 
-      {/* Terminal container */}
-      <div ref={containerRef} className="flex-1 min-h-0" />
+      {/* Terminal container — stopPropagation so window chrome doesn't steal xterm focus */}
+      <div
+        ref={containerRef}
+        className="flex-1 min-h-0"
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          focusXterm(tab.id);
+        }}
+      />
 
       {/* Resize handle */}
       {!maximized && (
