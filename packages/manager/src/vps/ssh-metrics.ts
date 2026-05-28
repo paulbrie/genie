@@ -1,18 +1,109 @@
-// Live count of outbound SSH connections (ssh2 Clients) the manager currently
+// Registry of outbound SSH connections (ssh2 Clients) the manager currently
 // holds open — VM exec/stat/forward connections (ssh-client.ts) and
 // interactive terminal connections (pty-manager.ts). Surfaced in the sidebar
-// so operators can watch SSH load. Each open is paired with exactly one close
-// at the instrumented sites.
-let active = 0;
+// gauge so operators can watch SSH load, and listed in /ssh with a Kill
+// action so a leak can be triaged live.
+//
+// Each open is paired with exactly one close at the instrumented sites; the
+// `end` thunk is what the /ssh kill action invokes — ssh2's `Client#end()`
+// triggers the `close` event which in turn calls `sshConnUnregister`.
 
-export function sshConnOpened(): void {
-  active++;
+import crypto from "node:crypto";
+
+export interface SshConnectionInfo {
+  id: string;
+  host: string;
+  port: number;
+  username: string;
+  /** "client" = programmatic connectSsh, "pty" = interactive terminal session. */
+  kind: "client" | "pty";
+  /** ms epoch when the underlying ssh2 client emitted `ready`. */
+  openedAt: number;
+  /** Short caller hint — first non-internal stack frame, useful when many
+   *  call sites look alike (e.g. fs-handler vs vps-db-handler). */
+  opener: string;
 }
 
-export function sshConnClosed(): void {
-  active = Math.max(0, active - 1);
+interface Entry extends SshConnectionInfo {
+  end: () => void;
+}
+
+const active = new Map<string, Entry>();
+
+function captureOpener(): string {
+  // Skip register frame + connectSsh/pty frame to reach the caller. Stack frames
+  // are best-effort; bundling may flatten them — falls back to "unknown".
+  const stack = new Error().stack ?? "";
+  const lines = stack.split("\n").slice(1);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line.startsWith("at ")) continue;
+    if (line.includes("ssh-metrics")) continue;
+    if (line.includes("ssh-client")) continue;
+    if (line.includes("pty-manager")) continue;
+    // Pull "fn (file:line)" or "file:line" out of the v8 stack format.
+    const m = line.match(/at\s+(.+)/);
+    return m ? m[1].slice(0, 160) : line.slice(0, 160);
+  }
+  return "unknown";
+}
+
+export function sshConnRegister(args: {
+  host: string;
+  port: number;
+  username: string;
+  kind: "client" | "pty";
+  end: () => void;
+}): string {
+  const id = crypto.randomUUID();
+  active.set(id, {
+    id,
+    host: args.host,
+    port: args.port,
+    username: args.username,
+    kind: args.kind,
+    openedAt: Date.now(),
+    opener: captureOpener(),
+    end: args.end,
+  });
+  return id;
+}
+
+export function sshConnUnregister(id: string): void {
+  active.delete(id);
 }
 
 export function getActiveSshConnections(): number {
-  return active;
+  return active.size;
+}
+
+export function listSshConnections(): SshConnectionInfo[] {
+  const out: SshConnectionInfo[] = [];
+  for (const e of active.values()) {
+    out.push({
+      id: e.id,
+      host: e.host,
+      port: e.port,
+      username: e.username,
+      kind: e.kind,
+      openedAt: e.openedAt,
+      opener: e.opener,
+    });
+  }
+  return out.sort((a, b) => a.openedAt - b.openedAt);
+}
+
+/** Closes the underlying ssh2 client. The client's own `close` event will then
+ *  fire sshConnUnregister, so the registry stays consistent without a second
+ *  delete here. Returns false if no such id is tracked. */
+export function killSshConnection(id: string): boolean {
+  const entry = active.get(id);
+  if (!entry) return false;
+  try {
+    entry.end();
+  } catch {
+    // ssh2 throws if the socket is already half-closed; the close event will
+    // still fire from the other side, so swallow.
+  }
+  return true;
 }

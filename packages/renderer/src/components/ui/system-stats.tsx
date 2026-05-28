@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useSubject } from "subjecto/react";
 import type { MemoryInfo } from "@/store/types";
 import { $system } from "@/store/subjects";
+import { switchNav } from "@/store/actions";
 import {
   Tooltip,
   TooltipTrigger,
@@ -87,6 +89,12 @@ export function SystemStats() {
   const [system] = useSubject($system);
   const { cpu, mem, memory } = system;
   const uiCpu = useUiCpu();
+  const router = useRouter();
+
+  const openSshPanel = (): void => {
+    switchNav("ssh");
+    router.push("/ssh");
+  };
 
   const total = memory?.physical || 1;
   const wiredPct = memory ? Math.min((memory.wired / total) * 100, 100) : 0;
@@ -235,8 +243,13 @@ export function SystemStats() {
       {system.sshConnections !== undefined && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex items-center gap-2 cursor-default">
-              <label className="w-[30px] text-md font-bold uppercase tracking-wide text-subtext0">
+            <button
+              type="button"
+              onClick={openSshPanel}
+              className="flex items-center gap-2 w-full text-left hover:bg-surface0/40 rounded transition-colors"
+              title="Open SSH connections panel"
+            >
+              <label className="w-[30px] text-md font-bold uppercase tracking-wide text-subtext0 cursor-pointer">
                 SSH
               </label>
               <div className="flex-1 h-1.5 bg-surface0 rounded-full overflow-hidden">
@@ -251,13 +264,14 @@ export function SystemStats() {
               <span className="w-8 text-right text-md tabular-nums text-subtext1">
                 {system.sshConnections}
               </span>
-            </div>
+            </button>
           </TooltipTrigger>
           <TooltipContent>
             <div className="flex flex-col gap-0.5 text-md max-w-[220px]">
               <span>Live outbound SSH connections the manager holds open (VMs + pooled bastions).</span>
               <span className="text-overlay0">
                 Bar scaled to 20. Sustained spikes can trip a bastion&rsquo;s rate-limiter.
+                Click to inspect &amp; kill connections.
               </span>
             </div>
           </TooltipContent>

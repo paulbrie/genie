@@ -1,6 +1,6 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
-import { migrateOrgs, migrateServerCredentials } from "./db/migrate.js";
+import { migrateOrgCredentials, migrateOrgs, migrateServerCredentials } from "./db/migrate.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
 import { createServer, shutdown } from "./ws-server.js";
@@ -61,6 +61,11 @@ try {
   await migrateServerCredentials();
 } catch (err) {
   console.error("[migrate] server_credentials migration failed:", err);
+}
+try {
+  await migrateOrgCredentials();
+} catch (err) {
+  console.error("[migrate] org_credentials migration failed:", err);
 }
 try {
   const { inserted, updated } = await seedDefaultRecipes(DEFAULT_RECIPES);

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, boolean, timestamp, index, integer, real, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, boolean, timestamp, index, uniqueIndex, integer, real, jsonb } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -467,6 +467,33 @@ export const projectMembers = pgTable(
     index("idx_project_members_user").on(table.userId),
   ]
 );
+
+/**
+ * Per-org encrypted credentials for cloud providers / external services. One
+ * row per (org, kind) — e.g. ("...uuid", "tazcloud-token"). Stored using the
+ * same AES-256-GCM envelope as server_credentials so a manager-secret rotation
+ * has the same blast radius for both. Kept normalised (one row per secret)
+ * rather than columns-on-organizations so adding DigitalOcean / GitHub /
+ * GitLab tokens later is just another `kind` value.
+ */
+export const orgCredentials = pgTable("org_credentials", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }).notNull(),
+  kind: text("kind").notNull(),            // "tazcloud-token" | "tazcloud-ssh-key" | …
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  authTag: text("auth_tag").notNull(),
+  salt: text("salt").notNull(),
+  createdBy: uuid("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  // $onUpdate bumps updatedAt on every drizzle UPDATE so the readCredential
+  // tiebreaker stays correct even if a future direct UPDATE forgets to set it.
+  updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
+}, (t) => [
+  // UNIQUE so setCredential can use ON CONFLICT (one round trip, atomic) and
+  // concurrent writes can't produce duplicate rows for the same (org, kind).
+  uniqueIndex("idx_org_credentials_lookup").on(t.orgId, t.kind),
+]);
 
 /**
  * Genie-side display names for cloud VMs, independent of provider API support.

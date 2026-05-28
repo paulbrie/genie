@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from "react";
-import { useSubject } from "subjecto/react";
+import { useSubject, useDeepSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import type { BaseImageTemplate, DeployLogEntry, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
 import { $admin, $auth, $commandRunOutputs, $projects, $selectedProjectId, $vpsDeploy } from "@/store/subjects";
+import { $orgSettings } from "@/store/subjects/org-settings";
 import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadDeployLogs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, uninstallVpsRecipe, vpsExec, wakeVps } from "@/store/actions";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { Button } from "@/components/ui/button";
@@ -595,7 +596,15 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
     setError(null);
     try {
       const res = await exec("sudo ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
-      if (res.error || res.output.includes("UFW_NOT_INSTALLED")) {
+      // SSH-layer failure (handshake timeout, key rejected, host unreachable):
+      // the exec never reached `ufw`. Surface the error instead of misreporting
+      // "Inactive" — otherwise users see a false-negative firewall state with
+      // no hint that the connection itself is broken.
+      if (res.error) {
+        setError(res.output || "SSH exec failed");
+        return;
+      }
+      if (res.output.includes("UFW_NOT_INSTALLED")) {
         setActive(false);
         setRules([]);
         return;
@@ -715,12 +724,14 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
         <span className="text-md font-medium text-subtext0">Firewall</span>
         <span className={cn(
           "text-[11px] px-1.5 py-0.5 rounded font-medium",
-          active ? "bg-green/15 text-green" : "bg-overlay0/15 text-overlay0"
+          error ? "bg-red/15 text-red"
+            : active ? "bg-green/15 text-green"
+            : "bg-overlay0/15 text-overlay0"
         )}>
-          {initialLoading ? "..." : active ? "Active" : "Inactive"}
+          {initialLoading ? "..." : error ? "Unknown" : active ? "Active" : "Inactive"}
         </span>
         <div className="flex-1" />
-        {!initialLoading && (
+        {!initialLoading && !error && (
           <button
             onClick={active ? disableFirewall : enableFirewall}
             disabled={actionLoading || refreshing}
@@ -1106,41 +1117,35 @@ export function CommandsTab({ project }: { project: ProjectDef }) {
 
 function ProjectSettingsTab({ project }: { project: ProjectDef }) {
   const [name, setName] = useState(project.name);
-  const [vpsRegion, setVpsRegion] = useState(project.vpsRegion || "nyc1");
-  const [vpsSize, setVpsSize] = useState(project.vpsSize || "s-2vcpu-4gb");
-  const [vpsBaseImageConfigName, setVpsBaseImageConfigName] = useState(project.vpsBaseImageConfigName || "");
-  const [doToken, setDoToken] = useState(project.doToken || "");
-  const [gitlabDeployKey, setGitlabDeployKey] = useState(project.gitlabDeployKey || "");
-  const [dbUrl, setDbUrl] = useState(project.dbUrl || "");
-  const [gitFolders, setGitFolders] = useState<string[]>(project.gitFolders || []);
-  const [newGitFolder, setNewGitFolder] = useState("");
   const [teamId, setTeamId] = useState<string | null>(project.teamId ?? null);
 
-  const adminState = useDeepSubjectAll($admin);
-  const baseImageTemplates = adminState.baseImage.templates;
-  const teamList = adminState.teams.list;
+  const [adminTeams] = useDeepSubject($admin, "teams");
+  const adminTeamList = adminTeams.list;
+  const [orgTeamList] = useDeepSubject($orgSettings, "myTeams");
+  const [orgMine] = useDeepSubject($orgSettings, "mine");
 
   const [auth] = useSubject($auth);
-  // Owning-team transfer is admin-only — server enforces this too (project:update drops
-  // the teamId field for non-admins), but we hide the control to make that explicit.
-  const canChangeTeam = auth.user?.role === "admin" || auth.user?.role === "superadmin";
+  const isAdmin = auth.user?.role === "admin" || auth.user?.role === "superadmin";
+  // Org admins (anyone with ≥1 manageable org) can also set the team — limited
+  // to teams in their own orgs. Server re-checks: project:update for non-system-
+  // admins drops teamId unless the target team is in a manageable org.
+  const canChangeTeam = isAdmin || orgMine.length > 0;
+
+  // Build the team picker's option list. Admins see everything (admin:teams:list);
+  // org admins see only teams in their orgs (org:list-mine payload).
+  const teamOptions = useMemo(() => {
+    if (isAdmin) return adminTeamList.map((t) => ({ id: t.id, label: t.name }));
+    return orgTeamList.map((t) => ({ id: t.id, label: `${t.name} (${t.orgName})` }));
+  }, [isAdmin, adminTeamList, orgTeamList]);
 
   useEffect(() => {
-    loadBaseImageConfigs();
-    if (canChangeTeam) loadAdminTeams();
-  }, [canChangeTeam]);
+    if (isAdmin) loadAdminTeams();
+    // org-admin team list arrives via $orgSettings, loaded by the Sidebar mount.
+  }, [isAdmin]);
 
   // Reset form when project changes
   useEffect(() => {
     setName(project.name);
-    setVpsRegion(project.vpsRegion || "nyc1");
-    setVpsSize(project.vpsSize || "s-2vcpu-4gb");
-    setVpsBaseImageConfigName(project.vpsBaseImageConfigName || "");
-    setDoToken(project.doToken || "");
-    setGitlabDeployKey(project.gitlabDeployKey || "");
-    setDbUrl(project.dbUrl || "");
-    setGitFolders(project.gitFolders || []);
-    setNewGitFolder("");
     setTeamId(project.teamId ?? null);
   }, [project.id]);
 
@@ -1153,16 +1158,10 @@ function ProjectSettingsTab({ project }: { project: ProjectDef }) {
     const payload: Record<string, unknown> = {
       id: project.id,
       name: trimName,
-      vpsRegion,
-      vpsSize,
-      vpsBaseImageConfigName: vpsBaseImageConfigName || undefined,
-      doToken: doToken || undefined,
-      gitlabDeployKey: gitlabDeployKey || undefined,
-      dbUrl: dbUrl || undefined,
-      gitFolders,
     };
     // Only send teamId when the operator is permitted to change it. The server
-    // also drops the field for non-admins, but this keeps the wire payload honest.
+    // re-checks: for org admins it accepts only team ids belonging to one of
+    // their manageable orgs.
     if (canChangeTeam) payload.teamId = teamId;
     wsSend("project:update", payload);
     setSaved(true);
@@ -1190,153 +1189,22 @@ function ProjectSettingsTab({ project }: { project: ProjectDef }) {
             onChange={(e) => setTeamId(e.target.value || null)}
             className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans focus:border-mauve"
           >
-            <option value="">No team (admin-only)</option>
-            {teamList.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
+            <option value="">{isAdmin ? "No team (admin-only)" : "— Select a team —"}</option>
+            {teamOptions.map((t) => (
+              <option key={t.id} value={t.id}>{t.label}</option>
             ))}
           </select>
           <p className="text-md text-overlay0">
-            Normal users only see projects whose team they belong to. Projects with no team are hidden from non-admins.
+            {isAdmin
+              ? "Normal users only see projects whose team they belong to. Projects with no team are hidden from non-admins."
+              : "Teams from organizations you administer. Members of the selected team will see this project."}
           </p>
         </div>
       )}
 
-      <div className="flex flex-col gap-1">
-        <label className="text-md font-semibold text-subtext0">VPS Configuration</label>
-        <div className="flex gap-2">
-          <div className="flex-1 flex flex-col gap-1">
-            <label className="text-md text-overlay0">Region</label>
-            <select
-              value={vpsRegion}
-              onChange={(e) => setVpsRegion(e.target.value)}
-              className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans focus:border-mauve"
-            >
-              <option value="nyc1">NYC 1 (New York)</option>
-              <option value="sfo3">SFO 3 (San Francisco)</option>
-              <option value="ams3">AMS 3 (Amsterdam)</option>
-              <option value="lon1">LON 1 (London)</option>
-              <option value="fra1">FRA 1 (Frankfurt)</option>
-              <option value="sgp1">SGP 1 (Singapore)</option>
-              <option value="blr1">BLR 1 (Bangalore)</option>
-              <option value="syd1">SYD 1 (Sydney)</option>
-            </select>
-          </div>
-          <div className="flex-1 flex flex-col gap-1">
-            <label className="text-md text-overlay0">Droplet Size</label>
-            <select
-              value={vpsSize}
-              onChange={(e) => setVpsSize(e.target.value)}
-              className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans focus:border-mauve"
-            >
-              <option value="s-1vcpu-1gb">1 vCPU / 1 GB</option>
-              <option value="s-1vcpu-2gb">1 vCPU / 2 GB</option>
-              <option value="s-2vcpu-2gb">2 vCPU / 2 GB</option>
-              <option value="s-2vcpu-4gb">2 vCPU / 4 GB</option>
-              <option value="s-4vcpu-8gb">4 vCPU / 8 GB</option>
-              <option value="s-8vcpu-16gb">8 vCPU / 16 GB</option>
-            </select>
-          </div>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-md text-overlay0">Template</label>
-          <select
-            value={vpsBaseImageConfigName}
-            onChange={(e) => setVpsBaseImageConfigName(e.target.value)}
-            className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans focus:border-mauve"
-          >
-            <option value="">Default</option>
-            {Object.keys(baseImageTemplates).filter((n) => n !== "default").map((tplName) => (
-              <option key={tplName} value={tplName}>{tplName}</option>
-            ))}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-md text-overlay0">DO API Token</label>
-          <input
-            type="password"
-            value={doToken}
-            onChange={(e) => setDoToken(e.target.value)}
-            placeholder="Leave blank to use global default from Settings"
-            className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans placeholder:text-overlay0 focus:border-mauve font-mono"
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-md text-overlay0">Deploy Key</label>
-          <textarea
-            value={gitlabDeployKey}
-            onChange={(e) => setGitlabDeployKey(e.target.value)}
-            placeholder="Leave blank to use global default from Settings"
-            spellCheck={false}
-            className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans placeholder:text-overlay0 focus:border-mauve font-mono resize-y min-h-[60px] max-h-[120px]"
-            rows={2}
-          />
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <label className="text-md font-semibold text-subtext0">Database</label>
-        <div className="flex flex-col gap-1">
-          <label className="text-md text-overlay0">PostgreSQL URL</label>
-          <input
-            type="text"
-            value={dbUrl}
-            onChange={(e) => setDbUrl(e.target.value)}
-            placeholder="postgres://user:pass@localhost:5432/dbname"
-            spellCheck={false}
-            className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans placeholder:text-overlay0 focus:border-mauve font-mono"
-          />
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <label className="text-md font-semibold text-subtext0">Git Folders</label>
-        <p className="text-overlay0" style={{ fontSize: 12 }}>Paths on the VPS to manage with the Git tab (e.g. /opt/project)</p>
-        {gitFolders.map((folder, i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <input
-              type="text"
-              value={folder}
-              onChange={(e) => {
-                const next = [...gitFolders];
-                next[i] = e.target.value;
-                setGitFolders(next);
-              }}
-              className="flex-1 bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans placeholder:text-overlay0 focus:border-mauve font-mono"
-            />
-            <button
-              onClick={() => setGitFolders(gitFolders.filter((_, j) => j !== i))}
-              className="text-overlay0 hover:text-red transition-colors p-1"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ))}
-        <div className="flex items-center gap-1.5">
-          <input
-            type="text"
-            value={newGitFolder}
-            onChange={(e) => setNewGitFolder(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && newGitFolder.trim()) {
-                setGitFolders([...gitFolders, newGitFolder.trim()]);
-                setNewGitFolder("");
-              }
-            }}
-            placeholder="/opt/project"
-            className="flex-1 bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans placeholder:text-overlay0 focus:border-mauve font-mono"
-          />
-          <button
-            onClick={() => {
-              if (newGitFolder.trim()) {
-                setGitFolders([...gitFolders, newGitFolder.trim()]);
-                setNewGitFolder("");
-              }
-            }}
-            className="text-overlay0 hover:text-green transition-colors p-1"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
+      <div className="text-xs text-overlay0 border-t border-surface0 pt-3 mt-1">
+        Servers, deploy keys, database URLs and git folders are now managed in{" "}
+        <span className="text-subtext0 font-mono">/clouds</span> — provision a VM there and attach it to this project from the Servers panel above.
       </div>
 
       <div className="flex gap-1.5 items-center justify-end pt-1">

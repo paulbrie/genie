@@ -8,7 +8,7 @@ export const $admin = new DeepSubject<AdminState>({
   loading: false, drawerOpen: false, drawerMode: "edit", drawerRow: null,
   sqlQuery: "", sqlResult: null, sqlError: null, sqlLoading: false, sqlOpen: false,
   droplets: [], dropletsLoading: false, dropletsError: null, dropletsCreating: false, dropletsCreateError: null, dropletStats: {}, dropletResize: {},
-  tazcloud: { vms: [], loading: false, error: null, creating: false, createError: null, projects: [], projectsLoading: false, projectsError: null, projectCreating: false, projectError: null, vmStats: {}, vmStatsLoading: false, snapshots: [], snapshotsLoading: false, snapshotsError: null, snapshotCreating: {}, snapshotCreateError: null, ingressBusy: {}, ingressError: null },
+  tazcloud: { vms: [], loading: false, error: null, creating: false, createError: null, projects: [], projectsLoading: false, projectsError: null, projectCreating: false, projectError: null, vmStats: {}, vmStatsErrors: {}, vmStatsLoading: false, snapshots: [], snapshotsLoading: false, snapshotsError: null, snapshotCreating: {}, snapshotCreateError: null, ingressBusy: {}, ingressError: null },
   baseImage: { configs: {}, templates: {}, deletedTemplates: {}, buildingName: null, progress: [], error: null, failedDropletId: null, failedDropletIp: null, history: [] },
   sshKey: { exists: false, publicKey: null, fingerprint: null, createdAt: null, history: [], loading: false, regenerating: false },
   drizzlePush: { running: false, output: "", open: false },

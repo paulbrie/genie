@@ -6,3 +6,4 @@ export * from "./vps";
 export * from "./tracker";
 export * from "./admin";
 export * from "./recipes";
+export * from "./ssh";

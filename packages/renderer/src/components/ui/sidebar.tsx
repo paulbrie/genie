@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSubject } from "subjecto/react";
+import { useSubject, useDeepSubject } from "subjecto/react";
 import { TerminalSquare, LogOut, Radio, MessageSquarePlus } from "lucide-react";
 import type { AuthUser } from "@/store/types";
 import { $auth, $manager } from "@/store/subjects";
+import { $orgSettings } from "@/store/subjects/org-settings";
 import { addTerminalTab, markUpdatesSeen } from "@/store/actions";
+import { loadMyOrgs } from "@/store/actions/org-settings";
 import { logout } from "@/lib/ws";
 import { SystemStats } from "@/components/ui/system-stats";
 import { SidebarNav } from "@/components/ui/sidebar-nav";
@@ -105,6 +107,28 @@ export function Sidebar({
 function UserBadge() {
   const [auth] = useSubject($auth);
   const user = auth.user as AuthUser | null;
+
+  // Org-membership summary line. listMine returns only orgs where the user is
+  // owner|admin (server-side filter), so the presence of any entry already
+  // signals "you can manage this". Fired here so the badge populates even when
+  // the user never opens Settings; the action is idempotent and fast.
+  const [mine] = useDeepSubject($orgSettings, "mine");
+  useEffect(() => {
+    if (auth.status === "authenticated") loadMyOrgs();
+  }, [auth.status, auth.user?.id]);
+  // Skip the org line for superadmins — the server returns ALL orgs for them,
+  // which would produce a noisy comma-separated wall. The "superadmin" pill
+  // above already conveys the relevant signal.
+  const orgBadge = useMemo<string | null>(() => {
+    if (auth.user?.role === "superadmin") return null;
+    const ownerNames = mine.filter((o) => o.role === "owner").map((o) => o.name);
+    const adminNames = mine.filter((o) => o.role === "admin").map((o) => o.name);
+    const parts: string[] = [];
+    if (ownerNames.length) parts.push(`owner of ${ownerNames.join(", ")}`);
+    if (adminNames.length) parts.push(`admin of ${adminNames.join(", ")}`);
+    return parts.length ? parts.join(" · ") : null;
+  }, [mine, auth.user?.role]);
+
   if (!user) return null;
 
   return (
@@ -125,18 +149,25 @@ function UserBadge() {
       </div>
       <div className="flex flex-col flex-1 min-w-0">
         <span className="text-md text-subtext0 truncate">{user.name}</span>
-        {user.role && user.role !== "user" && (
+        {user.role && (
           <span
             className={cn(
               "text-xs",
               user.role === "superadmin"
                 ? "text-mauve"
-                : user.role === "tazcloud"
-                  ? "text-teal"
-                  : "text-blue",
+                : user.role === "admin"
+                  ? "text-blue"
+                  : user.role === "tazcloud"
+                    ? "text-teal"
+                    : "text-overlay0",
             )}
           >
             {user.role}
+          </span>
+        )}
+        {orgBadge && (
+          <span className="text-xs text-overlay0 truncate" title={orgBadge}>
+            {orgBadge}
           </span>
         )}
       </div>

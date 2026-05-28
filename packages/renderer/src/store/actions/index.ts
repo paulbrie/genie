@@ -17,3 +17,4 @@ export * from "./file-template";
 export * from "./file-explorer";
 export * from "./security";
 export * from "./window-manager";
+export * from "./ssh";

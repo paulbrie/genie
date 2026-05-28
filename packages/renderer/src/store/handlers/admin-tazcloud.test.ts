@@ -26,6 +26,7 @@ beforeEach(() => {
   t.creating = false;
   t.createError = null;
   t.vmStats = {};
+  t.vmStatsErrors = {};
   t.vmStatsLoading = false;
   vi.clearAllMocks();
 });

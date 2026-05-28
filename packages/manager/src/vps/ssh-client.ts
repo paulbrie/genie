@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
-import { sshConnOpened, sshConnClosed } from "./ssh-metrics.js";
+import { sshConnRegister, sshConnUnregister } from "./ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
 
 export interface SshConnectionConfig {
@@ -296,14 +296,19 @@ export async function connectSsh(config: SshConnectionConfig, opts?: { timeoutMs
     const conn = new Client();
     const privateKey = loadPrivateKey(config.privateKey, config.privateKeyPath);
 
-    let counted = false;
+    let registryId: string | null = null;
     conn
       .on("ready", () => {
-        counted = true;
-        sshConnOpened();
+        registryId = sshConnRegister({
+          host: config.host,
+          port: config.port,
+          username: config.username,
+          kind: "client",
+          end: () => conn.end(),
+        });
         resolve(makeSession(conn));
       })
-      .on("close", () => { if (counted) { counted = false; sshConnClosed(); } })
+      .on("close", () => { if (registryId) { sshConnUnregister(registryId); registryId = null; } })
       .on("error", (err) => {
         console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));

@@ -16,6 +16,37 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "./index.js";
 
+/** Create the org_credentials table (encrypted per-org cloud-provider tokens
+ *  + SSH keys — currently TazCloud, room for DO / GitHub later). Idempotent. */
+export async function migrateOrgCredentials(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS org_credentials (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    ciphertext TEXT NOT NULL,
+    iv TEXT NOT NULL,
+    auth_tag TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    created_by UUID NOT NULL REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  // The lookup index must be UNIQUE so setCredential can use ON CONFLICT (one
+  // round trip, atomic) and so concurrent writes can't produce duplicate rows.
+  // An earlier release shipped this as a non-unique index — drop + recreate.
+  // Dedupe first by keeping the freshest row per (org_id, kind) so the unique
+  // CREATE doesn't fail on installations that already raced.
+  await db.execute(sql`DELETE FROM org_credentials a
+    USING org_credentials b
+    WHERE a.org_id = b.org_id
+      AND a.kind = b.kind
+      AND (a.updated_at < b.updated_at
+        OR (a.updated_at = b.updated_at AND a.id < b.id))`);
+  await db.execute(sql`DROP INDEX IF EXISTS idx_org_credentials_lookup`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_credentials_lookup ON org_credentials(org_id, kind)`);
+}
+
 /** Create the server_credentials table (encrypted SSH keys for generic
  *  bring-your-own servers). Idempotent; safe to call on every boot. */
 export async function migrateServerCredentials(): Promise<void> {

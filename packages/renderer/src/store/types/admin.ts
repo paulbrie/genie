@@ -102,6 +102,9 @@ export interface AdminTazState {
   projectError: string | null;
   /** Per-VM stats keyed by vmId. Populated by `admin:tazcloud:stats`. */
   vmStats: Record<string, VpsStats>;
+  /** Per-VM stats-probe error keyed by vmId. Set when an SSH probe fails so the
+   *  card can show "stats unavailable" with the reason instead of a blank gap. */
+  vmStatsErrors: Record<string, string>;
   /** True while the periodic stats refresh is in flight. */
   vmStatsLoading: boolean;
   /** Snapshot inventory + load state. Populated by `admin:tazcloud:snapshot:list`. */

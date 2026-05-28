@@ -4,7 +4,7 @@ import type { DirEntry } from "@/lib/genie-api";
 
 export type ProcessStatus = "running" | "stopped" | "crashed";
 
-export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "history" | "tracker" | "settings" | "admin" | "architecture" | "topology" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help";
+export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "history" | "tracker" | "settings" | "admin" | "architecture" | "topology" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help" | "ssh";
 
 /** Sub-tab for the `/clouds/*` route group (the unified DigitalOcean / TazCloud
  *  admin panel). The URL segment after `/clouds/` is one of these literals. */
@@ -164,6 +164,10 @@ export interface PresenceSession {
    *  direct-SSH sessions (which carry no instance id). */
   attachedServers: { instanceId: string | null; host: string }[];
   recentActions: { type: string; ts: number }[];
+  /** Floating windows ("popups") this session currently has open/minimized.
+   *  Reported by the renderer's $windowManager via presence:windows; shown to
+   *  admins in the Connected Users panel. */
+  openWindows: { title: string; icon: string; minimized: boolean }[];
   ip: string | null;
   userAgent: string | null;
 }

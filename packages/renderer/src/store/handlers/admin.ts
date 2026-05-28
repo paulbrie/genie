@@ -298,7 +298,14 @@ export const handlers: HandlerMap = {
   "admin:tazcloud:stats": (payload) => {
     batch(() => {
       const t = $admin.getValue().tazcloud;
-      if (payload.stats) Object.assign(t.vmStats, payload.stats);
+      if (payload.stats) {
+        Object.assign(t.vmStats, payload.stats);
+        // A VM that now reports stats clears any prior error — even when this
+        // payload carries no `errors` key.
+        for (const id of Object.keys(payload.stats)) delete t.vmStatsErrors[id];
+      }
+      // Freshly-failed probes record the reason for the card to surface.
+      if (payload.errors) Object.assign(t.vmStatsErrors, payload.errors);
       t.vmStatsLoading = false;
     });
   },

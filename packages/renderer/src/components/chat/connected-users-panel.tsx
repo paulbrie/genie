@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo } from "react";
 import { useSubject } from "subjecto/react";
-import { Users, Monitor, Chrome, MapPin, Globe, Wifi } from "lucide-react";
+import { Users, Monitor, Chrome, MapPin, Globe, Wifi, AppWindow } from "lucide-react";
 import type { PresenceSession } from "@/store/types";
 import { $presenceSessions } from "@/store/subjects";
 import { requestPresenceDetail } from "@/store/actions";
+import { iconMap } from "@/components/ui/window-toolbar";
 function parseBrowser(ua: string | null): string {
   if (!ua) return "Unknown";
   if (ua.includes("Edg/")) return "Edge";
@@ -148,6 +149,26 @@ export function ConnectedUsersPanel() {
                               </span>
                             )}
                           </div>
+                          {s.openWindows && s.openWindows.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pl-5">
+                              {s.openWindows.map((w, wi) => {
+                                const Icon = iconMap[w.icon] || AppWindow;
+                                return (
+                                  <span
+                                    key={wi}
+                                    className={
+                                      "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] " +
+                                      (w.minimized ? "bg-surface0 text-overlay0" : "bg-mauve/15 text-mauve")
+                                    }
+                                    title={w.minimized ? "minimized" : "open"}
+                                  >
+                                    <Icon size={10} className="shrink-0" />
+                                    {w.title}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       );
                     })}

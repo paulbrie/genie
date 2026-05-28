@@ -96,6 +96,18 @@ describe("ws-acl", () => {
       expect(entry?.receive).toBe("tazcloud");
     });
 
+    it("logs:errors:* is superadmin-only and server→client only", () => {
+      // The combined "manager" log stays admin; the stderr error stream is locked
+      // to superadmin and must never be sendable from a client.
+      expect(canReceive("admin", "logs:data")).toBe(true);
+      expect(canReceive("admin", "logs:errors:data")).toBe(false);
+      expect(canReceive("superadmin", "logs:errors:data")).toBe(true);
+      expect(canReceive("superadmin", "logs:errors:backlog")).toBe(true);
+      expect(canSend("superadmin", "logs:errors:data")).toBe(false);
+      // Subscribing/clearing rides the existing logs:* gate (admin+ may send).
+      expect(canSend("admin", "logs:subscribe")).toBe(true);
+    });
+
     it("user-facing namespaces are accessible to all roles", () => {
       expect(canSend("user", "chat:send")).toBe(true);
       expect(canReceive("user", "chat:message")).toBe(true);

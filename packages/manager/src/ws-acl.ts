@@ -87,6 +87,12 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // Admin-scoped orgs management — handler-level checks gate by org-ownership
   // for non-superadmins.
   "admin:orgs": { send: "admin", receive: "admin" },
+  // Org-admin-scoped operations: an org owner/admin (who may otherwise be a
+  // plain "user" at the system role) manages members/teams + provisions Cloud
+  // servers using the org's own stored credentials. Each handler re-checks
+  // userCanManageOrg(callerId, orgId); the ACL just lets the message reach
+  // the handler.
+  org: { send: "user", receive: "user", scope: "team", notes: "handler enforces userCanManageOrg(callerId, orgId)" },
   // The Clouds panel uses admin:droplets:* and admin:tazcloud:* — exposed to tazcloud.
   "admin:droplets": { send: "tazcloud", receive: "tazcloud" },
   "admin:tazcloud": { send: "tazcloud", receive: "tazcloud" },
@@ -99,6 +105,7 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   stats: { send: "admin", receive: "admin" },
   system: { send: "admin", receive: "admin" },
   process: { send: "admin", receive: "admin" },
+  ssh: { send: "admin", receive: "admin" },
 
   // Superadmin-only namespace.
   recipes: { send: "superadmin", receive: "superadmin" },
@@ -171,6 +178,14 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   "project:members:remove": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
   "project:members:set-role": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
   "project:members:updated": { receive: "user" },
+
+  // Dedicated error stream in /logs. The combined "manager" log source stays
+  // admin (logs namespace default), but these carry a stderr-only copy that can
+  // include stack traces and internal failure detail, so they're locked to
+  // superadmin. Server→client only (no `send`); the client subscribes via the
+  // existing logs:subscribe with { source: "errors" }.
+  "logs:errors:data": { receive: "superadmin", notes: "stderr error stream broadcast; superadmin-only" },
+  "logs:errors:backlog": { receive: "superadmin", notes: "stderr error backlog on subscribe; superadmin-only" },
 };
 
 /** Look up the effective ACL entry for a message type. Returns null when nothing matches and policy is deny-unknown. */

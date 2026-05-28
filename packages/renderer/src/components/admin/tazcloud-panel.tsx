@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon, AlertTriangle } from "lucide-react";
 import { $admin, $auth, $manager, $persistedTerminals, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
@@ -896,6 +896,7 @@ export function TazCloudPanel() {
               const isDeleting = deleting.has(vm.id);
               const isRenaming = renamingId === vm.id;
               const stats = admin.tazcloud.vmStats[vm.id];
+              const statsError = admin.tazcloud.vmStatsErrors[vm.id];
               const statsLoading = isActive && !stats && admin.tazcloud.vmStatsLoading;
               // vCPU label from size slug if present (DO format); TazCloud sizes are word
               // labels (small/medium/...) so this gracefully no-ops.
@@ -995,6 +996,14 @@ export function TazCloudPanel() {
                         {!stats && !statsLoading && !isActive && (
                           <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
                             VM is {vm.status.toLowerCase()}
+                          </div>
+                        )}
+                        {!stats && !statsLoading && isActive && statsError && (
+                          <div
+                            title={statsError}
+                            className="flex items-center justify-center gap-1.5 mt-3 py-3 text-red/80 text-xs bg-red/5 rounded-md cursor-help"
+                          >
+                            <AlertTriangle size={12} /> Stats unavailable
                           </div>
                         )}
 

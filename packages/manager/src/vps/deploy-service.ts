@@ -1,4 +1,5 @@
 import { connectSsh, type SshConnectionConfig, type SshSession } from "./ssh-client.js";
+import { execCached } from "./ssh-session-cache.js";
 
 export function remoteDir(_projectName: string): string {
   return "/opt/project";
@@ -230,14 +231,16 @@ export interface VpsStats {
 export async function vpsStats(
   config: SshConnectionConfig,
 ): Promise<VpsStats> {
-  const session = await connectSsh(config);
-  try {
-    // Two /proc/stat samples 1s apart for real-time CPU, plus memory, disk, processes and ports
-    const output = await session.exec(
-      `grep 'cpu ' /proc/stat; sleep 1; echo "===CPU2==="; grep 'cpu ' /proc/stat; echo "===MEM==="; cat /proc/meminfo; echo "===DISK==="; df -B1 / | tail -1; echo "===PROCS==="; ps -eo pid=,ppid=,user=,pcpu=,rss=,comm= --sort=-pcpu | head -50; echo "===PORTS==="; ss -tlnp 2>/dev/null || true`,
-    );
+  // Stats probes ride a cached SSH session so the Clouds panels (which fan
+  // out across every VM on every refresh tick) stop paying for a fresh TCP+SSH
+  // handshake per probe. The cache handles redial on a dead session.
+  // Two /proc/stat samples 1s apart for real-time CPU, plus memory, disk, processes and ports.
+  const output = await execCached(
+    config,
+    `grep 'cpu ' /proc/stat; sleep 1; echo "===CPU2==="; grep 'cpu ' /proc/stat; echo "===MEM==="; cat /proc/meminfo; echo "===DISK==="; df -B1 / | tail -1; echo "===PROCS==="; ps -eo pid=,ppid=,user=,pcpu=,rss=,comm= --sort=-pcpu | head -50; echo "===PORTS==="; ss -tlnp 2>/dev/null || true`,
+  );
 
-    let cpuPercent = 0;
+  let cpuPercent = 0;
     let memUsedBytes = 0;
     let memTotalBytes = 0;
     let diskUsedBytes = 0;
@@ -342,9 +345,6 @@ export async function vpsStats(
     const externalPorts = [...externalPortSet].sort((a, b) => a - b);
 
     return { cpuPercent, memUsedBytes, memTotalBytes, memPercent, diskUsedBytes, diskTotalBytes, diskPercent, processes, openPorts, externalPorts };
-  } finally {
-    session.close();
-  }
 }
 
 export async function vpsLogs(

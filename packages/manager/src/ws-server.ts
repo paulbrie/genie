@@ -15,7 +15,7 @@ import * as cloudVmAliases from "./cloud-vm-alias-service.js";
 import * as projectManager from "./project-manager.js";
 import { startMonitoring, stopMonitoring, setMonitoringInterval, getDockerBin } from "./monitor.js";
 import { handleChat, type ChatModelId } from "./chat.js";
-import { startLogCapture, getLogBuffer, clearLogBuffer } from "./log-capture.js";
+import { startLogCapture, getLogBuffer, clearLogBuffer, getErrorBuffer, clearErrorBuffer } from "./log-capture.js";
 import { setPtyEventCallback, spawnPty, spawnSshPty, writePty, resizePty, closePty, closeAllPtys, getSessionAccess, getScrollback, addCollaborator, removeCollaborator, isAuthorized, removeCollaboratorFromAll, getUserSessionDetails } from "./pty-manager.js";
 import { createPtySession, forgetPtySession, listPtySessions, touchPtySession } from "./pty-session-service.js";
 
@@ -36,7 +36,7 @@ import * as railwayService from "./railway-service.js";
 import { getClaudeUserId } from "./db/seed.js";
 import { getDb } from "./db/index.js";
 import { deployLogs, aiUsage, users, savedQueries, teams, teamMembers } from "./db/schema.js";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { connectSsh, pickWorkingSshUser, type SshSession } from "./vps/ssh-client.js";
 import type { StreamingChannel } from "./vps/ssh-client.js";
@@ -53,7 +53,7 @@ import { setupMcpSecurityTunnel, type McpSecurityTunnel } from "./vps/mcp-securi
 import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tunnel.js";
 import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
 import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type AgentOutboundMessage, type StatsPayload } from "./types.js";
-import { getActiveSshConnections } from "./vps/ssh-metrics.js";
+import { getActiveSshConnections, listSshConnections, killSshConnection } from "./vps/ssh-metrics.js";
 import * as settingsService from "./settings-service.js";
 import type { BaseImageConfig, BaseImageTemplate } from "./settings-service.js";
 import fs from "node:fs";
@@ -108,6 +108,75 @@ let lastStatsTs = Date.now();
 
 /** tazcloud/admin/superadmin — roles that may exec on any VM without an explicit
  *  project-ownership check. Plain users are owner-scoped (see userCanAccessVm). */
+/** Async firewall preset for newly-created TazCloud VMs: poll SSH up to 3 min,
+ *  then apply default-deny + allow 22/3000 via UFW. Used by both the admin and
+ *  the org-scoped create paths so both produce VMs with the same baseline.
+ *  Snapshot-booted VMs are skipped — they carry their own firewall config and
+ *  the SSH user depends on the snapshot's source image. Fire-and-forget. */
+function applyTazcloudFirewallPreset(
+  vm: { id: string; ssh_host: string; image?: string | null; snapshot_id?: string | null },
+  privateKey: string | null | undefined,
+  label: string,
+): void {
+  if (!privateKey || !vm.ssh_host || vm.snapshot_id) return;
+  void (async () => {
+    const keyPath = ensureTazcloudKeyOnDisk(privateKey);
+    // v2.0.0 vxlan-bastion VMs ship with `genie`, reached over WireGuard.
+    // Legacy v6: image-default user, direct SSH.
+    const sshUser = defaultSshUserForVm(vm);
+    const conn = { host: vm.ssh_host, port: 22, username: sshUser, privateKeyPath: keyPath };
+    // Poll SSH up to 3 minutes.
+    const sshStart = Date.now();
+    let ready = false;
+    while (Date.now() - sshStart < 180_000) {
+      try {
+        const s = await connectSsh(conn, { timeoutMs: 10_000 });
+        await s.exec("true");
+        s.close();
+        ready = true;
+        break;
+      } catch { /* not yet */ }
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+    if (!ready) {
+      console.warn(`[${label}] firewall preset: SSH didn't come up for ${vm.id} (${vm.ssh_host}) within 3min — skipping`);
+      return;
+    }
+    try {
+      const ufwSession = await connectSsh(conn);
+      await ufwSession.exec([
+        "sudo ufw --force reset",
+        "sudo ufw default deny incoming",
+        "sudo ufw default allow outgoing",
+        "sudo ufw allow 22/tcp",
+        "sudo ufw allow 3000/tcp",
+        "sudo ufw --force enable",
+      ].join(" && "));
+      ufwSession.close();
+      console.log(`[${label}] firewall preset applied to ${vm.id} (${vm.ssh_host}): SSH + 3000 open`);
+    } catch (err) {
+      console.warn(`[${label}] firewall preset failed for ${vm.id}:`, err);
+    }
+  })().catch(() => {});
+}
+
+/** When a TazCloud VM is deleted (from either the admin path or the org-scoped
+ *  one), strip its renderer-side display alias and detach it from any owning
+ *  project so the project's `vpsInstances` list doesn't keep a dangling
+ *  `tazcloud.vmId` reference. */
+async function cleanupTazcloudVmReferences(vmId: string): Promise<void> {
+  await cloudVmAliases.clearAlias("tazcloud", vmId);
+  const projects = await projectService.getAll();
+  for (const p of projects) {
+    const inst = p.vpsInstances.find((v) => v.tazcloud?.vmId === vmId);
+    if (inst) {
+      await projectService.removeVpsInstance(p.id, inst.id);
+      await broadcastProjectList();
+      break;
+    }
+  }
+}
+
 function isPrivilegedRole(role: Role | null): boolean {
   return role === "tazcloud" || role === "admin" || role === "superadmin";
 }
@@ -1005,6 +1074,14 @@ interface ClientAction {
   ts: number;
 }
 
+/** A floating window ("popup") the client currently has open or minimized.
+ *  Sourced from the renderer's $windowManager via presence:windows. */
+interface PresenceWindow {
+  title: string;
+  icon: string;
+  minimized: boolean;
+}
+
 interface ClientState {
   userId: string | null;
   user: { id: string; name: string; email: string; avatarUrl: string | null } | null;
@@ -1020,6 +1097,8 @@ interface ClientState {
    *  Used by the 3D topology to draw real user → server lines. */
   selectedProjectId: string | null;
   recentActions: ClientAction[];
+  /** Floating windows ("popups") this client currently has open/minimized. */
+  openWindows: PresenceWindow[];
   ip: string | null;
   userAgent: string | null;
 }
@@ -1403,7 +1482,7 @@ function getConnectedUserIds(): string[] {
 }
 
 const PRESENCE_SKIP_TYPES = new Set([
-  "ping", "pong", "stats", "pty:data", "pty:resize", "presence:nav", "presence:detail",
+  "ping", "pong", "stats", "pty:data", "pty:resize", "presence:nav", "presence:windows", "presence:detail",
 ]);
 
 function broadcastPresence(): void {
@@ -1432,6 +1511,8 @@ interface PresenceSession {
    *  edge per entry, matching either by instanceId or host. */
   attachedServers: PresenceAttachedServer[];
   recentActions: ClientAction[];
+  /** Floating windows ("popups") this session currently has open/minimized. */
+  openWindows: PresenceWindow[];
   ip: string | null;
   userAgent: string | null;
 }
@@ -1474,6 +1555,7 @@ async function buildPresenceDetail(): Promise<PresenceSession[]> {
       selectedProjectId: state.selectedProjectId,
       attachedServers: attached ? [...attached.values()] : [],
       recentActions: state.recentActions.slice(-25),
+      openWindows: state.openWindows,
       ip: state.ip,
       userAgent: state.userAgent,
     });
@@ -1495,11 +1577,20 @@ async function sendInitialData(ws: WebSocket, userId?: string): Promise<void> {
     send(ws, { type: "project:log", payload: { projectId, commandId, stream: "stdout", data } });
   }
 
-  // Send logs sources and backlog
-  send(ws, { type: "logs:sources", payload: { sources: ["manager"] } });
+  // Send logs sources and backlog. The superadmin-only "errors" source carries
+  // a stderr-only copy (stack traces etc.); only advertise it to superadmins.
+  const role = clients.get(ws)?.role;
+  const sources = role === "superadmin" ? ["manager", "errors"] : ["manager"];
+  send(ws, { type: "logs:sources", payload: { sources } });
   const logBacklog = getLogBuffer();
   if (logBacklog) {
     send(ws, { type: "logs:backlog", payload: { source: "manager", data: logBacklog } });
+  }
+  if (role === "superadmin") {
+    const errBacklog = getErrorBuffer();
+    if (errBacklog) {
+      send(ws, { type: "logs:errors:backlog", payload: { source: "errors", data: errBacklog } });
+    }
   }
 
   // Send active terminal sessions for this user
@@ -1536,6 +1627,10 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
             if (state) {
               state.userId = user.id;
               state.user = { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl };
+              // Mirror the auth:token path — without state.role, sendInitialData
+              // gates everything as a guest (no logs:errors:* backlog, ACL says
+              // "user" for every receive check until the next page reload).
+              state.role = user.role as Role;
               state.impersonatedBy = null;
             }
             const authPayload = await buildAuthPayload(user, token);
@@ -1658,6 +1753,24 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (msg.type === "presence:project") {
     const id = msg.payload?.projectId;
     state.selectedProjectId = typeof id === "string" && id ? id : null;
+    void broadcastPresenceDetail();
+    return;
+  }
+
+  if (msg.type === "presence:windows") {
+    const raw = Array.isArray(msg.payload?.windows) ? msg.payload.windows : [];
+    state.openWindows = raw
+      .filter((w: unknown): w is Record<string, unknown> => !!w && typeof w === "object")
+      .slice(0, 50)
+      .map((w: Record<string, unknown>) => ({
+        title: typeof w.title === "string" ? w.title.slice(0, 120) : "Untitled",
+        // Cap icon at 64 chars — it's a lucide icon-name key (e.g. "terminal"),
+        // never a payload. Without this an authenticated client could ship
+        // multi-MB strings that broadcastPresenceDetail amplifies to every
+        // admin on every presence tick.
+        icon: typeof w.icon === "string" ? w.icon.slice(0, 64) : "window",
+        minimized: w.minimized === true,
+      }));
     void broadcastPresenceDetail();
     return;
   }
@@ -2297,7 +2410,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "logs:subscribe": {
-      send(ws, { type: "logs:backlog", payload: { source: "manager", data: getLogBuffer() } });
+      const source = (msg.payload as { source?: string } | undefined)?.source ?? "manager";
+      if (source === "errors") {
+        // send() ACL-gates logs:errors:backlog to superadmins, so a lower role
+        // that subscribes to "errors" simply gets nothing.
+        send(ws, { type: "logs:errors:backlog", payload: { source: "errors", data: getErrorBuffer() } });
+      } else {
+        send(ws, { type: "logs:backlog", payload: { source: "manager", data: getLogBuffer() } });
+      }
       break;
     }
 
@@ -2305,7 +2425,18 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
 
     case "logs:clear": {
-      clearLogBuffer();
+      const source = (msg.payload as { source?: string } | undefined)?.source ?? "manager";
+      if (source === "errors") {
+        // ws-acl gates reading the errors buffer to superadmin; the writer
+        // side (logs:clear) rides the admin-level "logs:*" send default, so
+        // require superadmin explicitly here — otherwise an admin who can't
+        // read the buffer could still wipe it.
+        const role = clients.get(ws)?.role;
+        if (role !== "superadmin") break;
+        clearErrorBuffer();
+      } else {
+        clearLogBuffer();
+      }
       break;
     }
 
@@ -2317,6 +2448,21 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         }, ms);
         broadcast({ type: "monitor:interval", payload: { intervalMs: ms } });
       }
+      break;
+    }
+
+    case "ssh:list": {
+      send(ws, { type: "ssh:list", payload: { sessions: listSshConnections() } });
+      break;
+    }
+
+    case "ssh:kill": {
+      const id = msg.payload.id;
+      const ok = typeof id === "string" && killSshConnection(id);
+      send(ws, { type: "ssh:kill:result", payload: { id, ok } });
+      // Push the updated list to every admin watching /ssh so kills made by
+      // one operator show up in another's view without a manual refresh.
+      broadcast({ type: "ssh:list", payload: { sessions: listSshConnections() } });
       break;
     }
 
@@ -2693,14 +2839,37 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "project:update": {
       const { id, name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders, teamId: projTeamIdUpdate } = msg.payload;
-      // Only admins/superadmins can transfer a project to another team. Non-admins must not
-      // be able to grant themselves access to projects they don't own or evict others.
+      // teamId is settable by:
+      //   - system admins / superadmins (any value, including null = "no team");
+      //   - org admins, but only when the *target* team belongs to one of their
+      //     manageable orgs, and never to null (clearing a team strips access
+      //     for every member, so that stays admin-only).
+      // The renderer's ProjectSettingsTab shows the picker to these same two
+      // groups; this gate is defense-in-depth + the source of truth that
+      // bypassing the UI can't cheat.
       const updaterRealId = (() => {
         const st = clients.get(ws);
         return st?.impersonatedBy ?? st?.userId ?? null;
       })();
       const updaterIsAdmin = updaterRealId ? await isAdmin(updaterRealId) : false;
-      const teamIdFieldAllowed = updaterIsAdmin ? projTeamIdUpdate : undefined;
+      let teamIdFieldAllowed: string | null | undefined = undefined;
+      if (projTeamIdUpdate !== undefined) {
+        if (updaterIsAdmin) {
+          teamIdFieldAllowed = projTeamIdUpdate;
+        } else if (updaterRealId && projTeamIdUpdate !== null) {
+          const manageable = await orgService.manageableOrgIds(updaterRealId);
+          if (manageable.length > 0) {
+            const [teamRow] = await getDb()
+              .select({ orgId: teams.orgId })
+              .from(teams)
+              .where(eq(teams.id, projTeamIdUpdate))
+              .limit(1);
+            if (teamRow?.orgId && manageable.includes(teamRow.orgId)) {
+              teamIdFieldAllowed = projTeamIdUpdate;
+            }
+          }
+        }
+      }
       await projectManager.stopAll(id);
       const updated = await projectService.update(id, { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders, teamId: teamIdFieldAllowed });
       if (!updated) {
@@ -4408,7 +4577,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const tazToken = process.env.TAZCLOUD_API_TOKEN;
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazToken || !tazPrivateKey) {
-          send(ws, { type: "admin:tazcloud:stats", payload: { stats: {} } });
+          send(ws, { type: "admin:tazcloud:stats", payload: { stats: {}, errors: {} } });
           break;
         }
         const tazClient = createTazClient(tazToken);
@@ -4422,30 +4591,47 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           }
         }
         const results: Record<string, unknown> = {};
-        await Promise.allSettled(
-          vms
-            .filter((vm) => vm.status === "ACTIVE" && vm.ssh_host)
-            .map(async (vm) => {
-              try {
-                // Linked VMs always have a `genie` user (provision step creates
-                // it). Unlinked legacy VMs only have the image-default user.
-                // Unlinked v2 VMs (no public ipv6) ship with `genie` already.
-                const username = linked.has(vm.id) || !vm.ipv6
-                  ? VPS_SSH_USERNAME
-                  : sshUserForImage(vm.image || "ubuntu-22");
-                const stats = await vpsStats({
-                  host: vm.ssh_host,
-                  port: 22,
-                  username,
-                  privateKeyPath: keyPath,
-                });
-                results[vm.id] = stats;
-              } catch { /* skip unreachable VM */ }
-            }),
-        );
-        send(ws, { type: "admin:tazcloud:stats", payload: { stats: results } });
-      } catch {
-        send(ws, { type: "admin:tazcloud:stats", payload: { stats: {} } });
+        const errors: Record<string, string> = {};
+        const targets = vms.filter((vm) => vm.status === "ACTIVE" && vm.ssh_host);
+        // Bounded concurrency: firing an SSH handshake at every VM at once
+        // trips the Taz network's connection rate-limit (the burst that the
+        // WireGuard tunnel was meant to relieve for single connections, see
+        // taz_v2_bastion_throttle), so a slice of VMs would silently fail to
+        // probe. Cap parallelism so the cards fill in reliably.
+        const POOL = 4;
+        let cursor = 0;
+        const probe = async (): Promise<void> => {
+          while (cursor < targets.length) {
+            const vm = targets[cursor++];
+            try {
+              // Linked VMs always have a `genie` user (provision step creates
+              // it). Unlinked legacy VMs only have the image-default user.
+              // Unlinked v2 VMs (no public ipv6) ship with `genie` already.
+              const username = linked.has(vm.id) || !vm.ipv6
+                ? VPS_SSH_USERNAME
+                : sshUserForImage(vm.image || "ubuntu-22");
+              const stats = await vpsStats({
+                host: vm.ssh_host,
+                port: 22,
+                username,
+                privateKeyPath: keyPath,
+              });
+              results[vm.id] = stats;
+            } catch (err: unknown) {
+              // Surface the failure instead of swallowing it: record it per-VM
+              // for the card and log it so it lands in the superadmin error
+              // stream (/logs → "errors") for diagnosis.
+              const message = err instanceof Error ? err.message : String(err);
+              errors[vm.id] = message;
+              console.error(`[tazcloud:stats] probe failed for VM ${vm.id} (${vm.ssh_host}): ${message}`);
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, () => probe()));
+        send(ws, { type: "admin:tazcloud:stats", payload: { stats: results, errors } });
+      } catch (err: unknown) {
+        console.error(`[tazcloud:stats] handler failed: ${err instanceof Error ? err.message : String(err)}`);
+        send(ws, { type: "admin:tazcloud:stats", payload: { stats: {}, errors: {} } });
       }
       break;
     }
@@ -4614,59 +4800,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const tazClient = createTazClient(tazToken);
         const vm = await tazClient.createVm({ name, image, size, snapshot_id, project_id });
         send(ws, { type: "admin:tazcloud:created", payload: { vm } });
-
-        // Async firewall preset: wait for SSH, then apply default-deny + allow 22/3000.
-        // Fire-and-forget so the UI can show the VM immediately; the firewall card
-        // will reflect the new rules on next refresh.
-        // Skipped for snapshot-booted VMs: SSH user depends on the snapshot's source
-        // image (which may be deleted), and the snapshot already carries its own
-        // firewall config.
-        if (tazPrivateKey && vm.ssh_host && !snapshot_id) {
-          void (async () => {
-            const keyPath = ensureTazcloudKeyOnDisk(tazPrivateKey);
-            // v2.0.0 vxlan-bastion VMs ship with `genie`, reached over WireGuard.
-            // Legacy v6: image-default user, direct SSH.
-            const sshUser = defaultSshUserForVm(vm);
-            const conn = {
-              host: vm.ssh_host,
-              port: 22,
-              username: sshUser,
-              privateKeyPath: keyPath,
-            };
-            // Poll SSH up to 3 minutes.
-            const sshStart = Date.now();
-            let ready = false;
-            while (Date.now() - sshStart < 180_000) {
-              try {
-                const s = await connectSsh(conn, { timeoutMs: 10_000 });
-                await s.exec("true");
-                s.close();
-                ready = true;
-                break;
-              } catch { /* not yet */ }
-              await new Promise((r) => setTimeout(r, 5_000));
-            }
-            if (!ready) {
-              console.warn(`[tazcloud] firewall preset: SSH didn't come up for ${vm.id} (${vm.ssh_host}) within 3min — skipping`);
-              return;
-            }
-            try {
-              const ufwSession = await connectSsh(conn);
-              await ufwSession.exec([
-                "sudo ufw --force reset",
-                "sudo ufw default deny incoming",
-                "sudo ufw default allow outgoing",
-                "sudo ufw allow 22/tcp",
-                "sudo ufw allow 3000/tcp",
-                "sudo ufw --force enable",
-              ].join(" && "));
-              ufwSession.close();
-              console.log(`[tazcloud] firewall preset applied to ${vm.id} (${vm.ssh_host}): SSH + 3000 open`);
-            } catch (err) {
-              console.warn(`[tazcloud] firewall preset failed for ${vm.id}:`, err);
-            }
-          })().catch(() => {});
-        }
+        // Fire-and-forget — see applyTazcloudFirewallPreset.
+        applyTazcloudFirewallPreset(vm, tazPrivateKey, "tazcloud");
       } catch (err: unknown) {
         send(ws, { type: "admin:tazcloud:create:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
@@ -4680,17 +4815,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (!tazToken) throw new Error("TAZCLOUD_API_TOKEN not configured");
         const tazClient = createTazClient(tazToken);
         await tazClient.deleteVm(vmId);
-        await cloudVmAliases.clearAlias("tazcloud", vmId);
-        // Detach from any owning project.
-        const projects = await projectService.getAll();
-        for (const p of projects) {
-          const inst = p.vpsInstances.find(v => v.tazcloud?.vmId === vmId);
-          if (inst) {
-            await projectService.removeVpsInstance(p.id, inst.id);
-            await broadcastProjectList();
-            break;
-          }
-        }
+        await cleanupTazcloudVmReferences(vmId);
         send(ws, { type: "admin:tazcloud:deleted", payload: { vmId } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
@@ -5774,6 +5899,197 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // ── Org-admin-scoped operations (org:*) ────────────────
+    // These handlers don't require the system "admin" role — a normal user
+    // who is owner|admin of at least one org reaches them via the user-level
+    // ACL gate on the "org" namespace. Each handler re-checks
+    // orgService.userCanManageOrg(callerId, orgId) before acting on a
+    // specific org.
+
+    case "org:list-mine": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const orgs = await orgService.listManageable(callerId);
+        // Manageable = owner|admin (listManageable filters those for non-superadmins).
+        // Bundle the user's manageable teams (teams whose org_id is one we admin)
+        // so the project Settings tab can populate its team selector without a
+        // second round-trip. Empty array when the user manages no orgs.
+        let myTeams: Array<{ id: string; name: string; orgId: string; orgName: string }> = [];
+        if (orgs.length > 0) {
+          const orgIdToName = new Map(orgs.map((o) => [o.id, o.name]));
+          const rows = await getDb()
+            .select({ id: teams.id, name: teams.name, orgId: teams.orgId })
+            .from(teams)
+            .where(inArray(teams.orgId, orgs.map((o) => o.id)));
+          myTeams = rows
+            .filter((r): r is { id: string; name: string; orgId: string } => r.orgId !== null)
+            .map((r) => ({ id: r.id, name: r.name, orgId: r.orgId, orgName: orgIdToName.get(r.orgId) ?? "" }));
+        }
+        console.log(`[org:list-mine] caller=${callerId} (impersonatedBy=${callerState?.impersonatedBy ?? "—"}) → ${orgs.length} org(s), ${myTeams.length} team(s)`);
+        send(ws, { type: "org:list-mine", payload: { orgs, teams: myTeams } });
+      } catch (err) {
+        console.error("[org:list-mine] failed:", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:get": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId } = msg.payload as { orgId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized to manage this org" } }); break;
+        }
+        const org = await orgService.getOrg(orgId);
+        if (!org) { send(ws, { type: "org:error", payload: { orgId, message: "Org not found" } }); break; }
+        const members = await orgService.getMembers(orgId);
+        const credentials = await orgService.getCredentialStatus(orgId);
+        // Teams that belong to this org.
+        const orgTeams = await getDb().select().from(teams).where(eq(teams.orgId, orgId));
+        send(ws, { type: "org:get", payload: { org, members, teams: orgTeams, credentials } });
+      } catch (err) {
+        console.error("[org:get]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:cloud:taz:credentials:set": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, token, sshPrivateKey } = msg.payload as { orgId: string; token?: string; sshPrivateKey?: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        // Collect non-empty inputs first so we can (a) reject the empty-form
+        // case loudly instead of silently "saving" nothing, and (b) commit
+        // both secrets atomically in one transaction.
+        const items: Array<{ kind: "tazcloud-token" | "tazcloud-ssh-key"; plaintext: string }> = [];
+        if (token && token.trim()) items.push({ kind: "tazcloud-token", plaintext: token.trim() });
+        if (sshPrivateKey && sshPrivateKey.trim()) items.push({ kind: "tazcloud-ssh-key", plaintext: sshPrivateKey.trim() });
+        if (items.length === 0) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Provide a TazCloud token or SSH private key." } });
+          break;
+        }
+        await orgService.setCredentials(orgId, items, callerId);
+        const credentials = await orgService.getCredentialStatus(orgId);
+        send(ws, { type: "org:cloud:taz:credentials:status", payload: { orgId, credentials } });
+      } catch (err) {
+        console.error("[org:cloud:taz:credentials:set]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:cloud:taz:credentials:clear": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId } = msg.payload as { orgId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        await orgService.clearCredential(orgId, "tazcloud-token");
+        await orgService.clearCredential(orgId, "tazcloud-ssh-key");
+        const credentials = await orgService.getCredentialStatus(orgId);
+        send(ws, { type: "org:cloud:taz:credentials:status", payload: { orgId, credentials } });
+      } catch (err) {
+        console.error("[org:cloud:taz:credentials:clear]", err);
+        send(ws, { type: "org:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:cloud:taz:vms:list": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId } = msg.payload as { orgId: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const client = await orgService.getTazClientForOrg(orgId);
+        if (!client) {
+          send(ws, { type: "org:cloud:taz:vms:list", payload: { orgId, vms: [], error: "No TazCloud token set for this org. Set credentials first." } });
+          break;
+        }
+        const vms = await client.listVms();
+        send(ws, { type: "org:cloud:taz:vms:list", payload: { orgId, vms } });
+      } catch (err) {
+        console.error("[org:cloud:taz:vms:list]", err);
+        const { orgId } = (msg.payload || {}) as { orgId?: string };
+        send(ws, { type: "org:cloud:taz:vms:list", payload: { orgId, vms: [], error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:cloud:taz:vms:create": {
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        const { orgId, name, image, size, snapshot_id, project_id } = msg.payload as { orgId: string; name: string; image?: string; size?: string; snapshot_id?: string; project_id?: string };
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const client = await orgService.getTazClientForOrg(orgId);
+        if (!client) {
+          send(ws, { type: "org:cloud:taz:vms:create:error", payload: { orgId, message: "No TazCloud token set for this org." } });
+          break;
+        }
+        const vm = await client.createVm({ name, image, size, snapshot_id, project_id });
+        send(ws, { type: "org:cloud:taz:vms:created", payload: { orgId, vm } });
+        // Apply the same default-deny UFW preset the admin path runs, so
+        // org-provisioned VMs don't come up with whatever the image ships.
+        const orgSshKey = await orgService.getTazSshKeyForOrg(orgId);
+        applyTazcloudFirewallPreset(vm, orgSshKey, `org:${orgId}`);
+      } catch (err) {
+        console.error("[org:cloud:taz:vms:create]", err);
+        const { orgId } = (msg.payload || {}) as { orgId?: string };
+        send(ws, { type: "org:cloud:taz:vms:create:error", payload: { orgId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "org:cloud:taz:vms:delete": {
+      const { orgId, vmId } = (msg.payload || {}) as { orgId?: string; vmId?: string };
+      try {
+        const callerState = clients.get(ws);
+        const callerId = callerState?.userId;
+        if (!callerId) { send(ws, { type: "org:error", payload: { message: "Not authenticated" } }); break; }
+        if (!orgId || !vmId) { send(ws, { type: "org:error", payload: { orgId, message: "orgId and vmId are required" } }); break; }
+        if (!(await orgService.userCanManageOrg(callerId, orgId))) {
+          send(ws, { type: "org:error", payload: { orgId, message: "Not authorized" } }); break;
+        }
+        const client = await orgService.getTazClientForOrg(orgId);
+        if (!client) {
+          // Delete-specific error type so the renderer can clear the per-row
+          // deleting flag (vms.deleting[vmId]); a generic org:error carries
+          // no vmId and would leave the spinner hung forever.
+          send(ws, { type: "org:cloud:taz:vms:delete:error", payload: { orgId, vmId, message: "No TazCloud token set for this org." } });
+          break;
+        }
+        await client.deleteVm(vmId);
+        // Strip the renderer-side alias and detach from any owning project so
+        // we don't leave a dangling tazcloud.vmId reference in vpsInstances.
+        await cleanupTazcloudVmReferences(vmId);
+        send(ws, { type: "org:cloud:taz:vms:deleted", payload: { orgId, vmId } });
+      } catch (err) {
+        console.error("[org:cloud:taz:vms:delete]", err);
+        send(ws, { type: "org:cloud:taz:vms:delete:error", payload: { orgId, vmId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
     // ── User invitation ───────────────────────────────────
     case "admin:users:invite": {
       try {
@@ -6413,9 +6729,15 @@ export async function createServer(): Promise<WebSocketServer> {
     broadcastStats(stats);
   });
 
-  // Capture manager stdout/stderr and broadcast to clients
-  startLogCapture((data) => {
-    broadcast({ type: "logs:data", payload: { source: "manager", data } });
+  // Capture manager stdout/stderr and broadcast to clients. stderr is fanned
+  // out twice: into the combined "manager" feed (admin) AND a dedicated
+  // "errors" feed (superadmin-only via the ACL on logs:errors:data).
+  startLogCapture((source, data) => {
+    if (source === "manager") {
+      broadcast({ type: "logs:data", payload: { source: "manager", data } });
+    } else {
+      broadcast({ type: "logs:errors:data", payload: { source: "errors", data } });
+    }
   });
 
   // Sync droplet statuses on startup and every 60s
@@ -6441,7 +6763,7 @@ export async function createServer(): Promise<WebSocketServer> {
   wss.on("connection", (ws, req) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
     const userAgent = (req.headers["user-agent"] as string) || null;
-    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, selectedProjectId: null, recentActions: [], ip, userAgent });
+    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, selectedProjectId: null, recentActions: [], openWindows: [], ip, userAgent });
     console.log(`Client connected (${clients.size} total)`);
 
     // Tell client auth is required

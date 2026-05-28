@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "ssh2";
-import { sshConnOpened, sshConnClosed } from "./vps/ssh-metrics.js";
+import { sshConnRegister, sshConnUnregister } from "./vps/ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./vps/socks-dial.js";
 
 const MAX_SCROLLBACK = 100_000; // chars
@@ -203,24 +203,30 @@ function buildRemoteCommand(config: SshPtyConfig): string {
   //                       pane height. The Genie History panel already shows
   //                       session name + last-active info, so the tmux status
   //                       line is redundant inside Genie's window chrome.
-  //   mouse off         — Genie terminals are single-pane web terminals, so we
-  //                       don't want tmux's mouse handling: with `mouse on` the
-  //                       wheel enters tmux copy-mode and never reaches the app
-  //                       (Claude couldn't be scrolled). Off lets the wheel pass
-  //                       through to the TUI and restores native xterm.js
-  //                       selection. We force it off in case the VM's tmux.conf
-  //                       turned it on.
+  //   mouse on          — Required so wheel events do something useful. With
+  //                       `mouse off`, xterm.js sees the alt-screen buffer
+  //                       (tmux always uses it) and applies "alternate scroll
+  //                       mode" (DEC 1007): wheel-up/down → Up/Down arrow
+  //                       sequences. Those reach the inner app and cycle shell
+  //                       history (or Claude's input-prompt history). With
+  //                       `mouse on`, tmux captures wheel via the SGR mouse
+  //                       protocol and either forwards it to a mouse-aware app
+  //                       or enters copy-mode to scroll tmux's scrollback —
+  //                       which is the behavior users expect from "scroll the
+  //                       popup". Native xterm.js drag-selection still works
+  //                       via Option+drag (Mac) / Alt+drag, the standard
+  //                       escape hatch when the inner app captures the mouse.
   //   history-limit     — generous scrollback so reattaches show useful context.
   const setGlobal = [
     'tmux set-option -g focus-events on 2>/dev/null || true',
     'tmux set-option -g status off 2>/dev/null || true',
-    'tmux set-option -g mouse off 2>/dev/null || true',
+    'tmux set-option -g mouse on 2>/dev/null || true',
     'tmux set-option -g history-limit 50000 2>/dev/null || true',
   ].join('; ');
   const setForExisting = [
     `tmux set-option -t ${name} focus-events on 2>/dev/null || true`,
     `tmux set-option -t ${name} status off 2>/dev/null || true`,
-    `tmux set-option -t ${name} mouse off 2>/dev/null || true`,
+    `tmux set-option -t ${name} mouse on 2>/dev/null || true`,
   ].join('; ');
   // Bash script: apply globals, then either attach (with per-session overrides
   // for already-running sessions) or create fresh.
@@ -393,7 +399,7 @@ export function spawnSshPty(
     sessions.delete(id);
   }
 
-  let connCounted = false;
+  let registryId: string | null = null;
 
   function tryConnect(): void {
     if (cancelled) return;
@@ -427,7 +433,15 @@ export function spawnSshPty(
 
     conn
       .on("ready", () => {
-        if (!connCounted) { connCounted = true; sshConnOpened(); }
+        if (!registryId) {
+          registryId = sshConnRegister({
+            host: config.host,
+            port: config.port,
+            username: config.username,
+            kind: "pty",
+            end: () => conn.end(),
+          });
+        }
         if (cancelled) { conn.end(); return; }
         const shellCmd = buildRemoteCommand(config);
         conn.exec(shellCmd, { pty: { cols: currentCols, rows: currentRows, term: "xterm-256color" } }, (err, stream) => {
@@ -462,7 +476,7 @@ export function spawnSshPty(
         });
       })
       .on("close", () => {
-        if (connCounted) { connCounted = false; sshConnClosed(); }
+        if (registryId) { sshConnUnregister(registryId); registryId = null; }
       })
       .on("error", (err) => {
         if (cancelled) return;

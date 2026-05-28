@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Mock the WS layer — auth handlers call into it (sendAuthToken on retry,
-// setStoredToken on success, disconnectWs on revoke). Tests assert these
-// were invoked correctly without opening a real socket.
+// setStoredToken on success, disconnectWs on revoke, wsSend via the
+// broadcastWindows resync on auth:success). Tests assert these were invoked
+// correctly without opening a real socket.
 vi.mock("@/lib/ws", () => ({
   disconnectWs: vi.fn(),
   getStoredToken: vi.fn(),
   sendAuthToken: vi.fn(),
   setStoredToken: vi.fn(),
+  wsSend: vi.fn(),
 }));
 
 import { handlers } from "./auth";

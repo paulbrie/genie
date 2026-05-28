@@ -25,18 +25,20 @@ import { TopologyGraph3D } from "@/components/project/topology-graph-3d";
 import { ConnectedUsersPanel } from "@/components/chat/connected-users-panel";
 import { SecurityPanel } from "@/components/project/security-panel";
 import { HelpPanel } from "@/components/ui/help-panel";
+import { SshPanel } from "@/components/ui/ssh-panel";
 import { HistoryPanel } from "@/components/ui/history-panel";
 import { ProjectsGrid } from "@/components/project/projects-grid";
 import { defaultNavForRole, navAllowedForRole, parseRoute, type ProjectTab, type SettingsTab } from "@/lib/routes";
 import { findBySlug } from "@/lib/utils";
 import { buildNavPath } from "@/lib/routes";
 
-function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab } {
+function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab; settingsOrgId?: string } {
   const params = useParams();
   const router = useRouter();
   const [projects] = useSubject($projects);
   const [activeTab, setActiveTab] = useState<ProjectTab | undefined>();
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const [settingsOrgId, setSettingsOrgId] = useState<string | undefined>();
   const syncedRef = useRef<string>("");
 
   const slugSegments = (params?.slug as string[] | undefined) ?? [];
@@ -127,10 +129,11 @@ function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab } {
       return;
     }
 
-    // Settings sub-routes: /settings/general, /settings/deploy
+    // Settings sub-routes: /settings/general, /settings/deploy, /settings/org/{orgId}
     if (parsed.nav === "settings" && parsed.settingsTab) {
       switchNav("settings");
       setSettingsTab(parsed.settingsTab);
+      setSettingsOrgId(parsed.orgId);
       syncedRef.current = urlKey;
       return;
     }
@@ -148,10 +151,10 @@ function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab } {
     syncedRef.current = urlKey;
   }, [urlKey, projects, router, slugSegments]);
 
-  return { activeTab, settingsTab };
+  return { activeTab, settingsTab, settingsOrgId };
 }
 
-function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; settingsTab: SettingsTab }) {
+function MainPanel({ activeTab, settingsTab, settingsOrgId }: { activeTab?: ProjectTab; settingsTab: SettingsTab; settingsOrgId?: string }) {
   const [activeNav] = useSubject($activeNav);
   const [showAddProjectForm] = useSubject($showAddProjectForm);
   const [selectedProjectId] = useSubject($selectedProjectId);
@@ -186,7 +189,7 @@ function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; setting
   }
 
   if (activeNav === "settings") {
-    return <SettingsPanel activeTab={settingsTab} />;
+    return <SettingsPanel activeTab={settingsTab} orgId={settingsOrgId} />;
   }
 
   if (activeNav === "admin") {
@@ -234,6 +237,10 @@ function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; setting
     return <HelpPanel />;
   }
 
+  if (activeNav === "ssh") {
+    return <SshPanel />;
+  }
+
   // Default: projects
   if (showAddProjectForm) return <AddProjectForm />;
   const selectedProject = selectedProjectId
@@ -244,11 +251,11 @@ function MainPanel({ activeTab, settingsTab }: { activeTab?: ProjectTab; setting
 }
 
 export default function Home() {
-  const { activeTab, settingsTab } = useRouteSync();
+  const { activeTab, settingsTab, settingsOrgId } = useRouteSync();
 
   return (
     <>
-      <MainPanel activeTab={activeTab} settingsTab={settingsTab} />
+      <MainPanel activeTab={activeTab} settingsTab={settingsTab} settingsOrgId={settingsOrgId} />
       <ChatNotificationToasts />
       {/* Global mounts so both Manage popups (TazCloud + DigitalOcean) can be
           opened from any page and survive navigation. Separate window-id

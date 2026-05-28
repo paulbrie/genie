@@ -1,7 +1,7 @@
 import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey } from "@/store/types";
 export type ProjectTab = "deploy-history" | "settings" | "members";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "audit" | "prodlogs";
-export type SettingsTab = "general" | "deploy";
+export type SettingsTab = "general" | "deploy" | "org";
 
 // --- Nav-level role gate ---
 //
@@ -15,7 +15,7 @@ const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "hist
 const TAZCLOUD_EXTRA_NAVS = new Set<NavKey>(["recipes", "clouds"]);
 const ADMIN_NAVS = new Set<NavKey>([
   "projects", "processes", "docker", "docs", "logs", "chat", "history", "tracker",
-  "settings", "admin", "architecture", "topology", "users", "security", "help",
+  "settings", "admin", "architecture", "topology", "users", "security", "help", "ssh",
 ]);
 
 export function navAllowedForRole(nav: NavKey, role: NavRole): boolean {
@@ -57,6 +57,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   clouds: "clouds",
   recipes: "recipes",
   help: "help",
+  ssh: "ssh",
 };
 
 const VALID_CLOUD_SUBTABS = new Set<CloudSubTab>(["do", "taz"]);
@@ -81,7 +82,7 @@ const VALID_DROPLETS_SUBTABS = new Set<DropletsSubTab>([
 ]);
 
 const VALID_AI_SUBTABS = new Set<AiSubTab>(["costs", "settings"]);
-const VALID_SETTINGS_TABS = new Set<SettingsTab>(["general", "deploy"]);
+const VALID_SETTINGS_TABS = new Set<SettingsTab>(["general", "deploy", "org"]);
 
 // --- URL builders ---
 
@@ -96,7 +97,8 @@ export function buildCloudPath(sub: CloudSubTab): string {
   return `/clouds/${sub}`;
 }
 
-export function buildSettingsPath(tab: SettingsTab): string {
+export function buildSettingsPath(tab: SettingsTab, orgId?: string): string {
+  if (tab === "org" && orgId) return `/settings/org/${orgId}`;
   return `/settings/${tab}`;
 }
 
@@ -133,6 +135,8 @@ export interface ParsedRoute {
   dropletsSubTab?: DropletsSubTab;
   aiSubTab?: AiSubTab;
   settingsTab?: SettingsTab;
+  /** For settingsTab === "org": which org's settings to render. */
+  orgId?: string;
   cloudSubTab?: CloudSubTab;
   docId?: string;
 }
@@ -187,10 +191,13 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
     return { nav, entitySlug, tab };
   }
 
-  // Settings sub-routes: /settings/general, /settings/deploy
+  // Settings sub-routes: /settings/general, /settings/deploy, /settings/org/{orgId}
   if (nav === "settings") {
     const seg1 = slugSegments[1]?.toLowerCase();
     const settingsTab = seg1 && VALID_SETTINGS_TABS.has(seg1 as SettingsTab) ? (seg1 as SettingsTab) : "general";
+    if (settingsTab === "org" && slugSegments.length >= 3) {
+      return { nav, settingsTab, orgId: slugSegments[2] };
+    }
     return { nav, settingsTab };
   }
 

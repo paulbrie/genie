@@ -1,6 +1,8 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "./db/index.js";
-import { organizations, orgMembers, teams, users } from "./db/schema.js";
+import { organizations, orgCredentials, orgMembers, teams, users } from "./db/schema.js";
+import { decryptPrivateKey, encryptPrivateKey, isPasteKeyEnabled, type EncryptedSecret } from "./vps/credential-crypto.js";
+import { createTazClient, type TazApiClient } from "./vps/tazcloud-api-client.js";
 
 export type OrgRole = "owner" | "admin" | "member";
 
@@ -275,4 +277,137 @@ export async function ensureDefaultOrgFor(userId: string, userName: string | nul
   await createOrg({ name, ownerUserId: userId });
   // Touch sql import to satisfy type-checker if unused above in older Drizzle.
   void sql`SELECT 1`;
+}
+
+// ─── Org-scoped cloud credentials ─────────────────────────────────────────────
+// Each (orgId, kind) row stores an AES-GCM-encrypted blob (see credential-
+// crypto). The plaintext never leaves the manager — handlers only return
+// boolean "has-credentials" to the renderer.
+
+export type OrgCredentialKind = "tazcloud-token" | "tazcloud-ssh-key";
+
+/** Has-credential boolean per kind, for status display in the org settings UI.
+ *  We trial-decrypt every row so a rotated GENIE_SECRET (or otherwise corrupt
+ *  blob) shows up as "not set" — the UI then asks the user to reset, instead
+ *  of saying "set" while every actual use throws a raw GCM auth-tag error. */
+export async function getCredentialStatus(orgId: string): Promise<Record<OrgCredentialKind, boolean>> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      kind: orgCredentials.kind,
+      ciphertext: orgCredentials.ciphertext,
+      iv: orgCredentials.iv,
+      authTag: orgCredentials.authTag,
+      salt: orgCredentials.salt,
+    })
+    .from(orgCredentials)
+    .where(eq(orgCredentials.orgId, orgId));
+  const status: Record<OrgCredentialKind, boolean> = {
+    "tazcloud-token": false,
+    "tazcloud-ssh-key": false,
+  };
+  for (const r of rows) {
+    if (r.kind !== "tazcloud-token" && r.kind !== "tazcloud-ssh-key") continue;
+    try {
+      decryptPrivateKey(r as EncryptedSecret);
+      status[r.kind] = true;
+    } catch {
+      status[r.kind] = false;
+    }
+  }
+  return status;
+}
+
+/** Upsert one credential. Caller must already have org-admin auth (callers
+ *  enforce via {@link userCanManageOrg}). Throws when the manager-secret isn't
+ *  configured — encryption would fall back to a default that's effectively
+ *  plaintext. */
+export async function setCredential(
+  orgId: string,
+  kind: OrgCredentialKind,
+  plaintext: string,
+  createdBy: string,
+): Promise<void> {
+  if (!isPasteKeyEnabled()) {
+    throw new Error("Cannot store org credentials: set GENIE_SECRET on the manager to enable encrypted storage.");
+  }
+  const enc = encryptPrivateKey(plaintext);
+  const db = getDb();
+  // idx_org_credentials_lookup is UNIQUE on (org_id, kind), so this is one
+  // atomic upsert — no SELECT-then-INSERT race, no duplicate rows possible.
+  // updatedAt is auto-bumped via $onUpdate on the schema column.
+  await db.insert(orgCredentials).values({
+    orgId, kind, createdBy,
+    ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, salt: enc.salt,
+  }).onConflictDoUpdate({
+    target: [orgCredentials.orgId, orgCredentials.kind],
+    set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, salt: enc.salt },
+  });
+}
+
+/** Atomically write multiple credentials in a single transaction — used by the
+ *  "save token + SSH key" path so a mid-write failure can't leave the org in a
+ *  half-credentialled state (the half that did land would otherwise outlive
+ *  the failed second write and confuse subsequent reads). */
+export async function setCredentials(
+  orgId: string,
+  items: Array<{ kind: OrgCredentialKind; plaintext: string }>,
+  createdBy: string,
+): Promise<void> {
+  if (items.length === 0) return;
+  if (!isPasteKeyEnabled()) {
+    throw new Error("Cannot store org credentials: set GENIE_SECRET on the manager to enable encrypted storage.");
+  }
+  // Encrypt up front so we don't hold the transaction open during scrypt work.
+  const encrypted = items.map((i) => ({ kind: i.kind, ...encryptPrivateKey(i.plaintext) }));
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    for (const e of encrypted) {
+      await tx.insert(orgCredentials).values({
+        orgId, kind: e.kind, createdBy,
+        ciphertext: e.ciphertext, iv: e.iv, authTag: e.authTag, salt: e.salt,
+      }).onConflictDoUpdate({
+        target: [orgCredentials.orgId, orgCredentials.kind],
+        set: { ciphertext: e.ciphertext, iv: e.iv, authTag: e.authTag, salt: e.salt },
+      });
+    }
+  });
+}
+
+export async function clearCredential(orgId: string, kind: OrgCredentialKind): Promise<void> {
+  const db = getDb();
+  await db.delete(orgCredentials).where(and(eq(orgCredentials.orgId, orgId), eq(orgCredentials.kind, kind)));
+}
+
+/** Decrypt + return plaintext for a single secret. Server-side only — never
+ *  expose the result over WS. Returns null when the secret isn't stored. */
+async function readCredential(orgId: string, kind: OrgCredentialKind): Promise<string | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      ciphertext: orgCredentials.ciphertext,
+      iv: orgCredentials.iv,
+      authTag: orgCredentials.authTag,
+      salt: orgCredentials.salt,
+    })
+    .from(orgCredentials)
+    .where(and(eq(orgCredentials.orgId, orgId), eq(orgCredentials.kind, kind)))
+    .orderBy(desc(orgCredentials.updatedAt))
+    .limit(1);
+  if (!row) return null;
+  return decryptPrivateKey(row as EncryptedSecret);
+}
+
+/** Resolve a TazCloud API client bound to an org's stored token. Returns null
+ *  when no token is stored — caller surfaces a "Set credentials first" UX. */
+export async function getTazClientForOrg(orgId: string): Promise<TazApiClient | null> {
+  const token = await readCredential(orgId, "tazcloud-token");
+  if (!token) return null;
+  return createTazClient(token);
+}
+
+/** Return the SSH private key for this org's TazCloud VMs (PEM/OpenSSH text).
+ *  Used by ssh-client / pty-manager when connecting to org-pool VMs. */
+export async function getTazSshKeyForOrg(orgId: string): Promise<string | null> {
+  return readCredential(orgId, "tazcloud-ssh-key");
 }

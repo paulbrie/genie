@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSubject } from "subjecto/react";
 import { $admin, $auth, $doTokenValid, $railwayTestResult, $settings } from "@/store/subjects";
+import { $orgSettings } from "@/store/subjects/org-settings";
 import { deleteSshKey, loadSettings, loadSshKey, regenerateSshKey, saveSettingsField, testRailwayToken, validateDoToken } from "@/store/actions";
 import { useDeepSubject } from "subjecto/react";
 import { type AppSettings } from "@/lib/genie-api";
@@ -12,6 +13,8 @@ import { ViewTabs } from "@/components/ui/view-tabs";
 import { Select } from "@/components/ui/select";
 import { buildSettingsPath, type SettingsTab } from "@/lib/routes";
 import { useRouter } from "next/navigation";
+import { OrgSettingsPanel } from "@/components/settings/org-settings-panel";
+import { ErrorMessage } from "@/components/ui/error-message";
 
 const editorOptions = [
   { value: "", label: "System Default" },
@@ -87,14 +90,33 @@ const DEPLOY_STEPS = [
   },
 ];
 
-export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsTab }) {
+export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: SettingsTab; orgId?: string }) {
   const router = useRouter();
   const [auth] = useSubject($auth);
   const role = auth.user?.role;
   const isAdmin = role === "admin" || role === "superadmin";
-  // Non-admins land on (and are locked to) the general tab — the Deploy tab is
-  // the SSH-key / provisioning surface and only makes sense for operators.
-  const tab = isAdmin ? activeTab : "general";
+  const [manageableOrgs] = useDeepSubject($orgSettings, "mine");
+  const [mineError] = useDeepSubject($orgSettings, "mineError");
+  const [mineFetched] = useDeepSubject($orgSettings, "mineFetched");
+  const hasManageableOrgs = manageableOrgs.length > 0;
+  const requestedTab: SettingsTab = activeTab;
+  // Show the "Organization" tab when the user has manageable orgs OR when the
+  // URL explicitly asks for it (direct nav to /settings/org). The latter lets
+  // a user who landed there see a clear empty-state instead of a silent
+  // fallback to the General tab.
+  const showOrgTab = hasManageableOrgs || requestedTab === "org";
+  // `requestedTab === "org"` is always permitted when requested: showOrgTab is
+  // (hasManageableOrgs || requestedTab === "org"), so the org case is self-gating
+  // and only "deploy" is actually role-restricted.
+  const isPermittedTab =
+    requestedTab === "general"
+    || (requestedTab === "deploy" && isAdmin)
+    || requestedTab === "org";
+  const tab: SettingsTab = isPermittedTab ? requestedTab : "general";
+  // When orgId is missing, fall back to the first manageable org; undefined when
+  // the user has none, so the panel renders the empty state. An unknown/unauthorized
+  // orgId is passed through as-is and rejected by the server's org:get ACL.
+  const resolvedOrgId = orgId || manageableOrgs[0]?.id || undefined;
   const [settings] = useSubject($settings);
   const [doTokenValid] = useSubject($doTokenValid);
   const [railwayTestResult] = useSubject($railwayTestResult);
@@ -117,6 +139,8 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
   useEffect(() => {
     loadSettings();
     loadSshKey();
+    // The org list is fetched once on auth by the always-mounted Sidebar
+    // (UserBadge), so there's no need to re-fetch it on every Settings visit.
   }, []);
 
   useEffect(() => {
@@ -173,19 +197,41 @@ export function SettingsPanel({ activeTab = "general" }: { activeTab?: SettingsT
     <div className="flex-1 flex flex-col overflow-y-auto px-5 pb-5">
       <ViewHeader title="Settings" />
       <ViewTabs
-        tabs={isAdmin
-          ? [
-              { key: "general" as const, label: "General" },
-              { key: "deploy" as const, label: "Deploy" },
-            ]
-          : [
-              { key: "general" as const, label: "General" },
-            ]}
+        tabs={[
+          { key: "general" as const, label: "General" },
+          ...(isAdmin ? [{ key: "deploy" as const, label: "Deploy" }] : []),
+          ...(showOrgTab ? [{ key: "org" as const, label: "Organization" }] : []),
+        ]}
         activeTab={tab}
-        onTabChange={(t) => router.push(buildSettingsPath(t))}
+        onTabChange={(t) => router.push(buildSettingsPath(t, t === "org" ? resolvedOrgId : undefined))}
       />
 
-      {tab === "general" ? (
+      {tab === "org" ? (
+        resolvedOrgId ? (
+          <OrgSettingsPanel orgId={resolvedOrgId} />
+        ) : (
+          <div className="pt-6 max-w-xl">
+            <div className="bg-mantle border border-surface0 rounded-lg p-4 flex flex-col gap-2">
+              {mineFetched ? (
+                <>
+                  <h3 className="text-text font-medium text-md">No organizations to manage</h3>
+                  <p className="text-md text-overlay1">
+                    You're not an owner or admin of any organization yet, so there's nothing
+                    to configure here. A superadmin can add you to an org from{" "}
+                    <span className="font-mono text-subtext0">Admin → Orgs</span>, or create
+                    a new org and make you its owner.
+                  </p>
+                </>
+              ) : (
+                <div className="text-md text-overlay0">Checking your org memberships…</div>
+              )}
+              {mineError && (
+                <ErrorMessage className="text-xs">Server returned: {mineError}</ErrorMessage>
+              )}
+            </div>
+          </div>
+        )
+      ) : tab === "general" ? (
         <div className="pt-4">
           <div className="bg-mantle rounded-lg p-4 mb-4">
             <label className="block text-md font-medium text-subtext0 mb-2">

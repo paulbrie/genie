@@ -54,6 +54,21 @@ export function createTerminal(
   terminal.loadAddon(fitAddon);
   terminal.open(container);
 
+  terminal.parser.registerOscHandler(52, (data) => {
+    const semi = data.indexOf(";");
+    if (semi < 0) return false;
+    const payload = data.slice(semi + 1);
+    if (payload === "?" || payload === "") return true;
+    try {
+      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+      const text = new TextDecoder().decode(bytes);
+      void navigator.clipboard?.writeText(text);
+    } catch {
+      return false;
+    }
+    return true;
+  });
+
   // Initial fit + focus
   requestAnimationFrame(() => {
     fitAddon.fit();
