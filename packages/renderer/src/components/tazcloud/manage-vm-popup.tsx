@@ -844,6 +844,22 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         })}
       </div>
 
+      {/* Visible explanation for the dimmed tabs — the per-tab `reason` is only
+       *  a hover tooltip, which most users miss. Shows a single line under the
+       *  tab bar whenever any project-gated tab is disabled (currently
+       *  Commands / Files / DB, all keyed off `hasProject`). */}
+      {!hasProject && (
+        <div className="text-xs text-overlay0 bg-mantle border border-surface0 rounded-md px-2.5 py-1.5 flex items-start gap-2">
+          <Link2 size={12} className="shrink-0 mt-0.5 text-overlay1" />
+          <span className="leading-relaxed">
+            <span className="text-subtext0">Commands, Files and DB are disabled</span> — these
+            tabs need a Genie project to resolve the SSH connection. Attach this VM as a
+            server on a project (from the project's <span className="font-mono text-subtext0">Servers</span> panel)
+            to enable them.
+          </span>
+        </div>
+      )}
+
       {resolvedUser === null ? (
         <div className="flex items-center gap-2 text-overlay0 text-md py-4">
           <Loader2 size={14} className="animate-spin" /> Detecting SSH user…

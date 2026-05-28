@@ -531,11 +531,18 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
           <button onClick={() => loadDirectory(currentPath)} className="text-overlay1 hover:text-text transition-colors p-0.5 shrink-0 bg-transparent border-none cursor-pointer">
             <RefreshCw size={12} />
           </button>
+          {/* Visually hidden — NOT `display: none`. Chromium silently refuses to
+           *  open the native file picker when `.click()` is invoked on a
+           *  display:none <input type="file">, especially inside a portal
+           *  (this component is rendered through the manage-vm popup). Keep it
+           *  in the layout tree but invisible/unclickable instead. */}
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            className="hidden"
+            style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
+            tabIndex={-1}
+            aria-hidden="true"
             onChange={(e) => {
               if (e.target.files) handleUpload(e.target.files);
               e.target.value = "";
