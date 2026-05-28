@@ -77,26 +77,12 @@ export function TerminalBottomPanel() {
     [bottomPanelHeight]
   );
 
-  // --- Route incoming data to the right terminal instance ---
-  const handleData = useCallback((e: Event) => {
-    const detail = (e as CustomEvent).detail;
-    writeToTerminal(detail.id, detail.data);
-  }, []);
-
-  const handleExit = useCallback((e: Event) => {
-    const detail = (e as CustomEvent).detail;
-    writeToTerminal(detail.id, `\r\n[Process exited with code ${detail.code}]\r\n`);
-  }, []);
-
-  // Register window event listeners (persistent — never dispose terminals on re-render)
-  useEffect(() => {
-    window.addEventListener("genie:terminal:data", handleData);
-    window.addEventListener("genie:terminal:exit", handleExit);
-    return () => {
-      window.removeEventListener("genie:terminal:data", handleData);
-      window.removeEventListener("genie:terminal:exit", handleExit);
-    };
-  }, [handleData, handleExit]);
+  // Routing of terminal:data / terminal:exit → xterm is owned by
+  // <TerminalWindows /> (mounted in layout.tsx, always on) so EVERY xterm
+  // instance — bottom-panel tabs and floating popups alike — get one write
+  // per chunk. Subscribing again here would double-write into every xterm,
+  // halve effective throughput, and made the Claude popup freeze under
+  // sustained streaming output.
 
   // Auto-create first tab only when user explicitly opens the panel (not after closing last tab)
   const panelWasOpened = useRef(false);
