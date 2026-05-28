@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
+import { execCached, evictSession, getCachedSession } from "./ssh-session-cache.js";
 
 export const VPS_STATS_REMOTE_BASE = "/usr/lib/node_modules/@genie/vps-stats";
 export const VPS_STATS_JSONL_PATH = "/run/genie/stats.jsonl";
@@ -71,34 +72,33 @@ async function collectStatsFiles(): Promise<{ remotePath: string; content: strin
 export async function ensureVpsStats(connection: SshConnectionConfig): Promise<void> {
   const localHash = await computeLocalStatsHash();
 
-  const checkSession = await connectSsh(connection, { timeoutMs: 30_000 });
   let remoteHash = "";
   try {
-    remoteHash = (await checkSession.exec(`cat ${VERSION_FILE} 2>/dev/null || echo ""`)).trim();
+    remoteHash = (await execCached(connection, `cat ${VERSION_FILE} 2>/dev/null || echo ""`)).trim();
   } catch {
     /* missing */
   }
-  checkSession.close();
 
   if (remoteHash === localHash) return;
 
   console.log(`[vps-stats] Version mismatch (local=${localHash}, remote=${remoteHash || "none"}), uploading...`);
   const filesToUpload = await collectStatsFiles();
 
-  const uploadSession = await connectSsh(connection, { timeoutMs: 60_000 });
+  const session = await getCachedSession(connection);
   try {
     const dirs = new Set(filesToUpload.map((f) => path.posix.dirname(f.remotePath)));
-    await uploadSession.exec(`sudo mkdir -p ${[...dirs].join(" ")}`);
+    await session.exec(`sudo mkdir -p ${[...dirs].join(" ")}`);
 
     for (const file of filesToUpload) {
       const b64 = Buffer.from(file.content).toString("base64");
-      await uploadSession.exec(`echo '${b64}' | base64 -d | sudo tee ${file.remotePath} > /dev/null`);
+      await session.exec(`echo '${b64}' | base64 -d | sudo tee ${file.remotePath} > /dev/null`);
     }
 
-    await uploadSession.exec(`echo '${localHash}' | sudo tee ${VERSION_FILE} > /dev/null`);
+    await session.exec(`echo '${localHash}' | sudo tee ${VERSION_FILE} > /dev/null`);
     console.log(`[vps-stats] Uploaded successfully (version=${localHash})`);
-  } finally {
-    uploadSession.close();
+  } catch (err) {
+    evictSession(connection);
+    throw err;
   }
 }
 
@@ -116,14 +116,14 @@ export function vpsStatsTailCommand(): string {
 }
 
 export async function isGenieStatsServiceActive(connection: SshConnectionConfig): Promise<boolean> {
-  const session = await connectSsh(connection, { timeoutMs: 15_000 });
   try {
-    const out = (await session.exec(`systemctl is-active ${GENIE_STATS_SYSTEMD_UNIT} 2>/dev/null || echo inactive`)).trim();
+    const out = (await execCached(
+      connection,
+      `systemctl is-active ${GENIE_STATS_SYSTEMD_UNIT} 2>/dev/null || echo inactive`,
+    )).trim();
     return out === "active";
   } catch {
     return false;
-  } finally {
-    session.close();
   }
 }
 

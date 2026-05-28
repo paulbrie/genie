@@ -47,6 +47,7 @@ import {
   unwatchVpsStats,
   unwatchVpsStatsForClient,
   watchVpsStats,
+  stopStatsStreamsForHost,
 } from "./vps/stats-stream.js";
 import { getBulkVpsMetricHistory, getVpsMetricHistory } from "./vps/vps-metric-service.js";
 import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
@@ -2759,6 +2760,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         killed = killSshConnectionsForHost(killHost);
         closePersistentMcpTunnelForHost(killHost);
         evictAllSessionsForHost(killHost);
+        stopStatsStreamsForHost(killHost);
       } else if (typeof id === "string") {
         const info = getSshConnectionInfo(id);
         if (killSshConnection(id)) {

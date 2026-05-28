@@ -3,9 +3,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, LayoutGrid, List as ListIcon, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
 import { $admin, $auth, $manager, $persistedTerminals, $vpsDeploy, $windowManager } from "@/store/subjects";
-import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
+import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
@@ -13,8 +13,9 @@ import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
 import { VpsResourceGauges } from "@/components/project/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
-import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
 import { CircularGauge } from "@/components/ui/circular-gauge";
+import { CloudMetricSparklines } from "@/components/cloud/cloud-metric-sparklines";
+import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
 import type { VpsStats } from "@/store/types";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
@@ -71,7 +72,7 @@ const INGRESS_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
  *  bastion rate-limits happy vs the old 30s cadence. */
 const TAZ_STATS_POLL_MS = 60_000;
 
-function VmCardStatsGauges({
+export function VmCardStatsGauges({
   stats,
   statsLoading,
   statsError,
@@ -112,8 +113,9 @@ function VmCardStatsGauges({
 // and the manage popup cluster can reuse them without re-importing the whole
 // panel.
 
-export function TazCloudPanel() {
+export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   const admin = useDeepSubjectAll($admin);
+  const vpsDeploy = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
   const [auth] = useSubject($auth);
   // Used by the per-row "Detach from project" action to resolve the project's
   // internal vpsInstance id (which the server's `vps:disconnect` handler needs)
@@ -136,17 +138,6 @@ export function TazCloudPanel() {
   /** Per-row overflow menu. Collapses the rename/lock/security/rkhunter/snapshot/
    *  ingress/manage/delete cluster so the row isn't visually swamped. */
   const [actionMenuOpenFor, setActionMenuOpenFor] = useState<string | null>(null);
-  /** VM-list view mode + search query. Persisted to localStorage so the user
-   *  doesn't have to re-toggle on every visit. Search is case-insensitive,
-   *  applied to vm.name (the field admins actually scan by). */
-  const [vmViewMode, setVmViewMode] = useState<"list" | "cards">(() => {
-    if (typeof window === "undefined") return "list";
-    return (window.localStorage.getItem("genie.tazcloud.vmViewMode") as "list" | "cards") || "list";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem("genie.tazcloud.vmViewMode", vmViewMode);
-  }, [vmViewMode]);
   const [vmSearch, setVmSearch] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -379,28 +370,6 @@ export function TazCloudPanel() {
               <X size={11} />
             </button>
           )}
-        </div>
-        <div className="inline-flex rounded-md border border-surface0 bg-background overflow-hidden">
-          <button
-            onClick={() => setVmViewMode("list")}
-            className={cn(
-              "px-1.5 py-1 transition-colors",
-              vmViewMode === "list" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
-            )}
-            title="List view"
-          >
-            <ListIcon size={13} />
-          </button>
-          <button
-            onClick={() => setVmViewMode("cards")}
-            className={cn(
-              "px-1.5 py-1 transition-colors border-l border-surface0",
-              vmViewMode === "cards" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
-            )}
-            title="Card view"
-          >
-            <LayoutGrid size={13} />
-          </button>
         </div>
         <div className="flex-1" />
         <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
@@ -931,28 +900,26 @@ export function TazCloudPanel() {
             );
           };
           return (
-          <div
-            className={cn(
-              vmViewMode === "cards"
-                ? "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2"
-                : "flex flex-col gap-2",
-            )}
-          >
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
             {visibleVms.map((vm) => {
               const isActive = vm.status === "ACTIVE";
               const isPending = pendingDelete === vm.id;
               const isDeleting = deleting.has(vm.id);
               const isRenaming = renamingId === vm.id;
-              const vmStats = isActive ? admin.tazcloud.vmStats[vm.id] : null;
-              const vmStatsError = isActive ? admin.tazcloud.vmStatsErrors[vm.id] : null;
+              const adminStats = isActive ? admin.tazcloud.vmStats[vm.id] : null;
+              const adminStatsError = isActive ? admin.tazcloud.vmStatsErrors[vm.id] : null;
+              const link = findLinkedInstance(projects, { tazVmId: vm.id });
+              const streamStats = link ? vpsDeploy.instances[link.instanceId]?.stats ?? null : null;
+              const streamError = link ? vpsDeploy.instances[link.instanceId]?.statsError ?? null : null;
+              const vmStats = streamStats ?? adminStats;
+              const vmStatsError = streamStats ? null : (streamError ?? adminStatsError);
               const vmStatsLoading =
-                isActive && admin.tazcloud.vmStatsLoading && !vmStats && !vmStatsError;
-              // vCPU label from size slug if present (DO format); TazCloud sizes are word
-              // labels (small/medium/...) so this gracefully no-ops.
+                isActive && !vmStats && !vmStatsError
+                && (link ? false : admin.tazcloud.vmStatsLoading);
+              const historyKey = link ? vpsMetricKey(link.projectId, link.instanceId) : null;
               const vcpuMatch = vm.size?.match(/(\d+)vcpu/);
               const vcpuLabel = vcpuMatch ? `${vcpuMatch[1]}v` : undefined;
               const cardOnClick = (e: React.MouseEvent) => {
-                if (vmViewMode !== "cards") return;
                 if (!isActive || isRenaming || isPending || isDeleting) return;
                 const target = e.target as HTMLElement;
                 if (target.closest("button, a, input, select, textarea, label")) return;
@@ -960,197 +927,126 @@ export function TazCloudPanel() {
               };
               const cardClass = cn(
                 "bg-mantle rounded-lg px-3 py-2 border border-overlay0/10 transition-colors",
-                vmViewMode === "cards" && isActive && !isRenaming && !isPending && !isDeleting
+                isActive && !isRenaming && !isPending && !isDeleting
                   && "cursor-pointer hover:border-blue/30",
-                // Locked → red-tinted border so the state is visible at a glance,
-                // even before the user notices the lock badge.
                 vm.locked && "border-red/40 hover:border-red/60",
               );
 
-              // Card-mode layout: vertical sections (header / stats / meta / footer)
-              // instead of the cramped horizontal flex-wrap row used for list rows.
-              if (vmViewMode === "cards") {
-                return (
-                  <div key={vm.id} onClick={cardOnClick} className={cardClass}>
-                    {isRenaming ? renderRenameInput() : (
-                      <>
-                        {/* Header: name (+lock) on the left, status pill on the right. */}
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <span className="font-semibold text-text truncate" title={vm.name}>{vm.name}</span>
-                              {vm.locked && (
-                                <span
-                                  className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red/15 text-red border border-red/30"
-                                  title={isSuperAdmin
-                                    ? "Locked: typed-name confirmation required to delete; click the unlock icon to clear"
-                                    : "Locked: only a superadmin can delete or unlock this VM"}
-                                >
-                                  <Lock size={10} /> locked
-                                </span>
-                              )}
-                            </div>
-                            {vm.ipv6 && (
-                              <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                <span className="min-w-0 truncate">
-                                  <CopyableIp ip={vm.ipv6} className="text-xs text-overlay0 font-mono" />
-                                </span>
-                                <a
-                                  href={`http://[${vm.ipv6}]`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-overlay0 hover:text-blue transition-colors shrink-0"
-                                  title="Open in browser"
-                                >
-                                  <ExternalLink size={10} />
-                                </a>
-                              </div>
-                            )}
-                          </div>
-                          {cardStatusPill(vm.status)}
-                        </div>
-
-                        {isActive && (
-                          <VmCardStatsGauges
-                            stats={vmStats}
-                            statsLoading={vmStatsLoading}
-                            statsError={vmStatsError}
-                            vcpuLabel={vcpuLabel}
-                          />
-                        )}
-
-                        {/* Non-active state */}
-                        {!isActive && (
-                          <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
-                            VM is {vm.status.toLowerCase()}
-                          </div>
-                        )}
-
-                        {/* Metadata grid: label → value pairs, label-aligned column. */}
-                        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 mt-3 text-xs">
-                          {vm.image && (
-                            <>
-                              <span className="text-overlay0">Image</span>
-                              <span className="text-subtext0 truncate">{vm.image}</span>
-                            </>
-                          )}
-                          {vm.size && (
-                            <>
-                              <span className="text-overlay0">Size</span>
-                              <span className="text-subtext0">{vm.size}</span>
-                            </>
-                          )}
-                          <span className="text-overlay0">Project</span>
-                          <span className="truncate">
-                            {vm.projectName ? (
-                              <span className="text-blue">{vm.projectName}</span>
-                            ) : (
-                              <AttachVmToProject provider="tazcloud" vmId={vm.id} />
-                            )}
-                          </span>
-                          <span className="text-overlay0">ID</span>
-                          <span className="text-subtext0 font-mono truncate" title={vm.id}>{vm.id.slice(0, 8)}…</span>
-                          {vm.ingress && (
-                            <>
-                              <span className="text-overlay0">Ingress</span>
-                              <span className="min-w-0">{renderIngressBadge(vm)}</span>
-                            </>
-                          )}
-                        </div>
-
-                        {/* Footer: action cluster on the right. The external-port
-                            chips that used to live here depended on the per-card SSH
-                            probe and went away with it; the Manage popup shows them. */}
-                        <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
-                          <div className="flex-1" />
-                          {isDeleting ? (
-                            <span className="inline-flex items-center gap-1 text-overlay0 text-xs">
-                              <Loader2 size={12} className="animate-spin" />
-                              Deleting…
-                            </span>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() => loadAdminTazcloudStats()}
-                                className="p-1 text-overlay0 hover:text-text transition-colors"
-                                title="Refresh stats"
-                              >
-                                <RefreshCw size={13} className={cn(vmStatsLoading && "animate-spin")} />
-                              </button>
-                              {renderSshControls(vm, isActive)}
-                              {renderActionsMenu(vm, isActive, isRenaming)}
-                            </>
-                          )}
-                        </div>
-                      </>
-                    )}
-                    {isPending && (
-                      <ServerDeleteConfirm
-                        name={vm.name}
-                        locked={vm.locked}
-                        canDeleteLocked={isSuperAdmin}
-                        onConfirm={() => executeDelete(vm.id)}
-                        onCancel={() => setPendingDelete(null)}
-                      />
-                    )}
-                    {snapshotFormFor === vm.id && renderSnapshotForm(vm.id)}
-                    {ingressFormFor === vm.id && renderIngressForm(vm.id)}
-                  </div>
-                );
-              }
-
-              // List-mode layout (unchanged): single horizontal flex-wrap row.
               return (
                 <div key={vm.id} onClick={cardOnClick} className={cardClass}>
                   {isRenaming ? renderRenameInput() : (
-                    <DropletInstanceBar
-                      name={vm.name}
-                      status={vm.status.toLowerCase()}
-                      ip={vm.ipv6}
-                      sizeSlug={vm.size}
-                      provider="tazcloud"
-                      stats={vmStats}
-                      statsLoading={vmStatsLoading}
-                      statsError={vmStatsError}
-                      onRefresh={() => loadAdminTazcloudStats()}
-                      onDelete={vm.ingress ? undefined : () => confirmDelete(vm.id)}
-                    />
-                  )}
-                  <div className="flex items-center gap-3 mt-1 text-md text-overlay0 flex-wrap">
-                    {vm.image && <span>Image: <span className="text-subtext0">{vm.image}</span></span>}
-                    <span>
-                      Project:{" "}
-                      {vm.projectName ? (
-                        <span className="text-blue">{vm.projectName}</span>
-                      ) : (
-                        <AttachVmToProject provider="tazcloud" vmId={vm.id} />
+                    <>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-semibold text-text truncate" title={vm.name}>{vm.name}</span>
+                            {vm.locked && (
+                              <span
+                                className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red/15 text-red border border-red/30"
+                                title={isSuperAdmin
+                                  ? "Locked: typed-name confirmation required to delete; click the unlock icon to clear"
+                                  : "Locked: only a superadmin can delete or unlock this VM"}
+                              >
+                                <Lock size={10} /> locked
+                              </span>
+                            )}
+                          </div>
+                          {vm.ipv6 && (
+                            <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                              <span className="min-w-0 truncate">
+                                <CopyableIp ip={vm.ipv6} className="text-xs text-overlay0 font-mono" />
+                              </span>
+                              <a
+                                href={`http://[${vm.ipv6}]`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-overlay0 hover:text-blue transition-colors shrink-0"
+                                title="Open in browser"
+                              >
+                                <ExternalLink size={10} />
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                        {cardStatusPill(vm.status)}
+                      </div>
+
+                      {isActive && (
+                        <VmCardStatsGauges
+                          stats={vmStats}
+                          statsLoading={vmStatsLoading}
+                          statsError={vmStatsError}
+                          vcpuLabel={vcpuLabel}
+                        />
                       )}
-                    </span>
-                    <span>ID: <span className="text-subtext0 font-mono">{vm.id.slice(0, 8)}…</span></span>
-                    {vm.locked && (
-                      <span
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red/15 text-red border border-red/30"
-                        title={isSuperAdmin
-                          ? "Locked: typed-name confirmation required to delete; click the unlock icon to clear"
-                          : "Locked: only a superadmin can delete or unlock this VM"}
-                      >
-                        <Lock size={10} /> locked
-                      </span>
-                    )}
-                    {vm.ingress && renderIngressBadge(vm)}
-                    <div className="flex-1" />
-                    {isDeleting ? (
-                      <span className="inline-flex items-center gap-1 text-overlay0">
-                        <Loader2 size={12} className="animate-spin" />
-                        Deleting…
-                      </span>
-                    ) : (
-                      <>
-                        {renderSshControls(vm, isActive)}
-                        {renderActionsMenu(vm, isActive, isRenaming)}
-                      </>
-                    )}
-                  </div>
+
+                      {isActive && historyKey && (
+                        <CloudMetricSparklines
+                          history={monitor.history[historyKey]}
+                          hours={monitor.hours}
+                        />
+                      )}
+
+                      {!isActive && (
+                        <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
+                          VM is {vm.status.toLowerCase()}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 mt-3 text-xs">
+                        {vm.image && (
+                          <>
+                            <span className="text-overlay0">Image</span>
+                            <span className="text-subtext0 truncate">{vm.image}</span>
+                          </>
+                        )}
+                        {vm.size && (
+                          <>
+                            <span className="text-overlay0">Size</span>
+                            <span className="text-subtext0">{vm.size}</span>
+                          </>
+                        )}
+                        <span className="text-overlay0">Project</span>
+                        <span className="truncate">
+                          {vm.projectName ? (
+                            <span className="text-blue">{vm.projectName}</span>
+                          ) : (
+                            <AttachVmToProject provider="tazcloud" vmId={vm.id} />
+                          )}
+                        </span>
+                        <span className="text-overlay0">ID</span>
+                        <span className="text-subtext0 font-mono truncate" title={vm.id}>{vm.id.slice(0, 8)}…</span>
+                        {vm.ingress && (
+                          <>
+                            <span className="text-overlay0">Ingress</span>
+                            <span className="min-w-0">{renderIngressBadge(vm)}</span>
+                          </>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
+                        <div className="flex-1" />
+                        {isDeleting ? (
+                          <span className="inline-flex items-center gap-1 text-overlay0 text-xs">
+                            <Loader2 size={12} className="animate-spin" />
+                            Deleting…
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => loadAdminTazcloudStats()}
+                              className="p-1 text-overlay0 hover:text-text transition-colors"
+                              title="Refresh stats"
+                            >
+                              <RefreshCw size={13} className={cn(vmStatsLoading && "animate-spin")} />
+                            </button>
+                            {renderSshControls(vm, isActive)}
+                            {renderActionsMenu(vm, isActive, isRenaming)}
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
                   {isPending && (
                     <ServerDeleteConfirm
                       name={vm.name}

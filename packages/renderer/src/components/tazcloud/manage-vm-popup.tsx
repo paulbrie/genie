@@ -10,15 +10,15 @@ import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import {
   Activity, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, Loader2,
-  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw, RotateCcw,
+  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw,
   Settings as SettingsIcon, Shield, Terminal, Trash2, X,
 } from "lucide-react";
-import { $admin, $auth, $persistedTerminals, $projects, $ssh, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import {
   addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, focusWindow,
   hibernateVps, killPersistedTerminal, loadPersistedTerminals, minimizeWindow,
-  openWindow, reattachPersistedTerminal, reconnectSshTunnelForHost, registerWindow, updateWindowPosition, vpsExec,
+  openWindow, reattachPersistedTerminal, registerWindow, updateWindowPosition, vpsExec,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
@@ -31,6 +31,7 @@ import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { imageDefaultUser } from "./helpers";
+import { VmHostConnectionsPanel } from "./vm-host-connections-panel";
 
 const MANAGE_VM_WINDOW_PREFIX = "manage-vm-";
 /** Default size + cascade offset for any Manage popup variant. Exported so the
@@ -462,7 +463,7 @@ interface ManageVmInlineProps {
   vm: ManageVm;
 }
 
-type ManageTab = "manage" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
+type ManageTab = "manage" | "connections" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -477,9 +478,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   // plain "user" callers get silently dropped and would stall on the 15-min
   // client timeout. Non-admin callers route through user-level `vps:exec`.
   const [auth] = useSubject($auth);
-  const [ssh] = useSubject($ssh);
   const canUseAdminExec = (auth.user?.role ?? "user") !== "user";
-  const reconnectingTunnel = !!ssh.reconnectingHosts[vm.host];
 
   // Probe whether the 'genie' deploy user is set up (created + SSH key + sudo)
   // and prefer it over the image-default user. This matters because recipes
@@ -553,6 +552,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
   const tabs: { key: ManageTab; label: string; icon: typeof SettingsIcon; enabled: boolean; reason?: string }[] = [
     { key: "manage", label: "Manage", icon: SettingsIcon, enabled: true },
+    { key: "connections", label: "Connections", icon: Plug, enabled: true },
     { key: "firewall", label: "Firewall", icon: Shield, enabled: true },
     { key: "ports", label: "Ports", icon: Network, enabled: true },
     { key: "processes", label: "Processes", icon: Cpu, enabled: true },
@@ -595,37 +595,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         <>
           {tab === "manage" && (
             <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-overlay0">
-                  Operations run via SSH as <span className="font-mono text-overlay1">{user}@{vm.host}</span>
-                  {vm.isPrivateHost && (
-                    <span className="ml-1">over the WireGuard tunnel</span>
-                  )}
-                </p>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => reconnectSshTunnelForHost(vm.host)}
-                    disabled={reconnectingTunnel}
-                    className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-blue/30 text-md text-blue hover:bg-blue/10 transition-colors disabled:opacity-40 disabled:cursor-wait"
-                    title="Reconnect shared MCP tunnel for this host"
-                  >
-                    {reconnectingTunnel ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
-                    Tunnel
-                  </button>
-                  <ClaudeManageButton vm={vm} />
-                  <SshLaunchButton vm={vm} />
-                </div>
+              <div className="flex items-center justify-end gap-2">
+                <ClaudeManageButton vm={vm} />
+                <SshLaunchButton vm={vm} />
               </div>
               {vm.provider === "do" && linked && (
                 <DropletSleepControl projectId={linked.project.id} instanceId={linked.instance.id} />
-              )}
-              {vm.isPrivateHost && (
-                <div className="text-xs text-overlay0 bg-surface0/40 border border-surface0 rounded px-3 py-2">
-                  This VM lives on a private 10.128/24 network — the manager reaches it over the
-                  WireGuard tunnel (see <span className="font-mono">wireguard.md</span>). If recipes
-                  time out with &ldquo;SSH connection failed&rdquo;, check that the tunnel is up on
-                  the manager host (<span className="font-mono">sudo wg show</span>).
-                </div>
               )}
               <VpsResourceGauges
                 exec={exec}
@@ -654,6 +629,18 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
             <VmSessionsTab vmHost={vm.host} />
           )}
         </>
+      )}
+
+      {tab === "connections" && (
+        <VmHostConnectionsPanel
+          host={vm.host}
+          provider={vm.provider}
+          sshUser={user}
+          projectName={linked?.project.name ?? null}
+          isPrivateHost={vm.isPrivateHost}
+          ingress={vm.ingress}
+          connection={vm.connection}
+        />
       )}
 
       {tab === "commands" && linked && (

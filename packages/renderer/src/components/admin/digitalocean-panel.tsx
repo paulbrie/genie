@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, LayoutGrid, List as ListIcon, Trash2, Terminal, ExternalLink } from "lucide-react";
-import type { AdminDroplet } from "@/store/types";
-import { $admin, $auth, $manager, $projects, $windowManager } from "@/store/subjects";
-import { addSshTerminalTab, createAdminDroplet, disconnectVps, focusWindow, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink } from "lucide-react";
+import type { AdminDroplet, VpsDeployState, VpsMonitorState } from "@/store/types";
+import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { addSshTerminalTab, createAdminDroplet, disconnectVps, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { wsRequest } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -13,10 +13,11 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { CopyableIp } from "@/components/ui/copyable-ip";
-import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
-import { cardStatusPill } from "@/components/admin/tazcloud-panel";
+import { cardStatusPill, VmCardStatsGauges } from "@/components/admin/tazcloud-panel";
+import { CloudMetricSparklines } from "@/components/cloud/cloud-metric-sparklines";
+import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
 import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
 
 // Confirmation type for the inline delete UI on each row.
@@ -52,8 +53,11 @@ interface HibernatedRow {
   hibernatedAt: string;
 }
 
-export function DigitalOceanPanel() {
+const DO_STATS_POLL_MS = 60_000;
+
+export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
   const admin = useDeepSubjectAll($admin);
+  const vpsDeploy = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
   const [auth] = useSubject($auth);
   const [projects] = useSubject($projects);
   const [pendingDelete, setPendingDelete] = useState<PendingDeleteId>(null);
@@ -72,16 +76,6 @@ export function DigitalOceanPanel() {
   // Per-row overflow menu — matches TazCloud's pattern so the per-row controls
   // don't span the full width of the row.
   const [actionMenuOpenFor, setActionMenuOpenFor] = useState<number | null>(null);
-  // Droplet-list view mode + search. Mirrors the TazCloud panel — same keys
-  // would collide, so we namespace under `digitalocean`.
-  const [viewMode, setViewMode] = useState<"list" | "cards">(() => {
-    if (typeof window === "undefined") return "list";
-    return (window.localStorage.getItem("genie.digitalocean.viewMode") as "list" | "cards") || "list";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem("genie.digitalocean.viewMode", viewMode);
-  }, [viewMode]);
   const [search, setSearch] = useState("");
 
   // Walk projects to find DO instances that have been hibernated. These don't
@@ -107,8 +101,12 @@ export function DigitalOceanPanel() {
   useEffect(() => {
     if (!isSuperAdmin) return;
     loadAdminDroplets();
-    // Per-droplet stats live in the Manage popup; the panel itself stays
-    // metadata-only so we don't SSH-probe every droplet on a 10s cadence.
+    loadAdminDropletStats();
+    const id = window.setInterval(() => {
+      if (document.hidden) return;
+      loadAdminDropletStats();
+    }, DO_STATS_POLL_MS);
+    return () => window.clearInterval(id);
   }, [isSuperAdmin]);
 
   // Re-fire the one-shot droplet list when the WS reconnects (typically
@@ -124,6 +122,7 @@ export function DigitalOceanPanel() {
     wasManagerRunningRef.current = manager.running;
     if (!wasRunning && manager.running) {
       loadAdminDroplets();
+      loadAdminDropletStats();
     }
   }, [manager.running, isSuperAdmin]);
 
@@ -211,28 +210,6 @@ export function DigitalOceanPanel() {
               <X size={11} />
             </button>
           )}
-        </div>
-        <div className="inline-flex rounded-md border border-surface0 bg-background overflow-hidden">
-          <button
-            onClick={() => setViewMode("list")}
-            className={cn(
-              "px-1.5 py-1 transition-colors",
-              viewMode === "list" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
-            )}
-            title="List view"
-          >
-            <ListIcon size={13} />
-          </button>
-          <button
-            onClick={() => setViewMode("cards")}
-            className={cn(
-              "px-1.5 py-1 transition-colors border-l border-surface0",
-              viewMode === "cards" ? "bg-surface0 text-blue" : "text-overlay0 hover:text-text",
-            )}
-            title="Card view"
-          >
-            <LayoutGrid size={13} />
-          </button>
         </div>
         <div className="flex-1" />
         <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
@@ -500,13 +477,7 @@ export function DigitalOceanPanel() {
           };
 
           return (
-            <div
-              className={cn(
-                viewMode === "cards"
-                  ? "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2"
-                  : "flex flex-col gap-2",
-              )}
-            >
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
               {visibleDroplets.map((d) => {
                 const isActive = d.status === "active";
                 const isPending = pendingDelete === d.id;
@@ -514,8 +485,16 @@ export function DigitalOceanPanel() {
                 const resizeState = admin.dropletResize[d.id];
                 const resizing = !!resizeState && !resizeState.done && !resizeState.error;
                 const resizeFormOpen = resizeDraftFor === d.id;
-                // Per-droplet stats live in the Manage popup; cards stay
-                // metadata-only to avoid SSH-probing every droplet on refresh.
+                const adminStats = isActive ? admin.dropletStats[d.id] : null;
+                const link = findLinkedInstance(projects, { dropletId: d.id });
+                const streamStats = link ? vpsDeploy.instances[link.instanceId]?.stats ?? null : null;
+                const streamError = link ? vpsDeploy.instances[link.instanceId]?.statsError ?? null : null;
+                const dropletStats = streamStats ?? adminStats;
+                const dropletStatsError = streamStats ? null : streamError;
+                const dropletStatsLoading = isActive && !dropletStats && !dropletStatsError && !link;
+                const historyKey = link ? vpsMetricKey(link.projectId, link.instanceId) : null;
+                const vcpuMatch = d.size?.match(/(\d+)vcpu/);
+                const vcpuLabel = vcpuMatch ? `${vcpuMatch[1]}v` : undefined;
                 const rowOnClick = (e: React.MouseEvent) => {
                   if (!isActive || isRenaming || isPending || resizeFormOpen) return;
                   const target = e.target as HTMLElement;
@@ -526,10 +505,9 @@ export function DigitalOceanPanel() {
                   "bg-mantle rounded-lg px-3 py-2 border border-overlay0/10",
                   isActive && !isRenaming && !isPending && !resizeFormOpen
                     && "cursor-pointer hover:border-blue/30 transition-colors",
+                  d.locked && "border-red/40 hover:border-red/60",
                 );
 
-                // Resize form + progress — shared between layouts, rendered
-                // below the row's primary content.
                 const renderResizeBlocks = () => (
                   <>
                     {resizeFormOpen && !resizing && (
@@ -593,141 +571,96 @@ export function DigitalOceanPanel() {
                   </>
                 );
 
-                // Card-mode layout: header / stats gauges / metadata grid / footer.
-                // Mirrors the TazCloud card so admins see the same shape across providers.
-                if (viewMode === "cards") {
-                  return (
-                    <div key={d.id} onClick={rowOnClick} className={rowClass}>
-                      {isRenaming ? renderRenameInput() : (
-                        <>
-                          {/* Header: name (+lock) on the left, status pill on the right. */}
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span className="font-semibold text-text truncate" title={d.name}>{d.name}</span>
-                                {d.locked && (
-                                  <span
-                                    className="shrink-0 text-red inline-flex"
-                                    title="Locked: typed-name confirmation required to delete"
-                                  >
-                                    <Lock size={11} />
-                                  </span>
-                                )}
-                              </div>
-                              {d.ip && (
-                                <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                  <span className="min-w-0 truncate">
-                                    <CopyableIp ip={d.ip} className="text-xs text-overlay0 font-mono" />
-                                  </span>
-                                  <a
-                                    href={`http://${d.ip}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-overlay0 hover:text-blue transition-colors shrink-0"
-                                    title="Open in browser"
-                                  >
-                                    <ExternalLink size={10} />
-                                  </a>
-                                </div>
-                              )}
-                            </div>
-                            {cardStatusPill(d.status)}
-                          </div>
-
-                          {/* Non-active state surfaced here in place of the old stats block. */}
-                          {!isActive && (
-                            <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
-                              Droplet is {d.status.toLowerCase()}
-                            </div>
-                          )}
-
-                          {/* Metadata grid. */}
-                          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 mt-3 text-xs">
-                            <span className="text-overlay0">Region</span>
-                            <span className="text-subtext0">{d.region}</span>
-                            <span className="text-overlay0">Size</span>
-                            <span className="text-subtext0">{d.size}</span>
-                            <span className="text-overlay0">Project</span>
-                            <span className="truncate">
-                              {d.projectName ? (
-                                <span className="text-blue">{d.projectName}</span>
-                              ) : (
-                                <AttachVmToProject provider="digitalocean" vmId={d.id} />
-                              )}
-                            </span>
-                            <span className="text-overlay0">ID</span>
-                            <span className="text-subtext0 font-mono truncate" title={String(d.id)}>{String(d.id).slice(0, 8)}…</span>
-                          </div>
-
-                          {/* Footer: action cluster on the right. The external-port
-                              chips that used to live here depended on the per-card SSH
-                              probe and went away with it; the Manage popup shows them. */}
-                          <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
-                            <div className="flex-1" />
-                            <button
-                              onClick={() => loadAdminDroplets()}
-                              className="p-1 text-overlay0 hover:text-text transition-colors"
-                              title="Refresh"
-                            >
-                              <RefreshCw size={13} />
-                            </button>
-                            {renderSshButton(d, isActive)}
-                            {renderActionsMenu(d, isActive, isRenaming)}
-                          </div>
-                        </>
-                      )}
-                      {renderResizeBlocks()}
-                      {isPending && (
-                        <ServerDeleteConfirm
-                          name={d.name}
-                          locked={d.locked}
-                          canDeleteLocked={isSuperAdmin}
-                          onConfirm={() => { wsDeleteDroplet(d.id); setPendingDelete(null); }}
-                          onCancel={() => setPendingDelete(null)}
-                        />
-                      )}
-                    </div>
-                  );
-                }
-
-                // List-mode layout: header bar + horizontal meta row with overflow menu.
                 return (
                   <div key={d.id} onClick={rowOnClick} className={rowClass}>
                     {isRenaming ? renderRenameInput() : (
-                      <DropletInstanceBar
-                        name={d.name}
-                        status={d.status}
-                        ip={d.ip}
-                        region={d.region}
-                        sizeSlug={d.size}
-                        provider="digitalocean"
-                        stats={null}
-                        statsLoading={false}
-                        onRefresh={() => loadAdminDroplets()}
-                      />
-                    )}
-                    <div className="flex items-center gap-3 mt-1 text-md text-overlay0 flex-wrap">
-                      <span>
-                        Project:{" "}
-                        {d.projectName ? (
-                          <span className="text-blue">{d.projectName}</span>
-                        ) : (
-                          <AttachVmToProject provider="digitalocean" vmId={d.id} />
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-semibold text-text truncate" title={d.name}>{d.name}</span>
+                              {d.locked && (
+                                <span
+                                  className="shrink-0 text-red inline-flex"
+                                  title="Locked: typed-name confirmation required to delete"
+                                >
+                                  <Lock size={11} />
+                                </span>
+                              )}
+                            </div>
+                            {d.ip && (
+                              <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                <span className="min-w-0 truncate">
+                                  <CopyableIp ip={d.ip} className="text-xs text-overlay0 font-mono" />
+                                </span>
+                                <a
+                                  href={`http://${d.ip}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-overlay0 hover:text-blue transition-colors shrink-0"
+                                  title="Open in browser"
+                                >
+                                  <ExternalLink size={10} />
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                          {cardStatusPill(d.status)}
+                        </div>
+
+                        {isActive && (
+                          <VmCardStatsGauges
+                            stats={dropletStats}
+                            statsLoading={dropletStatsLoading}
+                            statsError={dropletStatsError}
+                            vcpuLabel={vcpuLabel}
+                          />
                         )}
-                      </span>
-                      <span>ID: <span className="text-subtext0 font-mono">{String(d.id).slice(0, 8)}</span></span>
-                      {d.locked && (
-                        <span
-                          className="inline-flex items-center gap-1 text-red"
-                          title="Locked: typed-name confirmation required to delete"
-                        >
-                          <Lock size={11} /> locked
-                        </span>
-                      )}
-                      <div className="flex-1" />
-                      {renderSshButton(d, isActive)}
-                      {renderActionsMenu(d, isActive, isRenaming)}
-                    </div>
+
+                        {isActive && historyKey && (
+                          <CloudMetricSparklines
+                            history={monitor.history[historyKey]}
+                            hours={monitor.hours}
+                          />
+                        )}
+
+                        {!isActive && (
+                          <div className="flex items-center justify-center mt-3 py-3 text-overlay0 text-xs bg-base/40 rounded-md">
+                            Droplet is {d.status.toLowerCase()}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 mt-3 text-xs">
+                          <span className="text-overlay0">Region</span>
+                          <span className="text-subtext0">{d.region}</span>
+                          <span className="text-overlay0">Size</span>
+                          <span className="text-subtext0">{d.size}</span>
+                          <span className="text-overlay0">Project</span>
+                          <span className="truncate">
+                            {d.projectName ? (
+                              <span className="text-blue">{d.projectName}</span>
+                            ) : (
+                              <AttachVmToProject provider="digitalocean" vmId={d.id} />
+                            )}
+                          </span>
+                          <span className="text-overlay0">ID</span>
+                          <span className="text-subtext0 font-mono truncate" title={String(d.id)}>{String(d.id).slice(0, 8)}…</span>
+                        </div>
+
+                        <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
+                          <div className="flex-1" />
+                          <button
+                            onClick={() => loadAdminDropletStats()}
+                            className="p-1 text-overlay0 hover:text-text transition-colors"
+                            title="Refresh stats"
+                          >
+                            <RefreshCw size={13} />
+                          </button>
+                          {renderSshButton(d, isActive)}
+                          {renderActionsMenu(d, isActive, isRenaming)}
+                        </div>
+                      </>
+                    )}
                     {renderResizeBlocks()}
                     {isPending && (
                       <ServerDeleteConfirm
