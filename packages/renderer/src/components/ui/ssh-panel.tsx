@@ -20,11 +20,26 @@ function formatAge(openedAt: number, now: number): string {
   return `${h}h ${m % 60}m`;
 }
 
+function fmtDuration(ms?: number): string {
+  if (ms == null) return "—";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
+// Faults worth the operator's eye get warm colors; expected/normal causes stay muted.
+function causeColor(cause?: string): string {
+  if (cause === "keepalive-timeout" || cause === "socks-failure") return "text-red";
+  if (cause && cause !== "process-exit" && cause !== "tcp-close" && cause !== "wireproxy-respawn") return "text-yellow";
+  return "text-subtext0";
+}
+
 export function SshPanel() {
   const [ssh] = useSubject($ssh);
   const [now, setNow] = useState(() => Date.now());
   const [filter, setFilter] = useState("");
-  const [view, setView] = useState<"connections" | "tunnels">("connections");
+  const [view, setView] = useState<"connections" | "tunnels" | "disconnects">("connections");
   const [kindFilter, setKindFilter] = useState<"all" | "client" | "pty">("all");
 
   useEffect(() => {
@@ -56,6 +71,17 @@ export function SshPanel() {
       return t.host.toLowerCase().includes(q) || t.projectName.toLowerCase().includes(q);
     });
   }, [ssh.tunnels, filter]);
+
+  const eventRows = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const events = ssh.events ?? [];
+    if (!q) return events;
+    return events.filter((e) =>
+      e.host.toLowerCase().includes(q)
+      || (e.cause ?? e.event).toLowerCase().includes(q)
+      || (e.detail ?? "").toLowerCase().includes(q),
+    );
+  }, [ssh.events, filter]);
 
   const byHost = useMemo(() => {
     const m = new Map<string, { count: number; users: Set<string> }>();
@@ -90,6 +116,7 @@ export function SshPanel() {
           {([
             ["connections", `connections (${ssh.sessions.length})`],
             ["tunnels", `tunnels (${ssh.tunnels.length})`],
+            ["disconnects", `disconnects (${(ssh.events ?? []).length})`],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -182,7 +209,16 @@ export function SshPanel() {
                 const killing = ssh.killing[s.id];
                 return (
                   <tr key={s.id} className="border-b border-surface0/50 hover:bg-surface0/30">
-                    <td className="py-1.5 pr-3 text-text">{s.host}</td>
+                    <td className="py-1.5 pr-3 text-text">
+                      <span
+                        className={
+                          "inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle "
+                          + (s.status === "connecting" ? "bg-yellow animate-pulse" : "bg-green")
+                        }
+                        title={s.status === "connecting" ? "handshake in flight" : "connected"}
+                      />
+                      {s.host}
+                    </td>
                     <td className="py-1.5 pr-3 text-subtext1">{s.port}</td>
                     <td className="py-1.5 pr-3 text-subtext1">{s.username}</td>
                     <td className="py-1.5 pr-3">
@@ -219,7 +255,7 @@ export function SshPanel() {
               )}
             </tbody>
           </table>
-        ) : (
+        ) : view === "tunnels" ? (
           <table className="w-full text-md font-mono">
             <thead className="text-subtext0 text-left sticky top-0 bg-base">
               <tr className="border-b border-surface0">
@@ -268,6 +304,40 @@ export function SshPanel() {
                 <tr>
                   <td colSpan={5} className="py-8 text-center text-subtext0">
                     {ssh.tunnels.length === 0 ? "No shared MCP tunnels." : "No matches."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        ) : (
+          <table className="w-full text-md font-mono">
+            <thead className="text-subtext0 text-left sticky top-0 bg-base">
+              <tr className="border-b border-surface0">
+                <th className="py-2 pr-3 font-normal">When</th>
+                <th className="py-2 pr-3 font-normal">Host</th>
+                <th className="py-2 pr-3 font-normal">Kind</th>
+                <th className="py-2 pr-3 font-normal">Cause</th>
+                <th className="py-2 pr-3 font-normal">Lived</th>
+                <th className="py-2 pr-3 font-normal">Idle</th>
+                <th className="py-2 pr-3 font-normal">Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {eventRows.map((e, i) => (
+                <tr key={`${e.occurredAt}-${i}`} className="border-b border-surface0/50 hover:bg-surface0/30">
+                  <td className="py-1.5 pr-3 text-subtext1 tabular-nums whitespace-nowrap">{formatAge(e.occurredAt, now)} ago</td>
+                  <td className="py-1.5 pr-3 text-text">{e.host}{e.username ? <span className="text-subtext0">@{e.username}</span> : null}</td>
+                  <td className="py-1.5 pr-3 text-subtext1">{e.kind}</td>
+                  <td className={"py-1.5 pr-3 font-medium " + causeColor(e.cause ?? e.event)}>{e.cause ?? e.event}</td>
+                  <td className="py-1.5 pr-3 text-subtext1 tabular-nums">{fmtDuration(e.lifetimeMs)}</td>
+                  <td className="py-1.5 pr-3 text-subtext1 tabular-nums" title="silence before the drop">{fmtDuration(e.lastDataAgeMs)}</td>
+                  <td className="py-1.5 pr-3 text-subtext0 truncate max-w-xs" title={e.detail}>{e.detail}</td>
+                </tr>
+              ))}
+              {eventRows.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-subtext0">
+                    {(ssh.events ?? []).length === 0 ? "No disconnects recorded since the manager started." : "No matches."}
                   </td>
                 </tr>
               )}
