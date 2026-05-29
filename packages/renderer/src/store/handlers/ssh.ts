@@ -28,4 +28,13 @@ export const handlers: HandlerMap = {
     const { [payload.host]: _, ...rest } = s.reconnectingHosts;
     $ssh.next({ ...s, reconnectingHosts: rest });
   },
+  "vps:mcp:ensure:result": (payload) => {
+    const s = $ssh.getValue();
+    if (!payload.host) return;
+    const { [payload.host]: _, ...rest } = s.reconnectingHosts;
+    $ssh.next({ ...s, reconnectingHosts: rest });
+    if (!payload.ok && payload.error) {
+      console.warn(`[mcp] reconnect failed for ${payload.host}: ${payload.error}`);
+    }
+  },
 };

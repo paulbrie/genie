@@ -32,3 +32,16 @@ export function reconnectSshTunnelForHost(host: string): void {
   });
   wsSend("ssh:tunnel:reconnect", { host });
 }
+
+/** Member-facing "Reconnect MCP servers" — project/ownership-scoped on the
+ *  server (`vps:mcp:ensure`), so any project member (not just admins) can
+ *  re-establish the shared MCP tunnels + rewrite the VM's .mcp.json. Reuses the
+ *  `reconnectingHosts` in-flight flag so the button can show a spinner. */
+export function ensureMcpForHost(host: string): void {
+  const s = $ssh.getValue();
+  $ssh.next({
+    ...s,
+    reconnectingHosts: { ...s.reconnectingHosts, [host]: true },
+  });
+  wsSend("vps:mcp:ensure", { host });
+}

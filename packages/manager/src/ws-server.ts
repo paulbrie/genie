@@ -1427,6 +1427,16 @@ async function reconnectPersistentMcpTunnelForHost(host: string): Promise<void> 
     throw new Error(`No active VPS instance found for host ${host}`);
   }
 
+  // Make sure the vps-agent bundle is on the VM before wiring genie-tracker
+  // (stdio → node mcp-cli.js). Without it the tunnel comes up but the tracker
+  // MCP can't launch. Best-effort: a failure here shouldn't block the HTTP
+  // tunnels (browser/security/notify/storage), so we log and continue.
+  try {
+    await ensureVpsAgent(targetInstance.connection);
+  } catch (err: unknown) {
+    console.error(`[mcp] ensureVpsAgent failed for ${host} (genie-tracker may be unavailable): ${(err instanceof Error ? err.message : String(err))}`);
+  }
+
   const sshSession = await connectSsh(targetInstance.connection, { timeoutMs: 30_000 });
   const mcpTunnel = await setupMcpTunnel(
     sshSession,
@@ -1507,6 +1517,21 @@ async function reconnectPersistentMcpTunnelForHost(host: string): Promise<void> 
     `"`,
   ].join("\n");
   await sshSession.exec(mergeScript);
+}
+
+/** Ensure shared MCP tunnels are live for `host` and the VM's `.mcp.json` points
+ *  at them. Cheap no-op in the warm case (a tunnel is already registered for the
+ *  host); otherwise — cold manager after a restart, or a dropped tunnel — it
+ *  (re)establishes every tunnel, uploads the vps-agent bundle, and rewrites
+ *  `.mcp.json`. Pass `force` to rebuild even when a tunnel is already present
+ *  (used by the manual "Reconnect MCP servers" button).
+ *
+ *  This is the single entry point every Claude launch path funnels through so
+ *  MCP setup is transparent: the in-app chat (routeChatToVpsAgent), the Claude
+ *  terminal popup (terminal:ssh:spawn), and the manual button all call it. */
+async function ensureMcpTunnelsForHost(host: string, opts: { force?: boolean } = {}): Promise<void> {
+  if (!opts.force && persistentMcpTunnels.has(tunnelKey(host))) return;
+  await reconnectPersistentMcpTunnelForHost(host);
 }
 
 async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string): Promise<void> {
@@ -7394,6 +7419,33 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    // Manual "Reconnect MCP servers" button in the Manage popup. Project-scoped:
+    // the caller must be able to access a VM with this host (or be privileged).
+    // Forces a rebuild so a member can self-heal stale tunnels after a manager
+    // restart without needing the admin SSH registry.
+    case "vps:mcp:ensure": {
+      const { host } = msg.payload as { host?: string };
+      if (!host || typeof host !== "string") {
+        send(ws, { type: "vps:mcp:ensure:result", payload: { host: host ?? null, ok: false, error: "host is required" } });
+        break;
+      }
+      try {
+        if (!isPrivilegedRole(state.role)) {
+          const accessible = await projectService.getAllForUser(userId);
+          const owns = accessible.some((p) => p.vpsInstances.some((v) => !v.deployFailed && v.connection.host === host));
+          if (!owns) {
+            send(ws, { type: "vps:mcp:ensure:result", payload: { host, ok: false, error: "Not permitted" } });
+            break;
+          }
+        }
+        await ensureMcpTunnelsForHost(host, { force: true });
+        send(ws, { type: "vps:mcp:ensure:result", payload: { host, ok: true } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:mcp:ensure:result", payload: { host, ok: false, error: err instanceof Error ? err.message : String(err) } });
+      }
+      break;
+    }
+
     case "terminal:ssh:spawn": {
       const { id, host, port, username, privateKeyPath, cols, rows, title, command, kind, cwd, claudeResume } = msg.payload as {
         id: string; host: string; port?: number; username?: string; privateKeyPath?: string;
@@ -7405,6 +7457,20 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const resolvedPort = port || 22;
       const launch = sshPtyLaunchFromSpawnMessage({ kind, command, cwd, claudeResume });
       const isClaudeKind = isClaudeTerminalSpawn({ kind, command, title });
+      // Claude sessions read /opt/project/.mcp.json at startup, so the shared MCP
+      // tunnels must be live *before* the PTY spawns — otherwise genie-* MCPs
+      // connect to dead ports and show "failed". Ensure them here (transparent
+      // to the user; a no-op when they're already up). Best-effort: if setup
+      // fails we still launch the terminal so the user isn't blocked.
+      if (isClaudeKind && host) {
+        try {
+          send(ws, { type: "terminal:data", payload: { id, data: "\x1b[2m· Connecting Genie MCP servers…\x1b[0m\r\n" } });
+          await ensureMcpTunnelsForHost(host);
+        } catch (err: unknown) {
+          console.error(`[claude-popup] MCP ensure failed for ${host}: ${(err instanceof Error ? err.message : String(err))}`);
+          send(ws, { type: "terminal:data", payload: { id, data: "\x1b[33m· MCP setup failed — launching without MCP servers.\x1b[0m\r\n" } });
+        }
+      }
       // Claude: direct PTY (no tmux). Claude+tmux + Shell: wrapped in tmux so a
       // reattach from the Sessions tab can grab the same process.
       spawnSshPty(id, cols || 80, rows || 24, {

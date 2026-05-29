@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
+import { Loader2, Plug, RefreshCw, RotateCcw, X } from "lucide-react";
 import { $auth, $ssh } from "@/store/subjects";
 import {
+  ensureMcpForHost,
   killSshSession,
   killSshSessionsForHost,
   loadSshSessions,
@@ -181,7 +182,7 @@ export function VmHostConnectionsPanel({
   view = "all",
 }: VmHostConnectionsPanelProps) {
   const props = { host, provider, sshUser, projectName, isPrivateHost, ingress, connection };
-  const { ssh, sessions, tunnels, now, canViewRegistry } = useVmHostSshRegistry(host);
+  const { ssh, sessions, tunnels, now, canViewRegistry, reconnecting } = useVmHostSshRegistry(host);
 
   const showConnection = view === "all" || view === "connection" || view === "ssh";
   const showSsh = view === "all" || view === "ssh";
@@ -299,11 +300,27 @@ export function VmHostConnectionsPanel({
           )}
         </>
       ) : (
-        (showSsh || showTunnels) && (
-          <p className="text-xs text-overlay0 italic">
-            Live SSH registry and MCP tunnel controls are available to admin users on the SSH panel.
-          </p>
-        )
+        <>
+          {showTunnels && (
+            <section className="rounded-lg border border-surface0 bg-surface0/20 px-3 py-3">
+              <div className="text-xs font-medium text-subtext0 uppercase tracking-wide mb-1">MCP servers</div>
+              <p className="text-md text-overlay1 mb-3">
+                Genie tools (browser, tracker, security, notify, storage) reach this VM over secure tunnels. If a
+                Claude session shows them as <span className="text-red">failed</span>, reconnect them here, then reopen
+                the Claude session.
+              </p>
+              <Button size="sm" onClick={() => ensureMcpForHost(host)} disabled={reconnecting}>
+                {reconnecting ? <Loader2 size={13} className="animate-spin mr-1.5" /> : <Plug size={13} className="mr-1.5" />}
+                {reconnecting ? "Reconnecting…" : "Reconnect MCP servers"}
+              </Button>
+            </section>
+          )}
+          {showSsh && !showTunnels && (
+            <p className="text-xs text-overlay0 italic">
+              Live SSH registry is available to admin users on the SSH panel.
+            </p>
+          )}
+        </>
       )}
     </div>
   );
