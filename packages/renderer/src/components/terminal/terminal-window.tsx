@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { TerminalSquare, X, Minus, Maximize2, Minimize2, Share2 } from "lucide-react";
+import { TerminalSquare, X, Minus, Maximize2, Minimize2, Share2, Bug } from "lucide-react";
 import type { ChatUser, FloatingWindowState, TerminalTab } from "@/store/types";
 import { $auth, $conversationChat, $terminal, $windowManager } from "@/store/subjects";
 import { closeWindow, focusWindow, leaveSharedTerminal, minimizeWindow, openWindow, registerWindow, removeTerminalTab, shareTerminal, updateWindowPosition } from "@/store/actions";
@@ -41,11 +41,31 @@ function SingleTerminalWindow({
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
 
-  // Diagnostic split — opt-in via localStorage so it only appears for the
-  // person investigating, not every user. To enable: `localStorage.setItem(
-  // "term-debug","1")` in DevTools, then reload. Recomputed once per mount
-  // because the popup re-mounts on tab change anyway.
-  const debugSplit = typeof window !== "undefined" && window.localStorage?.getItem("term-debug") === "1";
+  // Diagnostic split — opt-in. Persisted in localStorage so the choice
+  // survives reloads (handy when the freeze is a once-per-session event),
+  // but toggled live via the bug-icon button in the title bar so flipping
+  // it doesn't require a reload. Recomputed once on mount from storage.
+  const [debugSplit, setDebugSplit] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try { return window.localStorage.getItem("term-debug") === "1"; } catch { return false; }
+  });
+  const toggleDebugSplit = useCallback(() => {
+    setDebugSplit((v) => {
+      const next = !v;
+      try { window.localStorage.setItem("term-debug", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
+  // When debugSplit toggles, the xterm container is a different DOM node —
+  // re-attach xterm's helper element to the new container, otherwise its
+  // DOM stays orphaned in the previous (now-unmounted) container. No-op on
+  // first mount (the mount effect creates the terminal in this container).
+  useEffect(() => {
+    if (containerRef.current && hasTerminal(tab.id)) {
+      reattachTerminal(tab.id, containerRef.current);
+    }
+  }, [debugSplit, tab.id]);
 
   const [conversationChat] = useSubject($conversationChat);
   const chatUsers = conversationChat.users as ChatUser[];
@@ -246,6 +266,18 @@ function SingleTerminalWindow({
           <span className="truncate">{tab.title}</span>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={toggleDebugSplit}
+            className={cn(
+              "p-1 rounded transition-colors",
+              debugSplit
+                ? "text-yellow bg-yellow/10 hover:bg-yellow/15"
+                : "text-overlay0 hover:text-text hover:bg-surface0",
+            )}
+            title={debugSplit ? "Hide diagnostic split" : "Show diagnostic split (xterm | dumb-pre | ws log | stats)"}
+          >
+            <Bug size={13} />
+          </button>
           {!tab.shared && (
             <div className="relative" ref={shareRef}>
               <button
@@ -328,6 +360,9 @@ function SingleTerminalWindow({
           <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
             <CustomTerminalView sessionId={tab.id} />
           </div>
+          <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
+            <WsLogPanel sessionId={tab.id} />
+          </div>
           <div className="w-56 shrink-0 border-l border-surface0 overflow-hidden">
             <DebugPanel sessionId={tab.id} containerRef={containerRef} />
           </div>
@@ -405,6 +440,78 @@ function CustomTerminalView({ sessionId }: { sessionId: string }) {
         ref={preRef}
         className="flex-1 m-0 p-1 overflow-auto bg-crust text-text font-mono text-[10px] whitespace-pre-wrap break-all select-text"
       />
+    </div>
+  );
+}
+
+/** WS-message log scoped to this terminal's session. Subscribes to
+ *  genie:terminal:data (the in-process re-broadcast of every terminal:data
+ *  frame the manager pushed for this id) and shows one row per message
+ *  with timestamp, byte count, and an escaped preview of the first ~80
+ *  bytes. Useful for spotting bursts, gaps, or a sudden 0-byte stream
+ *  during a "freeze" — if rows keep arriving but xterm stops painting,
+ *  the wire is fine and the renderer is at fault. */
+function WsLogPanel({ sessionId }: { sessionId: string }) {
+  const bufRef = useRef<Array<{ ts: number; bytes: number; preview: string }>>([]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [, force] = useState(0);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail.id !== sessionId) return;
+      const data = detail.data as string;
+      // Escape control chars so binary/ANSI is visible as text. Keep first
+      // ~80 chars — anything more is just noise for spotting flow problems.
+      const preview = data
+        .slice(0, 80)
+        .replace(/\x1b/g, "\\e")
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n")
+        .replace(/\t/g, "\\t")
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\x00-\x1f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+      bufRef.current.push({ ts: Date.now(), bytes: data.length, preview });
+      if (bufRef.current.length > 200) bufRef.current = bufRef.current.slice(-200);
+    };
+    window.addEventListener("genie:terminal:data", handler);
+    // Re-render at 10fps so a bursty stream doesn't React-render per frame.
+    const interval = window.setInterval(() => {
+      force((n) => n + 1);
+      const el = listRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 100);
+    return () => {
+      window.removeEventListener("genie:terminal:data", handler);
+      window.clearInterval(interval);
+    };
+  }, [sessionId]);
+
+  function fmtTime(ts: number): string {
+    const d = new Date(ts);
+    const pad = (n: number, w = 2) => n.toString().padStart(w, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+  }
+
+  const messages = bufRef.current;
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-overlay0 bg-mantle border-b border-surface0 shrink-0">
+        WS · terminal:data ({messages.length})
+      </div>
+      <div ref={listRef} className="flex-1 overflow-auto bg-crust text-[10px] font-mono">
+        {messages.length === 0 ? (
+          <div className="p-2 text-overlay0">No terminal:data messages yet</div>
+        ) : (
+          messages.map((m, i) => (
+            <div key={i} className="px-1.5 py-0.5 border-b border-surface0/30 flex gap-1.5 items-baseline">
+              <span className="text-overlay0 shrink-0">{fmtTime(m.ts)}</span>
+              <span className="text-mauve shrink-0">{m.bytes}b</span>
+              <span className="text-text truncate flex-1 min-w-0 select-text">{m.preview}</span>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
