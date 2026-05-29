@@ -76,7 +76,7 @@ export const DEFAULT_RECIPES: RecipeInput[] = [
     // exactly the bug "Genie button not green after refresh". -n is safe: the
     // install script itself relies on passwordless sudo, so if install
     // succeeded, `sudo -n` works.
-    checkScript: `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ] && systemctl list-unit-files --type=service 2>/dev/null | grep -q '^genie-stats.service'; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && command -v dtach > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ] && systemctl list-unit-files --type=service 2>/dev/null | grep -q '^genie-stats.service'; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
@@ -90,8 +90,11 @@ log "Applying Genie standard setup (Docker, Node 20, Claude Code, /opt/project).
 if command -v apt-get > /dev/null 2>&1; then
   log "apt-get update..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
-  log "apt-get install docker.io git curl ca-certificates..."
-  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates > /dev/null
+  log "apt-get install docker.io git curl ca-certificates dtach..."
+  # dtach is the persistence wrapper for remote PTYs (Claude popup + shell tabs):
+  # closing the popup/tab/laptop detaches the SSH channel without killing the
+  # inner process. Tiny (~50KB), no daemon, no escape keys to surprise users.
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates dtach > /dev/null
   # Always run NodeSource's setup — Ubuntu 22.04 ships nodejs 12 without npm,
   # so even when 'command -v node' succeeds we can't trust the version. NodeSource
   # installs a higher-priority apt pin so the subsequent 'apt install nodejs'
@@ -106,8 +109,11 @@ if command -v apt-get > /dev/null 2>&1; then
     log "Node.js \${node_major}.x with npm already present, skipping NodeSource."
   fi
 elif command -v dnf > /dev/null 2>&1; then
-  log "dnf install docker git curl..."
-  sudo dnf install -y -q docker git curl > /dev/null
+  log "dnf install docker git curl dtach..."
+  # dtach lives in EPEL on RHEL-family. epel-release is idempotent and a no-op
+  # if the repo is already enabled (CentOS Stream/AlmaLinux 9 base + EPEL).
+  sudo dnf install -y -q epel-release > /dev/null 2>&1 || true
+  sudo dnf install -y -q docker git curl dtach > /dev/null
   node_major=$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\\1/' || echo 0)
   if [ "$node_major" -lt 20 ] || ! command -v npm > /dev/null 2>&1; then
     log "Adding NodeSource repo (dnf install inside)..."
@@ -211,6 +217,7 @@ log "Versions:"
 log "  Docker:  $(docker --version 2>/dev/null || echo MISSING)"
 log "  Node:    $(node --version 2>/dev/null || echo MISSING)"
 log "  Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"
+log "  dtach:   $(dtach -v 2>&1 | head -1 || echo MISSING)"
 log "Genie standard setup complete. SSH in as: ssh genie@$(hostname -I 2>/dev/null | awk '{print $1}')"
 log "Note: @genie/vps-agent is uploaded on-demand by the manager. genie-stats bundle is synced when this recipe finishes."`,
     uninstallScript: `set -e

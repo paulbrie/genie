@@ -22,6 +22,39 @@ export const handlers: HandlerMap = {
     }
   },
 
+  // Fired by the manager immediately after spawnSshPty for dtach-wrapped
+  // sessions. `resumed: true` means a live dtach socket already existed (the
+  // user is reconnecting); the popup uses this to show the "↻ Resumed" pill.
+  "terminal:opened": (payload) => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("genie:terminal:opened", { detail: payload })
+      );
+    }
+  },
+
+  // Fired by the manager after destroyDtachSession completes (user clicked
+  // "Restart Claude" in the popup overflow menu). The popup uses this to
+  // reset its xterm and re-issue the spawn message with the same sessionId.
+  "terminal:restarted": (payload) => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("genie:terminal:restarted", { detail: payload })
+      );
+    }
+  },
+
+  // Response to terminal:claude:listResumable — used by the "Resume previous
+  // conversation" affordance shown when the dtach socket is fresh but Claude
+  // JSONLs exist on disk (typical after a VM reboot).
+  "terminal:claude:resumable": (payload) => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("genie:terminal:claude:resumable", { detail: payload })
+      );
+    }
+  },
+
   "terminal:error": (payload) => {
     console.warn("Terminal error:", payload.message);
     // Render the error into the terminal pane so the user actually sees it.

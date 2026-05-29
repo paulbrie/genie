@@ -15,6 +15,11 @@ export interface PtySessionRecord {
   /** Direct-SSH reattach payload — host/port/username/privateKeyPath. Null for
    *  project-VPS sessions (the connection is resolved live from projectService). */
   sshConfig: Record<string, unknown> | null;
+  /** Absolute path of the dtach socket on the VM, e.g.
+   *  `/run/genie/dtach/<id>.sock`. Null for legacy claude-tmux rows. Stored
+   *  explicitly (rather than derived) so cleanup paths and the History tab can
+   *  see what's live without recomputing. */
+  dtachSocketPath: string | null;
   createdAt: Date;
   lastActivity: Date;
 }
@@ -28,6 +33,7 @@ export interface CreatePtySessionInput {
   vpsHost: string;
   commandLabel?: string | null;
   sshConfig?: Record<string, unknown> | null;
+  dtachSocketPath?: string | null;
 }
 
 export async function createPtySession(input: CreatePtySessionInput): Promise<void> {
@@ -43,6 +49,7 @@ export async function createPtySession(input: CreatePtySessionInput): Promise<vo
       vpsHost: input.vpsHost,
       commandLabel: input.commandLabel ?? null,
       sshConfig: input.sshConfig ?? null,
+      dtachSocketPath: input.dtachSocketPath ?? null,
       createdAt: now,
       lastActivity: now,
     })
@@ -94,6 +101,7 @@ export async function listPtySessions(filters: ListPtySessionsFilters): Promise<
     vpsHost: r.vpsHost,
     commandLabel: r.commandLabel,
     sshConfig: r.sshConfig as Record<string, unknown> | null,
+    dtachSocketPath: r.dtachSocketPath,
     createdAt: r.createdAt,
     lastActivity: r.lastActivity,
   }));
@@ -116,6 +124,7 @@ export async function getPtySession(id: string): Promise<PtySessionRecord | null
     vpsHost: r.vpsHost,
     commandLabel: r.commandLabel,
     sshConfig: r.sshConfig as Record<string, unknown> | null,
+    dtachSocketPath: r.dtachSocketPath,
     createdAt: r.createdAt,
     lastActivity: r.lastActivity,
   };

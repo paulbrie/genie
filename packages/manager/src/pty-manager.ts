@@ -183,6 +183,28 @@ export interface SshPtyConfig {
   /** Kill a leftover tmux session with this name before a non-tmux command
    *  (used for Claude, which never runs inside tmux). */
   clearStaleTmuxSession?: string;
+  /** Persistence wrapper for the remote command. `"dtach"` wraps the inner
+   *  command in dtach so process state survives SSH channel drops without
+   *  exposing tmux's UX baggage (status bar, Ctrl-b, "[detached]" banner). The
+   *  socket lives at {@link dtachSocketPath} on tmpfs, so it survives popup /
+   *  tab / laptop close but is cleared by a VM reboot. `"none"` is the legacy
+   *  direct-exec path. Tmux is selected via the `tmuxSessionName` field on the
+   *  same config and is mutually exclusive with `"dtach"`. */
+  persistence?: "dtach" | "none";
+  /** Absolute path of the dtach socket on the VM. Defaults to
+   *  `/run/genie/dtach/<sessionId>.sock` — override only when migrating an
+   *  existing session or in tests. */
+  dtachSocketPath?: string;
+}
+
+/** Default dtach socket dir on the VM. `/tmp` is universally writable by the
+ *  SSH user (unlike `/run/...` which needs systemd RuntimeDirectory + sudo)
+ *  and is wiped on reboot on every distro we target (Ubuntu / Debian / RHEL-
+ *  family). Dotfile prefix keeps the dir out of casual `ls /tmp` output. */
+export const DTACH_SOCKET_DIR = "/tmp/.genie-dtach";
+
+export function defaultDtachSocketPath(sessionId: string): string {
+  return `${DTACH_SOCKET_DIR}/${sessionId}.sock`;
 }
 
 /** tmux policy:
@@ -201,6 +223,15 @@ export function sshPtyTmuxPolicy(
     return { tmuxSessionName: sessionId, tmuxAttachExisting: true };
   }
   return { tmuxSessionName: sessionId, tmuxAttachExisting: false };
+}
+
+/** Dtach policy — the new default for shell and claude kinds. Sets up a
+ *  deterministic socket path so reopening the popup hits the same live
+ *  process. Mutually exclusive with `sshPtyTmuxPolicy`; callers pick one. */
+export function sshPtyDtachPolicy(
+  sessionId: string,
+): Pick<SshPtyConfig, "persistence" | "dtachSocketPath"> {
+  return { persistence: "dtach", dtachSocketPath: defaultDtachSocketPath(sessionId) };
 }
 
 /** Quote a string for safe use inside POSIX-shell single-quotes. */
@@ -243,6 +274,42 @@ function claudeLoginShellCommand(spec: ClaudeLaunchSpec): string {
 function wrapRemoteShellScript(script: string): string {
   if (!script.includes("\n")) return script;
   return `exec bash -lc ${shSingleQuote(script)}`;
+}
+
+/** Build the remote command for a dtach-wrapped PTY. `dtach -A` attaches if a
+ *  live master is bound to the socket, else creates a new session running
+ *  `inner`. dtach handles orphan sockets natively in -A mode (ECONNREFUSED →
+ *  unlink + create), so no manual zombie cleanup is needed.
+ *
+ *  Flags:
+ *    -E  no escape character (default would be Ctrl-\\; users could accidentally
+ *        detach by typing it).
+ *    -z  suppress dtach's "Attached." / "[detached]" banner — the wrapper must
+ *        be invisible to the user. */
+function buildDtachWrappedCommand(sessionId: string, config: SshPtyConfig): string {
+  const socketPath = config.dtachSocketPath || defaultDtachSocketPath(sessionId);
+  let inner: string;
+  let startDir = DEFAULT_PROJECT_DIR;
+
+  if (config.launchKind === "claude" && config.claude) {
+    const { startDir: sd, inner: claudeCmd } = claudeInnerFromSpec(config.claude);
+    startDir = sd;
+    inner = claudeCmd;
+  } else if (config.initialCommand?.trim()) {
+    inner = `$SHELL -ilc ${shSingleQuote(config.initialCommand.trim())}`;
+  } else {
+    inner = `$SHELL -l`;
+  }
+
+  const script = [
+    `mkdir -p ${shSingleQuote(DTACH_SOCKET_DIR)} 2>/dev/null || true`,
+    `chmod 700 ${shSingleQuote(DTACH_SOCKET_DIR)} 2>/dev/null || true`,
+    `cd ${startDir} 2>/dev/null || true`,
+    `export TERM=xterm-256color`,
+    `exec dtach -A ${shSingleQuote(socketPath)} -E -z ${inner}`,
+  ].join("\n");
+
+  return wrapRemoteShellScript(script);
 }
 
 /** Map WS `terminal:ssh:spawn` / `vps:terminal:spawn` launch fields onto PTY config. */
@@ -376,9 +443,17 @@ function resolveTmuxInnerCommand(config: SshPtyConfig): {
   return { inner: trimmed };
 }
 
-/** Compose the remote command we send to ssh.exec(). When tmuxSessionName is
- *  set the inner command is wrapped so process state outlives the SSH channel. */
-function buildRemoteCommand(config: SshPtyConfig): string {
+/** Compose the remote command we send to ssh.exec(). When persistence is
+ *  "dtach" the command is wrapped in dtach (process survives SSH drops, no
+ *  tmux baggage). When tmuxSessionName is set the inner command is wrapped in
+ *  tmux instead (legacy path, History-tab claude-tmux). Otherwise direct exec. */
+function buildRemoteCommand(sessionId: string, config: SshPtyConfig): string {
+  // dtach takes precedence over tmux — the two are mutually exclusive
+  // persistence layers and dtach is the new default for shell/claude.
+  if (config.persistence === "dtach") {
+    return buildDtachWrappedCommand(sessionId, config);
+  }
+
   // Non-tmux path:
   //   - no command → open an interactive login shell (the default terminal).
   //   - with a command → run it through an interactive login shell (`$SHELL -ilc`)
@@ -682,7 +757,7 @@ export function spawnSshPty(
           });
         }
         if (cancelled) { conn.end(); return; }
-        const shellCmd = buildRemoteCommand(config);
+        const shellCmd = buildRemoteCommand(id, config);
         conn.exec(shellCmd, { pty: { cols: currentCols, rows: currentRows, term: "xterm-256color" } }, (err, stream) => {
           if (err) {
             eventCallback?.({ type: "terminal:error", payload: { id, message: `SSH shell failed: ${err.message}` } });
@@ -783,6 +858,101 @@ export function closePty(id: string): void {
     session.proc.kill();
     sessions.delete(id);
   }
+}
+
+/**
+ * List Claude conversation JSONLs on the VM under
+ * `~/.claude/projects/-opt-project/`. Used by the popup to offer "Resume
+ * previous conversation" when the dtach socket is fresh (e.g. after a VM
+ * reboot) but the user had a prior session on disk. Returns up to 10 most
+ * recent entries, newest first.
+ */
+export async function listResumableClaudeJsonls(
+  sshConfig: import("./vps/ssh-client.js").SshConnectionConfig,
+): Promise<Array<{ id: string; mtime: number }>> {
+  const { execCached } = await import("./vps/ssh-session-cache.js");
+  try {
+    // `stat -c` is GNU coreutils; macOS would need -f but every VM target here
+    // is Linux. Print "<mtime>\t<basename>" sorted newest first.
+    const out = await execCached(
+      sshConfig,
+      `ls -1t ~/.claude/projects/-opt-project/*.jsonl 2>/dev/null | head -10 | while IFS= read -r f; do stat -c '%Y	%n' "$f" 2>/dev/null; done`,
+      undefined,
+      { timeoutMs: 5_000 },
+    );
+    const rows: Array<{ id: string; mtime: number }> = [];
+    for (const line of out.split("\n")) {
+      const [mtimeStr, fullPath] = line.split("\t");
+      if (!fullPath) continue;
+      const base = fullPath.trim().replace(/^.*\//, "").replace(/\.jsonl$/, "");
+      const mtime = parseInt(mtimeStr, 10);
+      if (!base || !Number.isFinite(mtime)) continue;
+      rows.push({ id: base, mtime });
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Probe whether a dtach socket exists for `sessionId` on the VM. Used to
+ * decide whether the upcoming spawn is a fresh start (no socket) or a resume
+ * (live socket — the user is reconnecting to an existing process). The result
+ * drives the "↻ Resumed" pill in the popup. Cheap: one `[ -S file ]` exec on
+ * the cached SSH session.
+ */
+export async function probeDtachSocketExists(
+  sshConfig: import("./vps/ssh-client.js").SshConnectionConfig,
+  sessionId: string,
+): Promise<boolean> {
+  const { execCached } = await import("./vps/ssh-session-cache.js");
+  const socketPath = defaultDtachSocketPath(sessionId);
+  try {
+    const out = await execCached(
+      sshConfig,
+      `[ -S ${shSingleQuote(socketPath)} ] && echo EXISTS || echo NEW`,
+      undefined,
+      { timeoutMs: 3_000 },
+    );
+    return out.includes("EXISTS");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Truly destroy a dtach-wrapped session on the remote VM. closePty alone only
+ * drops the SSH channel — for dtach that's a detach, the inner process keeps
+ * running. Use this when the user clicks "Restart" to end the conversation /
+ * shell entirely. Best-effort over the cached SSH session; safe to call when
+ * the socket is already gone.
+ */
+export async function destroyDtachSession(
+  sshConfig: import("./vps/ssh-client.js").SshConnectionConfig,
+  sessionId: string,
+): Promise<void> {
+  const { execCached } = await import("./vps/ssh-session-cache.js");
+  const socketPath = defaultDtachSocketPath(sessionId);
+  // pkill -f matches the full command line — our dtach invocations always
+  // include the unique socket path so the match is precise. SIGTERM gives the
+  // inner process (e.g. claude) a chance to write its session JSONL before
+  // exiting; the trailing rm covers the case where dtach never bound (e.g.
+  // missing binary) or the file lingers.
+  const cmd = [
+    `pkill -TERM -f ${shSingleQuote("dtach -A " + socketPath + " ")} 2>/dev/null || true`,
+    `sleep 0.3`,
+    `rm -f ${shSingleQuote(socketPath)} 2>/dev/null || true`,
+    `echo OK`,
+  ].join("; ");
+  try {
+    await execCached(sshConfig, cmd, undefined, { timeoutMs: 5_000 });
+  } catch {
+    // Best-effort: if SSH is down or the host is gone, the next reopen with the
+    // same id will create a fresh socket anyway. Don't surface the error.
+  }
+  // Also drop the in-memory session if it's still hanging around.
+  closePty(sessionId);
 }
 
 export function closeAllPtys(): void {

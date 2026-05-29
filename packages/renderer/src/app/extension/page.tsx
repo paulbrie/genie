@@ -24,6 +24,7 @@ import { ExtCommandsTab } from "./tabs/commands";
 import { ExtTrackerTab } from "./tabs/tracker";
 import { ExtTeamChat, ShareTerminalPopup, ShareInviteBanner } from "./tabs/team-chat";
 import { FloatingTerminalWindow, TerminalListPanel, type TerminalTabDef, TERM_WIN_W, TERM_WIN_H, TERM_CASCADE } from "./tabs/terminal";
+import { claudeSessionId } from "@/lib/claude-session-id";
 
 
 function relativeTimeAgo(iso: string): string {
@@ -454,6 +455,16 @@ export default function ExtensionPage() {
   const [termTabs, setTermTabs] = useState<TerminalTabDef[]>([]);
   const termNumRef = useRef(1);
   const termZIndexRef = useRef(1000);
+  // Tracks the hydration cycle so we don't accidentally overwrite the saved
+  // state with an empty array before hydration runs (e.g. on the very first
+  // mount when termTabs is [] but localStorage has a real list).
+  const termHydrationKeyRef = useRef<string | null>(null);
+  // `project` is derived further down the component (after URL/store
+  // resolution). openClaudeTerminal needs (projectId, instanceId) at click
+  // time to compute the deterministic dtach session id — read it from a ref
+  // updated by an effect so we don't have a forward reference at declaration
+  // time.
+  const projectRef = useRef<{ id: string; vpsInstanceId: string | null } | null>(null);
 
   const addTermTab = useCallback(() => {
     const id = crypto.randomUUID();
@@ -505,20 +516,47 @@ export default function ExtensionPage() {
     setTermTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, exited: true } : t)));
   }, []);
 
-  /** Open Claude Code on the project VPS (server-side tmux launch). */
-  const openClaudeTerminal = useCallback((label: string, resume?: boolean) => {
-    const id = crypto.randomUUID();
+  /** Open Claude Code on the project VPS. The session id is deterministic per
+   *  (ownerId, projectId, instanceId) so reopening the popup lands on the
+   *  same live dtach socket — Claude survives popup/tab/laptop close. If no
+   *  project is resolved yet, fall back to a random UUID (preserves the
+   *  pre-persistence behavior for projectless / unresolved states). */
+  const openClaudeTerminal = useCallback(async (label: string, resume?: boolean) => {
     const num = termNumRef.current++;
     const openCount = termTabs.filter((t) => t.windowStatus === "open").length;
     const x = Math.max(20, Math.floor(window.innerWidth / 2 - TERM_WIN_W / 2) + openCount * TERM_CASCADE);
     const y = Math.max(20, Math.floor(window.innerHeight / 2 - TERM_WIN_H / 2) + openCount * TERM_CASCADE);
     const z = ++termZIndexRef.current;
+    const ownerId = auth.user?.id;
+    const proj = projectRef.current;
+    const projectId = proj?.id;
+    const instanceId = proj?.vpsInstanceId;
+
+    // Compute the deterministic id BEFORE inserting the tab so the xterm
+    // mount uses the right id from the first render. Otherwise we'd spawn a
+    // dtach socket against the placeholder id and orphan it on the swap.
+    let id: string;
+    if (ownerId && projectId && instanceId) {
+      id = await claudeSessionId(ownerId, projectId, instanceId);
+    } else {
+      id = crypto.randomUUID();
+    }
+
+    // If the same Claude tab is already open (the deterministic id maps to an
+    // existing tab), just focus it instead of inserting a duplicate.
+    const existing = termTabs.find((t) => t.id === id);
+    if (existing) {
+      restoreTermTab(id);
+      focusTermTab(id);
+      return;
+    }
+
     const tab: TerminalTabDef = {
       id, sessionId: id, label: label || `Claude ${num}`, exited: false,
       claudeLaunch: { resume }, windowStatus: "open", windowPos: { x, y }, windowZIndex: z, focused: true,
     };
     setTermTabs((prev) => [...prev.map((t) => ({ ...t, focused: false })), tab]);
-  }, [termTabs]);
+  }, [termTabs, auth.user?.id, restoreTermTab, focusTermTab]);
 
   /** Open a shell terminal that injects a recipe command after connect. */
   const openCommandTerminal = useCallback((commandName: string, command: string) => {
@@ -797,6 +835,91 @@ export default function ExtensionPage() {
       })),
       gitFolders: resolvedStore.gitFolders,
     } : null);
+
+  // Mirror the derived `project` into a ref so callbacks declared earlier in
+  // the component body (openClaudeTerminal) can read its current value at
+  // click time without forward-referencing it in their dependency arrays.
+  useEffect(() => {
+    projectRef.current = project
+      ? { id: project.id, vpsInstanceId: project.vpsInstances?.[0]?.id ?? null }
+      : null;
+  }, [project]);
+
+  // Persist terminal tab list per (userId, projectId) so reopening the
+  // extension reattaches to the same dtach-backed sessions on the VM. Storage
+  // key changes on project switch — that's intentional, tabs are project-
+  // scoped. Shared and recipe-injecting tabs are excluded: they depend on
+  // live invites / one-shot commands that don't survive a reload.
+  const termStorageKey = useMemo(() => {
+    const uid = auth.user?.id;
+    if (!uid || !project?.id) return null;
+    return `genie:terminal-tabs:${uid}:${project.id}`;
+  }, [auth.user?.id, project?.id]);
+
+  // Hydrate tabs from localStorage when the storage key resolves. Strip
+  // transient fields (focused, viewerIds) and treat windowStatus="open" as
+  // "user expected this open" — silent reattach via the same id triggers a
+  // dtach -A which lands on the live socket if any.
+  useEffect(() => {
+    if (!termStorageKey) return;
+    if (termHydrationKeyRef.current === termStorageKey) return;
+    termHydrationKeyRef.current = termStorageKey;
+    try {
+      const raw = localStorage.getItem(termStorageKey);
+      if (!raw) {
+        setTermTabs([]);
+        return;
+      }
+      const parsed = JSON.parse(raw) as TerminalTabDef[];
+      if (!Array.isArray(parsed)) return;
+      const hydrated = parsed
+        .filter((t) => t && typeof t.id === "string" && !t.shared && !t.injectCommand)
+        .map((t) => ({
+          ...t,
+          // Reopen as un-focused, un-minimized so the user sees them.
+          focused: false,
+          windowStatus: (t.windowStatus === "minimized" ? "minimized" : "open") as "open" | "minimized",
+          // viewerIds will be refreshed by the next terminal:sessions:list.
+          viewerIds: undefined,
+          exited: false,
+        }));
+      setTermTabs(hydrated);
+      // Advance the cascade counter past the highest hydrated number so new
+      // tabs land below them.
+      termNumRef.current = Math.max(1, hydrated.length + 1);
+    } catch (err) {
+      console.warn("[terminal] failed to hydrate from localStorage:", err);
+    }
+  }, [termStorageKey]);
+
+  // Persist tab list whenever it changes. Skips writes until hydration has
+  // run for the current key — otherwise the initial empty-array render would
+  // wipe the saved state on every reload.
+  useEffect(() => {
+    if (!termStorageKey) return;
+    if (termHydrationKeyRef.current !== termStorageKey) return;
+    try {
+      const persisted = termTabs
+        .filter((t) => !t.shared && !t.injectCommand)
+        .map((t) => ({
+          id: t.id,
+          sessionId: t.sessionId,
+          label: t.label,
+          claudeLaunch: t.claudeLaunch,
+          windowStatus: t.windowStatus,
+          windowPos: t.windowPos,
+          windowZIndex: t.windowZIndex,
+          exited: t.exited,
+        }));
+      if (persisted.length === 0) {
+        localStorage.removeItem(termStorageKey);
+      } else {
+        localStorage.setItem(termStorageKey, JSON.stringify(persisted));
+      }
+    } catch (err) {
+      console.warn("[terminal] failed to persist to localStorage:", err);
+    }
+  }, [termTabs, termStorageKey]);
 
   // --- Render ---
 

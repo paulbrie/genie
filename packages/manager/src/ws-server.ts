@@ -37,13 +37,30 @@ import {
   persistCommandLabelForSpawn,
   persistedKindForSpawn,
   sshPtyTmuxPolicy,
+  sshPtyDtachPolicy,
+  defaultDtachSocketPath,
+  destroyDtachSession,
+  probeDtachSocketExists,
+  listResumableClaudeJsonls,
 } from "./pty-manager.js";
+import { ensureDtach } from "./vps/dtach-ensure.js";
 import { createPtySession, forgetPtySession, listPtySessions, touchPtySession } from "./pty-session-service.js";
 
 // Per-pty-session activity-write throttle so rapid keystrokes don't hammer the
 // DB. Bumped on each terminal:data; the actual UPDATE fires at most once per
 // minute per session.
 const ptyActivityLastWriteAt = new Map<string, number>();
+
+// Persistence mode for new shell/claude terminals. "dtach" (default) wraps the
+// remote command in dtach so the inner process survives SSH channel drops
+// (popup close, tab close, laptop sleep). "none" reverts to the legacy
+// direct-exec behavior. Tunable via env so we can flip this off without a code
+// change. The History-tab "claude-tmux" sessions are unaffected.
+type TerminalPersistenceMode = "dtach" | "none";
+function terminalPersistenceMode(): TerminalPersistenceMode {
+  const v = (process.env.GENIE_TERMINAL_PERSISTENCE || "dtach").trim().toLowerCase();
+  return v === "none" ? "none" : "dtach";
+}
 import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth.js";
 import { handleDebugServerLogs } from "./debug-api.js";
 import * as assistantLogService from "./assistant-log-service.js";
@@ -3059,6 +3076,12 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "terminal:close": {
+      // Semantics changed with dtach persistence: this only closes the SSH
+      // channel from the manager side. For dtach-wrapped sessions, that's a
+      // DETACH — the remote process keeps running and the user reattaches by
+      // opening the popup again (deterministic sessionId → same socket). For
+      // direct/tmux sessions the historical kill-on-close behavior still
+      // applies. To truly end a dtach session, use terminal:restart.
       const { id } = msg.payload;
       const access = getSessionAccess(id);
       if (access && access.ownerId !== userId) {
@@ -3066,6 +3089,60 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         break;
       }
       closePty(id);
+      break;
+    }
+
+    case "terminal:restart": {
+      // Explicit destroy for a dtach-wrapped session. Kills the inner process
+      // on the VM and removes the socket so the next spawn starts fresh. Used
+      // by the popup's "Restart Claude" / "Restart shell" overflow item.
+      if (!userId) break;
+      const { id } = msg.payload as { id: string };
+      if (!id) break;
+      try {
+        const isSuper = clients.get(ws)?.role === "superadmin";
+        const rows_ = await listPtySessions({ ownerId: null });
+        const row = rows_.find((r) => r.id === id);
+        if (!row) {
+          send(ws, { type: "terminal:restarted", payload: { id } });
+          break;
+        }
+        if (!isSuper && row.ownerId !== userId) {
+          send(ws, { type: "error", payload: { message: "Not your terminal" } });
+          break;
+        }
+        let sshCfg: SshConnectionConfig | null = null;
+        if (row.projectId && row.instanceId) {
+          const conn = await getVpsConnection(row.projectId, row.instanceId);
+          sshCfg = { host: conn.host, port: conn.port || 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
+        } else if (row.sshConfig) {
+          const cfg = row.sshConfig as { host: string; port?: number; username?: string; privateKeyPath?: string };
+          sshCfg = { host: cfg.host, port: cfg.port || 22, username: cfg.username || VPS_SSH_USERNAME, privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519" };
+        }
+        if (sshCfg) await destroyDtachSession(sshCfg, id);
+        send(ws, { type: "terminal:restarted", payload: { id } });
+      } catch (err: unknown) {
+        send(ws, { type: "error", payload: { message: `Restart failed: ${(err instanceof Error ? err.message : String(err))}` } });
+      }
+      break;
+    }
+
+    case "terminal:claude:listResumable": {
+      // Lists ~/.claude/projects/-opt-project/*.jsonl on the project's VM so
+      // the popup can offer "Resume previous conversation" when a fresh start
+      // happens to coincide with prior session files on disk (typical after a
+      // VM reboot — the dtach socket is gone, but the JSONL persists).
+      if (!userId) break;
+      const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const items = await listResumableClaudeJsonls({
+          host: conn.host, port: conn.port || 22, username: conn.username, privateKeyPath: conn.privateKeyPath,
+        });
+        send(ws, { type: "terminal:claude:resumable", payload: { projectId, instanceId, items } });
+      } catch (err) {
+        send(ws, { type: "terminal:claude:resumable", payload: { projectId, instanceId, items: [], error: err instanceof Error ? err.message : String(err) } });
+      }
       break;
     }
 
@@ -7392,14 +7469,42 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       try {
         const conn = await getVpsConnection(projectId, instanceId);
         const launch = sshPtyLaunchFromSpawnMessage({ kind, command, cwd, claudeResume });
+        // dtach wrapping is the default for shell/claude. claude-tmux stays on
+        // the legacy tmux path (History tab uses it). We probe socket existence
+        // BEFORE spawn so we can tell the renderer "this is a resume" — drives
+        // the "↻ Resumed" pill UX. ensureDtach lazy-installs the binary on
+        // pre-existing VMs that didn't get it via genie-standard.
+        const wantDtach =
+          terminalPersistenceMode() === "dtach"
+          && (kind === "shell" || kind === "claude" || kind === undefined);
+        const tmuxFields = sshPtyTmuxPolicy(id, { kind, mode: "spawn" });
+        const sshCfg = { host: conn.host, port: conn.port || 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
+        let resumed = false;
+        let socketPath: string | null = null;
+        let usedDtach = false;
+        if (wantDtach) {
+          const dtach = await ensureDtach(sshCfg);
+          if (dtach.available) {
+            resumed = await probeDtachSocketExists(sshCfg, id);
+            socketPath = defaultDtachSocketPath(id);
+            usedDtach = true;
+          } else {
+            // Surface a one-line yellow notice in the terminal pane so the user
+            // understands why a stop-on-close session is opening. The terminal
+            // still works; persistence is just unavailable.
+            send(ws, { type: "terminal:data", payload: { id, data: `\r\n\x1b[33m[persistence unavailable: ${dtach.reason} — re-run Standard Setup to enable dtach]\x1b[0m\r\n` } });
+          }
+        }
+        const persistenceFields = usedDtach ? sshPtyDtachPolicy(id) : tmuxFields;
         spawnSshPty(id, cols || 80, rows || 24, {
           host: conn.host,
           port: conn.port || 22,
           username: conn.username,
           privateKeyPath: conn.privateKeyPath,
-          ...sshPtyTmuxPolicy(id, { kind, mode: "spawn" }),
+          ...persistenceFields,
           ...launch,
         }, userId);
+        send(ws, { type: "terminal:opened", payload: { id, resumed, persistence: usedDtach ? "dtach" : "tmux" } });
         // Persist for the History/Terminals tab so it survives Manager restart.
         // Best-effort: a DB failure here shouldn't block the user opening a terminal.
         if (userId) {
@@ -7411,6 +7516,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
             instanceId,
             vpsHost: conn.host,
             commandLabel: persistCommandLabelForSpawn({ kind, command, claudeResume }),
+            dtachSocketPath: socketPath,
           }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
         }
       } catch (err: unknown) {
@@ -7471,16 +7577,37 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           send(ws, { type: "terminal:data", payload: { id, data: "\x1b[33m· MCP setup failed — launching without MCP servers.\x1b[0m\r\n" } });
         }
       }
-      // Claude: direct PTY (no tmux). Claude+tmux + Shell: wrapped in tmux so a
-      // reattach from the Sessions tab can grab the same process.
+      // Persistence: same dtach default as vps:terminal:spawn. claude-tmux
+      // remains on the tmux path for History-tab compatibility.
+      const wantDtach =
+        terminalPersistenceMode() === "dtach"
+        && (kind === "shell" || kind === "claude" || kind === undefined);
+      const sshCfg = { host, port: resolvedPort, username: resolvedUser, privateKeyPath: resolvedKey };
+      let resumed = false;
+      let socketPath: string | null = null;
+      let usedDtach = false;
+      if (wantDtach) {
+        const dtach = await ensureDtach(sshCfg);
+        if (dtach.available) {
+          resumed = await probeDtachSocketExists(sshCfg, id);
+          socketPath = defaultDtachSocketPath(id);
+          usedDtach = true;
+        } else {
+          send(ws, { type: "terminal:data", payload: { id, data: `\r\n\x1b[33m[persistence unavailable: ${dtach.reason}]\x1b[0m\r\n` } });
+        }
+      }
+      const persistenceFields = usedDtach
+        ? sshPtyDtachPolicy(id)
+        : sshPtyTmuxPolicy(id, { kind, mode: "spawn" });
       spawnSshPty(id, cols || 80, rows || 24, {
         host,
         port: resolvedPort,
         username: resolvedUser,
         privateKeyPath: resolvedKey,
-        ...sshPtyTmuxPolicy(id, { kind, mode: "spawn" }),
+        ...persistenceFields,
         ...launch,
       }, userId);
+      send(ws, { type: "terminal:opened", payload: { id, resumed, persistence: usedDtach ? "dtach" : "tmux" } });
       // Persist for the History/Terminals tab. Direct SSH carries its own
       // connection details since there's no project/instance to look them up from.
       if (userId) {
@@ -7491,6 +7618,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           vpsHost: host,
           commandLabel: persistCommandLabelForSpawn({ kind, command, title, claudeResume }),
           sshConfig: { host, port: resolvedPort, username: resolvedUser, privateKeyPath: resolvedKey, title },
+          dtachSocketPath: socketPath,
         }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
       }
       // Notify the superadmin that someone opened a remote shell. Fire-and-forget;

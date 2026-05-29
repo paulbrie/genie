@@ -562,13 +562,14 @@ export const cloudVmAliases = pgTable(
 );
 
 /**
- * Persistent terminal session metadata. The id matches the tmux session name on
- * the VPS — tmux's `new -A -s ${id}` attaches if the session exists or creates
- * it otherwise, so a reattach is just another spawn with the same id. The row
- * survives Manager restart; the tmux session survives SSH channel drops. Pair.
+ * Persistent terminal session metadata. The id matches the dtach socket name
+ * (or tmux session name for legacy claude-tmux rows) on the VPS — `dtach -A`
+ * attaches if the socket exists or creates it otherwise, so a reattach is just
+ * another spawn with the same id. The row survives Manager restart; the dtach
+ * socket survives SSH channel drops. Pair.
  */
 export const ptySessions = pgTable("pty_sessions", {
-  id: text("id").primaryKey(),                                // = tmux session name = renderer tab id
+  id: text("id").primaryKey(),                                // = dtach socket id = renderer tab id
   ownerId: text("owner_id").notNull(),
   kind: text("kind", { enum: ["shell", "claude", "claude-tmux"] }).default("shell").notNull(),
   projectId: text("project_id"),                              // nullable for direct-SSH terminals
@@ -576,6 +577,7 @@ export const ptySessions = pgTable("pty_sessions", {
   vpsHost: text("vps_host").notNull(),                        // for display + filtering
   commandLabel: text("command_label"),                        // e.g. "claude" or "bash -l"
   sshConfig: jsonb("ssh_config"),                             // for direct-SSH reattach: {host,port,username,privateKeyPath,...}
+  dtachSocketPath: text("dtach_socket_path"),                 // populated for dtach-persisted sessions; null for legacy/tmux
   createdAt: timestamp("created_at").defaultNow().notNull(),
   lastActivity: timestamp("last_activity").defaultNow().notNull(),
 }, (t) => [

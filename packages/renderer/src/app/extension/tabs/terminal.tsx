@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Maximize2, Minimize2, Minus, Plus, Share2, Terminal, X } from "lucide-react";
+import { Maximize2, Minimize2, Minus, Plus, RotateCcw, Share2, Terminal, X } from "lucide-react";
 import { GENIE_PROJECT_DIR } from "@/lib/terminal-spawn";
 import { wsSend } from "@/lib/ws";
 import { $auth, $conversationChat } from "@/store/subjects";
@@ -69,6 +69,7 @@ function SingleTerminal({
   claudeLaunch,
   injectCommand,
   shared,
+  respawnNonce,
 }: {
   project: ExtensionProject;
   sessionId: string;
@@ -77,6 +78,10 @@ function SingleTerminal({
   claudeLaunch?: { resume?: boolean };
   injectCommand?: string;
   shared?: boolean;
+  /** Bumped by the parent when the user confirms "Restart" — forces a full
+   *  remount so a fresh spawn message goes to the manager (which by then has
+   *  destroyed the dtach socket via terminal:restart). */
+  respawnNonce?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
@@ -142,11 +147,14 @@ function SingleTerminal({
       mountedRef.current = false;
       disposeTerminal(sessionId);
       if (!shared) {
+        // For dtach-wrapped sessions this is a DETACH, not a destroy — the
+        // manager keeps the inner process alive on the VM. To truly end the
+        // session use the "Restart" button (sends terminal:restart instead).
         setTimeout(() => wsSend("terminal:close", { id: sessionId }), 0);
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instId, project.id, sessionId, shared, claudeLaunch?.resume]);
+  }, [instId, project.id, sessionId, shared, claudeLaunch?.resume, respawnNonce]);
 
   return (
     <div className="h-full w-full bg-[#1e1e2e]" style={{ display: visible ? "block" : "none" }}>
@@ -239,6 +247,46 @@ export function FloatingTerminalWindow({
 }) {
   const [maximized, setMaximized] = useState(false);
   const [sharingOpen, setSharingOpen] = useState(false);
+  // "Resumed" pill — flashes for 3s when the manager confirms this open
+  // attached to a live dtach socket. Driven by terminal:opened.
+  const [resumedFlash, setResumedFlash] = useState(false);
+  // Inline confirm row for the "Restart" action. Showing this swaps the title
+  // bar for a small "End this session? [Cancel] [Restart]" affordance.
+  const [restartConfirm, setRestartConfirm] = useState(false);
+  // Bumps when the user confirms Restart — the inner SingleTerminal sees this
+  // and re-issues its spawn with the same sessionId after the manager dtach
+  // socket has been destroyed.
+  const [respawnNonce, setRespawnNonce] = useState(0);
+
+  useEffect(() => {
+    function handleOpened(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail.id !== tab.sessionId) return;
+      if (detail.resumed) {
+        setResumedFlash(true);
+        const t = setTimeout(() => setResumedFlash(false), 3000);
+        return () => clearTimeout(t);
+      }
+    }
+    function handleRestarted(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail.id !== tab.sessionId) return;
+      // Trigger SingleTerminal to remount + respawn against the now-empty
+      // socket.
+      setRespawnNonce((n) => n + 1);
+    }
+    window.addEventListener("genie:terminal:opened", handleOpened);
+    window.addEventListener("genie:terminal:restarted", handleRestarted);
+    return () => {
+      window.removeEventListener("genie:terminal:opened", handleOpened);
+      window.removeEventListener("genie:terminal:restarted", handleRestarted);
+    };
+  }, [tab.sessionId]);
+
+  const onConfirmRestart = useCallback(() => {
+    setRestartConfirm(false);
+    wsSend("terminal:restart", { id: tab.sessionId });
+  }, [tab.sessionId]);
 
   const initial = useMemo(() => {
     if (savedPos) return savedPos;
@@ -290,13 +338,52 @@ export function FloatingTerminalWindow({
       >
         <Terminal size={12} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : (tab.claudeLaunch || tab.injectCommand) ? "text-mauve" : "text-green"} />
         <span className="text-md text-subtext0 font-medium truncate flex-1">{tab.label}</span>
+        {resumedFlash && (
+          <span
+            className="px-1.5 py-0.5 rounded text-green bg-green/10 border border-green/30 transition-opacity duration-1000"
+            style={{ fontSize: 10 }}
+            title="Reattached to the live process on the VM"
+          >
+            ↻ Resumed
+          </span>
+        )}
         {tab.shared && tab.ownerId && (
           <OwnerAvatar ownerId={tab.ownerId} />
         )}
         {tab.viewerIds && tab.viewerIds.length > 0 && !tab.shared && (
           <ViewerAvatars viewerIds={tab.viewerIds} sessionId={tab.sessionId} />
         )}
-        {!tab.exited && !tab.shared && (
+        {!tab.exited && !tab.shared && !restartConfirm && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setRestartConfirm(true); }}
+            className="p-1 rounded text-overlay0 hover:text-yellow hover:bg-yellow/10 transition-colors"
+            title={tab.claudeLaunch ? "Restart Claude (ends this conversation)" : "Restart shell"}
+          >
+            <RotateCcw size={12} />
+          </button>
+        )}
+        {restartConfirm && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-yellow" style={{ fontSize: 11 }}>
+              {tab.claudeLaunch ? "End conversation?" : "Restart shell?"}
+            </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); setRestartConfirm(false); }}
+              className="px-1.5 py-0.5 rounded text-overlay1 hover:text-text hover:bg-surface0 transition-colors"
+              style={{ fontSize: 11 }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onConfirmRestart(); }}
+              className="px-1.5 py-0.5 rounded text-yellow bg-yellow/10 hover:bg-yellow/20 transition-colors"
+              style={{ fontSize: 11 }}
+            >
+              Restart
+            </button>
+          </div>
+        )}
+        {!tab.exited && !tab.shared && !restartConfirm && (
           <div className="relative">
             <button
               onClick={() => setSharingOpen((v) => !v)}
@@ -331,6 +418,7 @@ export function FloatingTerminalWindow({
           claudeLaunch={tab.claudeLaunch}
           injectCommand={tab.injectCommand}
           shared={tab.shared}
+          respawnNonce={respawnNonce}
         />
       </div>
 
