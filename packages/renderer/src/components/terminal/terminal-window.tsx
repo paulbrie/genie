@@ -41,6 +41,12 @@ function SingleTerminalWindow({
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
 
+  // Diagnostic split — opt-in via localStorage so it only appears for the
+  // person investigating, not every user. To enable: `localStorage.setItem(
+  // "term-debug","1")` in DevTools, then reload. Recomputed once per mount
+  // because the popup re-mounts on tab change anyway.
+  const debugSplit = typeof window !== "undefined" && window.localStorage?.getItem("term-debug") === "1";
+
   const [conversationChat] = useSubject($conversationChat);
   const chatUsers = conversationChat.users as ChatUser[];
   const [auth] = useSubject($auth);
@@ -303,19 +309,40 @@ function SingleTerminalWindow({
         </div>
       </div>
 
-      {/* Terminal container — stopPropagation keeps window chrome from
-       *  stealing xterm focus, but that also swallows the parent's
-       *  onPointerDown={focusWindow} bubble, so a click inside xterm wouldn't
-       *  bring the popup to front. Call focusWindow explicitly first. */}
-      <div
-        ref={containerRef}
-        className="flex-1 min-h-0"
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          focusWindow(windowId);
-          focusXterm(tab.id);
-        }}
-      />
+      {/* Body — single xterm pane normally; 3-column diagnostic split when
+       *  `localStorage.term-debug = "1"` (set in DevTools, reload). Built to
+       *  compare xterm rendering against a dumb-pre custom renderer fed by
+       *  the same genie:terminal:data stream — if xterm freezes but custom
+       *  keeps painting, the freeze is xterm; if both freeze, it's upstream. */}
+      {debugSplit ? (
+        <div className="flex-1 min-h-0 flex flex-row">
+          <div
+            ref={containerRef}
+            className="flex-1 min-w-0"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              focusWindow(windowId);
+              focusXterm(tab.id);
+            }}
+          />
+          <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
+            <CustomTerminalView sessionId={tab.id} />
+          </div>
+          <div className="w-56 shrink-0 border-l border-surface0 overflow-hidden">
+            <DebugPanel sessionId={tab.id} containerRef={containerRef} />
+          </div>
+        </div>
+      ) : (
+        <div
+          ref={containerRef}
+          className="flex-1 min-h-0"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            focusWindow(windowId);
+            focusXterm(tab.id);
+          }}
+        />
+      )}
 
       {/* Resize handle */}
       {!maximized && (
@@ -326,6 +353,155 @@ function SingleTerminalWindow({
       )}
     </div>,
     document.body
+  );
+}
+
+/** Dumbest-possible terminal renderer: appends every byte arriving on
+ *  genie:terminal:data into a <pre>, RAF-throttled, ANSI stripped. The
+ *  point isn't fidelity — it's to have an independent rendering path that
+ *  shares xterm's INPUT but nothing else, so when both panes are visible
+ *  side-by-side the user can see which one falls behind. Diagnostic only. */
+function CustomTerminalView({ sessionId }: { sessionId: string }) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const bufferRef = useRef("");
+  const pendingRef = useRef("");
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const flush = () => {
+      rafRef.current = null;
+      const pre = preRef.current;
+      if (!pre || pendingRef.current === "") return;
+      bufferRef.current = (bufferRef.current + pendingRef.current).slice(-100_000);
+      pendingRef.current = "";
+      pre.textContent = bufferRef.current;
+      pre.scrollTop = pre.scrollHeight;
+    };
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail.id !== sessionId) return;
+      // Strip CSI / OSC / Fp / Fs sequences so the pane stays readable as
+      // plain text. Crude but enough for "is it painting?" diagnostics.
+      const clean = (detail.data as string)
+        .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+        .replace(/\x1b[()][\x20-\x7e]/g, "");
+      pendingRef.current += clean;
+      if (rafRef.current == null) rafRef.current = requestAnimationFrame(flush);
+    };
+    window.addEventListener("genie:terminal:data", handler);
+    return () => {
+      window.removeEventListener("genie:terminal:data", handler);
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [sessionId]);
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-overlay0 bg-mantle border-b border-surface0 shrink-0">
+        Custom (plain &lt;pre&gt;)
+      </div>
+      <pre
+        ref={preRef}
+        className="flex-1 m-0 p-1 overflow-auto bg-crust text-text font-mono text-[10px] whitespace-pre-wrap break-all select-text"
+      />
+    </div>
+  );
+}
+
+/** Live debug readout for a terminal session. Polls xterm DOM + listens to
+ *  genie:terminal:data to derive bytes/sec, time-since-last-write, current
+ *  renderer (canvas vs DOM), focus state, and container dims. Diagnostic
+ *  only — paired with CustomTerminalView in the 3-column split. */
+function DebugPanel({ sessionId, containerRef }: { sessionId: string; containerRef: React.RefObject<HTMLDivElement | null> }) {
+  const statsRef = useRef({
+    bytesTotal: 0,
+    writeCount: 0,
+    lastWriteAt: 0,
+    bytesLastSec: 0,
+    lastBytesSnapshot: 0,
+    lastBytesTime: 0,
+  });
+  const [, force] = useState(0);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail.id !== sessionId) return;
+      statsRef.current.bytesTotal += detail.data.length;
+      statsRef.current.writeCount++;
+      statsRef.current.lastWriteAt = performance.now();
+    };
+    window.addEventListener("genie:terminal:data", handler);
+    statsRef.current.lastBytesTime = performance.now();
+    const interval = window.setInterval(() => {
+      const s = statsRef.current;
+      const now = performance.now();
+      const dt = (now - s.lastBytesTime) / 1000;
+      const dBytes = s.bytesTotal - s.lastBytesSnapshot;
+      s.bytesLastSec = dt > 0 ? Math.round(dBytes / dt) : 0;
+      s.lastBytesSnapshot = s.bytesTotal;
+      s.lastBytesTime = now;
+      force((n) => n + 1);
+    }, 500);
+    return () => {
+      window.removeEventListener("genie:terminal:data", handler);
+      window.clearInterval(interval);
+    };
+  }, [sessionId]);
+
+  const s = statsRef.current;
+  const xtermEl = containerRef.current?.querySelector(".xterm") as HTMLElement | null;
+  const canvasCount = xtermEl?.querySelectorAll(".xterm-screen canvas").length ?? 0;
+  const hasDomRows = !!xtermEl?.querySelector(".xterm-rows");
+  const rect = containerRef.current?.getBoundingClientRect();
+  const active = typeof document !== "undefined" ? document.activeElement : null;
+  const activeInXterm = !!xtermEl?.contains(active);
+  const sinceLastWrite = s.lastWriteAt ? Math.round(performance.now() - s.lastWriteAt) : null;
+
+  const Row = ({ k, v, danger }: { k: string; v: React.ReactNode; danger?: boolean }) => (
+    <div className="flex justify-between gap-2">
+      <span className="text-overlay0">{k}</span>
+      <span className={danger ? "text-red" : "text-text"}>{v}</span>
+    </div>
+  );
+
+  return (
+    <div className="h-full flex flex-col text-[10px] font-mono">
+      <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-overlay0 bg-mantle border-b border-surface0 shrink-0">
+        Debug
+      </div>
+      <div className="flex-1 overflow-auto p-2 space-y-2 bg-crust">
+        <div>
+          <div className="text-subtext0 uppercase text-[9px] mb-1">Session</div>
+          <div className="text-overlay1 break-all">{sessionId}</div>
+        </div>
+        <div>
+          <div className="text-subtext0 uppercase text-[9px] mb-1">Renderer</div>
+          <Row k="canvases" v={canvasCount} danger={canvasCount === 0} />
+          <Row k="dom rows" v={hasDomRows ? "yes" : "no"} danger={hasDomRows && canvasCount === 0} />
+        </div>
+        <div>
+          <div className="text-subtext0 uppercase text-[9px] mb-1">Container</div>
+          <Row k="w × h" v={rect ? `${Math.round(rect.width)} × ${Math.round(rect.height)}` : "—"} />
+        </div>
+        <div>
+          <div className="text-subtext0 uppercase text-[9px] mb-1">Focus</div>
+          <Row k="tag" v={active?.tagName ?? "—"} />
+          <Row k="in xterm" v={activeInXterm ? "yes" : "no"} danger={!activeInXterm} />
+        </div>
+        <div>
+          <div className="text-subtext0 uppercase text-[9px] mb-1">Stream</div>
+          <Row k="bytes total" v={s.bytesTotal.toLocaleString()} />
+          <Row k="writes" v={s.writeCount.toLocaleString()} />
+          <Row k="bytes/sec" v={s.bytesLastSec.toLocaleString()} />
+          <Row k="last write" v={sinceLastWrite == null ? "—" : `${sinceLastWrite} ms ago`} danger={sinceLastWrite !== null && sinceLastWrite > 2000} />
+        </div>
+        <div className="text-[9px] text-overlay0 pt-2 border-t border-surface0">
+          Disable: <span className="text-subtext0">localStorage.removeItem("term-debug")</span> + reload
+        </div>
+      </div>
+    </div>
   );
 }
 
