@@ -103,6 +103,7 @@ import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tun
 import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
 import { VPS_SSH_USERNAME, type VpsConnectionConfig, type ClientType, type DomActionExecutor, type DomActionRequestContext, type AgentOutboundMessage, type StatsPayload } from "./types.js";
 import { getActiveSshConnections, listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "./vps/ssh-metrics.js";
+import { listRecentSshEvents } from "./vps/ssh-events.js";
 import { dbgSsh } from "./debug-ssh-log.js";
 import {
   ensureServerTunnel,
@@ -2887,7 +2888,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     }
 
     case "ssh:list": {
-      send(ws, { type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels() } });
+      send(ws, { type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels(), events: listRecentSshEvents(100) } });
       break;
     }
 

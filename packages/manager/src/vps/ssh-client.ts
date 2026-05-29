@@ -7,6 +7,7 @@ import { Readable, Writable } from "node:stream";
 import { dbgSsh } from "../debug-ssh-log.js";
 import { getActiveSshConnections, sshConnRegister, sshConnUnregister, sshConnMarkConnected, captureSshOpenerStack } from "./ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
+import { recordSshEvent, classifySshDisconnect } from "./ssh-events.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -384,6 +385,14 @@ export async function connectSsh(
   return new Promise((resolve, reject) => {
     const conn = new Client();
 
+    // Flight-recorder bookkeeping: when did the handshake complete, did WE close
+    // it (idle reap / caller close / kill — not a fault), and the last transport
+    // error so the close handler can attribute the drop. See vps/ssh-events.ts.
+    let readyAt = 0;
+    let intentionalClose = false;
+    let lastError: Error | null = null;
+    const markIntentional = () => { intentionalClose = true; };
+
     let unregistered = false;
     const unregister = () => {
       if (!unregistered) {
@@ -400,19 +409,34 @@ export async function connectSsh(
       username: config.username,
       kind: "client",
       status: "connecting",
-      end: () => { unregister(); try { conn.destroy(); } catch { /* ignore */ } },
+      end: () => { markIntentional(); unregister(); try { conn.destroy(); } catch { /* ignore */ } },
       openerStack,
     });
     conn
       .on("ready", () => {
+        readyAt = Date.now();
         sshConnMarkConnected(registryId);
-        resolve(makeSession(conn, unregister, opts?.onSessionClosed));
+        // Wrap onClose so a caller/idle-reap close marks this as intentional —
+        // recordSshEvent drops local-kill, keeping the log to real faults.
+        resolve(makeSession(conn, () => { markIntentional(); unregister(); }, opts?.onSessionClosed));
       })
       .on("close", () => {
         unregister();
+        recordSshEvent({
+          occurredAt: Date.now(),
+          host: config.host,
+          port: config.port,
+          username: config.username,
+          kind: "client",
+          event: "disconnect",
+          cause: classifySshDisconnect(lastError, { wasLocalClose: intentionalClose }),
+          lifetimeMs: readyAt ? Date.now() - readyAt : undefined,
+          detail: lastError?.message,
+        });
         opts?.onSessionClosed?.();
       })
       .on("error", (err) => {
+        lastError = err;
         unregister();
         console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));

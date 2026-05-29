@@ -2,6 +2,7 @@ import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
 import { migrateOrgCredentials, migrateOrgs, migrateServerCredentials, migrateTeamInvites, migrateVpsMetricSamples } from "./db/migrate.js";
 import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-service.js";
+import { startSshEventFlusher, stopSshEventFlusher } from "./vps/ssh-events.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
 import { createServer, shutdown } from "./ws-server.js";
@@ -97,7 +98,7 @@ function gracefulShutdown(): void {
   stopSlackBot().catch(() => {});
   stopWireproxy();
   shutdown(wss);
-  void stopVpsMetricFlusher().finally(() => process.exit(0));
+  void Promise.allSettled([stopVpsMetricFlusher(), stopSshEventFlusher()]).finally(() => process.exit(0));
 }
 
 process.on("SIGINT", gracefulShutdown);

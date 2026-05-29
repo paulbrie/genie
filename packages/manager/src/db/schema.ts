@@ -623,3 +623,25 @@ export const vpsMetricSamples = pgTable("vps_metric_samples", {
   index("idx_vps_metric_samples_lookup").on(t.projectId, t.instanceId, t.sampledAt),
   index("idx_vps_metric_samples_sampled_at").on(t.sampledAt),
 ]);
+
+// SSH disconnect flight recorder (see vps/ssh-events.ts). Persists every
+// attributed connection drop + wireproxy lifecycle event so a stream-stop or
+// connection-loss can be triaged after the fact, including correlating all-hosts
+// drops against a wireproxy exit on the same timeline.
+export const sshEvents = pgTable("ssh_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  host: text("host").notNull(),
+  port: integer("port"),
+  username: text("username"),
+  kind: text("kind").notNull(),          // client | pty | stats | tunnel | wireproxy
+  event: text("event").notNull(),        // disconnect | wireproxy-exit | wireproxy-respawn | wireproxy-gaveup
+  cause: text("cause"),                   // SshDisconnectCause for disconnects
+  lifetimeMs: integer("lifetime_ms"),
+  lastDataAgeMs: integer("last_data_age_ms"),
+  detail: text("detail"),
+}, (t) => [
+  index("idx_ssh_events_host_time").on(t.host, t.occurredAt),
+  index("idx_ssh_events_time").on(t.occurredAt),
+  index("idx_ssh_events_cause").on(t.cause),
+]);

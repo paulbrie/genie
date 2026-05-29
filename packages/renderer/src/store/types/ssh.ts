@@ -26,9 +26,25 @@ export interface SshTunnelInfo {
   storage: boolean;
 }
 
+/** A recorded SSH disconnect / wireproxy lifecycle event (flight recorder). */
+export interface SshEventInfo {
+  occurredAt: number;
+  host: string;
+  port?: number;
+  username?: string;
+  kind: "client" | "pty" | "stats" | "tunnel" | "wireproxy";
+  event: "disconnect" | "wireproxy-exit" | "wireproxy-respawn" | "wireproxy-gaveup";
+  cause?: string;
+  lifetimeMs?: number;
+  lastDataAgeMs?: number;
+  detail?: string;
+}
+
 export interface SshState {
   sessions: SshSessionInfo[];
   tunnels: SshTunnelInfo[];
+  /** Recent disconnects / wireproxy events, newest first (in-memory ring). */
+  events: SshEventInfo[];
   loading: boolean;
   killing: Record<string, boolean>;
   reconnectingHosts: Record<string, boolean>;

@@ -15,6 +15,7 @@ import {
 import { enqueueVpsMetricSample } from "./vps-metric-service.js";
 import { dbgSsh } from "../debug-ssh-log.js";
 import { getActiveSshConnections } from "./ssh-metrics.js";
+import { recordSshEvent, classifySshDisconnect } from "./ssh-events.js";
 
 export const STATS_STALE_MS = 15_000;
 
@@ -186,6 +187,9 @@ async function runHostTransportLoop(
     let channel: Awaited<ReturnType<Awaited<ReturnType<typeof getCachedSession>>["execStreaming"]>> | undefined;
     let lineBuffer = "";
     let acquiredSlot = false;
+    // Flight-recorder timing for this stream attempt (see vps/ssh-events.ts).
+    let streamStartedAt = 0;
+    let lastDataAt = 0;
 
     const teardownTransport = () => {
       try {
@@ -212,8 +216,11 @@ async function runHostTransportLoop(
       sshSession = await getCachedSession(config);
       const streamCmd = useSystemd ? vpsStatsTailCommand() : vpsStatsDaemonCommand(5);
       channel = await sshSession.execStreaming(streamCmd);
+      streamStartedAt = Date.now();
+      lastDataAt = streamStartedAt;
 
       channel.stdout.on("data", (chunk: Buffer) => {
+        lastDataAt = Date.now();
         lineBuffer += chunk.toString();
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() || "";

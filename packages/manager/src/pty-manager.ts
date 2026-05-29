@@ -4,6 +4,7 @@ import { Client } from "ssh2";
 import { sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./vps/ssh-metrics.js";
 import { tazSocksProxy } from "./vps/socks-dial.js";
 import { buildConnectOptions, dialSock } from "./vps/ssh-client.js";
+import { recordSshEvent, classifySshDisconnect } from "./vps/ssh-events.js";
 import type { PtySessionKind } from "./pty-session-service.js";
 
 const MAX_SCROLLBACK = 100_000; // chars
@@ -635,6 +636,12 @@ export function spawnSshPty(
   // final outcome (exit or disconnect) for this session — emit it exactly once.
   let everReady = false;
   let settled = false;
+  // Flight-recorder bookkeeping (see vps/ssh-events.ts): when the shell went
+  // live, the last byte seen (silence-before-death), and the last transport
+  // error so an unexpected drop can be attributed to a cause.
+  let readyAt = 0;
+  let lastDataAt = 0;
+  let lastConnError: Error | null = null;
 
   const flushPendingWrites = () => {
     if (!channel) return;
@@ -688,6 +695,25 @@ export function spawnSshPty(
     sessions.delete(id);
   }
 
+  // Attribute an unexpected post-ready drop to the flight recorder (ssh-events).
+  // Called only from the disconnect branches (not user-kill / clean exit), so
+  // `wasLocalClose` is false — the cause comes from the last transport error.
+  function recordPtyDrop(): void {
+    const now = Date.now();
+    recordSshEvent({
+      occurredAt: now,
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      kind: "pty",
+      event: "disconnect",
+      cause: classifySshDisconnect(lastConnError),
+      lifetimeMs: readyAt ? now - readyAt : undefined,
+      lastDataAgeMs: lastDataAt ? now - lastDataAt : undefined,
+      detail: lastConnError?.message ?? "channel closed with no remote exit code",
+    });
+  }
+
   let registryId: string | null = null;
   // Capture the caller's stack synchronously — the `ready` event fires from
   // inside ssh2's event loop where the original caller has long unwound.
@@ -736,9 +762,11 @@ export function spawnSshPty(
           }
           channel = stream;
           everReady = true;
+          readyAt = Date.now();
+          lastDataAt = readyAt;
           stream.setWindow(currentRows, currentCols, currentRows * 16, currentCols * 8);
           flushPendingWrites();
-          stream.on("data", (data: Buffer) => dataCallback?.(data.toString()));
+          stream.on("data", (data: Buffer) => { lastDataAt = Date.now(); dataCallback?.(data.toString()); });
           // ssh2 reports the real exit status via the 'exit' event (code OR a
           // terminating signal); the 'close' event carries no code, so the old
           // `close(code)` read was always undefined → reported as 0 for every

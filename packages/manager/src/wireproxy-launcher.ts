@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { recordSshEvent } from "./vps/ssh-events.js";
 
 /** Render a wireproxy config from env vars. wireproxy reads a wg-quick-style
  *  ini plus a [Socks5] section it adds on top — no TUN device involved.
@@ -125,7 +126,18 @@ function spawnWireproxyProcess(s: { bin: string; cfgPath: string }): void {
     if (earlyExit.err === null) earlyExit.err = new Error(msg);
     console.error(`[wireproxy] ${msg}`);
     child = null;
-    if (supervising && !shuttingDown) scheduleRestart();
+    // A post-startup exit means every Taz dial via the SOCKS proxy is about to
+    // fail — record it so an all-hosts disconnect burst lines up against it.
+    if (supervising && !shuttingDown) {
+      recordSshEvent({
+        occurredAt: Date.now(),
+        host: lastSpawn?.socksBind ?? "wireproxy",
+        kind: "wireproxy",
+        event: "wireproxy-exit",
+        detail: msg,
+      });
+      scheduleRestart();
+    }
   });
   child.once("error", (err) => {
     earlyExit.err = err;
@@ -147,6 +159,13 @@ function scheduleRestart(): void {
   if (restartTimer) return;
   if (restartAttempts >= WIREPROXY_MAX_RESTARTS) {
     console.error(`[wireproxy] giving up after ${restartAttempts} restart attempts — Taz dials will fail until the manager restarts.`);
+    recordSshEvent({
+      occurredAt: Date.now(),
+      host: lastSpawn?.socksBind ?? "wireproxy",
+      kind: "wireproxy",
+      event: "wireproxy-gaveup",
+      detail: `gave up after ${restartAttempts} restart attempts`,
+    });
     return;
   }
   const delay = Math.min(WIREPROXY_RESTART_BASE_MS * 2 ** restartAttempts, WIREPROXY_RESTART_MAX_MS);
@@ -172,6 +191,13 @@ async function respawn(): Promise<void> {
   }
   restartAttempts = 0;
   console.log(`[wireproxy] respawned and healthy on ${lastSpawn.socksBind}.`);
+  recordSshEvent({
+    occurredAt: Date.now(),
+    host: lastSpawn.socksBind,
+    kind: "wireproxy",
+    event: "wireproxy-respawn",
+    detail: "respawned and healthy",
+  });
 }
 
 /** Spawn wireproxy as a sidecar when the WG_* env vars are present. On success
