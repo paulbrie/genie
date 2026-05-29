@@ -50,17 +50,12 @@ export function addSshTerminalTab(ssh: SshConfig, title?: string, command?: stri
   return id;
 }
 
-/** Open an SSH terminal that starts Claude Code in `/opt/project` (direct PTY, no tmux). */
-export function launchClaudeSshTab(
-  ssh: SshConfig,
-  title?: string,
-  opts?: ClaudeLaunchOptions,
-): string {
-  return launchClaudeTabInternal(ssh, "claude", title, opts);
-}
-
-/** Same as launchClaudeSshTab, but wraps Claude in a tmux session so the
- *  process survives WS / SSH drops and can be reattached from the Sessions tab. */
+/** Open an SSH terminal that starts Claude Code in `/opt/project`, wrapped
+ *  in a tmux session named after the tab id. tmux is the only supported mode
+ *  — the direct-PTY variant was removed because it died on every SSH drop;
+ *  the tmux session survives drops and can be reattached from the Sessions
+ *  tab. (Internally still passes kind="claude-tmux" so persisted tabs from
+ *  older sessions keep working.) */
 export function launchClaudeTmuxSshTab(
   ssh: SshConfig,
   title?: string,

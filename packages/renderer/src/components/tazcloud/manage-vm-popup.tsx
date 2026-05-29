@@ -18,7 +18,7 @@ import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $windowManag
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import {
   addSshTerminalTab, adminDropletExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
-  ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, launchClaudeSshTab, launchClaudeTmuxSshTab, loadRecipes,
+  ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, launchClaudeTmuxSshTab, loadRecipes,
   releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, loadPersistedTerminals,
   minimizeWindow, openWindow, reattachPersistedTerminal, registerWindow, unwatchVpsStats,
   updateWindowPosition, vpsExec, watchVpsStats,
@@ -250,12 +250,11 @@ function CheckGenieSetupButton({
   );
 }
 
-/** Claude Terminal — uses the SSH user already resolved for this popup (no extra probe).
- *  Two variants:
- *    • "Claude"      → direct PTY exec; dies if the SSH channel drops.
- *    • "Claude+tmux" → wrapped in a tmux session named after the tab id, so the
- *                      process survives WS/SSH drops and reappears in the
- *                      Sessions tab for reattach. */
+/** Claude Terminal — uses the SSH user already resolved for this popup (no
+ *  extra probe). Always wrapped in a tmux session named after the tab id, so
+ *  the process survives WS/SSH drops and reappears in the Sessions tab for
+ *  reattach. The direct-PTY variant was removed; tmux-backed is the only
+ *  sensible default once dtach-ensure / reattach exist. */
 function ClaudeManageButton({ vm, sshUser }: { vm: ManageVm; sshUser: string }) {
   const ssh = {
     host: vm.host,
@@ -263,26 +262,16 @@ function ClaudeManageButton({ vm, sshUser }: { vm: ManageVm; sshUser: string }) 
     username: sshUser,
     privateKeyPath: sshKeyPathFor(vm),
   };
-  const baseTitle = `Claude ${sshUser}@${vm.name}`;
+  const title = `Claude ${sshUser}@${vm.name}`;
   return (
-    <div className="flex items-stretch">
-      <button
-        onClick={() => launchClaudeSshTab(ssh, baseTitle)}
-        className="flex items-center gap-1.5 px-2 py-0.5 rounded-l border border-r-0 border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
-        title={`Launch Claude Terminal (direct PTY, no tmux) — ${sshUser}@${vm.host}`}
-      >
-        <ClaudeLogo size={11} />
-        Claude
-      </button>
-      <button
-        onClick={() => launchClaudeTmuxSshTab(ssh, `${baseTitle} (tmux)`)}
-        className="flex items-center gap-1.5 px-2 py-0.5 rounded-r border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
-        title={`Launch Claude Terminal inside tmux (survives SSH drops; reattach from Sessions) — ${sshUser}@${vm.host}`}
-      >
-        <ClaudeLogo size={11} />
-        +tmux
-      </button>
-    </div>
+    <button
+      onClick={() => launchClaudeTmuxSshTab(ssh, title)}
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
+      title={`Launch Claude Terminal (tmux-wrapped — survives SSH drops, reattach from Sessions) — ${sshUser}@${vm.host}`}
+    >
+      <ClaudeLogo size={11} />
+      Claude
+    </button>
   );
 }
 

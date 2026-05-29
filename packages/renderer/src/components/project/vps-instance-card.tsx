@@ -11,7 +11,7 @@ import type {
 } from "@/store/types";
 import { $vpsDeploy } from "@/store/subjects";
 import {
-  addSshTerminalTab, checkVpsStatus, deployToProvider, disconnectVps, fetchVpsLogs, launchClaudeSshTab,
+  addSshTerminalTab, checkVpsStatus, deployToProvider, disconnectVps, fetchVpsLogs, launchClaudeTmuxSshTab,
   fetchVpsStats, hibernateVps, killVpsProcess, loadDeployLogs, startMcpTunnel, unwatchVpsStats, watchVpsStats,
   teardownVps, vpsExec, wakeVps,
 } from "@/store/actions";
@@ -64,7 +64,7 @@ function ClaudeTerminalButton({ projectId, instance }: { projectId: string; inst
     const username = genieInstalled ? "genie" : instance.connection.username;
     startMcpTunnel(projectId, instance.id);
     const label = resume ? `Claude (resume) @ ${instance.label || host}` : `Claude @ ${instance.label || host}`;
-    launchClaudeSshTab({ host, port, username, privateKeyPath }, label, { resume });
+    launchClaudeTmuxSshTab({ host, port, username, privateKeyPath }, label, { resume });
   };
 
   const disabledTitle = checkPending ? "Checking Genie Standard Setup… terminal will launch as the correct user once the check resolves." : undefined;
