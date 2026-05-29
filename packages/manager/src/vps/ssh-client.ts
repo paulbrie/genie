@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { dbgSsh } from "../debug-ssh-log.js";
-import { getActiveSshConnections, sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./ssh-metrics.js";
+import { getActiveSshConnections, sshConnRegister, sshConnUnregister, sshConnMarkConnected, captureSshOpenerStack } from "./ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
 
 export interface SshConnectionConfig {
@@ -384,25 +384,28 @@ export async function connectSsh(
   return new Promise((resolve, reject) => {
     const conn = new Client();
 
-    let registryId: string | null = null;
     let unregistered = false;
     const unregister = () => {
-      if (registryId && !unregistered) {
+      if (!unregistered) {
         sshConnUnregister(registryId);
         unregistered = true;
-        registryId = null;
       }
     };
+    // Register as `connecting` BEFORE dialing so a hung handshake (dead SOCKS
+    // proxy, unreachable host) is visible in /ssh instead of invisible until
+    // `ready`. Flipped to `connected` on ready; cleaned up on close/error.
+    const registryId = sshConnRegister({
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      kind: "client",
+      status: "connecting",
+      end: () => { unregister(); try { conn.destroy(); } catch { /* ignore */ } },
+      openerStack,
+    });
     conn
       .on("ready", () => {
-        registryId = sshConnRegister({
-          host: config.host,
-          port: config.port,
-          username: config.username,
-          kind: "client",
-          end: () => { unregister(); try { conn.destroy(); } catch { /* ignore */ } },
-          openerStack,
-        });
+        sshConnMarkConnected(registryId);
         resolve(makeSession(conn, unregister, opts?.onSessionClosed));
       })
       .on("close", () => {
@@ -410,6 +413,7 @@ export async function connectSsh(
         opts?.onSessionClosed?.();
       })
       .on("error", (err) => {
+        unregister();
         console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));
       })

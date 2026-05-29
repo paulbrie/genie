@@ -18,7 +18,13 @@ export interface SshConnectionInfo {
   username: string;
   /** "client" = programmatic connectSsh, "pty" = interactive terminal session. */
   kind: "client" | "pty";
-  /** ms epoch when the underlying ssh2 client emitted `ready`. */
+  /** "connecting" = dial in flight (registered before ssh2 `ready`), "connected"
+   *  = handshake done. Lets the /ssh panel surface a HUNG handshake — previously
+   *  a connection was invisible until `ready`, so a dial stuck behind a dead
+   *  SOCKS proxy or an unreachable host showed nothing at all. */
+  status: "connecting" | "connected";
+  /** ms epoch when the connection was registered (dial start for connecting
+   *  rows, or `ready` for callers that register late). */
   openedAt: number;
   /** Short caller hint — first non-internal stack frame, useful when many
    *  call sites look alike (e.g. fs-handler vs vps-db-handler). */
@@ -63,6 +69,10 @@ export function sshConnRegister(args: {
   port: number;
   username: string;
   kind: "client" | "pty";
+  /** Initial status — defaults to "connected" so existing callers that register
+   *  on `ready` are unchanged. Pass "connecting" to register a dial in flight,
+   *  then flip with sshConnMarkConnected once `ready` fires. */
+  status?: "connecting" | "connected";
   end: () => void;
   /** Stack captured at the connectSsh() call site (see captureSshOpenerStack);
    *  falls back to a register-time capture, which is what we used to do but
@@ -76,6 +86,7 @@ export function sshConnRegister(args: {
     port: args.port,
     username: args.username,
     kind: args.kind,
+    status: args.status ?? "connected",
     openedAt: Date.now(),
     opener: captureOpener(args.openerStack),
     end: args.end,
@@ -102,6 +113,13 @@ export function sshConnUnregister(id: string): void {
   }
 }
 
+/** Promote a "connecting" entry to "connected" once ssh2 fires `ready`. No-op if
+ *  the id was already unregistered (a dial that failed before ready). */
+export function sshConnMarkConnected(id: string): void {
+  const entry = active.get(id);
+  if (entry) entry.status = "connected";
+}
+
 export function getActiveSshConnections(): number {
   return active.size;
 }
@@ -115,6 +133,7 @@ export function listSshConnections(): SshConnectionInfo[] {
       port: e.port,
       username: e.username,
       kind: e.kind,
+      status: e.status,
       openedAt: e.openedAt,
       opener: e.opener,
     });
@@ -131,6 +150,7 @@ export function getSshConnectionInfo(id: string): SshConnectionInfo | null {
     port: entry.port,
     username: entry.username,
     kind: entry.kind,
+    status: entry.status,
     openedAt: entry.openedAt,
     opener: entry.opener,
   };

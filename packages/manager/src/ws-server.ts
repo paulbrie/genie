@@ -1762,6 +1762,12 @@ interface SshTunnelInfo {
   host: string;
   projectName: string;
   openedAt: number;
+  /** False once the underlying SSH session has dropped (keepalive close fired)
+   *  but before the next launch rebuilds — surfaces a silently-dead tunnel in
+   *  /ssh instead of showing it as healthy. Normally an evicted dead tunnel
+   *  leaves the map entirely, so this is mainly visible in the brief window
+   *  between the close event and eviction. */
+  alive: boolean;
   browser: boolean;
   stream: boolean;
   security: boolean;
@@ -1776,6 +1782,7 @@ function listPersistentMcpTunnels(): SshTunnelInfo[] {
       host,
       projectName: tunnel.projectName,
       openedAt: tunnel.openedAt,
+      alive: tunnel.alive,
       browser: true,
       stream: !!tunnel.streamTunnel,
       security: !!tunnel.securityTunnel,

@@ -3,10 +3,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { TerminalSquare, X, Minus, Maximize2, Minimize2, Share2, Bug } from "lucide-react";
+import { TerminalSquare, X, Minus, Maximize2, Minimize2, Share2, Bug, RotateCw } from "lucide-react";
 import type { ChatUser, FloatingWindowState, TerminalTab } from "@/store/types";
 import { $auth, $conversationChat, $terminal, $windowManager } from "@/store/subjects";
-import { closeWindow, focusWindow, leaveSharedTerminal, minimizeWindow, openWindow, registerWindow, removeTerminalTab, shareTerminal, updateWindowPosition } from "@/store/actions";
+import { closeWindow, focusWindow, leaveSharedTerminal, minimizeWindow, openWindow, reconnectTerminalTab, registerWindow, removeTerminalTab, shareTerminal, updateWindowPosition } from "@/store/actions";
 import {
   createTerminal,
   disposeTerminal,
@@ -288,6 +288,16 @@ function SingleTerminalWindow({
           <span className="truncate">{tab.title}</span>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
+          {tab.disconnected && tab.reattachable && (
+            <button
+              onClick={() => reconnectTerminalTab(tab.id)}
+              className="flex items-center gap-1 px-2 py-1 rounded text-yellow bg-yellow/10 hover:bg-yellow/15 transition-colors"
+              title="Connection lost — reattach the session preserved on the VM"
+            >
+              <RotateCw size={12} />
+              <span className="text-md font-medium">Reconnect</span>
+            </button>
+          )}
           <button
             onClick={toggleDebugSplit}
             className={cn(
