@@ -96,6 +96,8 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // The Clouds panel uses admin:droplets:* and admin:tazcloud:* — exposed to tazcloud.
   "admin:droplets": { send: "tazcloud", receive: "tazcloud" },
   "admin:tazcloud": { send: "tazcloud", receive: "tazcloud" },
+  // Communication panel — mass-emailing the user base is superadmin-only.
+  "admin:email": { send: "superadmin", receive: "superadmin" },
   db: { send: "admin", receive: "admin" },
   security: { send: "admin", receive: "admin" },
   deploy: { send: "admin", receive: "admin" },

@@ -17,6 +17,7 @@ export const $admin = new DeepSubject<AdminState>({
   teams: { list: [], members: [], loading: false },
   orgs: { list: [], members: {}, loading: false, selectedOrgId: null },
   projectMembers: {},
+  communication: { logs: [], loading: false, sending: false, error: null, lastResult: null },
   audit: { logs: [], loading: false, filterUserId: null, filterAction: null },
   prodlogs: { deployments: [], logs: [], selectedDeploymentId: null, logType: "deploy", loading: false, logsLoading: false },
   ai: { subTab: "costs", costs: [], loading: false, error: null, settings: { defaultModel: "claude-sonnet", maxToolRounds: 10 }, settingsLoading: false },

@@ -341,6 +341,31 @@ export const auditLog = pgTable("audit_log", {
   index("idx_audit_log_created").on(t.createdAt),
 ]);
 
+/** Platform communication emails sent from the super-admin Communication panel.
+ *  One row per recipient per send (a broadcast to N users writes N rows) so the
+ *  log table can show per-recipient delivery results. */
+export const emailLogs = pgTable("email_logs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  /** Recipient user id when the address resolves to a known user; null for
+   *  ad-hoc / no-longer-existing addresses. */
+  recipientUserId: uuid("recipient_user_id"),
+  recipientEmail: text("recipient_email").notNull(),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  /** "sent" once SendGrid accepts it, "failed" otherwise. */
+  status: text("status", { enum: ["sent", "failed"] }).notNull(),
+  /** SendGrid / transport error message when status = "failed". */
+  error: text("error"),
+  /** The super-admin who triggered the send. */
+  sentByUserId: uuid("sent_by_user_id"),
+  sentByName: text("sent_by_name"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [
+  index("idx_email_logs_recipient").on(t.recipientUserId),
+  index("idx_email_logs_status").on(t.status),
+  index("idx_email_logs_created").on(t.createdAt),
+]);
+
 export const fileTemplates = pgTable("file_templates", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: text("name").notNull(),

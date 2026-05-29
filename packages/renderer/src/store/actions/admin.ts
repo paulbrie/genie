@@ -96,7 +96,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "audit" | "prodlogs"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs"): void {
   $admin.getValue().activeTab = tab;
 }
 
@@ -699,6 +699,32 @@ export function loadAuditLogs(opts?: { userId?: string; action?: string }): void
     action: v.audit.filterAction || undefined,
     limit: 200,
   });
+}
+
+// --- Communication actions ---
+
+export function loadEmailLogs(): void {
+  $admin.getValue().communication.loading = true;
+  wsSend("admin:email:logs", {});
+}
+
+/** Send a platform email. Target either every validated user (`allUsers: true`)
+ *  or an explicit set of user ids. The server writes one email-log row per
+ *  recipient and replies with `admin:email:sent` (summary) + a fresh
+ *  `admin:email:logs`, or `admin:email:send:error`. */
+export function sendCommunicationEmail(opts: {
+  allUsers: boolean;
+  recipientUserIds: string[];
+  subject: string;
+  body: string;
+}): void {
+  batch(() => {
+    const c = $admin.getValue().communication;
+    c.sending = true;
+    c.error = null;
+    c.lastResult = null;
+  });
+  wsSend("admin:email:send", opts);
 }
 
 // --- Prod Logs actions ---

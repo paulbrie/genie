@@ -14,7 +14,7 @@ import {
 import type { AdminBaseImageState, AdminColumnInfo, AdminState, AdminTeam, AdminTeamMember, AdminUser, AiSettings, AiSubTab, AiUsageRow, AuditLogEntry, BaseImageConfig, BaseImageTemplate, DropletsSubTab, RailwayDeployment, RailwayLogEntry, TemplateHistoryEntry } from "@/store/types";
 import { $admin, $auth, $doSnapshots, $doSnapshotsLoading } from "@/store/subjects";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser } from "@/store/actions";
+import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser, loadEmailLogs } from "@/store/actions";
 import { OrgsPanel } from "@/components/admin/admin-orgs-panel";
 import { InviteUserDialog } from "@/components/admin/admin-invite-user-dialog";
 import { AiCostsPanel } from "./admin-ai";
@@ -22,6 +22,7 @@ import { BackupPanel, DrizzlePushWindow } from "./admin-backup";
 import { UserDrawer, TeamsPanel } from "./admin-users";
 import { SnapshotsSubTab } from "./admin-images";
 import { AuditPanel, ProdLogsPanel } from "./admin-logs";
+import { CommunicationPanel } from "./admin-communication";
 import { useSubject } from "subjecto/react";
 import { cn } from "@/lib/utils";
 import { buildAdminPath } from "@/lib/routes";
@@ -205,6 +206,7 @@ export function AdminPanel() {
             { key: "users" as const, label: "Users" },
             { key: "teams" as const, label: "Teams" },
             { key: "orgs" as const, label: "Orgs" },
+            ...(isSuperadmin ? [{ key: "communication" as const, label: "Communication" }] : []),
             { key: "audit" as const, label: "Audit" },
             { key: "prodlogs" as const, label: "Prod Logs" },
           ]}
@@ -217,6 +219,7 @@ export function AdminPanel() {
             else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); router.push(buildAdminPath("users")); }
             else if (tab === "teams") { setAdminTab("teams"); loadAdminTeams(); loadAdminUsers(); router.push(buildAdminPath("teams")); }
             else if (tab === "orgs") { setAdminTab("orgs"); loadAdminOrgs(); loadAdminUsers(); router.push(buildAdminPath("orgs")); }
+            else if (tab === "communication") { setAdminTab("communication"); loadEmailLogs(); loadAdminUsers(); router.push(buildAdminPath("communication")); }
             else if (tab === "audit") { setAdminTab("audit"); loadAuditLogs(); router.push(buildAdminPath("audit")); }
             else if (tab === "prodlogs") { setAdminTab("prodlogs"); loadProdDeployments(); router.push(buildAdminPath("prodlogs")); }
           }}
@@ -1191,6 +1194,9 @@ export function AdminPanel() {
       ) : activeTab === "orgs" ? (
         /* ===== ORGS TAB ===== */
         <OrgsPanel orgs={admin.orgs} users={usersState.list} />
+      ) : activeTab === "communication" ? (
+        /* ===== COMMUNICATION TAB ===== */
+        <CommunicationPanel communication={admin.communication} users={usersState} />
       ) : activeTab === "audit" ? (
         /* ===== AUDIT TAB ===== */
         <AuditPanel audit={admin.audit} />

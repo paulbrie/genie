@@ -54,6 +54,7 @@ import * as trackerService from "./tracker-service.js";
 import * as adminService from "./admin-service.js";
 import * as backupService from "./backup-service.js";
 import * as auditService from "./audit-service.js";
+import * as emailService from "./email-service.js";
 import * as railwayService from "./railway-service.js";
 import { getClaudeUserId } from "./db/seed.js";
 import { getDb } from "./db/index.js";
@@ -4989,6 +4990,70 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "admin:audit:list", payload: { logs } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    // ── Communication (super-admin email) ─────────────────
+    case "admin:email:logs": {
+      try {
+        const logs = await emailService.getEmailLogs(200);
+        send(ws, { type: "admin:email:logs", payload: { logs } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:email:send": {
+      try {
+        const { recipientUserIds, allUsers, subject, body } = msg.payload as {
+          recipientUserIds?: string[];
+          allUsers?: boolean;
+          subject?: string;
+          body?: string;
+        };
+        if (!subject?.trim()) { send(ws, { type: "admin:email:send:error", payload: { message: "Subject is required" } }); break; }
+        if (!body?.trim()) { send(ws, { type: "admin:email:send:error", payload: { message: "Body is required" } }); break; }
+
+        const db = getDb();
+        // Resolve recipients to {userId, email}. "All users" targets every
+        // validated, non-agent account; otherwise the explicitly-selected ids.
+        const allRows = await db.select({ id: users.id, email: users.email, isAgent: users.isAgent, validated: users.validated }).from(users);
+        let recipients: emailService.EmailRecipient[];
+        if (allUsers) {
+          recipients = allRows
+            .filter((u) => !u.isAgent && u.validated && u.email)
+            .map((u) => ({ userId: u.id, email: u.email }));
+        } else {
+          const idSet = new Set(recipientUserIds ?? []);
+          recipients = allRows
+            .filter((u) => idSet.has(u.id) && u.email)
+            .map((u) => ({ userId: u.id, email: u.email }));
+        }
+
+        if (recipients.length === 0) {
+          send(ws, { type: "admin:email:send:error", payload: { message: "No valid recipients selected" } });
+          break;
+        }
+
+        const results = await emailService.sendCommunicationEmail({
+          recipients,
+          subject: subject.trim(),
+          body: body.trim(),
+          sentByUserId: userId,
+          sentByName: state.user?.name ?? null,
+        });
+
+        const sent = results.filter((r) => r.status === "sent").length;
+        const failed = results.length - sent;
+        send(ws, { type: "admin:email:sent", payload: { sent, failed, total: results.length } });
+
+        // Refresh the logs table for the sender.
+        const logs = await emailService.getEmailLogs(200);
+        send(ws, { type: "admin:email:logs", payload: { logs } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:email:send:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }

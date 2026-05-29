@@ -751,6 +751,31 @@ export const handlers: HandlerMap = {
     void import("@/lib/ws").then(({ wsSend }) => wsSend("project:list", {}));
   },
 
+  "admin:email:logs": (payload) => {
+    batch(() => {
+      const c = $admin.getValue().communication;
+      c.logs = payload.logs;
+      c.loading = false;
+    });
+  },
+
+  "admin:email:sent": (payload) => {
+    batch(() => {
+      const c = $admin.getValue().communication;
+      c.sending = false;
+      c.error = null;
+      c.lastResult = { sent: payload.sent, failed: payload.failed, total: payload.total };
+    });
+  },
+
+  "admin:email:send:error": (payload) => {
+    batch(() => {
+      const c = $admin.getValue().communication;
+      c.sending = false;
+      c.error = payload.message ?? "Failed to send email";
+    });
+  },
+
   "admin:audit:list": (payload) => {
     batch(() => {
       const a = $admin.getValue().audit;

@@ -265,6 +265,19 @@ export interface AuditLogEntry {
   createdAt: string;
 }
 
+export interface EmailLogEntry {
+  id: string;
+  recipientUserId: string | null;
+  recipientEmail: string;
+  subject: string;
+  body: string;
+  status: "sent" | "failed";
+  error: string | null;
+  sentByUserId: string | null;
+  sentByName: string | null;
+  createdAt: string;
+}
+
 export interface RailwayDeployment {
   id: string;
   status: string;
@@ -280,7 +293,7 @@ export interface RailwayLogEntry {
 }
 
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "audit" | "prodlogs";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];
@@ -355,6 +368,16 @@ export interface AdminState {
   /** Members of individual projects, keyed by projectId. Populated on demand
    *  when the project-detail Members section is opened. */
   projectMembers: Record<string, ProjectMemberInfo[]>;
+  communication: {
+    logs: EmailLogEntry[];
+    loading: boolean;
+    /** True while an `admin:email:send` request is in flight. */
+    sending: boolean;
+    /** Banner error from the latest send attempt. */
+    error: string | null;
+    /** Summary of the last completed send — drives the success banner. */
+    lastResult: { sent: number; failed: number; total: number } | null;
+  };
   audit: {
     logs: AuditLogEntry[];
     loading: boolean;

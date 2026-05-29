@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSubject } from "subjecto/react";
 import { $activeNav, $auth, $projects, $selectedProjectId, $showAddProjectForm } from "@/store/subjects";
-import { loadAiCosts, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDocsList, loadProdDeployments, loadSshKey, openDoc, selectProject, setAdminTab, setAiSubTab, setDropletsSubTab, switchNav } from "@/store/actions";
+import { loadAiCosts, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDocsList, loadEmailLogs, loadProdDeployments, loadSshKey, openDoc, selectProject, setAdminTab, setAiSubTab, setDropletsSubTab, switchNav } from "@/store/actions";
 import { AddProjectForm } from "@/components/project/add-project-form";
 import { ProjectDetail } from "@/components/project/project-detail";
 import { ProcessesPanel } from "@/components/ui/processes-panel";
@@ -108,6 +108,9 @@ function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab; set
         if (parsed.adminTab === "ai") {
           loadAiCosts();
           if (parsed.aiSubTab) setAiSubTab(parsed.aiSubTab);
+        }
+        if (parsed.adminTab === "communication") {
+          loadEmailLogs();
         }
         if (parsed.adminTab === "audit") {
           loadAuditLogs();
