@@ -240,6 +240,12 @@ export interface TerminalTab {
    *  bottom panel sends `terminal:reattach` instead of a fresh spawn so the
    *  manager reuses the row + tmux session keyed by `id`. */
   reattach?: boolean;
+  /** Which rendering frontend to use in the popup. "xterm" (default) mounts
+   *  xterm.js via terminal-bridge; "custom" mounts the in-house VT parser +
+   *  React renderer (lib/custom-term/* + components/terminal/custom-terminal.tsx).
+   *  Picked at launch time by the Claude (xterm) vs Claude (Custom) buttons,
+   *  defaults to xterm so persisted tabs from older releases keep working. */
+  renderer?: "xterm" | "custom";
 }
 
 export interface PersistedTerminalSession {

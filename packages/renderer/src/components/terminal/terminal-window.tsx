@@ -42,6 +42,12 @@ function SingleTerminalWindow({
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
 
+  // Which renderer this popup uses for its primary view. Decided at tab
+  // launch time (Claude (xterm) / Claude (Custom) buttons); defaults to
+  // xterm so any tab without an explicit choice — bottom-panel spawns,
+  // legacy persisted sessions — keeps the stable rendering path.
+  const useCustomRenderer = tab.renderer === "custom";
+
   // Diagnostic split — opt-in. Persisted in localStorage so the choice
   // survives reloads (handy when the freeze is a once-per-session event),
   // but toggled live via the bug-icon button in the title bar so flipping
@@ -152,44 +158,59 @@ function SingleTerminalWindow({
     [windowId, tab.id, onResizePointerDown],
   );
 
-  // Mount xterm when container is ready
+  // Spawn dispatcher shared by both rendering paths. xterm calls it from
+  // the FitAddon callback (so cols/rows match the rendered grid); the
+  // custom renderer doesn't have a measured grid yet (phase 1), so it
+  // fires with fixed defaults (100×30) at mount time.
+  const spawnWhenReady = useCallback((cols: number, rows: number) => {
+    const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
+    if (tab.shared || isRestored) return;
+    if (tab.reattach) {
+      window.dispatchEvent(new CustomEvent("genie:terminal:data", {
+        detail: { id: tab.id, data: `\x1b[2mReattaching to ${tab.id}...\x1b[0m\r\n` },
+      }));
+      wsSend("terminal:reattach", { id: tab.id, cols, rows });
+    } else if (tab.ssh) {
+      window.dispatchEvent(new CustomEvent("genie:terminal:data", {
+        detail: { id: tab.id, data: `\x1b[2mConnecting to ${tab.ssh.username || "genie"}@${tab.ssh.host}:${tab.ssh.port || 22}...\x1b[0m\r\n` },
+      }));
+      const payload = buildTerminalSshSpawnPayload(tab, cols, rows);
+      if (payload) wsSend("terminal:ssh:spawn", payload);
+    } else {
+      wsSend("terminal:spawn", {
+        id: tab.id,
+        cols,
+        rows,
+        command: tab.command,
+        cwd: tab.cwd,
+      });
+    }
+  }, [tab]);
+
+  // Mount xterm when container is ready — xterm path only. The custom
+  // renderer is a React component that mounts itself; no imperative setup
+  // needed beyond firing the spawn below.
   useEffect(() => {
-    if (!containerRef.current || mountedRef.current) return;
+    if (useCustomRenderer || !containerRef.current || mountedRef.current) return;
     mountedRef.current = true;
 
     if (hasTerminal(tab.id)) {
       reattachTerminal(tab.id, containerRef.current);
     } else {
-      const spawnWhenFitted = (cols: number, rows: number) => {
-        const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
-        if (tab.shared || isRestored) return;
-        if (tab.reattach) {
-          window.dispatchEvent(new CustomEvent("genie:terminal:data", {
-            detail: { id: tab.id, data: `\x1b[2mReattaching to ${tab.id}...\x1b[0m\r\n` },
-          }));
-          wsSend("terminal:reattach", { id: tab.id, cols, rows });
-        } else if (tab.ssh) {
-          window.dispatchEvent(new CustomEvent("genie:terminal:data", {
-            detail: { id: tab.id, data: `\x1b[2mConnecting to ${tab.ssh.username || "genie"}@${tab.ssh.host}:${tab.ssh.port || 22}...\x1b[0m\r\n` },
-          }));
-          const payload = buildTerminalSshSpawnPayload(tab, cols, rows);
-          if (payload) wsSend("terminal:ssh:spawn", payload);
-        } else {
-          wsSend("terminal:spawn", {
-            id: tab.id,
-            cols,
-            rows,
-            command: tab.command,
-            cwd: tab.cwd,
-          });
-        }
-      };
-
       createTerminal(containerRef.current, tab.id, ({ cols, rows }) => {
-        spawnWhenFitted(cols, rows);
+        spawnWhenReady(cols, rows);
       });
     }
-  }, [tab]);
+  }, [tab, useCustomRenderer, spawnWhenReady]);
+
+  // Spawn for the custom renderer path. xterm's onFitted callback already
+  // handles the spawn for the xterm path. Fixed dims for now — phase 2 of
+  // the custom terminal will compute these from container size.
+  useEffect(() => {
+    if (!useCustomRenderer || mountedRef.current) return;
+    mountedRef.current = true;
+    spawnWhenReady(100, 30);
+  }, [useCustomRenderer, spawnWhenReady]);
 
   // Focus xterm when output arrives so keystrokes reach Claude without an extra click.
   useEffect(() => {
@@ -342,43 +363,38 @@ function SingleTerminalWindow({
         </div>
       </div>
 
-      {/* Body — single xterm pane normally; 3-column diagnostic split when
-       *  `localStorage.term-debug = "1"` (set in DevTools, reload). Built to
-       *  compare xterm rendering against a dumb-pre custom renderer fed by
-       *  the same genie:terminal:data stream — if xterm freezes but custom
-       *  keeps painting, the freeze is xterm; if both freeze, it's upstream. */}
-      {debugSplit ? (
-        <div className="flex-1 min-h-0 flex flex-row">
+      {/* Body — single primary pane normally; 3-column diagnostic split when
+       *  the bug toggle is on. The primary pane is whichever renderer this
+       *  tab was launched with (xterm or custom); the diagnostic columns are
+       *  always WS log + Debug regardless of which renderer is primary. */}
+      {(() => {
+        const primary = useCustomRenderer ? (
+          <CustomTerminal sessionId={tab.id} />
+        ) : (
           <div
             ref={containerRef}
-            className="flex-1 min-w-0"
+            className="h-full w-full"
             onPointerDown={(e) => {
               e.stopPropagation();
               focusWindow(windowId);
               focusXterm(tab.id);
             }}
           />
-          <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
-            <CustomTerminal sessionId={tab.id} />
+        );
+        return debugSplit ? (
+          <div className="flex-1 min-h-0 flex flex-row">
+            <div className="flex-1 min-w-0">{primary}</div>
+            <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
+              <WsLogPanel sessionId={tab.id} />
+            </div>
+            <div className="w-56 shrink-0 border-l border-surface0 overflow-hidden">
+              <DebugPanel sessionId={tab.id} containerRef={containerRef} />
+            </div>
           </div>
-          <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
-            <WsLogPanel sessionId={tab.id} />
-          </div>
-          <div className="w-56 shrink-0 border-l border-surface0 overflow-hidden">
-            <DebugPanel sessionId={tab.id} containerRef={containerRef} />
-          </div>
-        </div>
-      ) : (
-        <div
-          ref={containerRef}
-          className="flex-1 min-h-0"
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            focusWindow(windowId);
-            focusXterm(tab.id);
-          }}
-        />
-      )}
+        ) : (
+          <div className="flex-1 min-h-0">{primary}</div>
+        );
+      })()}
 
       {/* Resize handle */}
       {!maximized && (

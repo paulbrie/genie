@@ -253,8 +253,10 @@ function CheckGenieSetupButton({
 /** Claude Terminal — uses the SSH user already resolved for this popup (no
  *  extra probe). Always wrapped in a tmux session named after the tab id, so
  *  the process survives WS/SSH drops and reappears in the Sessions tab for
- *  reattach. The direct-PTY variant was removed; tmux-backed is the only
- *  sensible default once dtach-ensure / reattach exist. */
+ *  reattach. Two buttons pick the popup's rendering frontend:
+ *    • Claude (xterm)  → battle-tested xterm.js
+ *    • Claude (Custom) → in-house VT parser + renderer (phase 1, no alt
+ *                        screen yet — use for streaming chat output only) */
 function ClaudeManageButton({ vm, sshUser }: { vm: ManageVm; sshUser: string }) {
   const ssh = {
     host: vm.host,
@@ -262,16 +264,26 @@ function ClaudeManageButton({ vm, sshUser }: { vm: ManageVm; sshUser: string }) 
     username: sshUser,
     privateKeyPath: sshKeyPathFor(vm),
   };
-  const title = `Claude ${sshUser}@${vm.name}`;
+  const base = `Claude ${sshUser}@${vm.name}`;
   return (
-    <button
-      onClick={() => launchClaudeTmuxSshTab(ssh, title)}
-      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
-      title={`Launch Claude Terminal (tmux-wrapped — survives SSH drops, reattach from Sessions) — ${sshUser}@${vm.host}`}
-    >
-      <ClaudeLogo size={11} />
-      Claude
-    </button>
+    <div className="flex items-stretch">
+      <button
+        onClick={() => launchClaudeTmuxSshTab(ssh, base, { renderer: "xterm" })}
+        className="flex items-center gap-1.5 px-2 py-0.5 rounded-l border border-r-0 border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
+        title={`Launch Claude in an xterm-rendered popup (stable) — ${sshUser}@${vm.host}`}
+      >
+        <ClaudeLogo size={11} />
+        Claude (xterm)
+      </button>
+      <button
+        onClick={() => launchClaudeTmuxSshTab(ssh, `${base} (custom)`, { renderer: "custom" })}
+        className="flex items-center gap-1.5 px-2 py-0.5 rounded-r border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
+        title={`Launch Claude in the in-house custom renderer (phase 1 — no alt screen, streaming chat only) — ${sshUser}@${vm.host}`}
+      >
+        <ClaudeLogo size={11} />
+        Claude (Custom)
+      </button>
+    </div>
   );
 }
 

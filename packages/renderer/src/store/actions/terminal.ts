@@ -55,11 +55,17 @@ export function addSshTerminalTab(ssh: SshConfig, title?: string, command?: stri
  *  — the direct-PTY variant was removed because it died on every SSH drop;
  *  the tmux session survives drops and can be reattached from the Sessions
  *  tab. (Internally still passes kind="claude-tmux" so persisted tabs from
- *  older sessions keep working.) */
+ *  older sessions keep working.)
+ *
+ *  Optional `renderer` ("xterm" | "custom") picks the popup's rendering
+ *  frontend — xterm.js (default, stable) or the in-house VT renderer
+ *  (lib/custom-term/*, currently phase 1 — linear scrollback, no alt
+ *  screen). The Claude (xterm) / Claude (Custom) buttons in the manage-vm
+ *  popup pass this. */
 export function launchClaudeTmuxSshTab(
   ssh: SshConfig,
   title?: string,
-  opts?: ClaudeLaunchOptions,
+  opts?: ClaudeLaunchOptions & { renderer?: "xterm" | "custom" },
 ): string {
   return launchClaudeTabInternal(ssh, "claude-tmux", title, opts);
 }
@@ -68,7 +74,7 @@ function launchClaudeTabInternal(
   ssh: SshConfig,
   kind: "claude" | "claude-tmux",
   title: string | undefined,
-  opts: ClaudeLaunchOptions | undefined,
+  opts: (ClaudeLaunchOptions & { renderer?: "xterm" | "custom" }) | undefined,
 ): string {
   tabCounter.value++;
   const id = `tab-${Date.now()}-${tabCounter.value}`;
@@ -81,6 +87,7 @@ function launchClaudeTabInternal(
       cwd: opts?.cwd ?? GENIE_PROJECT_DIR,
       resume: opts?.resume,
     },
+    renderer: opts?.renderer,
   };
   const t = $terminal.getValue();
   $terminal.next({ ...t, tabs: [...t.tabs, tab], activeTabId: id, bottomPanelOpen: true });
