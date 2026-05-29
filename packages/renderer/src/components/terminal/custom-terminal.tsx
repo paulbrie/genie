@@ -1,7 +1,13 @@
 "use client";
 
 /**
- * Custom terminal component — alternative to xterm in the diagnostic split.
+ * Custom terminal component — alternative to xterm.
+ *
+ * Wrapped in CustomTerminalErrorBoundary so a render-time throw is shown
+ * inline instead of unmounting the entire popup. Phase 1 is incomplete
+ * (no alt screen, cursor positioning is column-only) and we'd rather see
+ * "renderer crashed: …" inside the pane than have the user think the
+ * whole popup died.
  *
  * Phase 1: linear scrollback only. The companion VtParser + TerminalBuffer
  * (in @/lib/custom-term/*) handle the ANSI parsing and styled-segment
@@ -17,7 +23,8 @@
  * is the well-supported case in this phase.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { wsSend } from "@/lib/ws";
 import { VtParser, type VtEvent } from "@/lib/custom-term/vt-parser";
 import { TerminalBuffer, type CellAttrs, type LineView, type Segment } from "@/lib/custom-term/buffer";
@@ -115,7 +122,18 @@ interface Props {
   sessionId: string;
 }
 
-export function CustomTerminal({ sessionId }: Props) {
+// Exported entry — the unwrapped implementation is CustomTerminalInner; the
+// error boundary lives between them so any render-time throw renders an
+// inline error message instead of escaping to the popup.
+export function CustomTerminal(props: Props) {
+  return (
+    <CustomTerminalErrorBoundary>
+      <CustomTerminalInner {...props} />
+    </CustomTerminalErrorBoundary>
+  );
+}
+
+function CustomTerminalInner({ sessionId }: Props) {
   const buffer = useMemo(() => new TerminalBuffer(), []);
   const parser = useMemo(() => new VtParser(), []);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -155,6 +173,24 @@ export function CustomTerminal({ sessionId }: Props) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [snapshot.version]);
 
+  // Auto-focus the hidden input on mount, and again the first time any data
+  // arrives for THIS session — otherwise the user clicks an empty pane,
+  // focus lands on <body>, typing goes nowhere, and they assume the popup
+  // is broken. The parent SingleTerminalWindow's "focus xterm on data"
+  // effect is a no-op for the custom renderer, so we do our own here.
+  useEffect(() => {
+    requestAnimationFrame(() => inputRef.current?.focus());
+    let didFocus = false;
+    const onFirstData = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { id: string };
+      if (detail.id !== sessionId || didFocus) return;
+      didFocus = true;
+      requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener("genie:terminal:data", onFirstData);
+    return () => window.removeEventListener("genie:terminal:data", onFirstData);
+  }, [sessionId]);
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     const encoded = encodeKey(e);
     if (encoded !== null) {
@@ -191,6 +227,7 @@ export function CustomTerminal({ sessionId }: Props) {
       <div
         ref={scrollRef}
         className="flex-1 overflow-auto bg-crust p-1 font-mono text-[11px] leading-[1.35] cursor-text select-text"
+        onPointerDown={() => inputRef.current?.focus()}
         onClick={() => inputRef.current?.focus()}
       >
         {snapshot.lines.map((line, i) => (
@@ -264,3 +301,46 @@ function applyEvent(buf: TerminalBuffer, e: VtEvent): void {
 
 // Marker to ensure tree-shaking keeps the Segment type referenced.
 export type { Segment };
+
+/** Render-time error boundary. Phase 1 of the custom terminal still has
+ *  rough edges (alt-screen handling, deep recursion on huge lines, etc.) —
+ *  rather than letting an exception unmount the entire popup we render an
+ *  inline error so the rest of the popup (xterm-side debug panel, WS log)
+ *  stays usable for diagnosing it. */
+class CustomTerminalErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: { componentStack?: string | null }) {
+    // eslint-disable-next-line no-console
+    console.error("[custom-term] render crashed", { error, stack: info.componentStack });
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="h-full flex flex-col bg-crust p-2 text-[10px] font-mono">
+          <div className="text-red font-bold mb-1">custom terminal crashed</div>
+          <div className="text-text break-all select-text">{this.state.error.message}</div>
+          <div className="text-overlay0 mt-2">
+            The popup itself is fine — the bug is in the custom renderer. Toggle off via the
+            bug button and try xterm, or check the WS log column for what we choked on.
+          </div>
+          <button
+            onClick={() => this.setState({ error: null })}
+            className="mt-3 px-2 py-1 self-start rounded border border-surface0 text-md text-overlay1 hover:text-text hover:bg-surface0"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
