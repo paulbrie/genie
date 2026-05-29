@@ -427,13 +427,15 @@ const VERSION_FILE = `${VPS_AGENT_REMOTE_BASE}/.version`;
 async function ensureVpsAgent(connection: VpsConnectionConfig): Promise<void> {
   const localHash = await computeLocalAgentHash();
 
-  // Check remote version
-  const checkSession = await connectSsh(connection, { timeoutMs: 30_000 });
+  // Check remote version through the shared session cache: this probe is
+  // read-only and idempotent, so a warm ensureVpsAgent reuses an existing
+  // cached connection instead of opening a throwaway dial just to read the hash.
+  // The bundle upload below keeps its own dedicated session so a slow multi-step
+  // upload isn't serialized behind stats probes on the cached connection.
   let remoteHash = "";
   try {
-    remoteHash = (await checkSession.exec(`cat ${VERSION_FILE} 2>/dev/null || echo ""`)).trim();
+    remoteHash = (await execCached(connection, `cat ${VERSION_FILE} 2>/dev/null || echo ""`)).trim();
   } catch { /* missing */ }
-  checkSession.close();
 
   if (remoteHash === localHash) return;
 
@@ -672,7 +674,7 @@ async function routeChatToVpsAgent(
     const needsAnyTunnel = !tunnel || !tunnel.streamTunnel || !tunnel.securityTunnel || !tunnel.notifyTunnel || !tunnel.storageTunnel;
     try {
       // Use a dedicated SSH session for MCP tunnels (the chat session will be consumed by Claude Code)
-      const tunnelSsh = tunnel?.sshSession ?? await connectSsh(instance.connection, { timeoutMs: 30_000 });
+      const tunnelSsh = tunnel?.sshSession ?? await connectTunnelSsh(instance.connection.host, instance.connection);
 
       if (!tunnel) {
         const mcpTunnel = await setupMcpTunnel(
@@ -686,6 +688,7 @@ async function routeChatToVpsAgent(
           projectName: project.name,
           instanceHost: instance.connection.host,
           openedAt: Date.now(),
+          alive: true,
         };
         persistentMcpTunnels.set(hostKey, tunnel);
       }
@@ -1417,16 +1420,69 @@ interface PersistentMcpTunnel {
   projectName: string;
   instanceHost: string;
   openedAt: number;
+  /** Flipped false by the connectTunnelSsh onSessionClosed handler when the
+   *  underlying SSH session drops (now detected promptly via keepalive). A
+   *  dead-but-not-yet-evicted entry reads as not-live so ensureMcpTunnelsForHost
+   *  rebuilds it. */
+  alive: boolean;
 }
 
 /** Shared tunnels keyed by instance host (one tunnel per VPS host). */
 const persistentMcpTunnels = new Map<string, PersistentMcpTunnel>();
 
+/** One in-flight (re)build per host — prevents two concurrent callers (two Claude
+ *  launches, or the Reconnect button racing the chat/terminal path) from both
+ *  closing and rebuilding, which orphaned an SSH session + its reverse forwards.
+ *  Mirrors inflightDials in ssh-session-cache.ts. */
+const inflightTunnelBuilds = new Map<string, Promise<void>>();
+
 function tunnelKey(host: string): string {
   return host;
 }
 
+/** True only when a tunnel is registered AND its SSH session is still alive.
+ *  Used by ensureMcpTunnelsForHost so a dead-but-present entry triggers a rebuild
+ *  instead of a no-op (the old `.has()` check couldn't tell the difference). */
+function isTunnelLive(host: string): boolean {
+  const entry = persistentMcpTunnels.get(tunnelKey(host));
+  return !!entry && entry.alive;
+}
+
+/** connectSsh for a persistent MCP tunnel, wired so that when the session drops
+ *  — detected promptly via SSH keepalive (see ssh-client.ts) — the host is
+ *  evicted and its forwards torn down, so the next ensureMcpTunnelsForHost
+ *  rebuilds. The identity guard (entry.sshSession === self) stops a late close
+ *  from an OLD session from evicting a freshly-rebuilt entry. */
+async function connectTunnelSsh(host: string, cfg: SshConnectionConfig): Promise<SshSession> {
+  let self: SshSession | null = null;
+  self = await connectSsh(cfg, {
+    timeoutMs: 30_000,
+    onSessionClosed: () => {
+      const entry = persistentMcpTunnels.get(tunnelKey(host));
+      if (entry && entry.sshSession === self) {
+        entry.alive = false;
+        closePersistentMcpTunnelForHost(host);
+      }
+    },
+  });
+  return self;
+}
+
+/** Close + rebuild all MCP tunnels for `host`, deduped: concurrent callers share
+ *  one in-flight build instead of each closing+rebuilding (which leaked sessions).
+ *  Mirrors the inflightDials pattern in ssh-session-cache.ts. */
 async function reconnectPersistentMcpTunnelForHost(host: string): Promise<void> {
+  const key = tunnelKey(host);
+  const existing = inflightTunnelBuilds.get(key);
+  if (existing) return existing;
+  const build = doReconnectPersistentMcpTunnelForHost(host).finally(() => {
+    if (inflightTunnelBuilds.get(key) === build) inflightTunnelBuilds.delete(key);
+  });
+  inflightTunnelBuilds.set(key, build);
+  return build;
+}
+
+async function doReconnectPersistentMcpTunnelForHost(host: string): Promise<void> {
   closePersistentMcpTunnelForHost(host);
 
   const projects = await projectService.getAll();
@@ -1454,7 +1510,7 @@ async function reconnectPersistentMcpTunnelForHost(host: string): Promise<void> 
     console.error(`[mcp] ensureVpsAgent failed for ${host} (genie-tracker may be unavailable): ${(err instanceof Error ? err.message : String(err))}`);
   }
 
-  const sshSession = await connectSsh(targetInstance.connection, { timeoutMs: 30_000 });
+  const sshSession = await connectTunnelSsh(host, targetInstance.connection);
   const mcpTunnel = await setupMcpTunnel(
     sshSession,
     createDomActionExecutor(host),
@@ -1504,6 +1560,7 @@ async function reconnectPersistentMcpTunnelForHost(host: string): Promise<void> 
     projectName: targetProject.name,
     instanceHost: host,
     openedAt: Date.now(),
+    alive: true,
   });
 
   const dest = remoteDir(targetProject.name);
@@ -1547,7 +1604,14 @@ async function reconnectPersistentMcpTunnelForHost(host: string): Promise<void> 
  *  MCP setup is transparent: the in-app chat (routeChatToVpsAgent), the Claude
  *  terminal popup (terminal:ssh:spawn), and the manual button all call it. */
 async function ensureMcpTunnelsForHost(host: string, opts: { force?: boolean } = {}): Promise<void> {
-  if (!opts.force && persistentMcpTunnels.has(tunnelKey(host))) return;
+  // Join any in-flight (re)build first — even a force caller gets a fresh tunnel
+  // from it, and this is what makes concurrent ensure/reconnect calls coalesce.
+  const inflight = inflightTunnelBuilds.get(tunnelKey(host));
+  if (inflight) return inflight;
+  // Warm-case no-op only when the tunnel is actually alive — a dead-but-present
+  // entry (silent drop the keepalive close evicted, or about to) falls through
+  // to a rebuild instead of leaving Claude pointed at dead ports.
+  if (!opts.force && isTunnelLive(host)) return;
   await reconnectPersistentMcpTunnelForHost(host);
 }
 
@@ -1568,8 +1632,8 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
       const dest = remoteDir(project.name);
 
       try {
-        if (persistentMcpTunnels.has(key)) continue;
-        const sshSession = await connectSsh(instance.connection, { timeoutMs: 30_000 });
+        if (isTunnelLive(instance.connection.host)) continue;
+        const sshSession = await connectTunnelSsh(instance.connection.host, instance.connection);
         const mcpTunnel = await setupMcpTunnel(sshSession, createDomActionExecutor(instance.connection.host), { remotePort: MCP_BROWSER_REMOTE_PORT });
 
         // Set up stdio stream tunnel (carries tracker + future MCPs)
@@ -1610,7 +1674,7 @@ async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string)
           console.error(`[mcp-persistent] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
         }
 
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host, openedAt: Date.now() });
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host, openedAt: Date.now(), alive: true });
 
         // Merge MCP servers into .mcp.json on the VPS. Browser headers are set per
         // chat session in routeChatToVpsAgent, not here.
@@ -1673,17 +1737,24 @@ function closePersistentMcpTunnel(tunnel: PersistentMcpTunnel): void {
 }
 
 function closeAllPersistentMcpTunnels(): void {
-  for (const [, tunnel] of persistentMcpTunnels) {
+  // Snapshot + clear BEFORE closing: tunnel.sshSession.close() fires the
+  // connectTunnelSsh onSessionClosed callback synchronously, which looks the host
+  // up in the map — with the map already cleared that re-entry is a safe no-op.
+  const tunnels = [...persistentMcpTunnels.values()];
+  persistentMcpTunnels.clear();
+  for (const tunnel of tunnels) {
     closePersistentMcpTunnel(tunnel);
   }
-  persistentMcpTunnels.clear();
 }
 
 function closePersistentMcpTunnelForHost(host: string): boolean {
   const tunnel = persistentMcpTunnels.get(host);
   if (!tunnel) return false;
-  closePersistentMcpTunnel(tunnel);
+  // Delete BEFORE close so the synchronous onSessionClosed re-entry (sshSession
+  // .close() → conn close → onSessionClosed → this function) finds no entry and
+  // returns immediately instead of recursing.
   persistentMcpTunnels.delete(host);
+  closePersistentMcpTunnel(tunnel);
   return true;
 }
 
@@ -4485,13 +4556,13 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       const key = tunnelKey(host);
       const tunnelSessionId = `manual-${uuidv4()}`;
       registerDomBrokerSession(tunnelSessionId, userId, host, projectId, instanceId);
-      // Already has a tunnel?
-      if (persistentMcpTunnels.has(key)) {
+      // Already has a live tunnel?
+      if (isTunnelLive(host)) {
         send(ws, { type: "mcp:tunnel:result", payload: { projectId, instanceId, ok: true } });
         break;
       }
       try {
-        const sshSession = await connectSsh(vpsInst.connection, { timeoutMs: 30_000 });
+        const sshSession = await connectTunnelSsh(host, vpsInst.connection);
         const mcpTunnel = await setupMcpTunnel(
           sshSession,
           createDomActionExecutor(host),
@@ -4532,7 +4603,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
           console.error(`[mcp-tunnel] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
         }
 
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: host, openedAt: Date.now() });
+        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: host, openedAt: Date.now(), alive: true });
 
         // Merge MCP servers into .mcp.json on the VPS
         const dest = remoteDir(project.name);

@@ -1,10 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { Client } from "ssh2";
 import { sshConnRegister, sshConnUnregister, captureSshOpenerStack } from "./vps/ssh-metrics.js";
-import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./vps/socks-dial.js";
+import { tazSocksProxy } from "./vps/socks-dial.js";
+import { buildConnectOptions, dialSock } from "./vps/ssh-client.js";
 import type { PtySessionKind } from "./pty-session-service.js";
 
 const MAX_SCROLLBACK = 100_000; // chars
@@ -538,17 +537,6 @@ function buildRemoteCommand(sessionId: string, config: SshPtyConfig): string {
   return wrapRemoteShellScript([setGlobal, attachOrNew].join('\n'));
 }
 
-function resolveHome(p: string): string {
-  if (p.startsWith("~/") || p === "~") {
-    return p.replace("~", os.homedir());
-  }
-  const genieIdx = p.indexOf(".genie/ssh/");
-  if (genieIdx > 0) {
-    return path.join(os.homedir(), p.slice(genieIdx));
-  }
-  return p;
-}
-
 // Errors that mean "VM exists but isn't accepting SSH yet" (still booting,
 // IPv6 stack not up, sshd not bound). Retry these for a window — newly-created
 // TazCloud VMs typically need 25–70s post-create before sshd binds.
@@ -641,6 +629,12 @@ export function spawnSshPty(
   let currentCols = cols;
   let currentRows = rows;
   let cancelled = false;
+  // everReady: the shell exec succeeded at least once → a later drop is a
+  // mid-session disconnect (handled by the close path), not an initial-connect
+  // failure (handled by tryConnect's retry/IPv6 logic). settled: we've emitted a
+  // final outcome (exit or disconnect) for this session — emit it exactly once.
+  let everReady = false;
+  let settled = false;
 
   const flushPendingWrites = () => {
     if (!channel) return;
@@ -668,20 +662,6 @@ export function spawnSshPty(
   };
 
   registerSession(id, proc, ownerId);
-
-  let privateKey: Buffer | undefined;
-  try {
-    const keyPath = resolveHome(config.privateKeyPath);
-    privateKey = readFileSync(keyPath);
-  } catch {
-    // fall through — will try agent auth
-  }
-
-  const authConfig = privateKey
-    ? { privateKey }
-    : process.env.SSH_AUTH_SOCK
-      ? { agent: process.env.SSH_AUTH_SOCK }
-      : {};
 
   // Total retry budget for transient errors (VM still booting / sshd not bound).
   // TazCloud's documented post-create SSH-ready window is 25–70s; 90s covers it
@@ -723,21 +703,10 @@ export function spawnSshPty(
     // outside 10.128/16 or with no GENIE_TAZ_SOCKS env dial directly. SOCKS
     // failures are emitted as conn errors so the retry/backoff path handles
     // them with the same UX as a normal transient SSH failure.
-    const dialPromise: Promise<import("node:net").Socket | null> = shouldRouteViaSocks(config.host)
-      ? socksDial(tazSocksProxy()!, config.host, config.port, PER_ATTEMPT_TIMEOUT_MS)
-      : Promise.resolve(null);
-
-    dialPromise
+    dialSock(config, PER_ATTEMPT_TIMEOUT_MS)
       .then((sock) => {
         if (cancelled) { if (sock) try { sock.destroy(); } catch { /* ignore */ } return; }
-        conn.connect({
-          host: config.host,
-          port: config.port,
-          username: config.username,
-          ...authConfig,
-          ...(sock ? { sock } : {}),
-          readyTimeout: PER_ATTEMPT_TIMEOUT_MS,
-        });
+        conn.connect(buildConnectOptions(config, { sock, timeoutMs: PER_ATTEMPT_TIMEOUT_MS }));
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -766,6 +735,7 @@ export function spawnSshPty(
             return;
           }
           channel = stream;
+          everReady = true;
           stream.setWindow(currentRows, currentCols, currentRows * 16, currentCols * 8);
           flushPendingWrites();
           stream.on("data", (data: Buffer) => dataCallback?.(data.toString()));
@@ -785,16 +755,43 @@ export function spawnSshPty(
             }
           });
           stream.on("close", () => {
-            exitCallback?.({ exitCode: remoteExitCode ?? 0 });
+            if (settled) { conn.end(); return; }
+            settled = true;
+            if (cancelled || remoteExitCode !== null) {
+              // User kill or a real remote process exit → close the pane as today.
+              exitCallback?.({ exitCode: remoteExitCode ?? 0 });
+            } else {
+              // Transport dropped with no remote exit code (keepalive timeout,
+              // network loss). For tmux-backed kinds the remote process survives
+              // and can be reattached; plain `claude` cannot. Surface a disconnect
+              // the renderer offers a Reconnect button for, and drop the dead PTY.
+              eventCallback?.({ type: "terminal:disconnected", payload: { id, reattachable: !!config.tmuxSessionName } });
+              sessions.delete(id);
+            }
             conn.end();
           });
         });
       })
       .on("close", () => {
         if (registryId) { sshConnUnregister(registryId); registryId = null; }
+        // Backstop: a post-ready conn close that didn't run the channel-close path
+        // still surfaces a disconnect rather than a silently frozen pane.
+        if (everReady && !settled) {
+          settled = true;
+          if (cancelled) {
+            exitCallback?.({ exitCode: 0 });
+          } else {
+            eventCallback?.({ type: "terminal:disconnected", payload: { id, reattachable: !!config.tmuxSessionName } });
+            sessions.delete(id);
+          }
+        }
       })
       .on("error", (err) => {
         if (cancelled) return;
+        // Once the shell is live, a transport error is a mid-session drop — let the
+        // close path classify it (disconnect vs exit). The initial-connect retry,
+        // IPv6 preflight, and transient handling below apply only pre-ready.
+        if (everReady) return;
         const msg = err.message;
         const elapsed = Date.now() - startedAt;
         const transient = isTransientSshError(msg);

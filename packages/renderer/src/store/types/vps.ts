@@ -240,6 +240,13 @@ export interface TerminalTab {
    *  bottom panel sends `terminal:reattach` instead of a fresh spawn so the
    *  manager reuses the row + tmux session keyed by `id`. */
   reattach?: boolean;
+  /** Set true when the manager reports a mid-session SSH drop
+   *  (`terminal:disconnected`). Drives the inline "Connection lost" notice and
+   *  the Reconnect affordance; cleared on a successful reattach/respawn. */
+  disconnected?: boolean;
+  /** Whether the dropped session is tmux-backed and can be reattached (shell /
+   *  claude-tmux) vs not (plain claude). */
+  reattachable?: boolean;
   /** Which rendering frontend to use in the popup. "xterm" (default) mounts
    *  xterm.js via terminal-bridge; "custom" mounts the in-house VT parser +
    *  React renderer (lib/custom-term/* + components/terminal/custom-terminal.tsx).

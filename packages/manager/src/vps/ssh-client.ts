@@ -286,6 +286,67 @@ function loadPrivateKey(privateKey: SshConnectionConfig["privateKey"], privateKe
   }
 }
 
+/** ssh2 sends a `keepalive@openssh.com` global request every interval; after
+ *  `countMax` consecutive missed replies it emits `error` + `close`. This is the
+ *  OpenSSH ServerAliveInterval/ServerAliveCountMax equivalent and the ONLY thing
+ *  that makes a silently dropped TCP connection (NAT idle timeout, VM sleep,
+ *  network blip) surface as a close event instead of hanging until the OS TCP
+ *  keepalive (~2h) — or never, for an idle tunnel/terminal. Distinct from
+ *  WireGuard's PersistentKeepalive, which keeps the UDP NAT mapping warm a layer
+ *  below and says nothing about SSH liveness. 15s × 3 ≈ 45s to declare dead:
+ *  under typical NAT/LB idle windows (so the probes also keep the path warm),
+ *  faster than the PTY 90s initial-retry budget and the 5-min cache reaper, and
+ *  tolerant of a single dropped probe / GC pause. */
+export const SSH_KEEPALIVE_INTERVAL_MS = 15_000;
+export const SSH_KEEPALIVE_COUNT_MAX = 3;
+
+/** Minimal connection shape shared by SshConnectionConfig and SshPtyConfig —
+ *  enough to dial. Both config types are structurally assignable to this. */
+export interface DialConfig {
+  host: string;
+  port: number;
+  username: string;
+  privateKeyPath: string;
+  privateKey?: string | Buffer;
+}
+
+/** Resolve SOCKS-vs-direct for `config.host` and return the socket to hand ssh2,
+ *  or null to dial directly. Centralizes the Taz/wireproxy routing decision used
+ *  by both connectSsh and spawnSshPty so it can't drift. Throws if the SOCKS dial
+ *  itself fails (caller decides how to surface it). */
+export async function dialSock(
+  config: Pick<DialConfig, "host" | "port">,
+  timeoutMs: number,
+): Promise<import("node:net").Socket | null> {
+  if (!shouldRouteViaSocks(config.host)) return null;
+  return socksDial(tazSocksProxy()!, config.host, config.port, timeoutMs);
+}
+
+/** Single source of truth for ssh2 `.connect()` options shared by connectSsh and
+ *  spawnSshPty: auth fallback (private key → ssh-agent → none), readyTimeout, the
+ *  SOCKS `sock` pass-through, and keepalive. Connection tuning lives here once so
+ *  the (intentionally separate) dial sites stay in lockstep. */
+export function buildConnectOptions(
+  config: DialConfig,
+  opts: { sock?: import("node:net").Socket | null; timeoutMs: number },
+): import("ssh2").ConnectConfig {
+  const privateKey = loadPrivateKey(config.privateKey, config.privateKeyPath);
+  return {
+    host: config.host,
+    port: config.port,
+    username: config.username,
+    ...(privateKey
+      ? { privateKey }
+      : process.env.SSH_AUTH_SOCK
+        ? { agent: process.env.SSH_AUTH_SOCK }
+        : {}),
+    ...(opts.sock ? { sock: opts.sock } : {}),
+    readyTimeout: opts.timeoutMs,
+    keepaliveInterval: SSH_KEEPALIVE_INTERVAL_MS,
+    keepaliveCountMax: SSH_KEEPALIVE_COUNT_MAX,
+  };
+}
+
 export async function connectSsh(
   config: SshConnectionConfig,
   opts?: { timeoutMs?: number; /** Clear cached session slot when this connection closes. */ onSessionClosed?: () => void },
@@ -296,17 +357,14 @@ export async function connectSsh(
   // are reachable only via the userspace WG SOCKS5 proxy spawned at boot
   // (see wireproxy-launcher.ts). Hosts with kernel WG (local dev with the macOS
   // app, a Linux box with wg-quick) leave GENIE_TAZ_SOCKS unset and dial direct.
-  let sock: import("node:net").Socket | undefined;
-  if (shouldRouteViaSocks(config.host)) {
-    const proxy = tazSocksProxy()!;
-    try {
-      sock = await socksDial(proxy, config.host, config.port, timeout);
-    } catch (err) {
-      throw new Error(
-        `SOCKS dial to ${config.host}:${config.port} via ${proxy} failed: ${(err as Error).message}. ` +
-        `Check that wireproxy is running and the WireGuard tunnel is up.`,
-      );
-    }
+  let sock: import("node:net").Socket | null = null;
+  try {
+    sock = await dialSock(config, timeout);
+  } catch (err) {
+    throw new Error(
+      `SOCKS dial to ${config.host}:${config.port} via ${tazSocksProxy()} failed: ${(err as Error).message}. ` +
+      `Check that wireproxy is running and the WireGuard tunnel is up.`,
+    );
   }
 
   // Capture the caller's stack NOW, while we're still on it. By the time
@@ -325,7 +383,6 @@ export async function connectSsh(
   // #endregion
   return new Promise((resolve, reject) => {
     const conn = new Client();
-    const privateKey = loadPrivateKey(config.privateKey, config.privateKeyPath);
 
     let registryId: string | null = null;
     let unregistered = false;
@@ -356,18 +413,7 @@ export async function connectSsh(
         console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));
       })
-      .connect({
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        ...(privateKey
-          ? { privateKey }
-          : process.env.SSH_AUTH_SOCK
-            ? { agent: process.env.SSH_AUTH_SOCK }
-            : {}),
-        ...(sock ? { sock } : {}),
-        readyTimeout: timeout,
-      });
+      .connect(buildConnectOptions(config, { sock, timeoutMs: timeout }));
   });
 }
 

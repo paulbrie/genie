@@ -79,6 +79,21 @@ async function waitForPort(host: string, port: number, totalMs = 5_000): Promise
 
 let child: ChildProcess | null = null;
 let exitHookRegistered = false;
+/** True once the first startup succeeded — only then do unexpected exits trigger
+ *  a respawn. Before that, `startWireproxyIfConfigured` owns failure (fail-fast). */
+let supervising = false;
+/** Set by stopWireproxy() — an intentional stop must never respawn. */
+let shuttingDown = false;
+let restartAttempts = 0;
+let restartTimer: ReturnType<typeof setTimeout> | null = null;
+/** What respawn() needs to relaunch the same process on the same SOCKS port. */
+let lastSpawn: { bin: string; cfgPath: string; socksHost: string; socksPort: number; socksBind: string } | null = null;
+/** Last spawn/exit error, used by both the first-start fail-fast and respawn. */
+const earlyExit: { err: Error | null } = { err: null };
+
+const WIREPROXY_MAX_RESTARTS = 10;
+const WIREPROXY_RESTART_BASE_MS = 1_000;
+const WIREPROXY_RESTART_MAX_MS = 30_000;
 
 /** Sync handler so wireproxy doesn't outlive the manager on uncaught
  *  exceptions (where SIGINT/SIGTERM handlers don't run). Idempotent — only
@@ -92,6 +107,71 @@ function registerExitHook(): void {
       child = null;
     }
   });
+}
+
+/** Spawn the wireproxy child and attach lifecycle listeners. The `exit` handler
+ *  records the error (for the first-start fail-fast) and, once `supervising` is
+ *  on, schedules a respawn — unless we're intentionally shutting down. */
+function spawnWireproxyProcess(s: { bin: string; cfgPath: string }): void {
+  // Reset here (inside a function boundary) rather than at the call sites: an
+  // inline `earlyExit.err = null` before reading `.err` later in the same
+  // function narrows it to `null` under TS control-flow analysis, making the
+  // later `.message` read a `never`.
+  earlyExit.err = null;
+  child = spawn(s.bin, ["-c", s.cfgPath], { stdio: ["ignore", "inherit", "inherit"] });
+  registerExitHook();
+  child.once("exit", (code, signal) => {
+    const msg = `wireproxy exited (code=${code} signal=${signal})`;
+    if (earlyExit.err === null) earlyExit.err = new Error(msg);
+    console.error(`[wireproxy] ${msg}`);
+    child = null;
+    if (supervising && !shuttingDown) scheduleRestart();
+  });
+  child.once("error", (err) => {
+    earlyExit.err = err;
+    console.error(`[wireproxy] failed to spawn: ${err.message}`);
+  });
+}
+
+/** Kill the child without marking an intentional shutdown — used by respawn() to
+ *  reap a child that came up but failed its port re-probe. */
+function stopChildOnly(): void {
+  if (!child) return;
+  try { child.kill("SIGTERM"); } catch { /* ignore */ }
+  child = null;
+}
+
+/** Backoff-schedule a respawn after an unexpected exit. Capped so a hard crash
+ *  loop (e.g. the SOCKS port got stolen) gives up loudly instead of spinning. */
+function scheduleRestart(): void {
+  if (restartTimer) return;
+  if (restartAttempts >= WIREPROXY_MAX_RESTARTS) {
+    console.error(`[wireproxy] giving up after ${restartAttempts} restart attempts — Taz dials will fail until the manager restarts.`);
+    return;
+  }
+  const delay = Math.min(WIREPROXY_RESTART_BASE_MS * 2 ** restartAttempts, WIREPROXY_RESTART_MAX_MS);
+  restartAttempts++;
+  console.warn(`[wireproxy] respawning in ${delay}ms (attempt ${restartAttempts}/${WIREPROXY_MAX_RESTARTS})`);
+  restartTimer = setTimeout(() => { restartTimer = null; void respawn(); }, delay);
+  restartTimer.unref();
+}
+
+/** Relaunch wireproxy on the SAME config + SOCKS port. GENIE_TAZ_SOCKS is left
+ *  untouched (the bind address never changes) so in-flight callers keep routing
+ *  through it the moment the port is back. On a failed re-probe, back off again. */
+async function respawn(): Promise<void> {
+  if (shuttingDown || !lastSpawn) return;
+  spawnWireproxyProcess({ bin: lastSpawn.bin, cfgPath: lastSpawn.cfgPath });
+  const ok = await waitForPort(lastSpawn.socksHost, lastSpawn.socksPort, 5_000);
+  if (shuttingDown) return;
+  if (!ok) {
+    console.error(`[wireproxy] respawn failed to bind ${lastSpawn.socksBind}${earlyExit.err ? `: ${earlyExit.err.message}` : ""}`);
+    stopChildOnly();
+    scheduleRestart();
+    return;
+  }
+  restartAttempts = 0;
+  console.log(`[wireproxy] respawned and healthy on ${lastSpawn.socksBind}.`);
 }
 
 /** Spawn wireproxy as a sidecar when the WG_* env vars are present. On success
@@ -149,29 +229,16 @@ export async function startWireproxyIfConfigured(): Promise<void> {
   const bin = process.env.WIREPROXY_BIN || "wireproxy";
   console.log(`[wireproxy] starting: ${bin} -c ${cfgPath} → SOCKS5 ${socksBind} → ${endpoint}`);
 
-  child = spawn(bin, ["-c", cfgPath], { stdio: ["ignore", "inherit", "inherit"] });
-  registerExitHook();
-
-  // Box around the error so TS keeps the Error type across the async wait —
-  // a bare `let earlyExit: Error | null` gets narrowed to `never` inside
-  // `if (earlyExit)` because TS can't see callbacks mutating closure state.
-  const earlyExit: { err: Error | null } = { err: null };
-  child.once("exit", (code, signal) => {
-    const msg = `wireproxy exited (code=${code} signal=${signal})`;
-    if (earlyExit.err === null) earlyExit.err = new Error(msg);
-    console.error(`[wireproxy] ${msg}`);
-    child = null;
-  });
-  child.once("error", (err) => {
-    earlyExit.err = err;
-    console.error(`[wireproxy] failed to spawn: ${err.message}`);
-  });
+  lastSpawn = { bin, cfgPath, socksHost, socksPort, socksBind };
+  spawnWireproxyProcess({ bin, cfgPath });
 
   // Short race: either the port comes up, or wireproxy died (binary missing,
   // bad config, port collision). 5s is generous — wireproxy starts in <100ms.
   const listening = await waitForPort(socksHost, socksPort, 5_000);
   if (!listening) {
-    stopWireproxy();
+    // First-start failure → fail fast. stopChildOnly (not stopWireproxy) so we
+    // don't latch shuttingDown for what is a startup error, not a shutdown.
+    stopChildOnly();
     if (earlyExit.err) {
       throw new Error(`[wireproxy] ${earlyExit.err.message}. Is the binary at "${bin}" present and the config valid?`);
     }
@@ -179,11 +246,12 @@ export async function startWireproxyIfConfigured(): Promise<void> {
   }
 
   process.env.GENIE_TAZ_SOCKS = socksBind;
+  supervising = true; // from here on, an unexpected exit triggers respawn-with-backoff
   console.log(`[wireproxy] ready — Taz traffic now routes via SOCKS5 ${socksBind}.`);
 }
 
 export function stopWireproxy(): void {
-  if (!child) return;
-  try { child.kill("SIGTERM"); } catch { /* ignore */ }
-  child = null;
+  shuttingDown = true;
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+  stopChildOnly();
 }

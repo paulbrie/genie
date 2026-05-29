@@ -215,6 +215,28 @@ export function reattachPersistedTerminal(record: PersistedTerminalSession): voi
   });
 }
 
+/** Reconnect an in-memory tab the manager flagged as disconnected
+ *  (`terminal:disconnected`). Reuses the same id so the manager reattaches the
+ *  surviving tmux session, via the same unmount→remount dance as
+ *  reattachPersistedTerminal (the render components branch on `tab.reattach` and
+ *  send `terminal:reattach`). */
+export function reconnectTerminalTab(id: string): void {
+  const t = $terminal.getValue();
+  const existing = t.tabs.find((x) => x.id === id);
+  if (!existing) return;
+  const newTab: TerminalTab = { ...existing, reattach: true, disconnected: false };
+  wsSend("terminal:close", { id });
+  disposeTerminal(id);
+  const windowId = WINDOW_PREFIX + id;
+  const filtered = t.tabs.filter((x) => x.id !== id);
+  $terminal.next({ ...t, tabs: filtered, activeTabId: filtered.length > 0 ? filtered[filtered.length - 1].id : null });
+  requestAnimationFrame(() => {
+    const t2 = $terminal.getValue();
+    $terminal.next({ ...t2, tabs: [...t2.tabs, newTab], activeTabId: id, bottomPanelOpen: true });
+    if ($windowManager.getValue().windows[windowId]) openWindow(windowId);
+  });
+}
+
 export function forgetPersistedTerminal(id: string): void {
   wsSend("terminal:forget", { id });
 }

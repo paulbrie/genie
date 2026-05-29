@@ -22,6 +22,26 @@ export const handlers: HandlerMap = {
     }
   },
 
+  // Mid-session SSH drop (distinct from a clean exit). For tmux-backed sessions
+  // (reattachable) the remote process survives on the VM and can be reattached;
+  // plain claude cannot. Surface it inline instead of leaving a frozen pane, and
+  // mark the tab so a Reconnect affordance can render.
+  "terminal:disconnected": (payload) => {
+    if (typeof window === "undefined") return;
+    const { id, reattachable } = payload as { id: string; reattachable?: boolean };
+    const note = reattachable
+      ? "\r\n\x1b[33m⚠ Connection lost. Your session is preserved on the VM — click Reconnect (or reopen from the Sessions tab) to reattach.\x1b[0m\r\n"
+      : "\r\n\x1b[33m⚠ Connection lost — this session can't be restored. Start a new one.\x1b[0m\r\n";
+    if (id) {
+      window.dispatchEvent(new CustomEvent("genie:terminal:data", { detail: { id, data: note } }));
+      const t = $terminal.getValue();
+      $terminal.nextAssign({
+        tabs: t.tabs.map((tab) => tab.id === id ? { ...tab, disconnected: true, reattachable: !!reattachable } : tab),
+      });
+      window.dispatchEvent(new CustomEvent("genie:terminal:disconnected", { detail: { id, reattachable: !!reattachable } }));
+    }
+  },
+
   // Fired by the manager immediately after spawnSshPty for dtach-wrapped
   // sessions. `resumed: true` means a live dtach socket already existed (the
   // user is reconnecting); the popup uses this to show the "↻ Resumed" pill.
