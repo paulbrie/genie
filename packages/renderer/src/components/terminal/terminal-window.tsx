@@ -21,6 +21,7 @@ import { wsSend } from "@/lib/ws";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
+import { CustomTerminal } from "./custom-terminal";
 
 export const WINDOW_PREFIX = "terminal-";
 const DEFAULT_W = 600;
@@ -358,7 +359,7 @@ function SingleTerminalWindow({
             }}
           />
           <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
-            <CustomTerminalView sessionId={tab.id} />
+            <CustomTerminal sessionId={tab.id} />
           </div>
           <div className="flex-1 min-w-0 border-l border-surface0 overflow-hidden">
             <WsLogPanel sessionId={tab.id} />
@@ -391,58 +392,10 @@ function SingleTerminalWindow({
   );
 }
 
-/** Dumbest-possible terminal renderer: appends every byte arriving on
- *  genie:terminal:data into a <pre>, RAF-throttled, ANSI stripped. The
- *  point isn't fidelity — it's to have an independent rendering path that
- *  shares xterm's INPUT but nothing else, so when both panes are visible
- *  side-by-side the user can see which one falls behind. Diagnostic only. */
-function CustomTerminalView({ sessionId }: { sessionId: string }) {
-  const preRef = useRef<HTMLPreElement>(null);
-  const bufferRef = useRef("");
-  const pendingRef = useRef("");
-  const rafRef = useRef<number | null>(null);
+// Note: the original placeholder "dumb-pre" CustomTerminalView was removed
+// when the real custom terminal (CustomTerminal in ./custom-terminal.tsx)
+// took over column 2 of the diagnostic split.
 
-  useEffect(() => {
-    const flush = () => {
-      rafRef.current = null;
-      const pre = preRef.current;
-      if (!pre || pendingRef.current === "") return;
-      bufferRef.current = (bufferRef.current + pendingRef.current).slice(-100_000);
-      pendingRef.current = "";
-      pre.textContent = bufferRef.current;
-      pre.scrollTop = pre.scrollHeight;
-    };
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail.id !== sessionId) return;
-      // Strip CSI / OSC / Fp / Fs sequences so the pane stays readable as
-      // plain text. Crude but enough for "is it painting?" diagnostics.
-      const clean = (detail.data as string)
-        .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-        .replace(/\x1b[()][\x20-\x7e]/g, "");
-      pendingRef.current += clean;
-      if (rafRef.current == null) rafRef.current = requestAnimationFrame(flush);
-    };
-    window.addEventListener("genie:terminal:data", handler);
-    return () => {
-      window.removeEventListener("genie:terminal:data", handler);
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    };
-  }, [sessionId]);
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-overlay0 bg-mantle border-b border-surface0 shrink-0">
-        Custom (plain &lt;pre&gt;)
-      </div>
-      <pre
-        ref={preRef}
-        className="flex-1 m-0 p-1 overflow-auto bg-crust text-text font-mono text-[10px] whitespace-pre-wrap break-all select-text"
-      />
-    </div>
-  );
-}
 
 /** WS-message log scoped to this terminal's session. Subscribes to
  *  genie:terminal:data (the in-process re-broadcast of every terminal:data
