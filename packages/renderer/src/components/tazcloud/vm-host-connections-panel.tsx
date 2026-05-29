@@ -59,7 +59,7 @@ export function useVmHostSshRegistry(host: string) {
     if (!canViewRegistry || !host) return;
     loadSshSessions();
     const tick = window.setInterval(() => {
-      loadSshSessions();
+      loadSshSessions({ silent: true });
       setNow(Date.now());
     }, VM_HOST_SSH_REFRESH_MS);
     return () => window.clearInterval(tick);

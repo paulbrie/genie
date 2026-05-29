@@ -30,7 +30,7 @@ export function SshPanel() {
   useEffect(() => {
     loadSshSessions();
     const tick = window.setInterval(() => {
-      loadSshSessions();
+      loadSshSessions({ silent: true });
       setNow(Date.now());
     }, REFRESH_MS);
     return () => window.clearInterval(tick);

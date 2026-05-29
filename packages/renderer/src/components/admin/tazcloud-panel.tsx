@@ -157,7 +157,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   useEffect(() => {
     if (!canAccess) return;
     loadSshSessions();
-    const id = window.setInterval(loadSshSessions, VM_HOST_SSH_REFRESH_MS);
+    const id = window.setInterval(() => loadSshSessions({ silent: true }), VM_HOST_SSH_REFRESH_MS);
     return () => window.clearInterval(id);
   }, [canAccess]);
 

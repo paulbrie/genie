@@ -310,8 +310,6 @@ chmod 600 ~/.ssh/config`);
     // 8. Standard deploy via the shared pipeline.
     onProgress("Starting deployment...");
     const envVars: Record<string, string> = { ...optsEnvVars };
-    // GIT_TOKEN is no longer auto-injected from settings — apply the
-    // Git Credentials add-on after deploy if private clones are needed.
     await vpsDeploy(projectName, genieConn, onProgress, envVars, setupFiles);
 
     return {

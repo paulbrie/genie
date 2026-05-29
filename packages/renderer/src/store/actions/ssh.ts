@@ -1,8 +1,10 @@
 import { wsSend } from "@/lib/ws";
 import { $ssh } from "../subjects/ssh";
 
-export function loadSshSessions(): void {
-  $ssh.next({ ...$ssh.getValue(), loading: true });
+export function loadSshSessions(opts?: { silent?: boolean }): void {
+  if (!opts?.silent) {
+    $ssh.next({ ...$ssh.getValue(), loading: true });
+  }
   wsSend("ssh:list", {});
 }
 

@@ -291,8 +291,7 @@ export function AdminRecipesPanel({
       }
     }
     // Default rule when no field is marked required: at least one must be
-    // non-empty. Mirrors the previous custom validateSecrets used by
-    // git-credentials ("provide at least one token").
+    // non-empty.
     if (!anyRequired) {
       const anyFilled = recipe.secrets.some((s) => secretValuesDraft[s.name]?.trim());
       if (!anyFilled) {

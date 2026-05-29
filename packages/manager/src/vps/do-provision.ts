@@ -465,8 +465,6 @@ chmod 600 ~/.ssh/config`);
     // 7. Deploy via existing vpsDeploy (as genie user)
     onProgress("Starting deployment...");
     const envVars: Record<string, string> = { ...optsEnvVars };
-    // GIT_TOKEN is no longer auto-injected from settings — apply the
-    // Git Credentials add-on after deploy if private clones are needed.
     await vpsDeploy(projectName, genieConnConfig, onProgress, envVars, setupFiles);
 
     return { dropletId, ipAddress, region, size };
