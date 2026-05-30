@@ -445,9 +445,15 @@ async function ensureVpsAgent(connection: VpsConnectionConfig): Promise<void> {
 
   const uploadSession = await connectSsh(connection, { timeoutMs: 30_000 });
   try {
-    // Create directory structure
+    // Create directory structure. `/usr/lib/node_modules/@genie` is root-owned
+    // (the base recipe creates it with `sudo mkdir` for vps-stats), so the
+    // sibling vps-agent dir has to be created with sudo too. Chown to genie
+    // afterwards so the base64 writes and `npm install` below succeed as the
+    // unprivileged session user.
     const dirs = new Set(filesToUpload.map((f) => path.posix.dirname(f.remotePath)));
-    await uploadSession.exec(`mkdir -p ${[...dirs].join(" ")}`);
+    await uploadSession.exec(
+      `sudo mkdir -p ${[...dirs].join(" ")} && sudo chown -R genie:genie ${VPS_AGENT_REMOTE_BASE}`,
+    );
 
     // Write each file using base64
     for (const file of filesToUpload) {
@@ -1565,6 +1571,24 @@ async function doReconnectPersistentMcpTunnelForHost(host: string): Promise<void
   });
 
   const dest = remoteDir(targetProject.name);
+
+  // Only advertise genie-tracker if the stdio binary actually landed — if
+  // ensureVpsAgent failed above, the port-forward (streamTunnel) is still up
+  // but Claude would try to spawn a missing mcp-cli.js and report the server
+  // as failed. Better to omit it from .mcp.json than to lie.
+  let trackerCliExists = false;
+  if (streamTunnel) {
+    try {
+      const out = await sshSession.exec(
+        `test -e ${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js && echo yes || echo no`,
+      );
+      trackerCliExists = out.trim() === "yes";
+    } catch { /* treat as missing */ }
+    if (!trackerCliExists) {
+      console.warn(`[mcp] genie-tracker omitted from ${host} .mcp.json: ${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js not found`);
+    }
+  }
+
   const mergeScript = [
     `existing=$(cat ${dest}/.mcp.json 2>/dev/null || echo '{"mcpServers":{}}')`,
     `echo "$existing" | node -e "`,
@@ -1575,7 +1599,7 @@ async function doReconnectPersistentMcpTunnelForHost(host: string): Promise<void
     `    const cfg = JSON.parse(input);`,
     `    if (!cfg.mcpServers) cfg.mcpServers = {};`,
     `    cfg.mcpServers['genie-browser'] = { type: 'http', url: 'http://127.0.0.1:${MCP_BROWSER_REMOTE_PORT}/mcp' };`,
-    ...(streamTunnel ? [
+    ...(streamTunnel && trackerCliExists ? [
       `    cfg.mcpServers['genie-tracker'] = { type: 'stdio', command: 'node', args: ['${VPS_AGENT_REMOTE_BASE}/dist/mcp-cli.js', 'tracker'], env: { GENIE_MCP_SOCKET: '${streamTunnel.socketPath}' } };`,
     ] : []),
     ...(securityTunnel ? [
