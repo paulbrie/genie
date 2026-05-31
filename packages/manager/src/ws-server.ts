@@ -129,6 +129,7 @@ import { handleFsMessage } from "./handlers/fs-handler.js";
 import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
 import { handleSecurityMessage, abortAllSecurityScans } from "./handlers/security-handler.js";
 import { handleRecipesMessage } from "./handlers/recipes-handler.js";
+import { handleAgentsMessage } from "./handlers/agents-handler.js";
 import { handleFileTemplateMessage } from "./handlers/file-template-handler.js";
 import { handleProjectFileMessage } from "./handlers/project-file-handler.js";
 import { handleTrackerMessage } from "./handlers/tracker-handler.js";
@@ -2304,6 +2305,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (userId && await handleVpsDbMessage(ws, msg as Parameters<typeof handleVpsDbMessage>[1], send as Parameters<typeof handleVpsDbMessage>[2], userId)) return;
   if (userId && await handleSecurityMessage(ws, msg as Parameters<typeof handleSecurityMessage>[1], send as Parameters<typeof handleSecurityMessage>[2], userId)) return;
   if (userId && await handleRecipesMessage(ws, msg as Parameters<typeof handleRecipesMessage>[1], send as Parameters<typeof handleRecipesMessage>[2], userId, broadcast as Parameters<typeof handleRecipesMessage>[4])) return;
+  if (userId && await handleAgentsMessage(ws, msg as Parameters<typeof handleAgentsMessage>[1], send as Parameters<typeof handleAgentsMessage>[2], userId, broadcast as Parameters<typeof handleAgentsMessage>[4])) return;
   if (userId && await handleFileTemplateMessage(ws, msg as Parameters<typeof handleFileTemplateMessage>[1], send as Parameters<typeof handleFileTemplateMessage>[2], userId)) return;
   if (await handleProjectFileMessage(ws, msg as Parameters<typeof handleProjectFileMessage>[1], send as Parameters<typeof handleProjectFileMessage>[2])) return;
   if (userId && await handleTrackerMessage(ws, msg as Parameters<typeof handleTrackerMessage>[1], send as Parameters<typeof handleTrackerMessage>[2], userId, broadcast as Parameters<typeof handleTrackerMessage>[4], broadcastTrackerList as Parameters<typeof handleTrackerMessage>[5])) return;

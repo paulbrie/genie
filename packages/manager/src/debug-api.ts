@@ -19,7 +19,7 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-async function authorizeDebugAccess(
+export async function authorizeDebugAccess(
   req: http.IncomingMessage,
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   const debugSecret = process.env.GENIE_DEBUG_SECRET?.trim();
