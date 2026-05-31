@@ -1206,6 +1206,14 @@ interface ClientState {
 
 const clients = new Map<WebSocket, ClientState>();
 
+// WS heartbeat liveness, keyed by socket (covers pre-auth sockets too, so it
+// isn't entangled with ClientState lifecycle). true = pong seen since last ping.
+const wsAlive = new WeakMap<WebSocket, boolean>();
+let wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+// 30s ping with terminate-on-missed-pong gives ≤60s to reap a half-open socket —
+// under Railway's ~5min edge idle window, and frequent enough to keep it warm.
+const WS_PING_INTERVAL_MS = 30_000;
+
 async function buildAuthPayload(
   user: { id: string; name: string; email: string; avatarUrl: string | null; role: string },
   token: string,
@@ -2171,6 +2179,16 @@ async function broadcastTrackerList(): Promise<void> {
 
 async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   wsFrameCount++; // count every inbound frame for the messages/sec gauge
+
+  // App-level heartbeat, answered before auth so it works pre-auth and is never
+  // rejected by the ACL gate. Browsers can't send WS-protocol ping frames, so the
+  // client sends a JSON `ping` and watches for this `pong`; if pongs stop arriving
+  // it knows its socket is half-open and reconnects. Cheap and harmless.
+  if (msg.type === "ping") {
+    send(ws, { type: "pong", payload: {} });
+    return;
+  }
+
   // Auth messages are always handled
   if (msg.type.startsWith("auth:")) {
     await handleAuthMessage(ws, msg);
@@ -7986,6 +8004,10 @@ export async function createServer(): Promise<WebSocketServer> {
     clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, selectedProjectId: null, recentActions: [], openWindows: [], ip, userAgent });
     console.log(`Client connected (${clients.size} total)`);
 
+    // Seed heartbeat liveness and mark alive on every pong (see WS_PING_INTERVAL_MS).
+    wsAlive.set(ws, true);
+    ws.on("pong", () => { wsAlive.set(ws, true); });
+
     // Tell client auth is required
     send(ws, { type: "auth:required", payload: {} });
 
@@ -8062,10 +8084,31 @@ export async function createServer(): Promise<WebSocketServer> {
     console.log(`Genie manager WebSocket server listening on port ${PORT}`);
   });
 
+  // WS heartbeat. A browser↔manager socket can go HALF-OPEN — Railway's edge
+  // idle-timeout, laptop sleep, or a network blip during a long "thinking" gap
+  // with no tokens flowing — without ever firing `close`. The chat stream then
+  // freezes mid-answer with no error and the client's onclose-driven reconnect
+  // never triggers. ws-level ping/pong detects it: every PING_INTERVAL we ping
+  // each socket; one that missed the previous round (no pong) is terminated,
+  // which DOES fire `close` → the client reconnects. The ping traffic also keeps
+  // the edge from idling the connection out in the first place.
+  wsHeartbeatTimer = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (wsAlive.get(ws) === false) {
+        try { ws.terminate(); } catch { /* ignore */ }
+        continue;
+      }
+      wsAlive.set(ws, false);
+      try { ws.ping(); } catch { /* ignore */ }
+    }
+  }, WS_PING_INTERVAL_MS);
+  wsHeartbeatTimer.unref();
+
   return wss;
 }
 
 export function shutdown(wss: WebSocketServer): void {
+  if (wsHeartbeatTimer) { clearInterval(wsHeartbeatTimer); wsHeartbeatTimer = null; }
   backupService.stopBackupCron();
   stopMonitoring();
   projectManager.stopEverything();

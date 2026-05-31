@@ -7,6 +7,37 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let managerRunning = false;
 let currentWsUrl = "";
 
+// App-level heartbeat. A socket can go HALF-OPEN (laptop sleep, edge idle-timeout,
+// network blip during a long no-token "thinking" gap) without firing `onclose`,
+// so the chat stream freezes mid-answer and the onclose-driven reconnect never
+// runs. We send a JSON `ping` every HEARTBEAT_MS and expect a `pong`; if none has
+// arrived for HEARTBEAT_TIMEOUT_MS we treat the socket as dead and close it,
+// which triggers onclose → reconnect. (Browsers can't send WS-protocol ping
+// frames, hence app-level.)
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let lastPongAt = 0;
+const HEARTBEAT_MS = 25_000;
+const HEARTBEAT_TIMEOUT_MS = 70_000; // ~3 missed pongs before we give up
+
+function startHeartbeat(): void {
+  stopHeartbeat();
+  lastPongAt = Date.now();
+  heartbeatTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+      // No pong in the window → assume half-open. Close to force onclose+reconnect.
+      console.warn("[ws] heartbeat timeout — closing half-open socket");
+      try { ws.close(); } catch { /* ignore */ }
+      return;
+    }
+    try { ws.send(JSON.stringify({ type: "ping", payload: {} })); } catch { /* ignore */ }
+  }, HEARTBEAT_MS);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+}
+
 // Lazy-loaded to break the circular import: ws.ts ↔ store/handlers/{auth,conversation}.
 // `connectWs()` is only called at component mount, so by then ws.ts has fully initialized.
 let dispatcher: ((msg: { type: string; payload: any }) => void) | null = null;
@@ -100,6 +131,7 @@ export function connectWs(): void {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    startHeartbeat();
 
     // Check for token in URL (from OAuth redirect)
     const params = new URLSearchParams(window.location.search);
@@ -122,6 +154,10 @@ export function connectWs(): void {
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
+
+      // Heartbeat pong — update liveness and swallow (never reaches dispatcher).
+      if (msg.type === "pong") { lastPongAt = Date.now(); return; }
+
       logReceived(msg.type, msg.payload);
 
       // Resolve pending request-response if reqId matches
@@ -140,6 +176,7 @@ export function connectWs(): void {
 
   ws.onclose = () => {
     ws = null;
+    stopHeartbeat();
     $manager.next({ running: false });
     // Drain pending request-response promises so callers (UI panels) see a
     // rejection right away instead of dangling until their per-request timeout
@@ -169,6 +206,7 @@ export function disconnectWs(): void {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  stopHeartbeat();
   ws?.close();
   ws = null;
 }
