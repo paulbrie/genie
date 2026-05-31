@@ -160,8 +160,8 @@ function SingleTerminalWindow({
 
   // Spawn dispatcher shared by both rendering paths. xterm calls it from
   // the FitAddon callback (so cols/rows match the rendered grid); the
-  // custom renderer doesn't have a measured grid yet (phase 1), so it
-  // fires with fixed defaults (100×30) at mount time.
+  // custom renderer fires at its 80×24 initial size and corrects the PTY via
+  // terminal:resize once it has measured the container.
   const spawnWhenReady = useCallback((cols: number, rows: number) => {
     const isRestored = !!(tab.viewerIds && tab.viewerIds.length > 0);
     if (tab.shared || isRestored) return;
@@ -203,13 +203,14 @@ function SingleTerminalWindow({
     }
   }, [tab, useCustomRenderer, spawnWhenReady]);
 
-  // Spawn for the custom renderer path. xterm's onFitted callback already
-  // handles the spawn for the xterm path. Fixed dims for now — phase 2 of
-  // the custom terminal will compute these from container size.
+  // Spawn for the custom renderer path. xterm's onFitted callback handles the
+  // xterm path. The phase-2 grid starts at 80×24 and re-sizes the PTY from the
+  // measured container immediately after mount (terminal:resize), so we spawn
+  // at the grid's initial size to minimise the first-paint reflow.
   useEffect(() => {
     if (!useCustomRenderer || mountedRef.current) return;
     mountedRef.current = true;
-    spawnWhenReady(100, 30);
+    spawnWhenReady(80, 24);
   }, [useCustomRenderer, spawnWhenReady]);
 
   // Focus xterm when output arrives so keystrokes reach Claude without an extra click.
