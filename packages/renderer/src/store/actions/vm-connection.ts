@@ -36,6 +36,8 @@ export type OpenProjectVmArgs = {
   port?: number;
   username: string;
   vmLabel: string;
+  /** Shell command to run once the session is ready (e.g. launch Claude). */
+  initialCommand?: string;
 };
 
 export type OpenDirectVmArgs = {
@@ -78,6 +80,7 @@ export function openProjectVmConnection(args: OpenProjectVmArgs): string {
     instanceId: args.instanceId,
     cols: 80,
     rows: 24,
+    ...(args.initialCommand ? { initialCommand: args.initialCommand } : {}),
   });
   // Subscribe to the VM's live daemon stats — each HTTPS postback the VM sends
   // is fanned out by the manager as `vps:stats:update` and updates the gauges in

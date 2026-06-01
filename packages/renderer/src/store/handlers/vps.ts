@@ -300,6 +300,31 @@ export const handlers: HandlerMap = {
     }
   },
 
+  "vps:reboot:progress": (payload) => {
+    const { instanceId: rpInstId } = payload;
+    if (rpInstId) {
+      ensureInstanceState(rpInstId);
+      const inst = $vpsDeploy.getValue().instances[rpInstId];
+      inst.progress = [...inst.progress, payload.message];
+    }
+  },
+
+  "vps:reboot:done": (payload) => {
+    const { instanceId: rdInstId } = payload;
+    if (rdInstId) {
+      ensureInstanceState(rdInstId);
+      updateInstanceState(rdInstId, { rebooting: false, progress: [], error: null });
+    }
+  },
+
+  "vps:reboot:error": (payload) => {
+    const { instanceId: reInstId } = payload;
+    if (reInstId) {
+      ensureInstanceState(reInstId);
+      updateInstanceState(reInstId, { rebooting: false, error: payload.message });
+    }
+  },
+
   "vps:recipe:check:result": (payload) => {
     const { instanceId: rcInstId, recipeId: rcId, installed: rcInstalled } = payload;
     if (rcInstId && rcId) {

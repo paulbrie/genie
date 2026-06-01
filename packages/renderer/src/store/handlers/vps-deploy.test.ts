@@ -20,7 +20,7 @@ function makeActiveDeploy(instOverrides = {}, deployOverrides = {}) {
   $vpsDeploy.next({
     instances: {
       [INST]: {
-        deploying: true, tearingDown: false, hibernating: false, wakingUp: false,
+        deploying: true, tearingDown: false, hibernating: false, wakingUp: false, rebooting: false,
         progress: [], error: null, logs: null,
         startedAt: Date.now() - 1000, endedAt: null,
         stats: null, statsError: null, deployLogs: [],

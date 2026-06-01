@@ -258,7 +258,16 @@ function SyncStatsAgentButton({ projectId, instanceId }: { projectId: string; in
   const [syncState] = useSubject($vpsStatsSync);
   const status = syncState[`${projectId}:${instanceId}`];
   const running = status?.running ?? false;
-  const label = running ? "Syncing…" : status?.error ? "Sync failed" : "Sync stats agent";
+  const errored = !running && !!status?.error;
+  const succeeded = !running && !errored && !!status; // a finished run with no error
+
+  const label = running
+    ? (status?.message || "Syncing…")
+    : errored
+      ? "Sync failed"
+      : succeeded
+        ? "Stats agent synced"
+        : "Sync stats agent";
 
   return (
     <button
@@ -266,21 +275,29 @@ function SyncStatsAgentButton({ projectId, instanceId }: { projectId: string; in
       onClick={() => syncVmStatsAgent(projectId, instanceId)}
       disabled={running}
       className={cn(
-        "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-40 disabled:cursor-wait",
-        status?.error
+        "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-60 disabled:cursor-wait",
+        errored
           ? "border-red/30 text-red hover:bg-red/10"
-          : "border-overlay0/30 text-overlay1 hover:bg-surface0",
+          : succeeded
+            ? "border-green/30 text-green hover:bg-green/10"
+            : "border-overlay0/30 text-overlay1 hover:bg-surface0",
       )}
       title={
         running
-          ? "Uploading stats daemon + writing postback config…"
-          : status?.error
-            ? `Last sync failed: ${status.error}`
-            : "Push the latest stats daemon + postback config (manager URL + token) to this VM and restart it"
+          ? (status?.message || "Uploading stats daemon + writing postback config…")
+          : errored
+            ? `Last sync failed: ${status?.error}`
+            : succeeded
+              ? "Stats agent synced — click to re-sync"
+              : "Push the latest stats daemon + postback config (manager URL + token) to this VM and restart it"
       }
     >
       {running ? (
         <Loader2 size={11} className="animate-spin shrink-0" />
+      ) : errored ? (
+        <Activity size={11} className="shrink-0" />
+      ) : succeeded ? (
+        <Check size={11} className="shrink-0" />
       ) : (
         <Activity size={11} className="shrink-0" />
       )}
@@ -310,6 +327,7 @@ function ClaudeManageButton({
       port: 22,
       username: sshUser,
       vmLabel: `Claude · ${vm.name}`,
+      initialCommand: "cd /opt/project && claude --dangerously-skip-permissions",
     });
   };
   const reason = enabled ? undefined : "Attach this VM to a project to enable Claude/SSH terminals";

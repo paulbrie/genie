@@ -125,6 +125,7 @@ export async function startSshSession(
   rows: number,
   tmuxIntent: TmuxShellIntent | null = null,
   tmuxSessionName: string | null = null,
+  initialCommand: string | null = null,
 ): Promise<void> {
   closeSshSession(terminalId);
 
@@ -177,6 +178,9 @@ export async function startSshSession(
       });
       if (tmuxIntent && tmuxSessionName) {
         scheduleSessionCommand(terminalId, session, resolveTmuxShellCommand(tmuxIntent, tmuxSessionName));
+      } else if (initialCommand) {
+        // e.g. the Claude button: `cd /opt/project && claude --dangerously-skip-permissions`
+        scheduleSessionCommand(terminalId, session, initialCommand);
       }
     },
     onError: (message) => {

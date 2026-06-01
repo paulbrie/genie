@@ -201,9 +201,11 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         </div>
       )}
 
-      {/* Terminal pane */}
-      <div className="flex-1 min-h-0 relative">
-        <div ref={terminalRef} className="absolute inset-0" />
+      {/* Terminal pane — pad the xterm off the edges; back it with the terminal
+          background (#1e1e2e) so the inset reads as part of the terminal. The
+          FitAddon measures the padded content box, so cols/rows stay correct. */}
+      <div className="flex-1 min-h-0 relative" style={{ background: "#1e1e2e" }}>
+        <div ref={terminalRef} className="absolute inset-0 px-2.5 py-2" />
       </div>
     </div>
   );

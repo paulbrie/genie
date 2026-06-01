@@ -132,6 +132,7 @@ export interface VpsInstanceState {
   tearingDown: boolean;
   hibernating: boolean;
   wakingUp: boolean;
+  rebooting: boolean;
   progress: string[];
   error: string | null;
   logs: { serviceName: string | null; logs: string } | null;

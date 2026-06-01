@@ -13,7 +13,8 @@ import type { VpsConnectionConfig, VpsInstanceState } from "../types/vps";
 // --- VPS deploy actions ---
 
 export const DEFAULT_INSTANCE_STATE: VpsInstanceState = {
-  deploying: false, tearingDown: false, hibernating: false, wakingUp: false, progress: [], error: null, logs: null,
+  deploying: false, tearingDown: false, hibernating: false, wakingUp: false, rebooting: false,
+  progress: [], error: null, logs: null,
   startedAt: null, endedAt: null, stats: null, statsError: null, deployLogs: [],
   recipes: {},
 };
@@ -111,6 +112,18 @@ export function wakeVps(projectId: string, instanceId: string): void {
     inst.error = null;
   });
   wsSend("vps:wake", { projectId, instanceId });
+}
+
+/** Soft-reboot a DigitalOcean droplet (DO power-cycle, no SSH). */
+export function rebootVps(projectId: string, instanceId: string): void {
+  ensureInstanceState(instanceId);
+  batch(() => {
+    const inst = $vpsDeploy.getValue().instances[instanceId];
+    inst.rebooting = true;
+    inst.progress = [];
+    inst.error = null;
+  });
+  wsSend("vps:reboot", { projectId, instanceId });
 }
 
 export function disconnectVps(projectId: string, instanceId: string): void {

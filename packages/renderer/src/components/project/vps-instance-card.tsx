@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, AlertTriangle, ArrowUpDown, ChevronDown, CloudOff, Database, ExternalLink,
-  FileText, History, Loader2, MessageSquare, Moon, Play, Search, Server, Shield,
+  FileText, History, Loader2, MessageSquare, Moon, Play, RotateCw, Search, Server, Shield,
   Skull, Sun, TerminalSquare, Trash2,
 } from "lucide-react";
 import type {
@@ -12,7 +12,7 @@ import type {
 import { $vpsDeploy } from "@/store/subjects";
 import {
   addSshTerminalTab, checkVpsStatus, deployToProvider, disconnectVps, fetchVpsLogs, launchClaudeTmuxSshTab,
-  fetchVpsStats, hibernateVps, killVpsProcess, loadDeployLogs, startMcpTunnel, unwatchVpsStats, watchVpsStats,
+  fetchVpsStats, hibernateVps, killVpsProcess, loadDeployLogs, rebootVps, startMcpTunnel, unwatchVpsStats, watchVpsStats,
   teardownVps, vpsExec, wakeVps,
 } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -394,6 +394,7 @@ export function VpsInstanceCard({
 }) {
   const [confirmTeardown, setConfirmTeardown] = useState(false);
   const [confirmHibernate, setConfirmHibernate] = useState(false);
+  const [confirmReboot, setConfirmReboot] = useState(false);
   const [viewingLogs, setViewingLogs] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [activeTab, setActiveTab] = useState<InstanceTab>("main");
@@ -401,6 +402,9 @@ export function VpsInstanceCard({
   const isHibernated = !!instance.hibernate;
   const hibernating = instanceState?.hibernating ?? false;
   const wakingUp = instanceState?.wakingUp ?? false;
+  const rebooting = instanceState?.rebooting ?? false;
+  const rebootProgress = instanceState?.progress ?? [];
+  const rebootError = instanceState?.error ?? null;
 
   const stats = instanceState?.stats ?? null;
   const statsError = instanceState?.statsError ?? null;
@@ -596,8 +600,44 @@ export function VpsInstanceCard({
           {showHistory && <DeployHistoryPanel logs={instanceState?.deployLogs ?? []} onClose={() => setShowHistory(false)} />}
           {viewingLogs && <VpsLogViewer projectId={project.id} instanceId={instance.id} logs={instanceState?.logs ?? null} onClose={() => setViewingLogs(false)} />}
 
+          {/* Restart — DO soft reboot. Disabled while other actions are running so
+              we don't fire conflicting droplet operations. */}
+          {instance.digitalocean && !tearingDown && !hibernating && !wakingUp && (
+            <div className="border border-peach/20 rounded-lg px-3 py-2">
+              {rebooting ? (
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Loader2 size={14} className="text-peach animate-spin" />
+                    <span className="text-md font-medium text-peach">Restarting droplet…</span>
+                  </div>
+                  {rebootProgress.length > 0 && (
+                    <div className="max-h-[120px] overflow-y-auto scrollbar-thin bg-crust rounded-lg p-2 mt-2">
+                      {rebootProgress.map((line, i) => (
+                        <div key={i} className="text-md text-overlay1 font-mono whitespace-pre-wrap">{line}</div>
+                      ))}
+                    </div>
+                  )}
+                  {rebootError && <div className="text-md text-red mt-1">{rebootError}</div>}
+                </div>
+              ) : !confirmReboot ? (
+                <button onClick={() => setConfirmReboot(true)} className="flex items-center gap-1.5 text-md text-peach/70 hover:text-peach transition-colors">
+                  <RotateCw size={12} /> Restart
+                  <span className="text-overlay0 font-normal ml-1">— soft reboot via DigitalOcean</span>
+                </button>
+              ) : (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <RotateCw size={12} className="text-peach shrink-0" />
+                  <span className="text-md text-peach">Reboot the droplet now? Open SSH sessions will drop.</span>
+                  <Button size="sm" onClick={() => { rebootVps(project.id, instance.id); setConfirmReboot(false); }}>Confirm</Button>
+                  <Button size="sm" onClick={() => setConfirmReboot(false)}>Cancel</Button>
+                </div>
+              )}
+              {!rebooting && rebootError && <div className="text-md text-red mt-1">{rebootError}</div>}
+            </div>
+          )}
+
           {/* Hibernate */}
-          {instance.digitalocean && !tearingDown && (
+          {instance.digitalocean && !tearingDown && !rebooting && (
             <div className="border border-blue/20 rounded-lg px-3 py-2">
               {!confirmHibernate ? (
                 <button onClick={() => setConfirmHibernate(true)} className="flex items-center gap-1.5 text-md text-blue/70 hover:text-blue transition-colors">

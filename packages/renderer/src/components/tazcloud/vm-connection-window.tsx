@@ -38,6 +38,7 @@ export function openVmConnectionWindow(args: {
   port?: number;
   username: string;
   vmLabel: string;
+  initialCommand?: string;
 }): void {
   const key = openProjectVmConnection(args);
   const wid = VM_CONN_WINDOW_PREFIX + key;

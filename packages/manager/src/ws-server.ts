@@ -4517,6 +4517,59 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
+    case "vps:reboot": {
+      // Soft reboot of a DigitalOcean droplet — `dropletAction(id, "reboot")`
+      // triggers an OS-level shutdown + start. Pure DO action, no SSH involved.
+      // Poll the resulting action until it reports completed/errored so the UI
+      // can flip the "rebooting" flag back off and reload stats.
+      const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
+      const rProject = await projectService.getById(projectId);
+      const rInst = rProject?.vpsInstances.find((v) => v.id === instanceId);
+      if (!rInst?.digitalocean) {
+        send(ws, { type: "vps:reboot:error", payload: { projectId, instanceId, message: "Not a DigitalOcean droplet" } });
+        break;
+      }
+      const rToken = await settingsService.resolveDoToken(projectId);
+      if (!rToken) {
+        send(ws, { type: "vps:reboot:error", payload: { projectId, instanceId, message: "No DO token configured" } });
+        break;
+      }
+      void (async () => {
+        const progress = (m: string) =>
+          send(ws, { type: "vps:reboot:progress", payload: { projectId, instanceId, message: m } });
+        try {
+          const client = createDoClient(rToken);
+          const dropletId = rInst.digitalocean!.dropletId;
+          progress("Issuing reboot to DigitalOcean…");
+          const action = await client.dropletAction(dropletId, "reboot");
+
+          // Poll for completion — droplet reboots typically settle inside 60s.
+          const maxWait = 3 * 60_000;
+          const interval = 4_000;
+          const start = Date.now();
+          let completed = false;
+          while (Date.now() - start < maxWait) {
+            await new Promise((r) => setTimeout(r, interval));
+            const status = await client.getAction(action.id);
+            const elapsed = Math.round((Date.now() - start) / 1000);
+            progress(`Reboot in progress… (${elapsed}s)`);
+            if (status.status === "completed") { completed = true; break; }
+            if (status.status === "errored") throw new Error("Reboot action errored at DigitalOcean");
+          }
+          if (!completed) throw new Error("Reboot timed out after 3 minutes");
+
+          progress("Droplet rebooted.");
+          send(ws, { type: "vps:reboot:done", payload: { projectId, instanceId } });
+        } catch (err: unknown) {
+          send(ws, {
+            type: "vps:reboot:error",
+            payload: { projectId, instanceId, message: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      })();
+      break;
+    }
+
     case "vps:wake": {
       const { projectId, instanceId } = msg.payload;
       const wProject = await projectService.getById(projectId);
@@ -7164,12 +7217,12 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
     case "terminal:start": {
       const { terminalId, projectId, instanceId, host, port, username, privateKeyPath,
-        cols, rows, tmuxIntent, tmuxSessionName } = msg.payload as {
+        cols, rows, tmuxIntent, tmuxSessionName, initialCommand } = msg.payload as {
         terminalId?: string;
         projectId?: string; instanceId?: string;
         host?: string; port?: number; username?: string; privateKeyPath?: string;
         cols?: number; rows?: number;
-        tmuxIntent?: TmuxShellIntent; tmuxSessionName?: string;
+        tmuxIntent?: TmuxShellIntent; tmuxSessionName?: string; initialCommand?: string;
       };
       if (!terminalId) {
         send(ws, { type: "terminal:error", payload: { terminalId: null, message: "terminalId is required" } });
@@ -7187,7 +7240,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         }
         const intent = tmuxIntent === "attach" || tmuxIntent === "new" ? tmuxIntent : null;
         await startSshSession(ws, startParams, terminalId,
-          cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null);
+          cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null, initialCommand ?? null);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to start SSH session";
         send(ws, { type: "terminal:error", payload: { terminalId, message } });
@@ -7496,6 +7549,12 @@ export async function createServer(): Promise<WebSocketServer> {
           return;
         }
         const ts = typeof body.ts === "number" && Number.isFinite(body.ts) ? body.ts : Date.now();
+        // for now: one Logs-panel line per VM stats postback (via log-capture).
+        const ip = req.socket.remoteAddress ?? "?";
+        console.log(
+          `[stats] postback from ${ip} · ${owner.projectId}:${owner.instanceId} ` +
+            `cpu=${body.stats.cpuPercent.toFixed(0)}% mem=${body.stats.memPercent.toFixed(0)}% disk=${body.stats.diskPercent.toFixed(0)}%`,
+        );
         ingestVpsStats(owner.projectId, owner.instanceId, ts, body.stats, send);
         sendJson(200, { ok: true });
       } catch (err: unknown) {

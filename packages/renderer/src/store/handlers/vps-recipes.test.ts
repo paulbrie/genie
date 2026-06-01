@@ -13,7 +13,7 @@ function makeInstanceWithRecipe(overrides = {}) {
   $vpsDeploy.next({
     instances: {
       [INST]: {
-        deploying: false, tearingDown: false, hibernating: false, wakingUp: false,
+        deploying: false, tearingDown: false, hibernating: false, wakingUp: false, rebooting: false,
         progress: [], error: null, logs: null,
         startedAt: null, endedAt: null, stats: null, statsError: null, deployLogs: [],
         recipes: {

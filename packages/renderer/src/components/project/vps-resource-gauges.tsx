@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { RefreshCw, ExternalLink, Copy, Check, Globe, Loader2 } from "lucide-react";
+import { ExternalLink, Copy, Check, Globe, Loader2 } from "lucide-react";
 import type { VpsStats } from "@/store/types/vps";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -244,6 +244,8 @@ export interface VpsResourceBarProps {
   stats?: VpsResourceBarStats | null;
   statsLoading?: boolean;
   statsError?: string | null;
+  /** @deprecated Stats are live-pushed now; the manual refresh button was removed.
+   *  Kept for call-site compatibility — both are ignored. */
   onRefresh?: () => void;
   refreshLoading?: boolean;
   className?: string;
@@ -259,8 +261,6 @@ export function VpsResourceBar({
   stats,
   statsLoading = false,
   statsError,
-  onRefresh,
-  refreshLoading = false,
   className,
 }: VpsResourceBarProps) {
   const isPrivateHost = isPrivateHostProp ?? isPrivateHostAddress(host);
@@ -364,20 +364,6 @@ export function VpsResourceBar({
                 }
               />
             </>
-          )}
-          {onRefresh && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRefresh();
-              }}
-              disabled={refreshLoading}
-              className="text-overlay0 hover:text-blue transition-colors disabled:opacity-50 self-center ml-1"
-              title="Refresh"
-            >
-              <RefreshCw size={11} className={cn(refreshLoading && "animate-spin")} />
-            </button>
           )}
         </div>
       </div>
