@@ -16,6 +16,7 @@ import {
   executeTazRemoveIngress,
   executeTazGetCapabilities,
 } from "./tazcloud.js";
+import { executeDoAttachDomain, executeDoRemoveDomain } from "./do-domains.js";
 import * as projectService from "../project-service.js";
 import * as docsService from "../docs-service.js";
 import * as recipesService from "../recipes-service.js";
@@ -241,6 +242,24 @@ export const tools = {
       vmId: z.string().describe("The TazCloud VM id"),
     }),
     execute: async ({ vmId }) => executeTazRemoveIngress(vmId),
+  }),
+  do_attach_domain: tool({
+    description:
+      "Attach a custom subdomain with automatic HTTPS to a DigitalOcean droplet. Creates an A record at Namecheap (the FQDN must be a subdomain of the Namecheap-managed domain configured in Settings) pointing at the droplet's public IP, opens ports 80/443, and installs Caddy on the VM to reverse-proxy to the app and auto-issue a Let's Encrypt certificate. HTTPS goes live once DNS propagates (usually a few minutes). The droplet's app must listen on app_port (default 3000). Requires DigitalOcean + Namecheap credentials configured on the manager, and the manager's public IP whitelisted in Namecheap's API access settings.",
+    inputSchema: z.object({
+      dropletId: z.number().describe("The DigitalOcean droplet id"),
+      fqdn: z.string().describe("The full subdomain to attach, e.g. 'app.example.com'. Must be a subdomain of the Namecheap-managed domain."),
+      app_port: z.number().optional().describe("Port the app listens on inside the VM. Default: 3000. Range: 1–65535."),
+    }),
+    execute: async ({ dropletId, fqdn, app_port }) => executeDoAttachDomain({ dropletId, fqdn, appPort: app_port }),
+  }),
+  do_remove_domain: tool({
+    description:
+      "Remove the custom domain + HTTPS from a DigitalOcean droplet: deletes the A record at Namecheap and removes the Caddy site config on the VM. Does not delete the droplet.",
+    inputSchema: z.object({
+      dropletId: z.number().describe("The DigitalOcean droplet id"),
+    }),
+    execute: async ({ dropletId }) => executeDoRemoveDomain({ dropletId }),
   }),
 
   // --- Recipes (Add-ons authoring) ---

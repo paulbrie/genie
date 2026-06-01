@@ -214,3 +214,46 @@ export function handleTerminalInject(ws: WebSocket, terminalId: string, command:
   scheduleSessionCommand(terminalId, session, command, 0);
   scheduleTrafficEmit(terminalId, ws);
 }
+
+const SAFE_EXT = /^[a-z0-9]{1,8}$/i;
+
+function randomId(): string {
+  return `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+}
+
+/** Take a base64-encoded image from the browser clipboard, write it to a temp
+ *  file on the VM via SFTP, then type the file path into the live PTY so the
+ *  process the user is interacting with (Claude Code) reads it from its prompt.
+ *  Returns the remote path so the renderer can surface it / show a toast. */
+export async function handleTerminalPasteImage(
+  ws: WebSocket,
+  terminalId: string,
+  dataB64: string,
+  ext: string,
+): Promise<{ ok: true; remotePath: string } | { ok: false; error: string }> {
+  const session = getSshSession(terminalId);
+  if (!session) return { ok: false, error: "no_session" };
+
+  if (!SAFE_EXT.test(ext)) ext = "png";
+
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(dataB64, "base64");
+  } catch {
+    return { ok: false, error: "invalid_base64" };
+  }
+  if (bytes.length === 0) return { ok: false, error: "empty_image" };
+
+  const remotePath = `/tmp/genie-paste-${randomId()}.${ext.toLowerCase()}`;
+  try {
+    await session.writeRemoteFile(remotePath, bytes);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "sftp_write_failed" };
+  }
+
+  // Type the path (plus a trailing space) into the live PTY. Claude Code reads
+  // file paths from its prompt and auto-attaches them when sent.
+  session.write(`${remotePath} `);
+  scheduleTrafficEmit(terminalId, ws);
+  return { ok: true, remotePath };
+}

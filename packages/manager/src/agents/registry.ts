@@ -1,10 +1,23 @@
-// CRUD for the `agents` table. Mirrors the shape of recipes-service.ts so the
-// renderer's admin UI can reuse the same patterns (list, get, upsert, delete).
+// CRUD for the `agents` table with per-user ACL.
 //
-// Validation lives here, not in the WS handler — so a CLI script (the v0 smoke
-// test) and the eventual UI both go through the same gate.
+// Visibility model (private-by-default):
+//   - Built-in agents (is_builtin=true) are visible to every authenticated user.
+//   - User-created agents are visible only to their owner.
+//   - Admins are *not* given a blanket override here — there is no
+//     "everyone's agents" view in the UI today. If a future admin tool needs
+//     it, add a separate `listAllAgents()` that bypasses ACL.
+//
+// Mutation model:
+//   - Anyone can create their own agent (owner = the caller).
+//   - Only the owner can update / delete their agent.
+//   - Built-ins are read-only (admin editing comes later, when there's a UI
+//     for it).
+//
+// `userId === null` means "system context" (boot-time seeds, the smoke-test
+// script, future cron triggers) and bypasses ACL. The WS handler never passes
+// null — it always sources userId from the authenticated session.
 
-import { eq } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { agents } from "../db/schema.js";
 import type { AgentDef, AgentSandboxConfig } from "./types.js";
@@ -37,22 +50,51 @@ function rowToAgent(row: typeof agents.$inferSelect): AgentDef {
   };
 }
 
-export async function listAgents(): Promise<AgentDef[]> {
+/** `null` userId = system context — bypasses ACL, sees everything. */
+export async function listAgents(userId: string | null): Promise<AgentDef[]> {
   const db = getDb();
-  const rows = await db.select().from(agents).orderBy(agents.label);
+  const rows = userId === null
+    ? await db.select().from(agents).orderBy(agents.label)
+    : await db.select().from(agents)
+        .where(or(eq(agents.ownerUserId, userId), eq(agents.isBuiltin, true)))
+        .orderBy(agents.label);
   return rows.map(rowToAgent);
 }
 
-export async function getAgentById(id: string): Promise<AgentDef | null> {
+/** Returns null when the row doesn't exist or the user can't see it. */
+export async function getAgentById(
+  id: string,
+  userId: string | null,
+): Promise<AgentDef | null> {
   const db = getDb();
   const [row] = await db.select().from(agents).where(eq(agents.id, id)).limit(1);
-  return row ? rowToAgent(row) : null;
+  if (!row) return null;
+  if (!canSee(row, userId)) return null;
+  return rowToAgent(row);
 }
 
-export async function getAgentBySlug(slug: string): Promise<AgentDef | null> {
+export async function getAgentBySlug(
+  slug: string,
+  userId: string | null,
+): Promise<AgentDef | null> {
   const db = getDb();
   const [row] = await db.select().from(agents).where(eq(agents.slug, slug)).limit(1);
-  return row ? rowToAgent(row) : null;
+  if (!row) return null;
+  if (!canSee(row, userId)) return null;
+  return rowToAgent(row);
+}
+
+function canSee(row: typeof agents.$inferSelect, userId: string | null): boolean {
+  if (userId === null) return true;
+  if (row.isBuiltin) return true;
+  return row.ownerUserId === userId;
+}
+
+function canWrite(row: typeof agents.$inferSelect, userId: string | null): boolean {
+  if (userId === null) return true;
+  // Built-ins are read-only to everyone until there's an admin edit UI.
+  if (row.isBuiltin) return false;
+  return row.ownerUserId === userId;
 }
 
 function validate(input: AgentInput): void {
@@ -68,9 +110,18 @@ function validate(input: AgentInput): void {
   }
 }
 
-export async function createAgent(input: AgentInput, userId: string | null): Promise<AgentDef> {
+export async function createAgent(
+  input: AgentInput,
+  userId: string | null,
+): Promise<AgentDef> {
   validate(input);
   const db = getDb();
+  // Slug is globally unique so we surface conflicts up-front with a clean
+  // error rather than the raw PG unique-violation.
+  const [existing] = await db.select({ id: agents.id })
+    .from(agents).where(eq(agents.slug, input.slug.trim())).limit(1);
+  if (existing) throw new Error(`Agent slug '${input.slug}' is already taken`);
+
   const [row] = await db.insert(agents).values({
     slug: input.slug.trim(),
     label: input.label.trim(),
@@ -86,8 +137,17 @@ export async function createAgent(input: AgentInput, userId: string | null): Pro
   return rowToAgent(row);
 }
 
-export async function updateAgent(id: string, input: Partial<AgentInput>): Promise<AgentDef | null> {
+export async function updateAgent(
+  id: string,
+  input: Partial<AgentInput>,
+  userId: string | null,
+): Promise<AgentDef | null> {
   const db = getDb();
+  const [existing] = await db.select().from(agents).where(eq(agents.id, id)).limit(1);
+  if (!existing) return null;
+  if (!canWrite(existing, userId)) {
+    throw new Error("Not authorized to modify this agent");
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const patch: Record<string, any> = { updatedAt: new Date() };
   if (input.slug !== undefined) patch.slug = input.slug.trim();
@@ -102,19 +162,30 @@ export async function updateAgent(id: string, input: Partial<AgentInput>): Promi
   return row ? rowToAgent(row) : null;
 }
 
-export async function deleteAgent(id: string): Promise<void> {
+export async function deleteAgent(id: string, userId: string | null): Promise<void> {
   const db = getDb();
+  const [existing] = await db.select().from(agents).where(eq(agents.id, id)).limit(1);
+  if (!existing) return;
+  if (!canWrite(existing, userId)) {
+    throw new Error("Not authorized to delete this agent");
+  }
   await db.delete(agents).where(eq(agents.id, id));
 }
 
-/** Convenience for the v0 smoke-test script: upsert by slug, returning the row. */
+/** Convenience: upsert by slug, scoped to the caller's ownership. Used by the
+ *  v0 smoke-test script (userId=null = system) and could later back a CLI
+ *  flow. Won't clobber a built-in or someone else's agent. */
 export async function upsertAgentBySlug(
   input: AgentInput,
   userId: string | null,
 ): Promise<AgentDef> {
-  const existing = await getAgentBySlug(input.slug);
+  const db = getDb();
+  const [existing] = await db.select().from(agents).where(eq(agents.slug, input.slug)).limit(1);
   if (existing) {
-    const updated = await updateAgent(existing.id, input);
+    if (!canWrite(existing, userId)) {
+      throw new Error(`Agent slug '${input.slug}' is taken by another user or is built-in`);
+    }
+    const updated = await updateAgent(existing.id, input, userId);
     if (!updated) throw new Error(`Agent ${input.slug} disappeared mid-upsert`);
     return updated;
   }

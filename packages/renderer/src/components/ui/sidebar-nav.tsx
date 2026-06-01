@@ -1,7 +1,7 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, ChefHat, HelpCircle, Boxes, Clock, Cloud } from "lucide-react";
+import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, ChefHat, HelpCircle, Boxes, Clock, Cloud, Bot } from "lucide-react";
 import type { DockerInfo, NavKey } from "@/store/types";
 import { $activeNav, $auth, $docker, $presenceSessions } from "@/store/subjects";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,7 @@ import { adminBarNavKeysForRole } from "@/components/ui/superadmin-top-bar";
 
 const baseNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = [
   { key: "projects", label: "Projects", icon: FolderKanban },
+  { key: "agents", label: "Agents", icon: Bot },
   { key: "processes", label: "Processes", icon: Activity },
 
   { key: "docker", label: "Docker", icon: Container },
@@ -39,7 +40,7 @@ export function SidebarNav() {
   const isTazcloud = role === "tazcloud";
   const adminBarKeys = adminBarNavKeysForRole(role);
 
-  const standardUserKeys = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings"]);
+  const standardUserKeys = new Set<NavKey>(["projects", "agents", "tracker", "chat", "history", "settings"]);
   const items = isAdmin
     ? baseNavItems.filter((item) => !adminBarKeys.has(item.key))
     : isTazcloud

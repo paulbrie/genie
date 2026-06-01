@@ -97,4 +97,17 @@ export const handlers: HandlerMap = {
       }
     });
   },
+
+  // Result of `terminal:paste-image`. Surfaced as a DOM CustomEvent so the
+  // VM-connection popup can flash a short status line without coupling the
+  // store handlers to component refs.
+  "terminal:paste-image:result": (payload) => {
+    const { terminalId, ok, remotePath, error } = payload as {
+      terminalId: string | null; ok: boolean; remotePath?: string; error?: string;
+    };
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent("genie:terminal:paste-image:result", {
+      detail: { terminalId, ok, remotePath, error },
+    }));
+  },
 };

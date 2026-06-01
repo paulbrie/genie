@@ -6,3 +6,4 @@ export * from "./admin";
 export * from "./tracker";
 export * from "./docs";
 export * from "./recipes";
+export * from "./agents";

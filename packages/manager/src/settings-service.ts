@@ -167,6 +167,33 @@ export async function getGlobalRailwayProjectId(): Promise<string> {
   return (await getGlobalSetting<string>("railwayProjectId")) || process.env.RAILWAY_PROJECT_ID || "";
 }
 
+// --- Namecheap DNS (used to attach custom subdomains + auto-TLS to DO VMs) ---
+//
+// The ClientIp passed to Namecheap is the manager's MANAGER_PUBLIC_IP, which
+// must also be whitelisted in the Namecheap account's API access settings.
+
+export async function getGlobalNamecheapApiUser(): Promise<string> {
+  return (await getGlobalSetting<string>("namecheapApiUser")) || process.env.NAMECHEAP_API_USER || "";
+}
+
+export async function getGlobalNamecheapApiKey(): Promise<string> {
+  return (await getGlobalSetting<string>("namecheapApiKey")) || process.env.NAMECHEAP_API_KEY || "";
+}
+
+export async function getGlobalNamecheapUserName(): Promise<string> {
+  // Namecheap's UserName is usually the same as ApiUser; fall back to it.
+  return (
+    (await getGlobalSetting<string>("namecheapUserName")) ||
+    (await getGlobalSetting<string>("namecheapApiUser")) ||
+    process.env.NAMECHEAP_USERNAME ||
+    ""
+  );
+}
+
+export async function getGlobalNamecheapDomain(): Promise<string> {
+  return (await getGlobalSetting<string>("namecheapDomain")) || process.env.NAMECHEAP_DOMAIN || "";
+}
+
 // --- Base image configs ---
 
 export async function getAllBaseImageConfigs(): Promise<Record<string, BaseImageConfig>> {
@@ -356,6 +383,10 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
       gitlabDeployKey: "",
       railwayToken: "",
       railwayProjectId: "",
+      namecheapApiUser: "",
+      namecheapApiKey: "",
+      namecheapUserName: "",
+      namecheapDomain: "",
     };
   }
 
@@ -370,6 +401,10 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
     gitlabDeployKey: globalGitlabDeployKey || "",
     railwayToken: railwayToken || "",
     railwayProjectId: railwayProjectId || "",
+    namecheapApiUser: (await getGlobalNamecheapApiUser()) || "",
+    namecheapApiKey: (await getGlobalNamecheapApiKey()) || "",
+    namecheapUserName: (await getGlobalNamecheapUserName()) || "",
+    namecheapDomain: (await getGlobalNamecheapDomain()) || "",
   };
 }
 
@@ -379,7 +414,10 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
 // Non-admin attempts to set global fields are silently dropped — the renderer
 // gates this in the UI, but the server enforces it too so a hand-rolled WS
 // message can't sneak admin-only writes.
-const GLOBAL_FIELDS = new Set(["digitaloceanApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId"]);
+const GLOBAL_FIELDS = new Set([
+  "digitaloceanApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId",
+  "namecheapApiUser", "namecheapApiKey", "namecheapUserName", "namecheapDomain",
+]);
 
 export async function saveRoutedSettings(userId: string, fields: Record<string, unknown>, role?: SettingsRole): Promise<void> {
   const db = getDb();

@@ -179,6 +179,32 @@ export function resizeAdminDroplet(dropletId: number, size: string, disk: boolea
   wsSend("admin:droplets:resize", { dropletId, size, disk });
 }
 
+// --- Droplet custom-domain actions ---
+//
+// Attaches a custom subdomain + automatic HTTPS to a DO droplet: the manager
+// creates an A record at Namecheap (fqdn → droplet IP) and installs Caddy on
+// the VM (auto Let's Encrypt). Server streams `admin:droplets:domain:progress`
+// and finishes with `…:attached` / `…:detached` / `…:error`.
+
+export function attachAdminDropletDomain(dropletId: number, fqdn: string, appPort?: number): void {
+  batch(() => {
+    const v = $admin.getValue();
+    v.dropletDomainBusy[dropletId] = true;
+    v.dropletDomainError = null;
+    v.dropletDomainProgress[dropletId] = [];
+  });
+  wsSend("admin:droplets:domain:attach", { dropletId, fqdn, appPort });
+}
+
+export function detachAdminDropletDomain(dropletId: number): void {
+  batch(() => {
+    const v = $admin.getValue();
+    v.dropletDomainBusy[dropletId] = true;
+    v.dropletDomainError = null;
+  });
+  wsSend("admin:droplets:domain:detach", { dropletId });
+}
+
 // --- TazCloud actions ---
 
 /** SSH-probe every ACTIVE TazCloud VM for runtime port info. Mirrors the

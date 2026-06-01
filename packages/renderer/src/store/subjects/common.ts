@@ -32,6 +32,6 @@ export const $fileExplorer = new Subject<FileExplorerState>({
   history: [], historyIndex: -1, selectedEntry: null, renamingEntry: null, panelWidth: 380,
 });
 export const $logs = new Subject<LogsState>({ activeSource: "manager", sources: ["manager"], buffers: {} });
-export const $settings = new Subject<AppSettings>({ defaultEditor: "", digitaloceanApiToken: "", gitlabDeployKey: "", railwayToken: "", railwayProjectId: "" });
+export const $settings = new Subject<AppSettings>({ defaultEditor: "", digitaloceanApiToken: "", gitlabDeployKey: "", railwayToken: "", railwayProjectId: "", namecheapApiUser: "", namecheapApiKey: "", namecheapUserName: "", namecheapDomain: "" });
 export const $windowManager = new Subject<WindowManagerState>({ windows: {}, nextZIndex: 10000 });
 export const $presenceSessions = new Subject<PresenceSession[]>([]);

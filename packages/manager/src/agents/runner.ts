@@ -11,12 +11,12 @@
 // One call per run. The same agent can be run concurrently; each run gets its
 // own container (containerName encodes the run id).
 
-import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { agentRuns } from "../db/schema.js";
 import { getAgentById } from "./registry.js";
 import { projectDockerBackend } from "./sandbox/project-docker.js";
+import * as projectService from "../project-service.js";
 import type { SandboxBackend, SandboxHandle } from "./sandbox/index.js";
 import type { AgentRunEvent, AgentSandboxConfig } from "./types.js";
 
@@ -56,8 +56,19 @@ export async function runAgent(
   input: AgentRunInput,
   onEvent: (ev: AgentRunEvent) => void,
 ): Promise<AgentRunResult> {
-  const agent = await getAgentById(input.agentId);
+  // `triggeredByUserId === null` means a system caller (smoke-test script,
+  // future cron triggers). The registry treats null as ACL-bypass.
+  const userId = input.triggeredByUserId ?? null;
+  const agent = await getAgentById(input.agentId, userId);
   if (!agent) throw new Error(`Agent ${input.agentId} not found`);
+  // Project ACL gate: even though the registry already filtered the agent
+  // list by ownership, a project-docker agent runs SSH into a specific
+  // project's VPS — so the runner refuses if the caller can't see that
+  // project. System callers (userId=null) skip this check.
+  if (userId !== null && agent.sandbox.kind === "project-docker") {
+    const ok = await projectService.userCanSeeProject(userId, agent.sandbox.projectId);
+    if (!ok) throw new Error("Not authorized for this project");
+  }
 
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   if (!anthropicApiKey) throw new Error("ANTHROPIC_API_KEY is not set");

@@ -149,6 +149,7 @@ export const handlers: HandlerMap = {
         for (const slot of Object.values(conns)) {
           if (slot.projectId !== projectId || slot.instanceId !== statsInstId) continue;
           slot.stats = { cpu: stats.cpuPercent, mem: stats.memPercent, disk: stats.diskPercent };
+          if (typeof stats.sshSessions === "number") slot.sshSessions = stats.sshSessions;
           slot.statsError = null;
           slot.lastStatsAt = now;
         }

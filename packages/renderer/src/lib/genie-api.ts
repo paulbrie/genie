@@ -32,6 +32,10 @@ export interface AppSettings {
   gitlabDeployKey: string;
   railwayToken: string;
   railwayProjectId: string;
+  namecheapApiUser: string;
+  namecheapApiKey: string;
+  namecheapUserName: string;
+  namecheapDomain: string;
 }
 
 export const genie = {
@@ -59,6 +63,10 @@ export const genie = {
       gitlabDeployKey: "",
       railwayToken: "",
       railwayProjectId: "",
+      namecheapApiUser: "",
+      namecheapApiKey: "",
+      namecheapUserName: "",
+      namecheapDomain: "",
       ...rest,
     })),
   saveSettings: (settings: AppSettings): Promise<FsResult> =>

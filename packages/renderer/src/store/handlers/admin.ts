@@ -143,6 +143,9 @@ export const handlers: HandlerMap = {
           projectId: pm?.projectId || null,
           projectName: pm?.projectName || null,
           locked: d.locked === true,
+          domain: d.domain
+            ? { fqdn: d.domain.fqdn, url: d.domain.url, appPort: d.domain.appPort }
+            : undefined,
         } as AdminDroplet;
       });
       batch(() => { v.droplets = running; v.dropletsError = null; v.dropletsLoading = false; });
@@ -452,6 +455,43 @@ export const handlers: HandlerMap = {
       const t = $admin.getValue().tazcloud;
       t.projectCreating = false;
       t.projectError = payload.message ?? "Project operation failed";
+    });
+  },
+
+  "admin:droplets:domain:progress": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.dropletId;
+    if (id === undefined || id === null) return;
+    const arr = v.dropletDomainProgress[id] || [];
+    arr.push(payload.chunk);
+    v.dropletDomainProgress[id] = arr.slice(-50);
+  },
+
+  "admin:droplets:domain:attached": (payload) => {
+    const v = $admin.getValue();
+    batch(() => {
+      delete v.dropletDomainBusy[payload.dropletId];
+      v.dropletDomainError = null;
+      const d = v.droplets.find((x) => x.id === payload.dropletId);
+      if (d) d.domain = { fqdn: payload.domain, url: payload.url, status: payload.status };
+    });
+  },
+
+  "admin:droplets:domain:detached": (payload) => {
+    const v = $admin.getValue();
+    batch(() => {
+      delete v.dropletDomainBusy[payload.dropletId];
+      v.dropletDomainError = null;
+      const d = v.droplets.find((x) => x.id === payload.dropletId);
+      if (d) d.domain = undefined;
+    });
+  },
+
+  "admin:droplets:domain:error": (payload) => {
+    const v = $admin.getValue();
+    batch(() => {
+      if (payload.dropletId !== undefined && payload.dropletId !== null) delete v.dropletDomainBusy[payload.dropletId];
+      v.dropletDomainError = payload.message ?? "Domain operation failed";
     });
   },
 

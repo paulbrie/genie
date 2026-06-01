@@ -8,6 +8,7 @@ import { type WebSocket } from "ws";
 import type { WsMessage as WsMessageBase } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh, type SftpWriteHandle, type SshSession } from "../vps/ssh-client.js";
+import { execCached } from "../vps/ssh-session-cache.js";
 import * as projectService from "../project-service.js";
 
 export interface WsMessage extends Omit<WsMessageBase, "payload"> {
@@ -59,20 +60,22 @@ export async function handleFsMessage(
       const { projectId, instanceId, path: dirPath, reqId } = msg.payload;
       try {
         const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn);
-        try {
-          const escaped = dirPath.replace(/'/g, "'\\''");
-          const out = await session.exec(`find '${escaped}' -maxdepth 1 -not -path '${escaped}' -printf '%T@ %s %y %f\\n' 2>/dev/null | sort -k4`);
-          const entries = out.trim().split("\n").filter(Boolean).map((line: string) => {
-            const parts = line.split(" ");
-            const modifiedMs = parseFloat(parts[0]) * 1000;
-            const size = parseInt(parts[1]) || 0;
-            const isDir = parts[2] === "d";
-            const name = parts.slice(3).join(" ");
-            return { name, path: dirPath.replace(/\/$/, "") + "/" + name, isDirectory: isDir, size, modifiedMs };
-          });
-          send(ws, { type: "vps:fs:result", payload: { ok: true, entries, reqId } });
-        } finally { session.close(); }
+        const escaped = dirPath.replace(/'/g, "'\\''");
+        const out = await execCached(
+          conn,
+          `find '${escaped}' -maxdepth 1 -not -path '${escaped}' -printf '%T@ %s %y %f\\n' 2>/dev/null | sort -k4`,
+          undefined,
+          { timeoutMs: 20_000 },
+        );
+        const entries = out.trim().split("\n").filter(Boolean).map((line: string) => {
+          const parts = line.split(" ");
+          const modifiedMs = parseFloat(parts[0]) * 1000;
+          const size = parseInt(parts[1]) || 0;
+          const isDir = parts[2] === "d";
+          const name = parts.slice(3).join(" ");
+          return { name, path: dirPath.replace(/\/$/, "") + "/" + name, isDirectory: isDir, size, modifiedMs };
+        });
+        send(ws, { type: "vps:fs:result", payload: { ok: true, entries, reqId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
@@ -83,20 +86,17 @@ export async function handleFsMessage(
       const { projectId, instanceId, path: filePath, reqId } = msg.payload;
       try {
         const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn);
-        try {
-          const escaped = filePath.replace(/'/g, "'\\''");
-          // Check size first
-          const sizeOut = await session.exec(`stat -c '%s' '${escaped}' 2>/dev/null || echo 0`);
-          const fileSize = parseInt(sizeOut.trim()) || 0;
-          if (fileSize > 1_000_000) {
-            send(ws, { type: "vps:fs:result", payload: { ok: true, content: null, binary: false, tooLarge: true, reqId } });
-          } else {
-            const content = await session.exec(`cat '${escaped}'`);
-            const isBinary = /[\x00-\x08\x0E-\x1F]/.test(content.slice(0, 1000));
-            send(ws, { type: "vps:fs:result", payload: { ok: true, content: isBinary ? null : content, binary: isBinary, reqId } });
-          }
-        } finally { session.close(); }
+        const escaped = filePath.replace(/'/g, "'\\''");
+        // Check size first
+        const sizeOut = await execCached(conn, `stat -c '%s' '${escaped}' 2>/dev/null || echo 0`, undefined, { timeoutMs: 20_000 });
+        const fileSize = parseInt(sizeOut.trim()) || 0;
+        if (fileSize > 1_000_000) {
+          send(ws, { type: "vps:fs:result", payload: { ok: true, content: null, binary: false, tooLarge: true, reqId } });
+        } else {
+          const content = await execCached(conn, `cat '${escaped}'`, undefined, { timeoutMs: 30_000 });
+          const isBinary = /[\x00-\x08\x0E-\x1F]/.test(content.slice(0, 1000));
+          send(ws, { type: "vps:fs:result", payload: { ok: true, content: isBinary ? null : content, binary: isBinary, reqId } });
+        }
       } catch (err: unknown) {
         send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
@@ -107,14 +107,10 @@ export async function handleFsMessage(
       const { projectId, instanceId, path: filePath, content, reqId } = msg.payload;
       try {
         const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn);
-        try {
-          const escaped = filePath.replace(/'/g, "'\\''");
-          // Use heredoc to write content
-          const b64 = Buffer.from(content as string).toString("base64");
-          await session.exec(`echo '${b64}' | base64 -d > '${escaped}'`);
-          send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
-        } finally { session.close(); }
+        const escaped = filePath.replace(/'/g, "'\\''");
+        const b64 = Buffer.from(content as string).toString("base64");
+        await execCached(conn, `echo '${b64}' | base64 -d > '${escaped}'`, undefined, { timeoutMs: 30_000 });
+        send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
@@ -179,13 +175,10 @@ export async function handleFsMessage(
       const { projectId, instanceId, oldPath, newPath, reqId } = msg.payload;
       try {
         const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn);
-        try {
-          const escapedOld = (oldPath as string).replace(/'/g, "'\\''");
-          const escapedNew = (newPath as string).replace(/'/g, "'\\''");
-          await session.exec(`mv '${escapedOld}' '${escapedNew}'`);
-          send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
-        } finally { session.close(); }
+        const escapedOld = (oldPath as string).replace(/'/g, "'\\''");
+        const escapedNew = (newPath as string).replace(/'/g, "'\\''");
+        await execCached(conn, `mv '${escapedOld}' '${escapedNew}'`, undefined, { timeoutMs: 20_000 });
+        send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
@@ -196,15 +189,11 @@ export async function handleFsMessage(
       const { projectId, instanceId, path: dlPath, reqId } = msg.payload;
       try {
         const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn);
-        try {
-          const escaped = (dlPath as string).replace(/'/g, "'\\''");
-          const name = (dlPath as string).split("/").pop() || "download";
-          const parentDir = (dlPath as string).replace(/\/[^/]+$/, "") || "/";
-          const escapedParent = parentDir.replace(/'/g, "'\\''");
-          const data = await session.exec(`tar -czf - -C '${escapedParent}' '${name}' 2>/dev/null | base64`);
-          send(ws, { type: "vps:fs:result", payload: { ok: true, data: data.replace(/\s/g, ""), fileName: `${name}.tar.gz`, reqId } });
-        } finally { session.close(); }
+        const name = (dlPath as string).split("/").pop() || "download";
+        const parentDir = (dlPath as string).replace(/\/[^/]+$/, "") || "/";
+        const escapedParent = parentDir.replace(/'/g, "'\\''");
+        const data = await execCached(conn, `tar -czf - -C '${escapedParent}' '${name}' 2>/dev/null | base64`, undefined, { timeoutMs: 60_000 });
+        send(ws, { type: "vps:fs:result", payload: { ok: true, data: data.replace(/\s/g, ""), fileName: `${name}.tar.gz`, reqId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
@@ -215,12 +204,9 @@ export async function handleFsMessage(
       const { projectId, instanceId, path: delPath, reqId } = msg.payload;
       try {
         const conn = await getVpsConnection(projectId, instanceId);
-        const session = await connectSsh(conn);
-        try {
-          const escaped = (delPath as string).replace(/'/g, "'\\''");
-          await session.exec(`rm -rf '${escaped}'`);
-          send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
-        } finally { session.close(); }
+        const escaped = (delPath as string).replace(/'/g, "'\\''");
+        await execCached(conn, `rm -rf '${escaped}'`, undefined, { timeoutMs: 20_000 });
+        send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
       } catch (err: unknown) {
         send(ws, { type: "vps:fs:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }

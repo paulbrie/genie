@@ -31,6 +31,13 @@ export interface DoDropletInfo {
   ipAddress: string;
   region: string;
   size: string;
+  /** Custom subdomain attached on demand via Namecheap DNS + Caddy auto-TLS.
+   *  Absent until a domain is attached (see vps/do-domain.ts). */
+  domain?: string;
+  /** Public HTTPS URL (https://<domain>) once a domain is attached. */
+  domainUrl?: string;
+  /** App port Caddy reverse-proxies to on the VM (default 3000). */
+  appPort?: number;
 }
 
 export interface TazVmInfo {

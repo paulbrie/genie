@@ -11,6 +11,10 @@ export async function loadSettings(): Promise<void> {
     gitlabDeployKey: result.gitlabDeployKey || "",
     railwayToken: result.railwayToken || "",
     railwayProjectId: result.railwayProjectId || "",
+    namecheapApiUser: result.namecheapApiUser || "",
+    namecheapApiKey: result.namecheapApiKey || "",
+    namecheapUserName: result.namecheapUserName || "",
+    namecheapDomain: result.namecheapDomain || "",
   });
 }
 

@@ -21,6 +21,7 @@ import { TrackerPanel } from "@/components/project/tracker-panel";
 import { AdminPanel } from "@/components/admin/admin-panel";
 import { CloudsPanel } from "@/components/project/clouds-panel";
 import { RecipesPanel } from "@/components/project/recipes-panel";
+import { AgentsPanel } from "@/components/agents/agents-panel";
 import { ArchitecturePanel } from "@/components/project/architecture-panel";
 import { TopologyGraph3D } from "@/components/project/topology-graph-3d";
 import { ConnectedUsersPanel } from "@/components/chat/connected-users-panel";
@@ -243,6 +244,10 @@ function MainPanel({ activeTab, settingsTab, settingsOrgId }: { activeTab?: Proj
 
   if (activeNav === "ssh") {
     return <SshPanel />;
+  }
+
+  if (activeNav === "agents") {
+    return <AgentsPanel />;
   }
 
   // Default: projects

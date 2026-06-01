@@ -172,6 +172,39 @@ export class SshShellSession {
     this.stream?.setWindow(rows, cols, 0, 0);
   }
 
+  /** Write a Buffer to a remote path over SFTP on the same ssh2 client (no
+   *  second dial). Used for paste-image: ship the clipboard bytes to a temp
+   *  file the live PTY can reference. */
+  writeRemoteFile(remotePath: string, data: Buffer): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.closed) {
+        reject(new Error("SSH session closed"));
+        return;
+      }
+      this.conn.sftp((sftpErr, sftp) => {
+        if (sftpErr) return reject(sftpErr);
+        sftp.open(remotePath, "w", (openErr, handle) => {
+          if (openErr) {
+            try { sftp.end(); } catch { /* ignore */ }
+            return reject(openErr);
+          }
+          sftp.write(handle, data, 0, data.length, 0, (writeErr) => {
+            if (writeErr) {
+              try { sftp.close(handle, () => sftp.end()); } catch { /* ignore */ }
+              return reject(writeErr);
+            }
+            sftp.close(handle, (closeErr) => {
+              try { sftp.end(); } catch { /* ignore */ }
+              if (closeErr) return reject(closeErr);
+              this.trackIn(data);
+              resolve();
+            });
+          });
+        });
+      });
+    });
+  }
+
   exec(command: string): Promise<string> {
     return new Promise((resolve, reject) => {
       if (this.closed) {

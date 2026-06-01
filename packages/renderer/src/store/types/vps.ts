@@ -317,6 +317,8 @@ export interface VmConnectionState {
   bytesOut: number;
   stats: { cpu: number; mem: number; disk: number } | null;
   statsError: string | null;
+  /** Interactive SSH login sessions on the VM (`who` count from the daemon). */
+  sshSessions: number | null;
   tmuxSessions: VmTmuxSession[];
   lastStatsAt: number | null;
   openedAt: number;

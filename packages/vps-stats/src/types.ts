@@ -19,6 +19,8 @@ export interface VpsStatsPayload {
   processes: VpsProcessInfo[];
   openPorts: number[];
   externalPorts: number[];
+  /** Interactive SSH login sessions on the VM (`who` count). */
+  sshSessions: number;
 }
 
 export interface StatsOutboundMessage {

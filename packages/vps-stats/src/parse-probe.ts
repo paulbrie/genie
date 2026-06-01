@@ -106,5 +106,6 @@ export function parseProbeOutput(output: string): VpsStatsPayload {
     processes,
     openPorts: [...allPortSet].sort((a, b) => a - b),
     externalPorts: [...externalPortSet].sort((a, b) => a - b),
+    sshSessions: 0, // not captured by the one-shot probe
   };
 }

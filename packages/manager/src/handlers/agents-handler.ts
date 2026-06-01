@@ -23,7 +23,7 @@ export async function handleAgentsMessage(
   switch (msg.type) {
     case "agents:list": {
       try {
-        const rows = await agentRegistry.listAgents();
+        const rows = await agentRegistry.listAgents(userId);
         send(ws, { type: "agents:list", payload: { agents: rows } });
       } catch (err: unknown) {
         send(ws, { type: "agents:list", payload: { agents: [], error: errMsg(err) } });
@@ -35,9 +35,9 @@ export async function handleAgentsMessage(
       try {
         const { id, slug } = msg.payload;
         const row = id
-          ? await agentRegistry.getAgentById(id)
+          ? await agentRegistry.getAgentById(id, userId)
           : slug
-            ? await agentRegistry.getAgentBySlug(slug)
+            ? await agentRegistry.getAgentBySlug(slug, userId)
             : null;
         send(ws, { type: "agents:get", payload: { agent: row } });
       } catch (err: unknown) {
@@ -54,7 +54,10 @@ export async function handleAgentsMessage(
           userId,
         );
         send(ws, { type: "agents:upserted", payload: { agent: row } });
-        broadcast({ type: "agents:list:stale", payload: {} });
+        // Targeted ping: only this client's list need refresh (agents are
+        // private). Other clients owned by the same user are out of luck
+        // until they reload — fine for v0.
+        send(ws, { type: "agents:list:stale", payload: {} });
       } catch (err: unknown) {
         send(ws, { type: "agents:error", payload: { message: errMsg(err) } });
       }
@@ -64,9 +67,9 @@ export async function handleAgentsMessage(
     case "agents:delete": {
       try {
         const { id } = msg.payload;
-        await agentRegistry.deleteAgent(id);
+        await agentRegistry.deleteAgent(id, userId);
         send(ws, { type: "agents:deleted", payload: { id } });
-        broadcast({ type: "agents:list:stale", payload: {} });
+        send(ws, { type: "agents:list:stale", payload: {} });
       } catch (err: unknown) {
         send(ws, { type: "agents:error", payload: { message: errMsg(err) } });
       }

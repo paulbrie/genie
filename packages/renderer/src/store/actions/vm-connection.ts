@@ -69,6 +69,7 @@ export function openProjectVmConnection(args: OpenProjectVmArgs): string {
       bytesOut: 0,
       stats: null,
       statsError: null,
+      sshSessions: null,
       tmuxSessions: [],
       lastStatsAt: null,
       openedAt: Date.now(),
@@ -111,6 +112,7 @@ export function openDirectVmConnection(args: OpenDirectVmArgs): string {
       bytesOut: 0,
       stats: null,
       statsError: null,
+      sshSessions: null,
       tmuxSessions: [],
       lastStatsAt: null,
       openedAt: Date.now(),
@@ -140,6 +142,32 @@ export function injectVmCommand(key: string, command: string): void {
   const c = $vmConnections.getValue().connections[key];
   if (!c) return;
   wsSend("terminal:inject", { terminalId: c.terminalId, command });
+}
+
+/** Ship a clipboard image to the live PTY. Manager writes the bytes via SFTP
+ *  to a temp file on the VM and types the path into the shell so Claude Code
+ *  reads it from its prompt. */
+export async function pasteVmImage(key: string, file: Blob, suggestedExt?: string): Promise<void> {
+  const c = $vmConnections.getValue().connections[key];
+  if (!c) return;
+  const buf = new Uint8Array(await file.arrayBuffer());
+  // Tight base64 — manual loop is faster than chunked btoa via FileReader for
+  // typical screenshots (≤ a few MB).
+  let bin = "";
+  for (let i = 0; i < buf.byteLength; i++) bin += String.fromCharCode(buf[i]);
+  const dataB64 = btoa(bin);
+  const ext = (suggestedExt || extFromMime(file.type) || "png").toLowerCase();
+  wsSend("terminal:paste-image", { terminalId: c.terminalId, dataB64, ext });
+}
+
+function extFromMime(mime: string): string | null {
+  if (!mime) return null;
+  const m = /^image\/([a-z0-9.+-]+)$/i.exec(mime);
+  if (!m) return null;
+  const sub = m[1].toLowerCase();
+  if (sub === "jpeg") return "jpg";
+  if (sub === "svg+xml") return "svg";
+  return sub.replace(/\W+/g, "");
 }
 
 export function closeVmConnection(key: string): void {

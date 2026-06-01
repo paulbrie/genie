@@ -124,6 +124,19 @@ async function readProcessesAndPorts(): Promise<{
   };
 }
 
+/** Count interactive SSH login sessions via `who` (one line per pty login).
+ *  Counts only login shells — the manager's non-pty exec/tunnel SSH channels
+ *  don't create utmp entries, so this reflects open terminals, not every
+ *  established :22 socket. */
+async function readSshSessions(): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync("who", [], { maxBuffer: 64 * 1024 });
+    return stdout.split("\n").filter((l) => l.trim()).length;
+  } catch {
+    return 0;
+  }
+}
+
 export interface CollectStatsOptions {
   /** Previous /proc/stat sample for CPU delta (omit on first tick). */
   prevCpu?: { total: number; idle: number } | null;
@@ -151,6 +164,7 @@ export async function collectStats(opts: CollectStatsOptions = {}): Promise<{
   const { memUsedBytes, memTotalBytes, memPercent } = readMemory();
   const { diskUsedBytes, diskTotalBytes, diskPercent } = await readDisk();
   const { processes, openPorts, externalPorts } = await readProcessesAndPorts();
+  const sshSessions = await readSshSessions();
 
   return {
     stats: {
@@ -164,6 +178,7 @@ export async function collectStats(opts: CollectStatsOptions = {}): Promise<{
       processes,
       openPorts,
       externalPorts,
+      sshSessions,
     },
     cpuSample,
   };

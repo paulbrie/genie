@@ -5,11 +5,11 @@
  * One open connection per (project, instance); status pills, traffic counter,
  * resource gauges, tmux session row, terminal pane.
  */
-import { useEffect, useRef } from "react";
-import { Check, Loader2, RefreshCw, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, Image as ImageIcon, Loader2, RefreshCw, X } from "lucide-react";
 
 import { $vmConnections } from "@/store/subjects";
-import { closeVmConnection, injectVmCommand, refreshVmStats } from "@/store/actions";
+import { closeVmConnection, injectVmCommand, pasteVmImage, refreshVmStats } from "@/store/actions";
 import type { VmConnectionState, VmTmuxSession } from "@/store/types/vps";
 import { createTerminal, disposeTerminal, hasTerminal, reattachTerminal } from "@/lib/terminal-bridge";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -105,6 +105,7 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
   const state = useDeepSubjectAll($vmConnections);
   const conn = state.connections[connectionKey];
   const terminalRef = useRef<HTMLDivElement | null>(null);
+  const [pasteNotice, setPasteNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
   // Create or reattach the xterm into our terminal pane DIV whenever this
   // popup is rendered. createTerminal is idempotent against a missing
@@ -122,6 +123,57 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
       // popup-close button calls closeVmConnection which disposes the term.
     };
   }, [conn?.terminalId]);
+
+  // Clipboard-image paste → ship to VM → manager types the path into the PTY
+  // so Claude Code (or any process at the prompt) reads it. Bound to the
+  // popup's terminal container in capture phase so we run BEFORE xterm's
+  // default paste handler (which would dump junk bytes for non-text items).
+  useEffect(() => {
+    if (!conn || !terminalRef.current) return;
+    const container = terminalRef.current;
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind !== "file" || !it.type.startsWith("image/")) continue;
+        const blob = it.getAsFile();
+        if (!blob) continue;
+        e.preventDefault();
+        e.stopPropagation();
+        setPasteNotice({ kind: "ok", text: "Uploading image…" });
+        void pasteVmImage(connectionKey, blob).catch((err) => {
+          setPasteNotice({ kind: "error", text: err instanceof Error ? err.message : "Paste failed" });
+        });
+        return;
+      }
+    };
+    container.addEventListener("paste", onPaste, true);
+    return () => container.removeEventListener("paste", onPaste, true);
+  }, [connectionKey, conn?.terminalId]);
+
+  // Listen for the manager's paste-image result so we can flash a short status
+  // line under the header. Auto-clears after 3s.
+  useEffect(() => {
+    if (!conn) return;
+    const onResult = (e: Event) => {
+      const detail = (e as CustomEvent<{ terminalId: string | null; ok: boolean; remotePath?: string; error?: string }>).detail;
+      if (detail.terminalId !== conn.terminalId) return;
+      setPasteNotice(
+        detail.ok
+          ? { kind: "ok", text: `Image attached: ${detail.remotePath}` }
+          : { kind: "error", text: detail.error || "Paste failed" },
+      );
+    };
+    window.addEventListener("genie:terminal:paste-image:result", onResult);
+    return () => window.removeEventListener("genie:terminal:paste-image:result", onResult);
+  }, [conn?.terminalId]);
+
+  useEffect(() => {
+    if (!pasteNotice) return;
+    const t = window.setTimeout(() => setPasteNotice(null), 3000);
+    return () => window.clearTimeout(t);
+  }, [pasteNotice]);
 
   // Resource gauges update live from the VM's HTTPS stats postback (the manager
   // fans each one out over the WS subscription opened in openProjectVmConnection)
@@ -148,7 +200,9 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         <span className="font-medium text-md truncate">{conn.vmLabel}</span>
         <StatusPill status={conn.status} />
         <span className="text-[10px] uppercase tracking-wide text-overlay0">SSH</span>
-        <span className="text-[10px] text-overlay1">1 on server</span>
+        <span className="text-[10px] text-overlay1">
+          {conn.sshSessions && conn.sshSessions > 0 ? `${conn.sshSessions} on server` : "— on server"}
+        </span>
         <span className="text-[11px] font-mono tabular-nums text-overlay1 ml-1">
           ↓ {formatBytes(conn.bytesOut)} · ↑ {formatBytes(conn.bytesIn)}
         </span>
@@ -198,6 +252,21 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
       {conn.status === "error" && conn.errorMessage && (
         <div className="px-3 py-1.5 text-[11px] text-red bg-red/10 border-b border-red/30 shrink-0">
           {conn.errorMessage}
+        </div>
+      )}
+
+      {/* Paste-image status — auto-clears after 3s */}
+      {pasteNotice && (
+        <div
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1 text-[11px] border-b shrink-0",
+            pasteNotice.kind === "ok"
+              ? "text-mauve bg-mauve/10 border-mauve/30"
+              : "text-red bg-red/10 border-red/30",
+          )}
+        >
+          <ImageIcon size={11} className="shrink-0" />
+          <span className="truncate font-mono">{pasteNotice.text}</span>
         </div>
       )}
 

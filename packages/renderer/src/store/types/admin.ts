@@ -26,6 +26,14 @@ export interface AdminDroplet {
   projectName: string | null;
   /** Deletion lock — when true, only a superadmin can delete this droplet (typed-name confirm). Default false. */
   locked: boolean;
+  /** Custom subdomain attached via Namecheap DNS + Caddy auto-TLS (on-demand).
+   *  Absent until a domain is attached. Mirrors AdminTazVm.ingress. */
+  domain?: {
+    fqdn: string;
+    url?: string;
+    appPort?: number;
+    status?: string;
+  };
 }
 
 export interface AdminTazVm {
@@ -329,6 +337,12 @@ export interface AdminState {
    *  shows a streaming progress strip and other actions are disabled.
    *  Entries are cleared on `:done` or `:error`. */
   dropletResize: Record<number, { messages: string[]; targetSize: string; error: string | null; done: boolean }>;
+  /** Per-droplet domain-attach/detach in-flight flag. Keyed by dropletId. */
+  dropletDomainBusy: Record<number, boolean>;
+  /** Banner error from the latest domain attach/detach attempt. */
+  dropletDomainError: string | null;
+  /** Streamed progress lines for the in-flight domain op, keyed by dropletId. */
+  dropletDomainProgress: Record<number, string[]>;
   tazcloud: AdminTazState;
   baseImage: AdminBaseImageState;
   sshKey: {

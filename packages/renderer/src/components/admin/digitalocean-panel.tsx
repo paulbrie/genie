@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink, Globe } from "lucide-react";
 import type { AdminDroplet, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
-import { addSshTerminalTab, createAdminDroplet, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, attachAdminDropletDomain, createAdminDroplet, detachAdminDropletDomain, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { wsRequest } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -77,6 +77,10 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
   // don't span the full width of the row.
   const [actionMenuOpenFor, setActionMenuOpenFor] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  // Per-row "attach domain" form state: dropletId → draft. `null` = closed.
+  const [domainDraftFor, setDomainDraftFor] = useState<number | null>(null);
+  const [domainFqdn, setDomainFqdn] = useState("");
+  const [domainPort, setDomainPort] = useState("3000");
 
   // Walk projects to find DO instances that have been hibernated. These don't
   // appear in DO's droplet list (no live droplet) — only in our DB as a snapshot ref.
@@ -268,6 +272,12 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
         </div>
       )}
 
+      {admin.dropletDomainError && (
+        <div className="mb-3">
+          <ErrorMessage variant="banner">Domain: {admin.dropletDomainError}</ErrorMessage>
+        </div>
+      )}
+
       <div>
         {(() => {
           const q = search.trim().toLowerCase();
@@ -431,6 +441,36 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                         <Maximize2 size={12} className="text-blue" />
                         Resize droplet…
                       </button>
+                      {d.domain ? (
+                        <button
+                          onClick={() => {
+                            setActionMenuOpenFor(null);
+                            if (window.confirm(`Remove domain ${d.domain!.fqdn} from "${d.name}"?\n\nThis deletes the Namecheap A record and the Caddy site config on the VM. The droplet keeps running.`)) {
+                              detachAdminDropletDomain(d.id);
+                            }
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                          title={`Remove ${d.domain.fqdn}`}
+                        >
+                          <Globe size={12} className="text-overlay0" />
+                          Remove domain
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setActionMenuOpenFor(null);
+                            setDomainDraftFor(d.id);
+                            setDomainFqdn("");
+                            setDomainPort("3000");
+                          }}
+                          disabled={!isActive}
+                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={isActive ? "Attach a custom subdomain with automatic HTTPS" : "Droplet is not active"}
+                        >
+                          <Globe size={12} className="text-green" />
+                          Attach domain…
+                        </button>
+                      )}
                       {d.projectName && d.projectId && (
                         <button
                           onClick={() => {
@@ -562,6 +602,70 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                   </>
                 );
 
+                const domainFormOpen = domainDraftFor === d.id;
+                const domainBusy = !!admin.dropletDomainBusy[d.id];
+                const domainProgress = admin.dropletDomainProgress[d.id] || [];
+
+                const renderDomainBlocks = () => (
+                  <>
+                    {domainFormOpen && !domainBusy && (
+                      <div className="mt-2 border border-green/30 rounded-md bg-mantle/60 px-3 py-2">
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div className="flex flex-col gap-1 flex-1 min-w-[180px]">
+                            <label className="text-xs text-overlay0">Subdomain (FQDN)</label>
+                            <input
+                              autoFocus
+                              value={domainFqdn}
+                              onChange={(e) => setDomainFqdn(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Escape") setDomainDraftFor(null); }}
+                              placeholder="app.example.com"
+                              spellCheck={false}
+                              className="bg-background border border-surface0 rounded px-2 py-1 text-md font-mono outline-none focus:border-blue"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1 w-24">
+                            <label className="text-xs text-overlay0">App port</label>
+                            <input
+                              value={domainPort}
+                              onChange={(e) => setDomainPort(e.target.value)}
+                              inputMode="numeric"
+                              className="bg-background border border-surface0 rounded px-2 py-1 text-md font-mono outline-none focus:border-blue"
+                            />
+                          </div>
+                          <div className="flex-1" />
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            disabled={!domainFqdn.trim()}
+                            onClick={() => {
+                              const port = parseInt(domainPort, 10);
+                              attachAdminDropletDomain(d.id, domainFqdn.trim(), Number.isFinite(port) ? port : undefined);
+                              setDomainDraftFor(null);
+                            }}
+                          >
+                            Attach
+                          </Button>
+                          <Button size="sm" onClick={() => setDomainDraftFor(null)}>Cancel</Button>
+                        </div>
+                        <p className="mt-1.5 text-xs text-overlay0 italic">
+                          Creates a Namecheap A record pointing this subdomain at the droplet, opens ports 80/443, and installs Caddy for automatic HTTPS. The app must listen on the chosen port. HTTPS goes live once DNS propagates (usually a few minutes).
+                        </p>
+                      </div>
+                    )}
+                    {domainBusy && (
+                      <div className="mt-2 px-3 py-2 rounded-md text-md font-mono bg-blue/10 text-blue border border-blue/30">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Loader2 size={12} className="animate-spin" />
+                          <span className="font-semibold">Attaching domain…</span>
+                        </div>
+                        {domainProgress.slice(-4).map((m, i) => (
+                          <div key={i} className="text-overlay1 text-xs">{m}</div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+
                 return (
                   <div key={d.id} onClick={rowOnClick} className={rowClass}>
                     {isRenaming ? renderRenameInput() : (
@@ -625,6 +729,24 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                               <AttachVmToProject provider="digitalocean" vmId={d.id} />
                             )}
                           </span>
+                          {d.domain && (
+                            <>
+                              <span className="text-overlay0">Domain</span>
+                              <span className="truncate">
+                                <a
+                                  href={d.domain.url || `https://${d.domain.fqdn}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-blue hover:underline inline-flex items-center gap-1"
+                                  title={`Open https://${d.domain.fqdn}`}
+                                >
+                                  {d.domain.fqdn}
+                                  <ExternalLink size={10} />
+                                </a>
+                              </span>
+                            </>
+                          )}
                           <span className="text-overlay0">ID</span>
                           <span className="text-subtext0 font-mono truncate" title={String(d.id)}>{String(d.id).slice(0, 8)}…</span>
                         </div>
@@ -637,6 +759,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                       </>
                     )}
                     {renderResizeBlocks()}
+                    {renderDomainBlocks()}
                     {isPending && (
                       <ServerDeleteConfirm
                         name={d.name}

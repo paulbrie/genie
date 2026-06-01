@@ -17,6 +17,7 @@ export {
   handleTerminalData,
   handleTerminalResize,
   handleTerminalInject,
+  handleTerminalPasteImage,
   type StartParams,
   type WsSendFn,
 } from "./session/handlers.js";

@@ -24,6 +24,7 @@ import {
   handleTerminalData,
   handleTerminalResize,
   handleTerminalInject,
+  handleTerminalPasteImage,
   pollVpsStats,
   type StartParams,
   type TmuxShellIntent,
@@ -63,6 +64,7 @@ import { getBulkVpsMetricHistory, getVpsMetricHistory } from "./vps/vps-metric-s
 import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
 import { createDoClient } from "./vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, generateEd25519KeyPair, writeKeyToDisk, sshKeyFingerprint, buildUfwRules, getGenieKeyPath } from "./vps/do-provision.js";
+import { attachDoDomain, detachDoDomain, loadNamecheapConfig, assertNamecheapConfig, getDropletDomain, setDropletDomain, removeDropletDomain, getDropletDomainMap } from "./vps/do-domain.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
 import { createTazClient, defaultSshUserForVm, sshUserForImage } from "./vps/tazcloud-api-client.js";
 import { createBaseImage } from "./vps/do-base-image.js";
@@ -5519,9 +5521,20 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         const droplets = await doClient.listDroplets("genie");
         // Overlay Genie-side aliases — prefer them so DO and Taz share one unified rename source.
         const aliasMap = await cloudVmAliases.getAliasMap("digitalocean", droplets.map((d) => String(d.id)));
+        // Overlay any attached custom domain (Namecheap DNS + Caddy auto-TLS).
+        const domainMap = await getDropletDomainMap();
         const decoratedDroplets = droplets.map((d) => {
           const alias = aliasMap.get(String(d.id));
-          return alias ? { ...d, name: alias } : d;
+          const dom = domainMap[String(d.id)];
+          const base = alias ? { ...d, name: alias } : { ...d };
+          if (dom) {
+            (base as typeof base & { domain?: unknown }).domain = {
+              fqdn: dom.fqdn,
+              url: `https://${dom.fqdn}`,
+              appPort: dom.appPort,
+            };
+          }
+          return base;
         });
         const projects = await projectService.getAll();
         const projectMap: Record<number, { projectId: string; projectName: string }> = {};
@@ -5622,6 +5635,58 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "admin:droplets:deleted", payload: { dropletId } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:droplets:domain:attach": {
+      // Attach a custom subdomain + automatic HTTPS to a DO droplet: create the
+      // A record at Namecheap (fqdn → droplet IP), open ports 80/443, and install
+      // Caddy on the VM (auto Let's Encrypt). On-demand analog of the TazCloud
+      // ingress flow — see vps/do-domain.ts.
+      const { dropletId, fqdn, appPort } = msg.payload as { dropletId: number; fqdn: string; appPort?: number };
+      try {
+        if (!dropletId || typeof dropletId !== "number") throw new Error("dropletId is required");
+        if (!fqdn || typeof fqdn !== "string") throw new Error("fqdn is required");
+        const doToken = await settingsService.getGlobalDoToken();
+        if (!doToken) throw new Error("DigitalOcean API token not configured");
+        const namecheap = await loadNamecheapConfig();
+        assertNamecheapConfig(namecheap);
+        const result = await attachDoDomain(
+          { doToken, dropletId, fqdn, appPort, namecheap },
+          (m) => send(ws, { type: "admin:droplets:domain:progress", payload: { dropletId, chunk: m } }),
+        );
+        await setDropletDomain(dropletId, {
+          fqdn: result.fqdn, host: result.host, appPort: result.appPort, ip: result.ip,
+          createdAt: new Date().toISOString(),
+        });
+        send(ws, { type: "admin:droplets:domain:attached", payload: { dropletId, domain: result.fqdn, url: result.url, ip: result.ip, status: result.status } });
+        broadcast({ type: "admin:droplets:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:droplets:domain:error", payload: { dropletId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      break;
+    }
+
+    case "admin:droplets:domain:detach": {
+      const { dropletId } = msg.payload as { dropletId: number };
+      try {
+        if (!dropletId || typeof dropletId !== "number") throw new Error("dropletId is required");
+        const existing = await getDropletDomain(dropletId);
+        if (!existing) throw new Error("No domain attached to this droplet");
+        const doToken = await settingsService.getGlobalDoToken();
+        if (!doToken) throw new Error("DigitalOcean API token not configured");
+        const namecheap = await loadNamecheapConfig();
+        assertNamecheapConfig(namecheap);
+        await detachDoDomain(
+          { doToken, dropletId, fqdn: existing.fqdn, namecheap },
+          (m) => send(ws, { type: "admin:droplets:domain:progress", payload: { dropletId, chunk: m } }),
+        );
+        await removeDropletDomain(dropletId);
+        send(ws, { type: "admin:droplets:domain:detached", payload: { dropletId } });
+        broadcast({ type: "admin:droplets:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:droplets:domain:error", payload: { dropletId, message: (err instanceof Error ? err.message : String(err)) } });
       }
       break;
     }
@@ -7265,6 +7330,22 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
     case "terminal:inject": {
       const { terminalId, command } = msg.payload as { terminalId?: string; command?: string };
       if (terminalId && command) handleTerminalInject(ws, terminalId, command);
+      break;
+    }
+
+    case "terminal:paste-image": {
+      // Clipboard image pasted in the VM-connection popup. Ship the bytes via
+      // SFTP to /tmp/genie-paste-<id>.<ext> on the VM, then type the path into
+      // the PTY so Claude Code reads it from its prompt.
+      const { terminalId, dataB64, ext } = msg.payload as {
+        terminalId?: string; dataB64?: string; ext?: string;
+      };
+      if (!terminalId || !dataB64) {
+        send(ws, { type: "terminal:paste-image:result", payload: { terminalId: terminalId ?? null, ok: false, error: "terminalId and dataB64 are required" } });
+        break;
+      }
+      const result = await handleTerminalPasteImage(ws, terminalId, dataB64, ext || "png");
+      send(ws, { type: "terminal:paste-image:result", payload: { terminalId, ...result } });
       break;
     }
 

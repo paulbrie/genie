@@ -132,6 +132,10 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
   const [railwayTokenDirty, setRailwayTokenDirty] = useState(false);
   const [railwayProjectIdInput, setRailwayProjectIdInput] = useState("");
   const [railwayProjectIdDirty, setRailwayProjectIdDirty] = useState(false);
+  // Namecheap DNS — used to attach custom subdomains + auto-TLS to DO droplets.
+  const [showNcKey, setShowNcKey] = useState(false);
+  const [nc, setNc] = useState({ apiUser: "", apiKey: "", userName: "", domain: "" });
+  const [ncDirty, setNcDirty] = useState(false);
 
   const [sshKey] = useDeepSubject($admin, "sshKey");
   const [copiedKey, setCopiedKey] = useState(false);
@@ -164,6 +168,16 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
   }, [settings.railwayProjectId]);
 
   useEffect(() => {
+    setNc({
+      apiUser: settings.namecheapApiUser || "",
+      apiKey: settings.namecheapApiKey || "",
+      userName: settings.namecheapUserName || "",
+      domain: settings.namecheapDomain || "",
+    });
+    setNcDirty(false);
+  }, [settings.namecheapApiUser, settings.namecheapApiKey, settings.namecheapUserName, settings.namecheapDomain]);
+
+  useEffect(() => {
     if (railwayTestResult) setRailwayTesting(false);
   }, [railwayTestResult]);
 
@@ -191,6 +205,14 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
   function handleSaveRailwayProjectId() {
     saveSettingsField("railwayProjectId", railwayProjectIdInput);
     setRailwayProjectIdDirty(false);
+  }
+
+  function handleSaveNamecheap() {
+    saveSettingsField("namecheapApiUser", nc.apiUser.trim());
+    saveSettingsField("namecheapApiKey", nc.apiKey.trim());
+    saveSettingsField("namecheapUserName", nc.userName.trim());
+    saveSettingsField("namecheapDomain", nc.domain.trim());
+    setNcDirty(false);
   }
 
   return (
@@ -373,6 +395,71 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
               SSH private key used to clone private repos from GitLab on provisioned droplets.
               This key will be installed as <code className="text-text">~/.ssh/id_gitlab</code> on each new droplet.
               Can be overridden per project.
+            </p>
+          </div>
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Namecheap DNS
+              <span className="ml-2 text-md text-overlay0 font-normal">Global — DigitalOcean custom domains</span>
+            </label>
+            <div className="flex flex-col gap-2 max-w-md">
+              <input
+                type="text"
+                value={nc.apiUser}
+                onChange={(e) => { setNc((p) => ({ ...p, apiUser: e.target.value })); setNcDirty(true); }}
+                placeholder="API user (Namecheap username)"
+                spellCheck={false}
+                className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+              />
+              <div className="relative">
+                <input
+                  type={showNcKey ? "text" : "password"}
+                  value={nc.apiKey}
+                  onChange={(e) => { setNc((p) => ({ ...p, apiKey: e.target.value })); setNcDirty(true); }}
+                  placeholder="API key"
+                  spellCheck={false}
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNcKey(!showNcKey)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showNcKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              <input
+                type="text"
+                value={nc.userName}
+                onChange={(e) => { setNc((p) => ({ ...p, userName: e.target.value })); setNcDirty(true); }}
+                placeholder="Username (optional — defaults to API user)"
+                spellCheck={false}
+                className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+              />
+              <input
+                type="text"
+                value={nc.domain}
+                onChange={(e) => { setNc((p) => ({ ...p, domain: e.target.value })); setNcDirty(true); }}
+                placeholder="Managed domain, e.g. example.com"
+                spellCheck={false}
+                className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+              />
+              {ncDirty ? (
+                <button
+                  onClick={handleSaveNamecheap}
+                  className="self-start px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              ) : (nc.apiUser || nc.domain) ? (
+                <p className="text-md text-green">Saved</p>
+              ) : null}
+            </div>
+            <p className="text-md text-overlay0 mt-2">
+              Lets you attach a custom subdomain with automatic HTTPS (Caddy + Let&apos;s Encrypt) to a DigitalOcean
+              droplet from the Droplets panel. Subdomains must be under the managed domain. The manager&apos;s public IP
+              must be whitelisted in Namecheap &rarr; Profile &rarr; Tools &rarr; API Access &rarr; Whitelisted IPs.
             </p>
           </div>
           </>

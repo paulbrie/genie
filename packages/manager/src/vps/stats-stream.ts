@@ -179,6 +179,7 @@ export function startStatsDbPoll(
           processes: [],
           openPorts: [],
           externalPorts: [],
+          sshSessions: 0, // not persisted in vps_metric_samples
         };
         cache.set(key, { stats, updatedAt: m.sampledAt });
         notifyWatchers(key, projectId, instanceId, stats, send);
