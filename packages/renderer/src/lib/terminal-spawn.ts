@@ -1,11 +1,9 @@
 import type { ClaudeLaunchOptions, SshConfig, TerminalLaunchKind, TerminalTab } from "@/store/types/vps";
 
-/** Canonical project root on Genie VPS images (Genie Standard Setup). */
 export const GENIE_PROJECT_DIR = "/opt/project";
 
 export type { ClaudeLaunchOptions, TerminalLaunchKind };
 
-/** Persisted / display label for Claude sessions (no `cd` prefix). */
 export function claudeCommandLabel(resume?: boolean): string {
   return resume
     ? "claude --dangerously-skip-permissions --resume"
@@ -28,27 +26,11 @@ export interface TerminalSshSpawnPayload {
 }
 
 export function buildTerminalSshSpawnPayload(
-  tab: TerminalTab,
-  cols: number,
-  rows: number,
+  _tab: TerminalTab,
+  _cols: number,
+  _rows: number,
 ): TerminalSshSpawnPayload | null {
-  if (!tab.ssh) return null;
-  const kind: TerminalLaunchKind = tab.kind ?? "shell";
-  const isClaude = kind === "claude" || kind === "claude-tmux";
-  return {
-    id: tab.id,
-    cols,
-    rows,
-    host: tab.ssh.host,
-    port: tab.ssh.port,
-    username: tab.ssh.username,
-    privateKeyPath: tab.ssh.privateKeyPath,
-    title: tab.title,
-    kind,
-    command: kind === "shell" ? tab.command : undefined,
-    cwd: isClaude ? (tab.claudeLaunch?.cwd ?? GENIE_PROJECT_DIR) : tab.cwd,
-    claudeResume: isClaude ? !!tab.claudeLaunch?.resume : undefined,
-  };
+  return null;
 }
 
 export function defaultClaudeTabTitle(ssh: SshConfig, vmName?: string): string {

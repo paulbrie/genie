@@ -3,16 +3,30 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { createTools } from "./tools/index.js";
 
-// Cache the Anthropic client + model across chat turns (apiKey is set once at init)
-let cachedApiKey: string | null = null;
-let cachedModel: ReturnType<ReturnType<typeof createAnthropic>> | null = null;
+/** Anthropic model ids the agent runtime knows how to load. Keep in sync with
+ *  the manager's CHAT_MODELS so a user picking "claude-opus" in the agent
+ *  editor resolves to the same actual model. Non-Anthropic providers
+ *  (Fireworks etc.) will be plugged in here when added. */
+const ANTHROPIC_MODELS: Record<string, string> = {
+  "claude-sonnet": "claude-sonnet-4-20250514",
+  "claude-opus": "claude-opus-4-20250514",
+};
+const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
 
-function getModel(apiKey: string) {
-  if (cachedModel && cachedApiKey === apiKey) return cachedModel;
-  cachedApiKey = apiKey;
-  const anthropic = createAnthropic({ apiKey });
-  cachedModel = anthropic("claude-sonnet-4-20250514");
-  return cachedModel;
+// Cache models per (apiKey, modelId) so per-turn calls don't rebuild the client.
+const modelCache = new Map<string, ReturnType<ReturnType<typeof createAnthropic>>>();
+
+function getModel(apiKey: string, modelId?: string) {
+  // Accept either the friendly id ("claude-sonnet") or a raw Anthropic model id.
+  const anthropicModel = modelId
+    ? (ANTHROPIC_MODELS[modelId] ?? modelId)
+    : DEFAULT_ANTHROPIC_MODEL;
+  const cacheKey = `${apiKey}::${anthropicModel}`;
+  const cached = modelCache.get(cacheKey);
+  if (cached) return cached;
+  const model = createAnthropic({ apiKey })(anthropicModel);
+  modelCache.set(cacheKey, model);
+  return model;
 }
 
 export interface ChatMessage {
@@ -27,6 +41,13 @@ export interface AgentChatOptions {
   messages: ChatMessage[];
   context?: string;
   domSnapshot?: string;
+  /** Optional model id (e.g. "claude-sonnet", "claude-opus"). Default: claude-sonnet. */
+  modelId?: string;
+  /** Optional override for the system prompt. Default: the built-in Genie prompt. */
+  systemPrompt?: string;
+  /** Optional allowlist of tool names. Empty/undefined = expose all built-in tools.
+   *  Names: shell_exec, read_file, write_file, list_files, search_files, view_page, dom_action. */
+  allowedTools?: string[];
   onToken: (token: string) => void;
   onTool: (name: string, input: Record<string, unknown>, result: string) => void;
   onDone: (fullContent: string) => void;
@@ -36,22 +57,19 @@ export interface AgentChatOptions {
   abortSignal?: AbortSignal;
 }
 
-function buildSystemPrompt(context?: string): string {
-  const lines = [
-    "You are Genie, a helpful AI assistant with direct access to this server's filesystem and shell.",
-    "You can read/write files, run shell commands, search code, and list directories — all locally and instantly.",
-    "Use read_file before write_file to avoid losing existing content.",
-    "For long-running tasks (>10 min), suggest using nohup or screen/tmux.",
-    "Always warn the user before running destructive commands (rm -rf, DROP TABLE, reboot, etc.).",
-    "Use view_page to see what the user sees in their browser. Use dom_action to interact with page elements.",
-    "Answer concisely and helpfully.",
-  ];
+const DEFAULT_SYSTEM_PROMPT = [
+  "You are Genie, a helpful AI assistant with direct access to this server's filesystem and shell.",
+  "You can read/write files, run shell commands, search code, and list directories — all locally and instantly.",
+  "Use read_file before write_file to avoid losing existing content.",
+  "For long-running tasks (>10 min), suggest using nohup or screen/tmux.",
+  "Always warn the user before running destructive commands (rm -rf, DROP TABLE, reboot, etc.).",
+  "Use view_page to see what the user sees in their browser. Use dom_action to interact with page elements.",
+  "Answer concisely and helpfully.",
+].join("\n");
 
-  if (context) {
-    lines.push("", "=== Assistant Context ===", context);
-  }
-
-  return lines.join("\n");
+function buildSystemPrompt(systemPrompt: string | undefined, context: string | undefined): string {
+  const base = systemPrompt && systemPrompt.length > 0 ? systemPrompt : DEFAULT_SYSTEM_PROMPT;
+  return context ? `${base}\n\n=== Assistant Context ===\n${context}` : base;
 }
 
 export async function runAgentChat(opts: AgentChatOptions): Promise<void> {
@@ -62,6 +80,9 @@ export async function runAgentChat(opts: AgentChatOptions): Promise<void> {
     messages,
     context,
     domSnapshot,
+    modelId,
+    systemPrompt,
+    allowedTools,
     onToken,
     onTool,
     onDone,
@@ -72,7 +93,7 @@ export async function runAgentChat(opts: AgentChatOptions): Promise<void> {
   } = opts;
 
   try {
-    const model = getModel(apiKey);
+    const model = getModel(apiKey, modelId);
     const localTools = createTools(projectDir);
 
     // Build the full tool set
@@ -137,13 +158,24 @@ export async function runAgentChat(opts: AgentChatOptions): Promise<void> {
       }),
     };
 
+    // Apply the per-agent tool allowlist. Empty array or undefined = expose
+    // every built-in tool (today's default behaviour). A non-empty list filters
+    // the union of local tools + view_page/dom_action down to just the named
+    // tools; unknown names are silently ignored so a typo can't gate the run.
+    const exposedTools: Record<string, any> =
+      allowedTools && allowedTools.length > 0
+        ? Object.fromEntries(
+            Object.entries(allTools).filter(([name]) => allowedTools.includes(name)),
+          )
+        : allTools;
+
     const result = streamText({
       model,
-      system: buildSystemPrompt(context),
+      system: buildSystemPrompt(systemPrompt, context),
       messages: messages
         .filter((m) => m.content.length > 0)
         .map((m) => ({ role: m.role, content: m.content })),
-      tools: allTools,
+      tools: exposedTools,
       stopWhen: stepCountIs(maxToolRounds),
       abortSignal,
     });

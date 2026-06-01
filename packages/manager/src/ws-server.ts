@@ -17,50 +17,17 @@ import { startMonitoring, stopMonitoring, setMonitoringInterval, getDockerBin } 
 import { handleChat, type ChatModelId } from "./chat.js";
 import { startLogCapture, getLogBuffer, clearLogBuffer, getErrorBuffer, clearErrorBuffer } from "./log-capture.js";
 import {
-  setPtyEventCallback,
-  spawnPty,
-  spawnSshPty,
-  writePty,
-  resizePty,
-  closePty,
-  closeAllPtys,
-  getSessionAccess,
-  getScrollback,
-  addCollaborator,
-  removeCollaborator,
-  isAuthorized,
-  removeCollaboratorFromAll,
-  getUserSessionDetails,
-  sshPtyLaunchFromSpawnMessage,
-  ptyLaunchFieldsFromPersisted,
-  isClaudeTerminalSpawn,
-  persistCommandLabelForSpawn,
-  persistedKindForSpawn,
-  sshPtyTmuxPolicy,
-  sshPtyDtachPolicy,
-  defaultDtachSocketPath,
-  destroyDtachSession,
-  probeDtachSocketExists,
-  listResumableClaudeJsonls,
-} from "./pty-manager.js";
-import { ensureDtach } from "./vps/dtach-ensure.js";
-import { createPtySession, forgetPtySession, listPtySessions, touchPtySession } from "./pty-session-service.js";
-
-// Per-pty-session activity-write throttle so rapid keystrokes don't hammer the
-// DB. Bumped on each terminal:data; the actual UPDATE fires at most once per
-// minute per session.
-const ptyActivityLastWriteAt = new Map<string, number>();
-
-// Persistence mode for new shell/claude terminals. "dtach" (default) wraps the
-// remote command in dtach so the inner process survives SSH channel drops
-// (popup close, tab close, laptop sleep). "none" reverts to the legacy
-// direct-exec behavior. Tunable via env so we can flip this off without a code
-// change. The History-tab "claude-tmux" sessions are unaffected.
-type TerminalPersistenceMode = "dtach" | "none";
-function terminalPersistenceMode(): TerminalPersistenceMode {
-  const v = (process.env.GENIE_TERMINAL_PERSISTENCE || "dtach").trim().toLowerCase();
-  return v === "none" ? "none" : "dtach";
-}
+  setWsSend as setSshWsSend,
+  startSshSession,
+  closeSshSession,
+  closeAllSessionsForWs,
+  handleTerminalData,
+  handleTerminalResize,
+  handleTerminalInject,
+  pollVpsStats,
+  type StartParams,
+  type TmuxShellIntent,
+} from "./ssh/index.js";
 import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth.js";
 import { handleDebugServerLogs } from "./debug-api.js";
 import * as assistantLogService from "./assistant-log-service.js";
@@ -84,11 +51,14 @@ import { vpsDeploy, vpsStatus, vpsLogs, vpsTeardown, vpsStats, remoteDir } from 
 import { GENIE_STANDARD_RECIPE_SLUG, syncGenieStatsOnVm } from "./vps/ensure-vps-stats.js";
 import {
   getCachedVpsStats,
+  ingestVpsStats,
+  startStatsDbPoll,
   unwatchVpsStats,
   unwatchVpsStatsForClient,
   watchVpsStats,
-  stopStatsStreamsForHost,
 } from "./vps/stats-stream.js";
+import { resolveStatsToken } from "./vps/stats-token-service.js";
+import type { VpsStatsPayload } from "@genie/vps-stats";
 import { getBulkVpsMetricHistory, getVpsMetricHistory } from "./vps/vps-metric-service.js";
 import { ensureBootstrapped } from "./vps/vps-bootstrap.js";
 import { createDoClient } from "./vps/do-api-client.js";
@@ -1949,7 +1919,7 @@ function getConnectedUserIds(): string[] {
 }
 
 const PRESENCE_SKIP_TYPES = new Set([
-  "ping", "pong", "stats", "pty:data", "pty:resize", "presence:nav", "presence:windows", "presence:detail",
+  "ping", "pong", "stats", "presence:nav", "presence:windows", "presence:detail",
 ]);
 
 function broadcastPresence(): void {
@@ -1985,33 +1955,12 @@ interface PresenceSession {
 }
 
 async function buildPresenceDetail(): Promise<PresenceSession[]> {
-  // Pull every persisted PTY session in one query, then group attachments by
-  // owner. Cheaper than N round-trips when many users are connected.
-  // Dedup per owner on `instanceId||host` so two terminals on the same box
-  // don't draw two stacked edges.
-  const ptyByOwner = new Map<string, Map<string, PresenceAttachedServer>>();
-  try {
-    const rows = await listPtySessions({});
-    for (const r of rows) {
-      if (!r.vpsHost) continue;
-      let map = ptyByOwner.get(r.ownerId);
-      if (!map) {
-        map = new Map();
-        ptyByOwner.set(r.ownerId, map);
-      }
-      const key = r.instanceId ?? `host:${r.vpsHost}`;
-      if (!map.has(key)) {
-        map.set(key, { instanceId: r.instanceId, host: r.vpsHost });
-      }
-    }
-  } catch (err) {
-    console.warn("[presence] listPtySessions failed:", err instanceof Error ? err.message : String(err));
-  }
-
+  // Terminal/PTY attachment data is gone with the connection layer rewrite —
+  // attachedServers stays in the contract but is always empty until the new
+  // layer lands. Topology graph rendering tolerates this.
   const result: PresenceSession[] = [];
   for (const [ws, state] of clients) {
     if (!state.userId || !state.user || ws.readyState !== ws.OPEN) continue;
-    const attached = ptyByOwner.get(state.userId);
     result.push({
       id: state.userId,
       name: state.user.name,
@@ -2020,7 +1969,7 @@ async function buildPresenceDetail(): Promise<PresenceSession[]> {
       clientType: state.clientType,
       currentNav: state.currentNav,
       selectedProjectId: state.selectedProjectId,
-      attachedServers: attached ? [...attached.values()] : [],
+      attachedServers: [],
       recentActions: state.recentActions.slice(-25),
       openWindows: state.openWindows,
       ip: state.ip,
@@ -2060,28 +2009,7 @@ async function sendInitialData(ws: WebSocket, userId?: string): Promise<void> {
     }
   }
 
-  // Send active terminal sessions for this user
-  if (userId) {
-    const sessions = getUserSessionDetails(userId);
-    if (sessions.length > 0) {
-      // Resolve owner names from connected clients
-      const sessionsWithNames = sessions.map((s) => {
-        let ownerName = "Unknown";
-        for (const [, clientState] of clients) {
-          if (clientState.userId === s.ownerId && clientState.user) {
-            ownerName = clientState.user.name;
-            break;
-          }
-        }
-        return {
-          ...s,
-          ownerName,
-          viewerIds: [s.ownerId, ...s.collaboratorIds],
-        };
-      });
-      send(ws, { type: "terminal:sessions:list", payload: { sessions: sessionsWithNames } });
-    }
-  }
+  // Active terminal-session restoration removed with the connection layer rewrite.
 }
 
 async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean> {
@@ -2962,7 +2890,6 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         killed = killSshConnectionsForHost(killHost);
         closePersistentMcpTunnelForHost(killHost);
         evictAllSessionsForHost(killHost);
-        stopStatsStreamsForHost(killHost);
       } else if (typeof id === "string") {
         const info = getSshConnectionInfo(id);
         if (killSshConnection(id)) {
@@ -2984,410 +2911,9 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
-    case "terminal:spawn": {
-      const { id, cols, rows, command, cwd } = msg.payload;
-      void spawnPty(id, cols || 80, rows || 24, command, cwd, userId);
-      break;
-    }
-
-    case "terminal:data": {
-      const { id, data } = msg.payload;
-      if (!isAuthorized(id, userId)) {
-        send(ws, { type: "error", payload: { message: "Not authorized for this terminal" } });
-        break;
-      }
-      writePty(id, data);
-      // Throttled activity bump for persisted (tmux-wrapped) sessions. At most
-      // one DB write per minute per session — irrelevant for the local PTY
-      // case where the row doesn't exist (UPDATE matches zero rows, no-op).
-      const now = Date.now();
-      const last = ptyActivityLastWriteAt.get(id) || 0;
-      if (now - last > 60_000) {
-        ptyActivityLastWriteAt.set(id, now);
-        void touchPtySession(id).catch(() => { /* row may not exist for local PTY */ });
-      }
-      break;
-    }
-
-    case "terminal:resize": {
-      const { id, cols, rows } = msg.payload;
-      if (!isAuthorized(id, userId)) break;
-      resizePty(id, cols, rows);
-      break;
-    }
-
-    case "terminal:list": {
-      if (!userId) {
-        send(ws, { type: "terminal:list", payload: { sessions: [] } });
-        break;
-      }
-      try {
-        const isSuper = clients.get(ws)?.role === "superadmin";
-        const filters = msg.payload || {};
-        const { projectId: filterProject, instanceId: filterInstance, vpsHost: filterHost, ownerId: filterOwner } =
-          filters as { projectId?: string; instanceId?: string; vpsHost?: string; ownerId?: string | null };
-        // Non-superadmin callers can never see other users' sessions, even if
-        // they pass an ownerId filter — silently force it to their own id.
-        const effectiveOwner = isSuper ? (filterOwner === undefined ? null : filterOwner) : userId;
-        const sessions = await listPtySessions({
-          ownerId: effectiveOwner,
-          projectId: filterProject ?? null,
-          instanceId: filterInstance ?? null,
-          vpsHost: filterHost ?? null,
-        });
-        send(ws, { type: "terminal:list", payload: {
-          sessions: sessions.map((s) => ({
-            id: s.id,
-            ownerId: s.ownerId,
-            kind: s.kind,
-            projectId: s.projectId,
-            instanceId: s.instanceId,
-            vpsHost: s.vpsHost,
-            commandLabel: s.commandLabel,
-            // ssh_config intentionally omitted — may contain key paths; reattach
-            // happens server-side via terminal:ssh:spawn with the row's data.
-            hasSshConfig: !!s.sshConfig,
-            createdAt: s.createdAt.toISOString(),
-            lastActivity: s.lastActivity.toISOString(),
-          })),
-        }});
-      } catch (err: unknown) {
-        console.error("[terminal:list] error:", err);
-        send(ws, { type: "terminal:list", payload: { sessions: [] } });
-      }
-      break;
-    }
-
-    case "terminal:reattach": {
-      if (!userId) break;
-      const { id, cols, rows } = msg.payload as { id: string; cols?: number; rows?: number };
-      if (!id) break;
-      try {
-        const rows_ = await listPtySessions({ ownerId: null });
-        const row = rows_.find((r) => r.id === id);
-        if (!row) {
-          send(ws, { type: "terminal:error", payload: { id, message: "Session no longer exists in the registry" } });
-          break;
-        }
-        const isSuper = clients.get(ws)?.role === "superadmin";
-        if (!isSuper && row.ownerId !== userId) {
-          send(ws, { type: "terminal:error", payload: { id, message: "Not your terminal" } });
-          break;
-        }
-        // If a session for this id is still in the in-memory map (e.g. from an
-        // earlier broken attempt that spawned a local PTY for this same tab id,
-        // or a previous reattach we never properly tore down), spawnSshPty will
-        // bail with no-op. Clear it first so reattach is idempotent.
-        if (getSessionAccess(id)) {
-          closePty(id);
-        }
-        if (row.projectId && row.instanceId) {
-          const conn = await getVpsConnection(row.projectId, row.instanceId);
-          spawnSshPty(id, cols || 80, rows || 24, {
-            host: conn.host,
-            port: conn.port || 22,
-            username: conn.username,
-            privateKeyPath: conn.privateKeyPath,
-            ...sshPtyTmuxPolicy(id, { kind: row.kind, mode: "reattach" }),
-            ...ptyLaunchFieldsFromPersisted(row),
-          }, userId);
-        } else if (row.sshConfig) {
-          const cfg = row.sshConfig as { host: string; port?: number; username?: string; privateKeyPath?: string };
-          spawnSshPty(id, cols || 80, rows || 24, {
-            host: cfg.host,
-            port: cfg.port || 22,
-            username: cfg.username || VPS_SSH_USERNAME,
-            privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519",
-            ...sshPtyTmuxPolicy(id, { kind: row.kind, mode: "reattach" }),
-            ...ptyLaunchFieldsFromPersisted(row),
-          }, userId);
-        } else {
-          send(ws, { type: "terminal:error", payload: { id, message: "Session has no connection details" } });
-          break;
-        }
-        // Bump activity so a successful reattach refreshes the "last active" stamp.
-        await touchPtySession(id).catch(() => {});
-      } catch (err: unknown) {
-        send(ws, { type: "terminal:error", payload: { id, message: `Reattach failed: ${(err instanceof Error ? err.message : String(err))}` } });
-      }
-      break;
-    }
-
-    case "terminal:forget": {
-      if (!userId) break;
-      const { id } = msg.payload as { id: string };
-      if (!id) break;
-      try {
-        // Only the owner (or a superadmin) can forget a row.
-        const isSuper = clients.get(ws)?.role === "superadmin";
-        const existing = await listPtySessions({ ownerId: null });
-        const row = existing.find((r) => r.id === id);
-        if (!row) break;
-        if (!isSuper && row.ownerId !== userId) {
-          send(ws, { type: "error", payload: { message: "Not your terminal" } });
-          break;
-        }
-        await forgetPtySession(id);
-        send(ws, { type: "terminal:forgotten", payload: { id } });
-      } catch (err: unknown) {
-        console.error("[terminal:forget] error:", err);
-      }
-      break;
-    }
-
-    // Hard-kill a persisted session: closes any in-memory PTY, kills the tmux
-    // session on the VPS, then drops the DB row. Use when forget alone would
-    // leak a tmux process on the VPS that's no longer reachable from the UI.
-    case "terminal:kill": {
-      if (!userId) break;
-      const { id } = msg.payload as { id: string };
-      if (!id) break;
-      try {
-        const isSuper = clients.get(ws)?.role === "superadmin";
-        const existing = await listPtySessions({ ownerId: null });
-        const row = existing.find((r) => r.id === id);
-        if (!row) {
-          send(ws, { type: "terminal:killed", payload: { id } });
-          break;
-        }
-        if (!isSuper && row.ownerId !== userId) {
-          send(ws, { type: "error", payload: { message: "Not your terminal" } });
-          break;
-        }
-
-        // Drop any in-memory PTY first so an active reader doesn't keep tmux alive.
-        if (getSessionAccess(id)) {
-          try { closePty(id); } catch { /* ignore */ }
-        }
-
-        // Best-effort tmux kill on the VPS. Failure here (host gone, key rotated,
-        // tmux already dead) should not block dropping the registry row — that's
-        // the whole point of this action.
-        try {
-          let conn: VpsConnectionConfig | null = null;
-          if (row.projectId && row.instanceId) {
-            conn = await getVpsConnection(row.projectId, row.instanceId);
-          } else if (row.sshConfig) {
-            const cfg = row.sshConfig as { host: string; port?: number; username?: string; privateKeyPath?: string };
-            conn = {
-              host: cfg.host,
-              port: cfg.port || 22,
-              username: cfg.username || VPS_SSH_USERNAME,
-              privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519",
-            };
-          }
-          if (conn) {
-            const sshSession = await connectSsh(conn, { timeoutMs: 10_000 });
-            try {
-              const escaped = id.replace(/'/g, "'\\''");
-              await sshSession.exec(`tmux kill-session -t '${escaped}' 2>/dev/null; true`, undefined, { timeoutMs: 8_000 });
-            } finally {
-              try { sshSession.close(); } catch { /* ignore */ }
-            }
-          }
-        } catch (err: unknown) {
-          console.warn("[terminal:kill] tmux kill best-effort failed:", err instanceof Error ? err.message : String(err));
-        }
-
-        await forgetPtySession(id);
-        send(ws, { type: "terminal:killed", payload: { id } });
-      } catch (err: unknown) {
-        console.error("[terminal:kill] error:", err);
-        send(ws, { type: "error", payload: { message: `Kill failed: ${(err instanceof Error ? err.message : String(err))}` } });
-      }
-      break;
-    }
-
-    case "terminal:close": {
-      // Semantics changed with dtach persistence: this only closes the SSH
-      // channel from the manager side. For dtach-wrapped sessions, that's a
-      // DETACH — the remote process keeps running and the user reattaches by
-      // opening the popup again (deterministic sessionId → same socket). For
-      // direct/tmux sessions the historical kill-on-close behavior still
-      // applies. To truly end a dtach session, use terminal:restart.
-      const { id } = msg.payload;
-      const access = getSessionAccess(id);
-      if (access && access.ownerId !== userId) {
-        send(ws, { type: "error", payload: { message: "Only the owner can close this terminal" } });
-        break;
-      }
-      closePty(id);
-      break;
-    }
-
-    case "terminal:restart": {
-      // Explicit destroy for a dtach-wrapped session. Kills the inner process
-      // on the VM and removes the socket so the next spawn starts fresh. Used
-      // by the popup's "Restart Claude" / "Restart shell" overflow item.
-      if (!userId) break;
-      const { id } = msg.payload as { id: string };
-      if (!id) break;
-      try {
-        const isSuper = clients.get(ws)?.role === "superadmin";
-        const rows_ = await listPtySessions({ ownerId: null });
-        const row = rows_.find((r) => r.id === id);
-        if (!row) {
-          send(ws, { type: "terminal:restarted", payload: { id } });
-          break;
-        }
-        if (!isSuper && row.ownerId !== userId) {
-          send(ws, { type: "error", payload: { message: "Not your terminal" } });
-          break;
-        }
-        let sshCfg: SshConnectionConfig | null = null;
-        if (row.projectId && row.instanceId) {
-          const conn = await getVpsConnection(row.projectId, row.instanceId);
-          sshCfg = { host: conn.host, port: conn.port || 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
-        } else if (row.sshConfig) {
-          const cfg = row.sshConfig as { host: string; port?: number; username?: string; privateKeyPath?: string };
-          sshCfg = { host: cfg.host, port: cfg.port || 22, username: cfg.username || VPS_SSH_USERNAME, privateKeyPath: cfg.privateKeyPath || "~/.genie/ssh/genie_ed25519" };
-        }
-        if (sshCfg) await destroyDtachSession(sshCfg, id);
-        send(ws, { type: "terminal:restarted", payload: { id } });
-      } catch (err: unknown) {
-        send(ws, { type: "error", payload: { message: `Restart failed: ${(err instanceof Error ? err.message : String(err))}` } });
-      }
-      break;
-    }
-
-    case "terminal:claude:listResumable": {
-      // Lists ~/.claude/projects/-opt-project/*.jsonl on the project's VM so
-      // the popup can offer "Resume previous conversation" when a fresh start
-      // happens to coincide with prior session files on disk (typical after a
-      // VM reboot — the dtach socket is gone, but the JSONL persists).
-      if (!userId) break;
-      const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const items = await listResumableClaudeJsonls({
-          host: conn.host, port: conn.port || 22, username: conn.username, privateKeyPath: conn.privateKeyPath,
-        });
-        send(ws, { type: "terminal:claude:resumable", payload: { projectId, instanceId, items } });
-      } catch (err) {
-        send(ws, { type: "terminal:claude:resumable", payload: { projectId, instanceId, items: [], error: err instanceof Error ? err.message : String(err) } });
-      }
-      break;
-    }
-
-    case "terminal:share": {
-      const { sessionId, targetUserId, conversationId: shareConvId } = msg.payload;
-      const access = getSessionAccess(sessionId);
-      console.log(`[terminal:share] sessionId=${sessionId} userId=${userId} access=${JSON.stringify(access)}`);
-      if (!access || access.ownerId !== userId) {
-        send(ws, { type: "terminal:share:error", payload: { message: access ? "Only the owner can share this terminal" : "Terminal session not found (may have been restarted)" } });
-        break;
-      }
-      // Terminal sharing is scoped to teammates: the target must share at least
-      // one team with the owner. This is the authoritative gate — the share UI
-      // lists every online user (chat roster isn't team-scoped), so it cannot
-      // be relied on to enforce this.
-      if (!(await projectService.usersShareTeam(userId, targetUserId))) {
-        send(ws, { type: "terminal:share:error", payload: { message: "You can only share terminals with members of your team" } });
-        break;
-      }
-      sendToUser(targetUserId, {
-        type: "terminal:share:invite",
-        payload: { sessionId, ownerId: userId, ownerName: state.user?.name || "Unknown", conversationId: shareConvId },
-      });
-      send(ws, { type: "terminal:share:sent", payload: { sessionId, targetUserId } });
-      // Optionally post a chat message
-      if (shareConvId) {
-        const meta = JSON.stringify({ type: "terminal-share", sessionId });
-        const shareMsg = await chatService.saveMessage(shareConvId, userId, `Shared a terminal session`, meta);
-        const members = await chatService.getConversationMembers(shareConvId);
-        const memberIds = members.map((m) => m.userId);
-        broadcastToUsers(memberIds, {
-          type: "chat:message:new",
-          payload: { conversationId: shareConvId, message: shareMsg },
-        });
-      }
-      break;
-    }
-
-    case "terminal:share:accept": {
-      const { sessionId } = msg.payload;
-      const access = getSessionAccess(sessionId);
-      if (!access) {
-        send(ws, { type: "error", payload: { message: "Terminal session not found" } });
-        break;
-      }
-      // Defense-in-depth: accept adds a collaborator purely by sessionId — the
-      // invite is not a capability token — so re-verify the teammate constraint
-      // here too (membership could have changed, or the accept was fabricated).
-      if (!(await projectService.usersShareTeam(access.ownerId, userId))) {
-        send(ws, { type: "terminal:share:error", payload: { message: "You can only join terminals shared by members of your team" } });
-        break;
-      }
-      const added = addCollaborator(sessionId, userId);
-      if (!added) {
-        send(ws, { type: "error", payload: { message: "Terminal session not found" } });
-        break;
-      }
-      const updatedAccess = getSessionAccess(sessionId);
-      if (updatedAccess) {
-        const allUsers = [updatedAccess.ownerId, ...updatedAccess.collaboratorIds];
-        broadcastToUsers(allUsers, {
-          type: "terminal:share:viewers",
-          payload: { sessionId, viewerIds: allUsers },
-        });
-      }
-      // Send scrollback history so the invitee sees the session so far
-      const scrollback = getScrollback(sessionId);
-      send(ws, { type: "terminal:share:joined", payload: { sessionId, scrollback } });
-      break;
-    }
-
-    case "terminal:share:leave": {
-      const { sessionId } = msg.payload;
-      removeCollaborator(sessionId, userId);
-      const access = getSessionAccess(sessionId);
-      if (access) {
-        const allUsers = [access.ownerId, ...access.collaboratorIds];
-        broadcastToUsers(allUsers, {
-          type: "terminal:share:viewers",
-          payload: { sessionId, viewerIds: allUsers },
-        });
-      }
-      break;
-    }
-
-    case "terminal:share:replay": {
-      const { sessionId } = msg.payload;
-      if (!isAuthorized(sessionId, userId)) {
-        send(ws, { type: "error", payload: { message: "Not authorized for this terminal" } });
-        break;
-      }
-      const scrollback = getScrollback(sessionId);
-      if (scrollback) {
-        send(ws, { type: "terminal:data", payload: { id: sessionId, data: scrollback } });
-      }
-      break;
-    }
-
-    case "terminal:share:kick": {
-      const { sessionId, userId: kickUserId } = msg.payload;
-      const access = getSessionAccess(sessionId);
-      if (!access || access.ownerId !== userId) {
-        send(ws, { type: "error", payload: { message: "Only the owner can remove collaborators" } });
-        break;
-      }
-      removeCollaborator(sessionId, kickUserId);
-      // Notify the kicked user
-      sendToUser(kickUserId, {
-        type: "terminal:share:kicked",
-        payload: { sessionId },
-      });
-      // Update viewer list for remaining users
-      const updatedAccess = getSessionAccess(sessionId);
-      if (updatedAccess) {
-        const allUsers = [updatedAccess.ownerId, ...updatedAccess.collaboratorIds];
-        broadcastToUsers(allUsers, {
-          type: "terminal:share:viewers",
-          payload: { sessionId, viewerIds: allUsers },
-        });
-      }
-      break;
-    }
+    // terminal:* / pty:* handlers intentionally removed — terminal connection
+    // layer is being rebuilt from scratch. The Claude / SSH buttons in the UI
+    // still render but their actions are no-ops on the renderer side.
 
     case "project:add": {
       const { name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl, teamId: projTeamId } = msg.payload;
@@ -4462,21 +3988,44 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: "No VPS deployment for this project/instance" } });
         break;
       }
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        watchVpsStats(ws, projectId, instanceId, conn, send);
-      } catch (err: unknown) {
-        send(ws, {
-          type: "vps:stats:error",
-          payload: { projectId, instanceId, message: err instanceof Error ? err.message : String(err) },
-        });
-      }
+      // Stats now arrive via the VM's HTTPS postback (POST /api/vps/stats);
+      // this just subscribes the socket and replays the cached value.
+      watchVpsStats(ws, projectId, instanceId, send);
       break;
     }
 
     case "vps:stats:unwatch": {
       const { projectId, instanceId } = msg.payload;
       unwatchVpsStats(ws, projectId, instanceId);
+      break;
+    }
+
+    // Push the latest stats daemon bundle + postback drop-in to a VM and
+    // restart its genie-stats service — same work the genie-standard recipe
+    // does, but on its own so the daemon can be updated without a full re-run.
+    case "vps:stats:sync": {
+      const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:stats:sync:error", payload: { projectId, instanceId, message: "Not authorized for this project" } });
+        break;
+      }
+      const project = await projectService.getById(projectId);
+      if (!project?.vpsInstances.some((v) => v.id === instanceId)) {
+        send(ws, { type: "vps:stats:sync:error", payload: { projectId, instanceId, message: "No VPS deployment for this project/instance" } });
+        break;
+      }
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        await syncGenieStatsOnVm(conn, projectId, instanceId, (message) => {
+          send(ws, { type: "vps:stats:sync:progress", payload: { projectId, instanceId, message } });
+        });
+        send(ws, { type: "vps:stats:sync:done", payload: { projectId, instanceId } });
+      } catch (err: unknown) {
+        send(ws, {
+          type: "vps:stats:sync:error",
+          payload: { projectId, instanceId, message: err instanceof Error ? err.message : String(err) },
+        });
+      }
       break;
     }
 
@@ -4828,7 +4377,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
         if (recipeId === GENIE_STANDARD_RECIPE_SLUG) {
           try {
             const conn = await getVpsConnection(projectId, instanceId);
-            await syncGenieStatsOnVm(conn, (message) => {
+            await syncGenieStatsOnVm(conn, projectId, instanceId, (message) => {
               send(ws, { type: "vps:recipe:progress", payload: { projectId, instanceId, recipeId, message } });
             });
           } catch (err: unknown) {
@@ -7582,71 +7131,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
-    case "vps:terminal:spawn": {
-      const { id, projectId, instanceId, cols, rows, command, kind, cwd, claudeResume } = msg.payload as {
-        id: string; projectId: string; instanceId: string;
-        cols?: number; rows?: number;
-        command?: string; kind?: "shell" | "claude" | "claude-tmux";
-        cwd?: string; claudeResume?: boolean;
-      };
-      try {
-        const conn = await getVpsConnection(projectId, instanceId);
-        const launch = sshPtyLaunchFromSpawnMessage({ kind, command, cwd, claudeResume });
-        // dtach wrapping is the default for shell/claude. claude-tmux stays on
-        // the legacy tmux path (History tab uses it). We probe socket existence
-        // BEFORE spawn so we can tell the renderer "this is a resume" — drives
-        // the "↻ Resumed" pill UX. ensureDtach lazy-installs the binary on
-        // pre-existing VMs that didn't get it via genie-standard.
-        const wantDtach =
-          terminalPersistenceMode() === "dtach"
-          && (kind === "shell" || kind === "claude" || kind === undefined);
-        const tmuxFields = sshPtyTmuxPolicy(id, { kind, mode: "spawn" });
-        const sshCfg = { host: conn.host, port: conn.port || 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
-        let resumed = false;
-        let socketPath: string | null = null;
-        let usedDtach = false;
-        if (wantDtach) {
-          const dtach = await ensureDtach(sshCfg);
-          if (dtach.available) {
-            resumed = await probeDtachSocketExists(sshCfg, id);
-            socketPath = defaultDtachSocketPath(id);
-            usedDtach = true;
-          } else {
-            // Surface a one-line yellow notice in the terminal pane so the user
-            // understands why a stop-on-close session is opening. The terminal
-            // still works; persistence is just unavailable.
-            send(ws, { type: "terminal:data", payload: { id, data: `\r\n\x1b[33m[persistence unavailable: ${dtach.reason} — re-run Standard Setup to enable dtach]\x1b[0m\r\n` } });
-          }
-        }
-        const persistenceFields = usedDtach ? sshPtyDtachPolicy(id) : tmuxFields;
-        spawnSshPty(id, cols || 80, rows || 24, {
-          host: conn.host,
-          port: conn.port || 22,
-          username: conn.username,
-          privateKeyPath: conn.privateKeyPath,
-          ...persistenceFields,
-          ...launch,
-        }, userId);
-        send(ws, { type: "terminal:opened", payload: { id, resumed, persistence: usedDtach ? "dtach" : "tmux" } });
-        // Persist for the History/Terminals tab so it survives Manager restart.
-        // Best-effort: a DB failure here shouldn't block the user opening a terminal.
-        if (userId) {
-          await createPtySession({
-            id,
-            ownerId: userId,
-            kind: persistedKindForSpawn({ kind, command }),
-            projectId,
-            instanceId,
-            vpsHost: conn.host,
-            commandLabel: persistCommandLabelForSpawn({ kind, command, claudeResume }),
-            dtachSocketPath: socketPath,
-          }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
-        }
-      } catch (err: unknown) {
-        send(ws, { type: "error", payload: { message: `SSH terminal failed: ${(err instanceof Error ? err.message : String(err))}` } });
-      }
-      break;
-    }
+    // vps:terminal:spawn handler removed — terminal connection layer is being rebuilt.
 
     // Manual "Reconnect MCP servers" button in the Manage popup. Project-scoped:
     // the caller must be able to access a VM with this host (or be privileged).
@@ -7675,89 +7160,85 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       break;
     }
 
-    case "terminal:ssh:spawn": {
-      const { id, host, port, username, privateKeyPath, cols, rows, title, command, kind, cwd, claudeResume } = msg.payload as {
-        id: string; host: string; port?: number; username?: string; privateKeyPath?: string;
-        cols?: number; rows?: number; title?: string; command?: string;
-        kind?: "shell" | "claude" | "claude-tmux"; cwd?: string; claudeResume?: boolean;
+    // ---- Interactive SSH terminal (rebuilt from socket-testing-genie pattern) ----
+
+    case "terminal:start": {
+      const { terminalId, projectId, instanceId, host, port, username, privateKeyPath,
+        cols, rows, tmuxIntent, tmuxSessionName } = msg.payload as {
+        terminalId?: string;
+        projectId?: string; instanceId?: string;
+        host?: string; port?: number; username?: string; privateKeyPath?: string;
+        cols?: number; rows?: number;
+        tmuxIntent?: TmuxShellIntent; tmuxSessionName?: string;
       };
-      const resolvedUser = username || VPS_SSH_USERNAME;
-      const resolvedKey = privateKeyPath || "~/.genie/ssh/genie_ed25519";
-      const resolvedPort = port || 22;
-      const launch = sshPtyLaunchFromSpawnMessage({ kind, command, cwd, claudeResume });
-      const isClaudeKind = isClaudeTerminalSpawn({ kind, command, title });
-      // Claude sessions read /opt/project/.mcp.json at startup, so the shared MCP
-      // tunnels must be live *before* the PTY spawns — otherwise genie-* MCPs
-      // connect to dead ports and show "failed". Ensure them here (transparent
-      // to the user; a no-op when they're already up). Best-effort: if setup
-      // fails we still launch the terminal so the user isn't blocked.
-      if (isClaudeKind && host) {
-        try {
-          send(ws, { type: "terminal:data", payload: { id, data: "\x1b[2m· Connecting Genie MCP servers…\x1b[0m\r\n" } });
-          await ensureMcpTunnelsForHost(host);
-        } catch (err: unknown) {
-          console.error(`[claude-popup] MCP ensure failed for ${host}: ${(err instanceof Error ? err.message : String(err))}`);
-          send(ws, { type: "terminal:data", payload: { id, data: "\x1b[33m· MCP setup failed — launching without MCP servers.\x1b[0m\r\n" } });
-        }
+      if (!terminalId) {
+        send(ws, { type: "terminal:error", payload: { terminalId: null, message: "terminalId is required" } });
+        break;
       }
-      // Persistence: same dtach default as vps:terminal:spawn. claude-tmux
-      // remains on the tmux path for History-tab compatibility.
-      const wantDtach =
-        terminalPersistenceMode() === "dtach"
-        && (kind === "shell" || kind === "claude" || kind === undefined);
-      const sshCfg = { host, port: resolvedPort, username: resolvedUser, privateKeyPath: resolvedKey };
-      let resumed = false;
-      let socketPath: string | null = null;
-      let usedDtach = false;
-      if (wantDtach) {
-        const dtach = await ensureDtach(sshCfg);
-        if (dtach.available) {
-          resumed = await probeDtachSocketExists(sshCfg, id);
-          socketPath = defaultDtachSocketPath(id);
-          usedDtach = true;
+      try {
+        let startParams: StartParams;
+        if (projectId && instanceId) {
+          startParams = { kind: "project", projectId, instanceId };
+        } else if (host && username && privateKeyPath) {
+          startParams = { kind: "direct", host, port, username, privateKeyPath };
         } else {
-          send(ws, { type: "terminal:data", payload: { id, data: `\r\n\x1b[33m[persistence unavailable: ${dtach.reason}]\x1b[0m\r\n` } });
+          send(ws, { type: "terminal:error", payload: { terminalId, message: "Either (projectId+instanceId) or (host+username+privateKeyPath) is required" } });
+          break;
         }
+        const intent = tmuxIntent === "attach" || tmuxIntent === "new" ? tmuxIntent : null;
+        await startSshSession(ws, startParams, terminalId,
+          cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to start SSH session";
+        send(ws, { type: "terminal:error", payload: { terminalId, message } });
       }
-      const persistenceFields = usedDtach
-        ? sshPtyDtachPolicy(id)
-        : sshPtyTmuxPolicy(id, { kind, mode: "spawn" });
-      spawnSshPty(id, cols || 80, rows || 24, {
-        host,
-        port: resolvedPort,
-        username: resolvedUser,
-        privateKeyPath: resolvedKey,
-        ...persistenceFields,
-        ...launch,
-      }, userId);
-      send(ws, { type: "terminal:opened", payload: { id, resumed, persistence: usedDtach ? "dtach" : "tmux" } });
-      // Persist for the History/Terminals tab. Direct SSH carries its own
-      // connection details since there's no project/instance to look them up from.
-      if (userId) {
-        await createPtySession({
-          id,
-          ownerId: userId,
-          kind: persistedKindForSpawn({ kind, command, title }),
-          vpsHost: host,
-          commandLabel: persistCommandLabelForSpawn({ kind, command, title, claudeResume }),
-          sshConfig: { host, port: resolvedPort, username: resolvedUser, privateKeyPath: resolvedKey, title },
-          dtachSocketPath: socketPath,
-        }).catch((err) => console.error("[pty-session] persist failed:", err instanceof Error ? err.message : String(err)));
+      break;
+    }
+
+    case "terminal:data": {
+      const { terminalId, data } = msg.payload as { terminalId?: string; data?: string };
+      if (terminalId && typeof data === "string") {
+        handleTerminalData(ws, terminalId, data);
       }
-      // Notify the superadmin that someone opened a remote shell. Fire-and-forget;
-      // a missing SENDGRID_API_KEY makes this a silent no-op.
-      const actor = clients.get(ws)?.user;
-      const actorLabel = actor ? `${actor.name} <${actor.email}>` : "Unknown user";
-      const kindLabel = kind === "claude-tmux" ? "Claude Terminal (tmux)" : (isClaudeKind ? "Claude Terminal" : "SSH Terminal");
-      const lines = [
-        `${actorLabel} started a ${kindLabel}.`,
-        ``,
-        `Target: ${resolvedUser}@${host}:${port || 22}`,
-      ];
-      if (title) lines.push(`Label: ${title}`);
-      if (command) lines.push(`Initial command: ${command}`);
-      lines.push(``, `Time: ${new Date().toISOString()}`);
-      void notifySuperadmin(`[Genie] ${kindLabel} started by ${actor?.name ?? "user"}`, lines.join("\n"));
+      break;
+    }
+
+    case "terminal:resize": {
+      const { terminalId, cols, rows } = msg.payload as { terminalId?: string; cols?: number; rows?: number };
+      if (terminalId && cols && rows) handleTerminalResize(terminalId, cols, rows);
+      break;
+    }
+
+    case "terminal:inject": {
+      const { terminalId, command } = msg.payload as { terminalId?: string; command?: string };
+      if (terminalId && command) handleTerminalInject(ws, terminalId, command);
+      break;
+    }
+
+    case "terminal:close": {
+      const { terminalId } = msg.payload as { terminalId?: string };
+      if (terminalId) closeSshSession(terminalId, ws);
+      break;
+    }
+
+    case "vps:stats:refresh": {
+      const { projectId, instanceId } = msg.payload as { projectId?: string; instanceId?: string };
+      if (!projectId || !instanceId) break;
+      // One-shot SSH probe — the only source of tmux sessions. Emitted as
+      // `vm:conn:stats` to disambiguate from the live daemon push, which shares
+      // the `vps:stats:update` type but a different (full) stats shape.
+      try {
+        const result = await pollVpsStats(projectId, instanceId);
+        send(ws, { type: "vm:conn:stats", payload: result });
+      } catch (err) {
+        send(ws, {
+          type: "vm:conn:stats",
+          payload: {
+            projectId, instanceId, stats: null, tmux: [],
+            error: err instanceof Error ? err.message : "stats failed",
+          },
+        });
+      }
       break;
     }
 
@@ -7818,7 +7299,49 @@ async function handleConversationChat(
   }
 }
 
+/** Read and JSON-parse an HTTP request body, capped at `maxBytes`. */
+async function readJsonBody(req: http.IncomingMessage, maxBytes = 65536): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    let aborted = false;
+    req.on("data", (chunk: Buffer) => {
+      if (aborted) return;
+      body += chunk.toString();
+      if (body.length > maxBytes) {
+        aborted = true;
+        reject(new Error("Body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (aborted) return;
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new Error("Invalid JSON"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+/** Validate a posted stats payload has the scalar numeric fields we persist. */
+function isValidStatsPayload(stats: unknown): stats is VpsStatsPayload {
+  if (!stats || typeof stats !== "object") return false;
+  const s = stats as Record<string, unknown>;
+  const numericFields = [
+    "cpuPercent", "memUsedBytes", "memTotalBytes", "memPercent",
+    "diskUsedBytes", "diskTotalBytes", "diskPercent",
+  ];
+  return numericFields.every((f) => typeof s[f] === "number" && Number.isFinite(s[f] as number));
+}
+
 export async function createServer(): Promise<WebSocketServer> {
+  // Bind the SSH terminal module to this server's `send` helper so the
+  // SshShellSession layer can emit terminal:* frames to the originating
+  // WebSocket without re-importing ws-server internals.
+  setSshWsSend((ws, message) => send(ws, message as WsMessage));
+
   // Ensure history table + default configs/templates
   await settingsService.ensureBaseImageDefaults();
 
@@ -7936,6 +7459,51 @@ export async function createServer(): Promise<WebSocketServer> {
       return;
     }
 
+    // VM stats postback: the on-VM genie-stats daemon POSTs each sample here,
+    // authed by its per-instance bearer token. Replaces the old SSH tail.
+    if (req.url === "/api/vps/stats" && req.method === "POST") {
+      const sendJson = (status: number, body: Record<string, unknown>) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(body));
+      };
+      try {
+        const authHeader = req.headers.authorization ?? "";
+        if (!authHeader.startsWith("Bearer ")) {
+          sendJson(401, { error: "Missing bearer token" });
+          return;
+        }
+        const owner = await resolveStatsToken(authHeader.slice(7).trim());
+        if (!owner) {
+          sendJson(401, { error: "Invalid token" });
+          return;
+        }
+        const body = (await readJsonBody(req)) as {
+          projectId?: string;
+          instanceId?: string;
+          ts?: unknown;
+          stats?: unknown;
+        };
+        // A token may only post for its own instance.
+        if (
+          (body.projectId && body.projectId !== owner.projectId) ||
+          (body.instanceId && body.instanceId !== owner.instanceId)
+        ) {
+          sendJson(403, { error: "Token/instance mismatch" });
+          return;
+        }
+        if (!isValidStatsPayload(body.stats)) {
+          sendJson(400, { error: "Invalid stats payload" });
+          return;
+        }
+        const ts = typeof body.ts === "number" && Number.isFinite(body.ts) ? body.ts : Date.now();
+        ingestVpsStats(owner.projectId, owner.instanceId, ts, body.stats, send);
+        sendJson(200, { ok: true });
+      } catch (err: unknown) {
+        sendJson(400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
     const match = req.url?.match(/^\/api\/public\/doc\/([A-Za-z0-9_-]+)$/);
     if (match && req.method === "GET") {
       try {
@@ -7969,6 +7537,10 @@ export async function createServer(): Promise<WebSocketServer> {
     broadcastStats(stats);
   });
 
+  // Dev-only: when this manager doesn't receive the VM's postback (shared DB),
+  // read the latest persisted samples and push them to watchers (GENIE_STATS_DB_POLL=1).
+  startStatsDbPoll(send);
+
   // Capture manager stdout/stderr and broadcast to clients. stderr is fanned
   // out twice: into the combined "manager" feed (admin) AND a dedicated
   // "errors" feed (superadmin-only via the ACL on logs:errors:data).
@@ -7987,18 +7559,7 @@ export async function createServer(): Promise<WebSocketServer> {
   // Broadcast presence detail every 3s for real-time action updates
   setInterval(() => void broadcastPresenceDetail(), 3_000);
 
-  // Forward PTY events — filtered to authorized users
-  setPtyEventCallback((event) => {
-    const sessionId = (event.payload as Record<string, unknown> | undefined)?.id as string | undefined;
-    if (sessionId) {
-      const access = getSessionAccess(sessionId);
-      if (access?.ownerId) {
-        broadcastToUsers([access.ownerId, ...access.collaboratorIds], event as WsMessage);
-        return;
-      }
-    }
-    broadcast(event as WsMessage);
-  });
+  // PTY event forwarding removed — terminal connection layer is being rebuilt.
 
   wss.on("connection", (ws, req) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
@@ -8062,20 +7623,9 @@ export async function createServer(): Promise<WebSocketServer> {
       if (closingState?.clientType === "chrome-extension" && closingState?.userId) {
         teardownPersistentMcpTunnels(closingState.userId).catch(() => {});
       }
-      // Clean up terminal collaborations
-      if (closingState?.userId) {
-        const affected = removeCollaboratorFromAll(closingState.userId);
-        for (const sessionId of affected) {
-          const access = getSessionAccess(sessionId);
-          if (access) {
-            const allUsers = [access.ownerId, ...access.collaboratorIds];
-            broadcastToUsers(allUsers, {
-              type: "terminal:share:viewers",
-              payload: { sessionId, viewerIds: allUsers },
-            });
-          }
-        }
-      }
+      // Dispose any interactive SSH terminals tied to this socket. One SSH
+      // per terminal, no persistent reuse — closing the WS kills the dial.
+      closeAllSessionsForWs(ws);
       clients.delete(ws);
       console.log(`Client disconnected (${clients.size} total)`);
       if (wasAuthenticated) broadcastPresence();
@@ -8114,7 +7664,6 @@ export function shutdown(wss: WebSocketServer): void {
   backupService.stopBackupCron();
   stopMonitoring();
   projectManager.stopEverything();
-  closeAllPtys();
   // Close all VPS agent sessions
   for (const [, session] of activeAgentSessions) {
     session.stop();

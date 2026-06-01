@@ -18,3 +18,4 @@ export * from "./file-explorer";
 export * from "./security";
 export * from "./window-manager";
 export * from "./ssh";
+export * from "./vm-connection";

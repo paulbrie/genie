@@ -10,6 +10,12 @@ interface InitMessage {
   apiKey: string;
   projectDir: string;
   maxToolRounds?: number;
+  /** Optional per-agent persona. When omitted, the agent runs with the built-in
+   *  Genie defaults (claude-sonnet, built-in system prompt, all tools exposed).
+   *  When set, these come from a row in the `agents` table on the manager. */
+  modelId?: string;
+  systemPrompt?: string;
+  allowedTools?: string[];
 }
 
 interface ChatInputMessage {
@@ -34,7 +40,14 @@ type IncomingMessage = InitMessage | ChatInputMessage | StopMessage | BrowserRes
 
 // --- State ---
 
-let config: { apiKey: string; projectDir: string; maxToolRounds: number } | null = null;
+let config: {
+  apiKey: string;
+  projectDir: string;
+  maxToolRounds: number;
+  modelId?: string;
+  systemPrompt?: string;
+  allowedTools?: string[];
+} | null = null;
 let currentAbortController: AbortController | null = null;
 
 // Pending browser action results (requestId → resolve)
@@ -60,6 +73,9 @@ function handleInit(msg: InitMessage): void {
     apiKey: msg.apiKey,
     projectDir: msg.projectDir,
     maxToolRounds: msg.maxToolRounds ?? 40,
+    modelId: msg.modelId,
+    systemPrompt: msg.systemPrompt,
+    allowedTools: msg.allowedTools,
   };
   sendMessage({ type: "ready" });
 }
@@ -80,6 +96,9 @@ async function handleChat(msg: ChatInputMessage): Promise<void> {
     apiKey: config.apiKey,
     projectDir: config.projectDir,
     maxToolRounds: config.maxToolRounds,
+    modelId: config.modelId,
+    systemPrompt: config.systemPrompt,
+    allowedTools: config.allowedTools,
     messages: msg.messages,
     context: msg.context,
     domSnapshot: msg.domSnapshot,

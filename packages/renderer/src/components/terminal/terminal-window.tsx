@@ -21,7 +21,6 @@ import { wsSend } from "@/lib/ws";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
-import { CustomTerminal } from "./custom-terminal";
 
 export const WINDOW_PREFIX = "terminal-";
 const DEFAULT_W = 600;
@@ -43,10 +42,7 @@ function SingleTerminalWindow({
   const mountedRef = useRef(false);
 
   // Which renderer this popup uses for its primary view. Decided at tab
-  // launch time (Claude (xterm) / Claude (Custom) buttons); defaults to
-  // xterm so any tab without an explicit choice — bottom-panel spawns,
-  // legacy persisted sessions — keeps the stable rendering path.
-  const useCustomRenderer = tab.renderer === "custom";
+  // Custom renderer was removed — every tab uses xterm.
 
   // Diagnostic split — opt-in. Persisted in localStorage so the choice
   // survives reloads (handy when the freeze is a once-per-session event),
@@ -187,11 +183,9 @@ function SingleTerminalWindow({
     }
   }, [tab]);
 
-  // Mount xterm when container is ready — xterm path only. The custom
-  // renderer is a React component that mounts itself; no imperative setup
-  // needed beyond firing the spawn below.
+  // Mount xterm when container is ready.
   useEffect(() => {
-    if (useCustomRenderer || !containerRef.current || mountedRef.current) return;
+    if (!containerRef.current || mountedRef.current) return;
     mountedRef.current = true;
 
     if (hasTerminal(tab.id)) {
@@ -201,17 +195,7 @@ function SingleTerminalWindow({
         spawnWhenReady(cols, rows);
       });
     }
-  }, [tab, useCustomRenderer, spawnWhenReady]);
-
-  // Spawn for the custom renderer path. xterm's onFitted callback handles the
-  // xterm path. The phase-2 grid starts at 80×24 and re-sizes the PTY from the
-  // measured container immediately after mount (terminal:resize), so we spawn
-  // at the grid's initial size to minimise the first-paint reflow.
-  useEffect(() => {
-    if (!useCustomRenderer || mountedRef.current) return;
-    mountedRef.current = true;
-    spawnWhenReady(80, 24);
-  }, [useCustomRenderer, spawnWhenReady]);
+  }, [tab, spawnWhenReady]);
 
   // Focus xterm when output arrives so keystrokes reach Claude without an extra click.
   useEffect(() => {
@@ -374,14 +358,10 @@ function SingleTerminalWindow({
         </div>
       </div>
 
-      {/* Body — single primary pane normally; 3-column diagnostic split when
-       *  the bug toggle is on. The primary pane is whichever renderer this
-       *  tab was launched with (xterm or custom); the diagnostic columns are
-       *  always WS log + Debug regardless of which renderer is primary. */}
+      {/* Body — xterm pane normally; 3-column diagnostic split when the bug
+       *  toggle is on (WS log + Debug). */}
       {(() => {
-        const primary = useCustomRenderer ? (
-          <CustomTerminal sessionId={tab.id} />
-        ) : (
+        const primary = (
           <div
             ref={containerRef}
             className="h-full w-full"
@@ -418,11 +398,6 @@ function SingleTerminalWindow({
     document.body
   );
 }
-
-// Note: the original placeholder "dumb-pre" CustomTerminalView was removed
-// when the real custom terminal (CustomTerminal in ./custom-terminal.tsx)
-// took over column 2 of the diagnostic split.
-
 
 /** WS-message log scoped to this terminal's session. Subscribes to
  *  genie:terminal:data (the in-process re-broadcast of every terminal:data
@@ -499,7 +474,7 @@ function WsLogPanel({ sessionId }: { sessionId: string }) {
 /** Live debug readout for a terminal session. Polls xterm DOM + listens to
  *  genie:terminal:data to derive bytes/sec, time-since-last-write, current
  *  renderer (canvas vs DOM), focus state, and container dims. Diagnostic
- *  only — paired with CustomTerminalView in the 3-column split. */
+ *  only — paired with WsLogPanel in the 3-column split. */
 function DebugPanel({ sessionId, containerRef }: { sessionId: string; containerRef: React.RefObject<HTMLDivElement | null> }) {
   const statsRef = useRef({
     bytesTotal: 0,

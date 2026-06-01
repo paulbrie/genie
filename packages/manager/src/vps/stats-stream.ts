@@ -1,35 +1,11 @@
 import { type WebSocket, WebSocket as Ws } from "ws";
 import type { VpsStatsPayload } from "@genie/vps-stats";
-import type { SshConnectionConfig } from "./ssh-client.js";
-import {
-  evictAllSessionsForHost,
-  evictSession,
-  getCachedSession,
-} from "./ssh-session-cache.js";
-import {
-  ensureVpsStats,
-  isGenieStatsServiceActive,
-  vpsStatsDaemonCommand,
-  vpsStatsTailCommand,
-} from "./ensure-vps-stats.js";
-import { enqueueVpsMetricSample } from "./vps-metric-service.js";
-import { dbgSsh } from "../debug-ssh-log.js";
-import { getActiveSshConnections } from "./ssh-metrics.js";
-import { recordSshEvent, classifySshDisconnect } from "./ssh-events.js";
+import { enqueueVpsMetricSample, getLatestVpsMetricSamples } from "./vps-metric-service.js";
 
 export const STATS_STALE_MS = 15_000;
 
-const INITIAL_RETRY_MS = 5_000;
-const MAX_RETRY_MS = 60_000;
-/** Cap parallel SSH dials when many VMs are watched at once. */
-const MAX_CONCURRENT_CONNECTS = 4;
-
 export function statsStreamKey(projectId: string, instanceId: string): string {
   return `${projectId}:${instanceId}`;
-}
-
-function connectionKey(cfg: SshConnectionConfig): string {
-  return `${cfg.host}:${cfg.port}:${cfg.username}`;
 }
 
 interface CachedEntry {
@@ -37,60 +13,9 @@ interface CachedEntry {
   updatedAt: number;
 }
 
-interface HostTransport {
-  config: SshConnectionConfig;
-  /** Instance keys (projectId:instanceId) sharing this SSH tail session. */
-  keys: Set<string>;
-  abort: { stop: boolean };
-}
-
 const cache = new Map<string, CachedEntry>();
 /** WS clients watching a given instance stream key. */
 const watchers = new Map<string, Set<WebSocket>>();
-/** Instance key → SSH target used when the watch was registered. */
-const keyConnections = new Map<string, SshConnectionConfig>();
-/** One tail stream per host:port:user — prevents N duplicate SSH sessions to the same VM. */
-const hostTransports = new Map<string, HostTransport>();
-const retryBackoffMs = new Map<string, number>();
-
-function hostBackoffKey(ck: string): string {
-  return ck;
-}
-
-function retryDelayMs(ck: string): number {
-  return retryBackoffMs.get(ck) ?? INITIAL_RETRY_MS;
-}
-
-function bumpRetryBackoff(ck: string): void {
-  const next = Math.min(retryDelayMs(ck) * 2, MAX_RETRY_MS);
-  retryBackoffMs.set(ck, next);
-}
-
-function resetRetryBackoff(ck: string): void {
-  retryBackoffMs.delete(ck);
-}
-
-let connectInFlight = 0;
-const connectWaiters: Array<() => void> = [];
-
-async function acquireConnectSlot(): Promise<void> {
-  if (connectInFlight < MAX_CONCURRENT_CONNECTS) {
-    connectInFlight++;
-    return;
-  }
-  await new Promise<void>((resolve) => {
-    connectWaiters.push(() => {
-      connectInFlight++;
-      resolve();
-    });
-  });
-}
-
-function releaseConnectSlot(): void {
-  connectInFlight = Math.max(0, connectInFlight - 1);
-  const next = connectWaiters.shift();
-  if (next) next();
-}
 
 export function getCachedVpsStats(projectId: string, instanceId: string): VpsStatsPayload | null {
   const entry = cache.get(statsStreamKey(projectId, instanceId));
@@ -101,30 +26,6 @@ export function getCachedVpsStats(projectId: string, instanceId: string): VpsSta
 
 function setCache(key: string, stats: VpsStatsPayload): void {
   cache.set(key, { stats, updatedAt: Date.now() });
-}
-
-function parseStreamKey(key: string): { projectId: string; instanceId: string } {
-  const idx = key.indexOf(":");
-  return { projectId: key.slice(0, idx), instanceId: key.slice(idx + 1) };
-}
-
-function handleStatsLine(
-  key: string,
-  line: string,
-  send: (ws: WebSocket, msg: { type: string; payload: Record<string, unknown> }) => void,
-): void {
-  if (!line.trim()) return;
-  let msg: { type?: string; ts?: number; stats?: VpsStatsPayload };
-  try {
-    msg = JSON.parse(line);
-  } catch {
-    return;
-  }
-  if (msg.type !== "stats" || !msg.stats) return;
-  setCache(key, msg.stats);
-  const { projectId, instanceId } = parseStreamKey(key);
-  enqueueVpsMetricSample(projectId, instanceId, msg.ts ?? Date.now(), msg.stats);
-  notifyWatchers(key, projectId, instanceId, msg.stats, send);
 }
 
 function notifyWatchers(
@@ -142,199 +43,43 @@ function notifyWatchers(
   }
 }
 
-function notifyWatchersError(
-  key: string,
+/**
+ * Ingest a single stats sample pushed by the on-VM genie-stats daemon over
+ * HTTPS (POST /api/vps/stats). Caches it for instant replay, persists it to the
+ * metric history, and fans it out to any live UI watchers. This is the sole
+ * data source now that VMs push instead of the manager tailing them over SSH.
+ */
+export function ingestVpsStats(
   projectId: string,
   instanceId: string,
-  message: string,
+  ts: number,
+  stats: VpsStatsPayload,
   send: (ws: WebSocket, msg: { type: string; payload: Record<string, unknown> }) => void,
 ): void {
-  const set = watchers.get(key);
-  if (!set?.size) return;
-  const msg = { type: "vps:stats:error", payload: { projectId, instanceId, message } };
-  for (const ws of set) {
-    if (ws.readyState === Ws.OPEN) send(ws, msg);
-  }
+  const key = statsStreamKey(projectId, instanceId);
+  setCache(key, stats);
+  enqueueVpsMetricSample(projectId, instanceId, ts, stats);
+  notifyWatchers(key, projectId, instanceId, stats, send);
 }
 
-function notifyTransportError(
-  transport: HostTransport,
-  message: string,
-  send: (ws: WebSocket, msg: { type: string; payload: Record<string, unknown> }) => void,
-): void {
-  for (const key of transport.keys) {
-    const { projectId, instanceId } = parseStreamKey(key);
-    notifyWatchersError(key, projectId, instanceId, message, send);
-  }
-}
-
-function transportHasWatchers(transport: HostTransport): boolean {
-  for (const key of transport.keys) {
-    if (watchers.get(key)?.size) return true;
-  }
-  return false;
-}
-
-async function runHostTransportLoop(
-  ck: string,
-  transport: HostTransport,
-  send: (ws: WebSocket, msg: { type: string; payload: Record<string, unknown> }) => void,
-): Promise<void> {
-  const { config } = transport;
-
-  while (!transport.abort.stop && transportHasWatchers(transport)) {
-    let sshSession: Awaited<ReturnType<typeof getCachedSession>> | undefined;
-    let channel: Awaited<ReturnType<Awaited<ReturnType<typeof getCachedSession>>["execStreaming"]>> | undefined;
-    let lineBuffer = "";
-    let acquiredSlot = false;
-    // Flight-recorder timing for this stream attempt (see vps/ssh-events.ts).
-    let streamStartedAt = 0;
-    let lastDataAt = 0;
-
-    const teardownTransport = () => {
-      try {
-        channel?.close();
-      } catch {
-        /* */
-      }
-      channel = undefined;
-      sshSession = undefined;
-    };
-
-    try {
-      await acquireConnectSlot();
-      acquiredSlot = true;
-      await ensureVpsStats(config);
-      const useSystemd = await isGenieStatsServiceActive(config);
-      // #region agent log
-      dbgSsh("stats-stream.ts:loop", "stats stream connectSsh", "H3", {
-        host: config.host,
-        username: config.username,
-        activeSsh: getActiveSshConnections(),
-      });
-      // #endregion
-      sshSession = await getCachedSession(config);
-      const streamCmd = useSystemd ? vpsStatsTailCommand() : vpsStatsDaemonCommand(5);
-      channel = await sshSession.execStreaming(streamCmd);
-      streamStartedAt = Date.now();
-      lastDataAt = streamStartedAt;
-
-      channel.stdout.on("data", (chunk: Buffer) => {
-        lastDataAt = Date.now();
-        lineBuffer += chunk.toString();
-        const lines = lineBuffer.split("\n");
-        lineBuffer = lines.pop() || "";
-        for (const line of lines) {
-          for (const key of transport.keys) {
-            if (watchers.get(key)?.size) {
-              handleStatsLine(key, line, send);
-            }
-          }
-        }
-      });
-
-      channel.stderr.on("data", (chunk: Buffer) => {
-        const text = chunk.toString().trim();
-        if (text) console.error(`[vps-stats:${config.host}] ${text}`);
-      });
-
-      await new Promise<void>((resolve) => {
-        channel!.stdout.on("end", () => resolve());
-        channel!.stdout.on("close", () => resolve());
-      });
-      resetRetryBackoff(ck);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[vps-stats] stream error for ${config.host}: ${message}`);
-      notifyTransportError(transport, message, send);
-    } finally {
-      teardownTransport();
-      if (acquiredSlot) releaseConnectSlot();
-    }
-
-    if (transport.abort.stop || !transportHasWatchers(transport)) break;
-
-    const delay = retryDelayMs(ck);
-    bumpRetryBackoff(ck);
-    await new Promise((r) => setTimeout(r, delay));
-  }
-
-  hostTransports.delete(ck);
-  evictSession(config);
-}
-
-function ensureHostTransport(
-  key: string,
-  connection: SshConnectionConfig,
-  send: (ws: WebSocket, msg: { type: string; payload: Record<string, unknown> }) => void,
-): void {
-  const ck = connectionKey(connection);
-  const existing = hostTransports.get(ck);
-  if (existing) {
-    existing.keys.add(key);
-    return;
-  }
-
-  const transport: HostTransport = {
-    config: connection,
-    keys: new Set([key]),
-    abort: { stop: false },
-  };
-  hostTransports.set(ck, transport);
-  void runHostTransportLoop(ck, transport, send);
-}
-
-function releaseInstanceKey(key: string): void {
-  const connection = keyConnections.get(key);
-  keyConnections.delete(key);
-  if (!connection) return;
-
-  const ck = connectionKey(connection);
-  const transport = hostTransports.get(ck);
-  if (!transport) return;
-
-  transport.keys.delete(key);
-  if (!transportHasWatchers(transport)) {
-    transport.abort.stop = true;
-    if (transport.keys.size === 0) {
-      hostTransports.delete(ck);
-    }
-  }
-}
-
-/** Stop all stats tail streams targeting `host` (used by /ssh kill-all). */
-export function stopStatsStreamsForHost(host: string): void {
-  for (const [ck, transport] of hostTransports) {
-    if (transport.config.host !== host) continue;
-    transport.abort.stop = true;
-    hostTransports.delete(ck);
-  }
-  for (const [key, conn] of keyConnections) {
-    if (conn.host === host) {
-      keyConnections.delete(key);
-    }
-  }
-  evictAllSessionsForHost(host);
-}
-
+/**
+ * Register a UI client as a watcher of an instance's live stats. The actual
+ * samples arrive via `ingestVpsStats` from the VM's HTTPS postback; this just
+ * subscribes the socket and replays the most recent cached value.
+ */
 export function watchVpsStats(
   ws: WebSocket,
   projectId: string,
   instanceId: string,
-  connection: SshConnectionConfig,
   send: (ws: WebSocket, msg: { type: string; payload: Record<string, unknown> }) => void,
 ): void {
   const key = statsStreamKey(projectId, instanceId);
-  keyConnections.set(key, connection);
-
   let set = watchers.get(key);
   if (!set) {
     set = new Set();
     watchers.set(key, set);
   }
   set.add(ws);
-
-  ensureHostTransport(key, connection, send);
 
   const cached = cache.get(key);
   if (cached) {
@@ -350,23 +95,95 @@ export function unwatchVpsStats(ws: WebSocket, projectId: string, instanceId: st
   const set = watchers.get(key);
   if (!set) return;
   set.delete(ws);
-  if (set.size === 0) {
-    watchers.delete(key);
-    releaseInstanceKey(key);
-  }
+  if (set.size === 0) watchers.delete(key);
 }
 
 /** Drop all watches for a disconnected WebSocket client. */
 export function unwatchVpsStatsForClient(ws: WebSocket): void {
   for (const [key, set] of watchers) {
     if (!set.delete(ws)) continue;
-    if (set.size === 0) {
-      watchers.delete(key);
-      releaseInstanceKey(key);
-    }
+    if (set.size === 0) watchers.delete(key);
   }
 }
 
 export function clearVpsStatsCache(projectId: string, instanceId: string): void {
   cache.delete(statsStreamKey(projectId, instanceId));
+}
+
+function parseStreamKey(key: string): { projectId: string; instanceId: string } {
+  const idx = key.indexOf(":");
+  return { projectId: key.slice(0, idx), instanceId: key.slice(idx + 1) };
+}
+
+/**
+ * Decide whether the dev DB-poll fallback should run. Explicit
+ * GENIE_STATS_DB_POLL=1/0 wins; otherwise auto-enable when this manager isn't
+ * publicly addressable (MANAGER_URL unset or pointing at localhost) — i.e. a
+ * dev manager that won't receive the VM's postback but shares prod's DB.
+ */
+function dbPollEnabled(): boolean {
+  const flag = process.env.GENIE_STATS_DB_POLL;
+  if (flag === "1") return true;
+  if (flag === "0") return false;
+  const url = process.env.MANAGER_URL?.trim();
+  if (!url) return true; // unset → defaults to http://127.0.0.1:PORT (dev)
+  try {
+    const host = new URL(url).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Dev-only fallback: when this manager doesn't receive the VM's HTTPS postback
+ * (the VM posts to prod), but dev and prod share a DB, poll the latest persisted
+ * sample for each watched VM every 5s and push it to watchers — the same
+ * `vps:stats:update` the live path emits, just sourced from the DB. The
+ * persisted row carries only scalar gauges, so processes/ports come back empty.
+ * Auto-enabled when MANAGER_URL is unset/localhost; force with GENIE_STATS_DB_POLL=1/0.
+ */
+export function startStatsDbPoll(
+  send: (ws: WebSocket, msg: { type: string; payload: Record<string, unknown> }) => void,
+): void {
+  if (!dbPollEnabled()) return;
+  console.log("[vps-stats] DB-poll fallback enabled (reading vps_metric_samples every 5s)");
+
+  const timer = setInterval(() => {
+    void (async () => {
+      const keys = [...watchers.keys()].filter((k) => watchers.get(k)?.size);
+      if (keys.length === 0) return;
+      const instances = keys.map(parseStreamKey);
+      let latest: Awaited<ReturnType<typeof getLatestVpsMetricSamples>>;
+      try {
+        latest = await getLatestVpsMetricSamples(instances);
+      } catch (err: unknown) {
+        console.error(`[vps-stats] DB-poll query failed: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      for (const key of keys) {
+        const m = latest[key];
+        if (!m) continue;
+        const cached = cache.get(key);
+        // Skip if we've already pushed this exact sample.
+        if (cached && cached.updatedAt >= m.sampledAt) continue;
+        const { projectId, instanceId } = parseStreamKey(key);
+        const stats: VpsStatsPayload = {
+          cpuPercent: m.cpuPercent,
+          memUsedBytes: m.memUsedBytes,
+          memTotalBytes: m.memTotalBytes,
+          memPercent: m.memPercent,
+          diskUsedBytes: m.diskUsedBytes,
+          diskTotalBytes: m.diskTotalBytes,
+          diskPercent: m.diskPercent,
+          processes: [],
+          openPorts: [],
+          externalPorts: [],
+        };
+        cache.set(key, { stats, updatedAt: m.sampledAt });
+        notifyWatchers(key, projectId, instanceId, stats, send);
+      }
+    })();
+  }, 5000);
+  timer.unref();
 }

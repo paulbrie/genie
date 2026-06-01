@@ -14,16 +14,17 @@ import {
   Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw,
   Settings as SettingsIcon, Shield, Sparkles, Terminal, Trash2, X,
 } from "lucide-react";
-import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $vpsStatsSync, $windowManager } from "@/store/subjects";
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import {
-  addSshTerminalTab, adminDropletExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
-  ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, launchClaudeTmuxSshTab, loadRecipes,
+  adminDropletExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
+  ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, loadRecipes,
   releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, loadPersistedTerminals,
-  minimizeWindow, openWindow, reattachPersistedTerminal, registerWindow, unwatchVpsStats,
+  minimizeWindow, openWindow, reattachPersistedTerminal, registerWindow, syncVmStatsAgent, unwatchVpsStats,
   updateWindowPosition, vpsExec, watchVpsStats,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
+import { openVmConnectionWindow } from "@/components/tazcloud/vm-connection-window";
 import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
@@ -250,75 +251,132 @@ function CheckGenieSetupButton({
   );
 }
 
-/** Claude Terminal — uses the SSH user already resolved for this popup (no
- *  extra probe). Always wrapped in a tmux session named after the tab id, so
- *  the process survives WS/SSH drops and reappears in the Sessions tab for
- *  reattach. Two buttons pick the popup's rendering frontend:
- *    • Claude (xterm)  → battle-tested xterm.js
- *    • Claude (Custom) → in-house VT parser + renderer (phase 1, no alt
- *                        screen yet — use for streaming chat output only) */
-function ClaudeManageButton({ vm, sshUser }: { vm: ManageVm; sshUser: string }) {
-  const ssh = {
-    host: vm.host,
-    port: 22,
-    username: sshUser,
-    privateKeyPath: sshKeyPathFor(vm),
-  };
-  const base = `Claude ${sshUser}@${vm.name}`;
+/** Re-uploads the latest stats daemon bundle + postback drop-in (manager URL +
+ *  token) and restarts genie-stats — without re-running the whole recipe.
+ *  Handy after the daemon changes, or to re-point a VM at a dev manager. */
+function SyncStatsAgentButton({ projectId, instanceId }: { projectId: string; instanceId: string }) {
+  const [syncState] = useSubject($vpsStatsSync);
+  const status = syncState[`${projectId}:${instanceId}`];
+  const running = status?.running ?? false;
+  const label = running ? "Syncing…" : status?.error ? "Sync failed" : "Sync stats agent";
+
   return (
-    <div className="flex items-stretch">
-      <button
-        onClick={() => launchClaudeTmuxSshTab(ssh, base, { renderer: "xterm" })}
-        className="flex items-center gap-1.5 px-2 py-0.5 rounded-l border border-r-0 border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
-        title={`Launch Claude in an xterm-rendered popup (stable) — ${sshUser}@${vm.host}`}
-      >
-        <ClaudeLogo size={11} />
-        Claude (xterm)
-      </button>
-      <button
-        onClick={() => launchClaudeTmuxSshTab(ssh, `${base} (custom)`, { renderer: "custom" })}
-        className="flex items-center gap-1.5 px-2 py-0.5 rounded-r border border-peach/30 text-md text-peach hover:bg-peach/10 transition-colors"
-        title={`Launch Claude in the in-house custom renderer (phase 1 — no alt screen, streaming chat only) — ${sshUser}@${vm.host}`}
-      >
-        <ClaudeLogo size={11} />
-        Claude (Custom)
-      </button>
-    </div>
+    <button
+      type="button"
+      onClick={() => syncVmStatsAgent(projectId, instanceId)}
+      disabled={running}
+      className={cn(
+        "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-40 disabled:cursor-wait",
+        status?.error
+          ? "border-red/30 text-red hover:bg-red/10"
+          : "border-overlay0/30 text-overlay1 hover:bg-surface0",
+      )}
+      title={
+        running
+          ? "Uploading stats daemon + writing postback config…"
+          : status?.error
+            ? `Last sync failed: ${status.error}`
+            : "Push the latest stats daemon + postback config (manager URL + token) to this VM and restart it"
+      }
+    >
+      {running ? (
+        <Loader2 size={11} className="animate-spin shrink-0" />
+      ) : (
+        <Activity size={11} className="shrink-0" />
+      )}
+      {label}
+    </button>
+  );
+}
+
+/** Claude Terminal — opens the live SSH popup for this VM and launches
+ *  Claude inside it (xterm.js renderer). */
+function ClaudeManageButton({
+  vm,
+  sshUser,
+  linked,
+}: {
+  vm: ManageVm;
+  sshUser: string;
+  linked: { project: { id: string }; instance: { id: string } } | null;
+}) {
+  const enabled = !!linked;
+  const openClaude = () => {
+    if (!linked) return;
+    openVmConnectionWindow({
+      projectId: linked.project.id,
+      instanceId: linked.instance.id,
+      host: vm.host,
+      port: 22,
+      username: sshUser,
+      vmLabel: `Claude · ${vm.name}`,
+    });
+  };
+  const reason = enabled ? undefined : "Attach this VM to a project to enable Claude/SSH terminals";
+  return (
+    <button
+      onClick={openClaude}
+      disabled={!enabled}
+      className={cn(
+        "flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach transition-colors",
+        enabled ? "hover:bg-peach/10" : "opacity-40 cursor-not-allowed",
+      )}
+      title={reason ?? `Launch Claude — ${sshUser}@${vm.host}`}
+    >
+      <ClaudeLogo size={11} />
+      Claude
+    </button>
   );
 }
 
 /** SSH-launch split-button for the Manage tab. Click the body → open a terminal
  *  as `genie` (the deploy user); click the chevron → pick a different login. */
-function SshLaunchButton({ vm }: { vm: ManageVm }) {
+function SshLaunchButton({
+  vm,
+  linked,
+}: {
+  vm: ManageVm;
+  linked: { project: { id: string }; instance: { id: string } } | null;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
   if (!vm.host) return null;
+  const enabled = !!linked;
   const openSsh = (user: string) => {
-    addSshTerminalTab(
-      {
-        host: vm.host,
-        port: 22,
-        username: user,
-        privateKeyPath: sshKeyPathFor(vm),
-      },
-      `SSH ${user}@${vm.name}`,
-    );
+    if (!linked) return;
+    openVmConnectionWindow({
+      projectId: linked.project.id,
+      instanceId: linked.instance.id,
+      host: vm.host,
+      port: 22,
+      username: user,
+      vmLabel: vm.name,
+    });
   };
   const defaultUser = vm.provider === "ssh" ? (vm.connection?.username || "root") : "genie";
   const imageDefault = imageDefaultUser(vm.image);
   const userChoices = sshUserChoicesFor(vm);
+  const disabledTitle = enabled ? undefined : "Attach this VM to a project to open an SSH terminal";
   return (
     <div className="relative inline-flex items-stretch">
       <button
         onClick={() => openSsh(defaultUser)}
-        className="flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 rounded-l border border-r-0 border-blue/30 text-md text-blue hover:bg-blue/10 transition-colors"
-        title={`Open SSH terminal — ${defaultUser}@${vm.host}`}
+        disabled={!enabled}
+        className={cn(
+          "flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 rounded-l border border-r-0 border-blue/30 text-md text-blue transition-colors",
+          enabled ? "hover:bg-blue/10" : "opacity-40 cursor-not-allowed",
+        )}
+        title={disabledTitle ?? `Open SSH terminal — ${defaultUser}@${vm.host}`}
       >
         <Terminal size={11} />
         SSH
       </button>
       <button
         onClick={() => setMenuOpen((v) => !v)}
-        className="flex items-center px-1 rounded-r border border-blue/30 text-blue hover:bg-blue/10 transition-colors"
+        disabled={!enabled}
+        className={cn(
+          "flex items-center px-1 rounded-r border border-blue/30 text-blue transition-colors",
+          enabled ? "hover:bg-blue/10" : "opacity-40 cursor-not-allowed",
+        )}
         title="Choose SSH user"
       >
         <ChevronDown size={11} />
@@ -888,8 +946,14 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
                     onCheck={genieSetup.runCheck}
                     disabled={!genieSetup.recipe}
                   />
-                  <ClaudeManageButton vm={vm} sshUser={claudeSshUser} />
-                  <SshLaunchButton vm={vm} />
+                  {linked && (
+                    <SyncStatsAgentButton
+                      projectId={linked.project.id}
+                      instanceId={linked.instance.id}
+                    />
+                  )}
+                  <ClaudeManageButton vm={vm} sshUser={claudeSshUser} linked={linked} />
+                  <SshLaunchButton vm={vm} linked={linked} />
                 </div>
               </div>
               {vm.provider === "do" && linked && (

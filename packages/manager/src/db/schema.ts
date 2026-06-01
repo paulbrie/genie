@@ -396,6 +396,20 @@ export const serverCredentials = pgTable("server_credentials", {
   index("idx_server_credentials_project").on(t.projectId),
 ]);
 
+// Per-instance bearer token the on-VM genie-stats daemon uses to authenticate
+// its HTTPS stats postback to the manager (POST /api/vps/stats). One row per
+// (projectId, instanceId); `token` is the lookup key on ingest.
+export const vpsStatsTokens = pgTable("vps_stats_tokens", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  instanceId: text("instance_id").notNull(),
+  token: text("token").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex("uniq_vps_stats_tokens_token").on(t.token),
+  uniqueIndex("uniq_vps_stats_tokens_instance").on(t.projectId, t.instanceId),
+]);
+
 export const globalSettings = pgTable("global_settings", {
   key: text("key").primaryKey(),
   value: jsonb("value").notNull(),
@@ -622,6 +636,71 @@ export const vpsMetricSamples = pgTable("vps_metric_samples", {
 }, (t) => [
   index("idx_vps_metric_samples_lookup").on(t.projectId, t.instanceId, t.sampledAt),
   index("idx_vps_metric_samples_sampled_at").on(t.sampledAt),
+]);
+
+/**
+ * User-definable AI agents. An agent is a named LLM persona with its own
+ * system prompt, model, tool allowlist, and sandbox target — think "recipes
+ * but for AI". Built-in agents are seeded on boot (isBuiltin=true) and can be
+ * forked by users; user-created agents have an ownerUserId and isBuiltin=false.
+ * Runs of an agent are tracked in `agentRuns`.
+ */
+export const agents = pgTable("agents", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  slug: text("slug").notNull().unique(),                       // url-safe stable id (e.g. "echo", "reviewer")
+  label: text("label").notNull(),                              // display name
+  description: text("description").default("").notNull(),
+  systemPrompt: text("system_prompt").default("").notNull(),
+  /** Model id from chat.ts CHAT_MODELS — kept as free-form text so adding a new
+   *  model in code doesn't require a migration. Empty/unknown → default. */
+  modelId: text("model_id").default("claude-sonnet").notNull(),
+  maxToolRounds: integer("max_tool_rounds").default(40).notNull(),
+  /** Allowlist of tool names (strings). Empty array = allow all built-in tools.
+   *  Names match the keys exposed by createTools() in @genie/vps-agent. */
+  tools: jsonb("tools").default([]).notNull(),
+  /** Where the agent runs. v0: `{kind:"project-docker", projectId, instanceId, timeoutSec?}`.
+   *  Future: `{kind:"firecracker", host, ...}`. */
+  sandbox: jsonb("sandbox").default({}).notNull(),
+  ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+  isBuiltin: boolean("is_builtin").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => [
+  index("idx_agents_slug").on(t.slug),
+  index("idx_agents_owner").on(t.ownerUserId),
+]);
+
+/**
+ * One execution of an agent. Status flows queued → running → (succeeded |
+ * failed | timeout | cancelled). `toolEvents` accumulates the streamed
+ * `{name,input,result}` tool calls (same shape as assistantChatLogs.toolUses).
+ * `parentRunId` is set for agent-to-agent calls (Phase 4).
+ */
+export const agentRuns = pgTable("agent_runs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }).notNull(),
+  parentRunId: uuid("parent_run_id"),
+  triggeredByUserId: uuid("triggered_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+  instanceId: text("instance_id"),
+  status: text("status", { enum: ["queued", "running", "succeeded", "failed", "timeout", "cancelled"] })
+    .default("queued").notNull(),
+  input: jsonb("input").default({}).notNull(),
+  output: jsonb("output"),
+  error: text("error"),
+  inputTokens: integer("input_tokens").default(0).notNull(),
+  outputTokens: integer("output_tokens").default(0).notNull(),
+  costUsd: real("cost_usd").default(0).notNull(),
+  toolEvents: jsonb("tool_events").default([]).notNull(),
+  /** Backend-specific reference for cleanup (Docker container id, microVM id). */
+  sandboxRef: text("sandbox_ref"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+}, (t) => [
+  index("idx_agent_runs_agent").on(t.agentId),
+  index("idx_agent_runs_project").on(t.projectId),
+  index("idx_agent_runs_status").on(t.status),
+  index("idx_agent_runs_started").on(t.startedAt),
 ]);
 
 // SSH disconnect flight recorder (see vps/ssh-events.ts). Persists every

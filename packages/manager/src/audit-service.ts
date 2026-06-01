@@ -7,8 +7,6 @@ const SKIP_TYPES = new Set([
   "ping",
   "pong",
   "stats",
-  "pty:data",
-  "pty:resize",
 ]);
 
 export async function logAction(

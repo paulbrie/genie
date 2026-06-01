@@ -19,3 +19,4 @@ TESTER-CREDENTIALS.md
 # Playwright generated output — never commit
 packages/*/playwright-report/
 packages/*/test-results/
+.playwright-mcp/

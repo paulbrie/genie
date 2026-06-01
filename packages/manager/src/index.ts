@@ -1,6 +1,6 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
-import { migrateOrgCredentials, migrateOrgs, migrateServerCredentials, migrateTeamInvites, migrateVpsMetricSamples } from "./db/migrate.js";
+import { migrateAgents, migrateOrgCredentials, migrateOrgs, migrateServerCredentials, migrateTeamInvites, migrateVpsMetricSamples, migrateVpsStatsTokens } from "./db/migrate.js";
 import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-service.js";
 import { startSshEventFlusher, stopSshEventFlusher } from "./vps/ssh-events.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
@@ -78,6 +78,16 @@ try {
   await migrateVpsMetricSamples();
 } catch (err) {
   console.error("[migrate] vps_metric_samples migration failed:", err);
+}
+try {
+  await migrateVpsStatsTokens();
+} catch (err) {
+  console.error("[migrate] vps_stats_tokens migration failed:", err);
+}
+try {
+  await migrateAgents();
+} catch (err) {
+  console.error("[migrate] agents migration failed:", err);
 }
 startVpsMetricFlusher();
 try {

@@ -5,6 +5,7 @@ import type {
   PersistedTerminalsState,
   ProjectDef,
   TerminalState,
+  VmConnectionsState,
   VpsDeployState,
   VpsMonitorState,
 } from "../types/vps";
@@ -30,6 +31,16 @@ export const $railwayTestResult = new Subject<{ ok: boolean; message: string } |
 export const $doSnapshots = new Subject<DoSnapshot[]>([]);
 export const $doSnapshotsLoading = new Subject<boolean>(false);
 export const $vpsDeploy = new DeepSubject<VpsDeployState>({ instances: {}, activeDeploys: {}, testResult: null, deployLogs: [] });
+
+/** Live VM SSH connections — keyed by `${projectId}:${instanceId}` (or
+ *  `direct:${host}:${username}`). One entry per open Manage-popup. */
+export const $vmConnections = new DeepSubject<VmConnectionsState>({ connections: {} });
+
+/** Per-instance status of the "Sync stats agent" action, keyed by
+ *  `${projectId}:${instanceId}`. */
+export const $vpsStatsSync = new Subject<
+  Record<string, { running: boolean; message: string; error: string | null }>
+>({});
 
 export const $vpsMonitor = new Subject<VpsMonitorState>({
   history: {},

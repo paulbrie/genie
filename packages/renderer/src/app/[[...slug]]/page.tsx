@@ -16,6 +16,7 @@ import { ChatView } from "@/components/chat/chat-view";
 import { ChatNotificationToasts } from "@/components/chat/chat-notification-toasts";
 import { ManageVmWindows } from "@/components/tazcloud/manage-vm-popup";
 import { ManageDropletWindows } from "@/components/admin/digitalocean-panel";
+import { VmConnectionWindows } from "@/components/tazcloud/vm-connection-window";
 import { TrackerPanel } from "@/components/project/tracker-panel";
 import { AdminPanel } from "@/components/admin/admin-panel";
 import { CloudsPanel } from "@/components/project/clouds-panel";
@@ -265,6 +266,7 @@ export default function Home() {
           prefixes keep them independent. */}
       <ManageVmWindows />
       <ManageDropletWindows />
+      <VmConnectionWindows />
     </>
   );
 }

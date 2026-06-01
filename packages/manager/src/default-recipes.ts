@@ -225,6 +225,7 @@ ${BASH_HELPERS}
 log "Stopping genie-stats service..."
 sudo systemctl disable --now genie-stats.service 2>/dev/null || true
 sudo rm -f /etc/systemd/system/genie-stats.service
+sudo rm -rf /etc/systemd/system/genie-stats.service.d
 sudo systemctl daemon-reload 2>/dev/null || true
 log "Removing Claude Code (user-facing global)..."
 sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
@@ -328,6 +329,110 @@ apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=t
     ],
   },
   {
+    slug: "playwright",
+    label: "Playwright",
+    icon: "Globe",
+    description: "Playwright browser-automation toolkit. Installs @playwright/test globally, the OS dependencies for Chromium, and downloads Chromium into the 'genie' user's cache (~/.cache/ms-playwright, ~300MB). Firefox/WebKit can be added via the commands below. Requires Genie Standard Setup (provides the 'genie' user).",
+    checkScript: `if command -v playwright > /dev/null 2>&1 && sudo -n test -d /home/genie/.cache/ms-playwright 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+# registry.npmjs.org and playwright.azureedge.net (browser CDN) are Cloudflare/
+# Azure-fronted and v6-flaky from Taz VMs — see taz-ipv6-quirk.
+force_ipv4_dns
+
+if ! id genie > /dev/null 2>&1; then
+  log "ERROR: 'genie' user missing — install 'Genie Standard Setup' first."; exit 1
+fi
+
+# 1. Node.js (Playwright ships via npm; needs ≥18).
+if ! command -v node > /dev/null 2>&1 || ! command -v npm > /dev/null 2>&1; then
+  log "Node.js not found — installing Node 20 via NodeSource..."
+  if command -v apt-get > /dev/null 2>&1; then
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates > /dev/null
+    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null
+  elif command -v dnf > /dev/null 2>&1; then
+    sudo dnf install -y -q curl > /dev/null
+    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1
+    sudo dnf install -y -q nodejs > /dev/null
+  else
+    log "ERROR: need apt-get or dnf and Node.js is missing."; exit 1
+  fi
+fi
+log "Node: $(node --version), npm: $(npm --version)"
+
+# 2. Install @playwright/test globally (provides the 'playwright' CLI).
+# HOME=/root pins npm's cache to /root/.npm — see comment in genie-standard.
+log "Installing @playwright/test globally (npm install -g)..."
+sudo HOME=/root NODE_OPTIONS="--dns-result-order=ipv4first" \\
+  npm install -g \\
+    --no-audit --no-fund \\
+    --fetch-retries=2 --fetch-retry-mintimeout=5000 \\
+    @playwright/test 2>&1 | tail -20
+
+if ! command -v playwright > /dev/null 2>&1; then
+  log "ERROR: 'playwright' is not on PATH after npm install — check 'npm root -g'."; exit 1
+fi
+log "Playwright CLI: $(playwright --version 2>&1 | head -1)"
+
+# 3. OS browser deps for Chromium (libnss3, libatk-bridge2.0-0, libxss1, …).
+# 'playwright install-deps' shells to apt-get internally — Ubuntu/Debian only,
+# per https://playwright.dev/docs/cli#install-system-dependencies. On dnf-based
+# distros (RHEL/Alma/Rocky) it fails with "Don't know how to install dependencies
+# on this Linux distribution". Skip it there and let the user install the
+# equivalent RPMs themselves; the next step (browser download) still works and
+# Chromium will tell them at launch which libs are missing.
+if command -v apt-get > /dev/null 2>&1; then
+  log "Installing OS browser dependencies for Chromium (apt, ~50–100 MB)..."
+  wait_apt
+  sudo NODE_OPTIONS="--dns-result-order=ipv4first" \\
+    playwright install-deps chromium 2>&1 | sed 's/^/  /' | tail -30
+else
+  log "Skipping 'playwright install-deps' — only Ubuntu/Debian is supported by playwright's installer."
+  log "On RHEL/Alma/Rocky, install the equivalent libs by hand: 'sudo dnf install nss atk at-spi2-atk libdrm mesa-libgbm libxkbcommon alsa-lib' (see playwright.dev/docs/browsers#system-requirements)."
+fi
+
+# 4. Download Chromium as the 'genie' user so the cache (~300 MB) lands in
+# /home/genie/.cache/ms-playwright — same user that runs the tests later.
+log "Downloading Chromium as 'genie' (~300 MB, takes 1–2 min)..."
+sudo -H -u genie env NODE_OPTIONS="--dns-result-order=ipv4first" \\
+  playwright install chromium 2>&1 | sed 's/^/  /' | tail -20
+
+log "Versions:"
+log "  Playwright: $(playwright --version 2>&1 | head -1)"
+log "  Node:       $(node --version)"
+log "  Cache size: $(sudo -n du -sh /home/genie/.cache/ms-playwright 2>/dev/null | awk '{print $1}')"
+log "Done. Run tests as: sudo -H -u genie playwright test"
+log "Add Firefox/WebKit with the 'Install Firefox' / 'Install WebKit' commands."`,
+    uninstallScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+log "Uninstalling @playwright/test (global)..."
+sudo npm uninstall -g @playwright/test 2>&1 | tail -3 || true
+log "Removing browser caches (/home/genie and /root)..."
+sudo rm -rf /home/genie/.cache/ms-playwright /root/.cache/ms-playwright 2>/dev/null || true
+log "Note: apt-installed system libraries (libnss3 etc.) are left in place — shared with other browsers."
+log "Done."`,
+    setupShSnippet: `# Playwright + Chromium (assumes Node.js + 'genie' user from Genie Standard Setup)
+sudo HOME=/root NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g --no-audit --no-fund @playwright/test 2>&1 | tail -5
+NODE_OPTIONS="--dns-result-order=ipv4first" playwright install-deps chromium
+sudo -H -u genie env NODE_OPTIONS="--dns-result-order=ipv4first" playwright install chromium`,
+    commands: [
+      { name: "Version", command: "playwright --version" },
+      { name: "List cached browsers (genie)", command: "sudo -H -u genie ls /home/genie/.cache/ms-playwright 2>/dev/null || echo '(no browsers cached for genie)'" },
+      { name: "Cache size", command: "sudo du -sh /home/genie/.cache/ms-playwright 2>/dev/null || echo '(no cache)'" },
+      { name: "Where installed", command: "command -v playwright && ls -la $(command -v playwright)" },
+      { name: "Install Firefox", command: "sudo -H -u genie env NODE_OPTIONS=--dns-result-order=ipv4first playwright install firefox 2>&1 | tail -20" },
+      { name: "Install WebKit", command: "sudo NODE_OPTIONS=--dns-result-order=ipv4first playwright install-deps webkit && sudo -H -u genie env NODE_OPTIONS=--dns-result-order=ipv4first playwright install webkit 2>&1 | tail -20" },
+      { name: "Re-download Chromium (force)", command: "sudo -H -u genie env NODE_OPTIONS=--dns-result-order=ipv4first playwright install --force chromium 2>&1 | tail -20" },
+      { name: "Reinstall OS deps (chromium)", command: "sudo NODE_OPTIONS=--dns-result-order=ipv4first playwright install-deps chromium 2>&1 | tail -20" },
+      { name: "Smoke test (launch chromium → example.com)", command: "sudo -H -u genie node -e \"const{chromium}=require(process.env.NPM_GLOBAL+'/@playwright/test/node_modules/playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage();await p.goto('https://example.com');console.log('title:',await p.title());await b.close();})().catch(e=>{console.error(e);process.exit(1)})\" NPM_GLOBAL=$(npm root -g)" },
+      { name: "Update Playwright", command: "sudo HOME=/root NODE_OPTIONS=--dns-result-order=ipv4first npm install -g --no-audit --no-fund @playwright/test 2>&1 | tail -5" },
+    ],
+  },
+  {
     slug: "postgres",
     label: "PostgreSQL",
     icon: "Database",
@@ -339,28 +444,52 @@ export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
 PG_VERSION="\${PG_VERSION:-default}"
 log "Installing PostgreSQL (version: $PG_VERSION)..."
-if [ "$PG_VERSION" = "default" ]; then
-  log "apt-get update..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
-  log "apt-get install postgresql (this can take 1-2 min)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq postgresql postgresql-contrib > /dev/null
-  log "apt-get install done."
+if command -v apt-get > /dev/null 2>&1; then
+  if [ "$PG_VERSION" = "default" ]; then
+    log "apt-get update..."
+    wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+    log "apt-get install postgresql (this can take 1-2 min)..."
+    wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq postgresql postgresql-contrib > /dev/null
+    log "apt-get install done."
+  else
+    # Add PGDG repository to get specific PG versions (Ubuntu/Debian only).
+    # apt.postgresql.org and www.postgresql.org are Fastly-fronted; v6 egress to
+    # Fastly hangs from some VMs (e.g. TazCloud), so force IPv4 for these fetches.
+    log "Installing prereqs (curl, ca-certificates, lsb-release)..."
+    wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates lsb-release > /dev/null
+    log "Adding PGDG repository key + source..."
+    sudo install -d /etc/apt/keyrings
+    curl -4 -fsSL --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/keyrings/postgresql.asc > /dev/null
+    CODENAME=$(lsb_release -cs)
+    echo "deb [signed-by=/etc/apt/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt $CODENAME-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+    log "Codename: $CODENAME — apt-get update (refresh PGDG)..."
+    wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+    log "apt-get install postgresql-$PG_VERSION (can take 1-3 min)..."
+    wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq postgresql-$PG_VERSION postgresql-contrib-$PG_VERSION > /dev/null
+    log "apt-get install done."
+  fi
+elif command -v dnf > /dev/null 2>&1; then
+  # AlmaLinux/Rocky/RHEL path. Stock 'postgresql-server' is the default cluster
+  # version for the EL release (PG 13 on EL9, PG 15 via the postgresql:15 module).
+  # PGDG RPM repos exist but the PG_VERSION option here is shaped around Debian
+  # codenames, so on dnf we only honor 'default' and warn loudly for anything else.
+  if [ "$PG_VERSION" != "default" ]; then
+    log "WARNING: PG_VERSION=$PG_VERSION ignored on dnf — installing the EL default cluster. Use PGDG RPM repos manually for a specific version."
+  fi
+  log "dnf install postgresql-server postgresql-contrib (1-2 min)..."
+  sudo dnf install -y -q postgresql-server postgresql-contrib > /dev/null
+  # RHEL/Alma packages ship without an initialized cluster — first start fails
+  # until 'postgresql-setup --initdb' runs. Idempotent: setup exits non-zero
+  # if the data dir already exists, hence the || true.
+  if [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
+    log "Initializing data dir (/var/lib/pgsql/data) via postgresql-setup --initdb..."
+    sudo postgresql-setup --initdb > /dev/null
+  else
+    log "Data dir already initialized — skipping initdb."
+  fi
+  log "dnf install done."
 else
-  # Add PGDG repository to get specific PG versions (Ubuntu/Debian only).
-  # apt.postgresql.org and www.postgresql.org are Fastly-fronted; v6 egress to
-  # Fastly hangs from some VMs (e.g. TazCloud), so force IPv4 for these fetches.
-  log "Installing prereqs (curl, ca-certificates, lsb-release)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates lsb-release > /dev/null
-  log "Adding PGDG repository key + source..."
-  sudo install -d /etc/apt/keyrings
-  curl -4 -fsSL --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/keyrings/postgresql.asc > /dev/null
-  CODENAME=$(lsb_release -cs)
-  echo "deb [signed-by=/etc/apt/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt $CODENAME-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
-  log "Codename: $CODENAME — apt-get update (refresh PGDG)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
-  log "apt-get install postgresql-$PG_VERSION (can take 1-3 min)..."
-  wait_apt; sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq postgresql-$PG_VERSION postgresql-contrib-$PG_VERSION > /dev/null
-  log "apt-get install done."
+  log "ERROR: unsupported package manager (need apt-get or dnf)."; exit 1
 fi
 log "Starting PostgreSQL..."
 # Prefer systemctl (modern Ubuntu/Debian/Almalinux); fall back to legacy 'service'.
@@ -410,17 +539,29 @@ log "PostgreSQL ready (user: postgres, password: postgres, port: 5432, version: 
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
 log "Stopping PostgreSQL..."
-sudo service postgresql stop 2>/dev/null || true
-log "Removing PostgreSQL packages..."
-wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq postgresql postgresql-contrib > /dev/null
-log "Autoremove..."
-wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+sudo systemctl stop postgresql 2>/dev/null || sudo service postgresql stop 2>/dev/null || true
+if command -v apt-get > /dev/null 2>&1; then
+  log "apt-get remove postgresql postgresql-contrib..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 remove -y -qq postgresql postgresql-contrib > /dev/null 2>&1 || true
+  log "Autoremove..."
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 autoremove -y -qq > /dev/null
+elif command -v dnf > /dev/null 2>&1; then
+  log "dnf remove postgresql-server postgresql-contrib..."
+  sudo dnf remove -y -q postgresql-server postgresql-contrib > /dev/null 2>&1 || true
+  log "Note: /var/lib/pgsql/data is left in place — remove manually to wipe cluster data."
+fi
 log "PostgreSQL removed."`,
-    setupShSnippet: `# Install and start PostgreSQL
+    setupShSnippet: `# Install and start PostgreSQL (apt + dnf)
 export DEBIAN_FRONTEND=noninteractive
-apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq postgresql postgresql-contrib > /dev/null
-service postgresql start
-cd / && su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
+if command -v apt-get > /dev/null 2>&1; then
+  apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq postgresql postgresql-contrib > /dev/null
+  service postgresql start
+elif command -v dnf > /dev/null 2>&1; then
+  dnf install -y -q postgresql-server postgresql-contrib > /dev/null
+  [ -f /var/lib/pgsql/data/PG_VERSION ] || postgresql-setup --initdb > /dev/null
+  systemctl enable --now postgresql
+fi
+su - postgres -c "psql -c \\"ALTER USER postgres PASSWORD 'postgres';\\""`,
     commands: [
       { name: "Start service", command: "sudo service postgresql start" },
       { name: "Stop service", command: "sudo service postgresql stop" },
@@ -535,7 +676,8 @@ if ! command -v docker >/dev/null 2>&1; then
     log "Unsupported package manager (need apt-get or dnf)"; exit 1
   fi
   sudo systemctl enable --now docker > /dev/null 2>&1
-  sudo usermod -aG docker "$USER" 2>/dev/null || true
+  # $(whoami), not $USER — SSH 'exec' shells don't reliably set $USER.
+  sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
   # Cross-distro Compose v2 from official GitHub release.
   if ! docker compose version >/dev/null 2>&1; then
     COMPOSE_VER=v2.29.7; ARCH=$(uname -m)
@@ -633,7 +775,9 @@ else
 fi
 log "Enabling and starting docker service..."
 sudo systemctl enable --now docker > /dev/null 2>&1
-sudo usermod -aG docker "$USER" 2>/dev/null || true
+# $(whoami), not $USER — SSH 'exec' shells (non-login) don't reliably set $USER,
+# which would silently skip the group-add via the || true fallback.
+sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
 # Docker Compose v2 from GitHub release — package name is inconsistent across
 # distros (docker-compose-v2 on Ubuntu 24.04+, docker-compose-plugin on
 # docker-ce repos, absent on stock Ubuntu 22.04 / Debian 12). The plugin
@@ -719,10 +863,27 @@ fi
 log "Updating rkhunter signature database..."
 # --update fetches new rules; non-zero exit just means "no updates available", not failure.
 sudo rkhunter --update --nocolors 2>&1 | tail -20 || true
-log "Baselining file properties (rkhunter --propupd)..."
+log "Baselining file properties (rkhunter --propupd, scans the whole filesystem — can take 2–5 min)..."
 # Without a baseline, every subsequent --check reports thousands of "file properties
 # changed" warnings. Running this once after install is the standard post-install step.
-sudo rkhunter --propupd --nocolors > /dev/null
+# Heartbeat: propupd is silent by default and can run 2–5 min, which trips the
+# 120s SSH idle timeout. Background it and tick every 20 s so the runner sees
+# output. The wait at the end propagates propupd's exit code via $!.
+# shellcheck disable=SC2024  # /tmp is world-writable; redirect-as-user is intentional
+sudo rkhunter --propupd --nocolors > /tmp/rkhunter-propupd.log 2>&1 &
+PROPUPD_PID=$!
+i=0
+while kill -0 "$PROPUPD_PID" 2>/dev/null; do
+  i=$((i+1))
+  sleep 20
+  log "  ...still baselining ($((i*20))s elapsed)"
+done
+if ! wait "$PROPUPD_PID"; then
+  log "ERROR: rkhunter --propupd failed. Last 20 lines of output:"
+  sudo tail -20 /tmp/rkhunter-propupd.log || true
+  exit 1
+fi
+sudo rm -f /tmp/rkhunter-propupd.log
 log "rkhunter installed: $(rkhunter --version 2>&1 | head -1)"`,
     uninstallScript: `set -e
 export DEBIAN_FRONTEND=noninteractive

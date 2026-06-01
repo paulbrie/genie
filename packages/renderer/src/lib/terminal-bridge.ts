@@ -1,11 +1,19 @@
+/**
+ * xterm.js ↔ WebSocket bridge for one terminal session.
+ *
+ * Each interactive SSH terminal is identified by a `terminalId`. The bridge:
+ *   1. Creates an xterm instance.
+ *   2. Wires keystrokes → `terminal:data` over the WS.
+ *   3. Decodes `terminal:output` (base64) frames into the xterm.
+ *   4. Reports container resizes → `terminal:resize`.
+ *
+ * One xterm per terminalId; no per-VPS shared session.
+ */
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-// CanvasAddon is imported dynamically inside createTerminal — its module-load
-// code touches `self` (browser global), which crashes Next's SSR prerender of
-// the /extension page.
+
 import { wsSend } from "@/lib/ws";
 
-// Catppuccin Mocha theme for xterm
 const THEME = {
   background: "#1e1e2e",
   foreground: "#cdd6f4",
@@ -35,14 +43,15 @@ interface TerminalInstance {
   terminal: Terminal;
   fitAddon: FitAddon;
   resizeObserver: ResizeObserver;
-  sessionId: string;
+  terminalId: string;
 }
 
 const instances = new Map<string, TerminalInstance>();
+const RESIZE_SETTLE_MS = 80;
 
 export function createTerminal(
   container: HTMLElement,
-  sessionId: string,
+  terminalId: string,
   onFitted?: (size: { cols: number; rows: number }) => void,
 ): Terminal {
   const terminal = new Terminal({
@@ -58,28 +67,14 @@ export function createTerminal(
   terminal.loadAddon(fitAddon);
   terminal.open(container);
 
-  // Swap xterm's default DOM renderer for the Canvas one (~10× faster than
-  // DOM for chatty TUI output like Claude streaming / tmux redraws — DOM
-  // renderer is the documented freeze culprit). Dynamic import because the
-  // canvas addon module touches `self` at evaluation time and would crash
-  // Next's SSR prerender if imported statically. Async upgrade is fine —
-  // the terminal renders with the default DOM renderer for the first frames
-  // and switches over the moment the chunk lands. Wrapped in try/catch in
-  // case of an xterm v5/v6 API drift; falls back to DOM if so.
+  // Canvas renderer: ~10× faster than DOM for chatty TUI output. Loaded
+  // async because the addon touches `self` at module-eval time which would
+  // crash Next's SSR prerender if imported statically.
   void import("@xterm/addon-canvas").then(({ CanvasAddon }) => {
-    try {
-      terminal.loadAddon(new CanvasAddon());
-      // eslint-disable-next-line no-console
-      console.log(`[term-renderer] canvas addon loaded (sess=${sessionId})`);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(`[term-renderer] canvas addon failed, falling back to DOM (sess=${sessionId})`, err);
-    }
-  }).catch((err) => {
-    // eslint-disable-next-line no-console
-    console.warn(`[term-renderer] canvas addon import failed (sess=${sessionId})`, err);
-  });
+    try { terminal.loadAddon(new CanvasAddon()); } catch { /* fall back to DOM */ }
+  }).catch(() => { /* ignore */ });
 
+  // OSC 52 → system clipboard, so tmux/Claude can write selections.
   terminal.parser.registerOscHandler(52, (data) => {
     const semi = data.indexOf(";");
     if (semi < 0) return false;
@@ -87,257 +82,120 @@ export function createTerminal(
     if (payload === "?" || payload === "") return true;
     try {
       const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-      const text = new TextDecoder().decode(bytes);
-      void navigator.clipboard?.writeText(text);
-    } catch {
-      return false;
-    }
+      void navigator.clipboard?.writeText(new TextDecoder().decode(bytes));
+    } catch { return false; }
     return true;
   });
 
-  // Initial fit + focus (keyboard goes to the remote PTY via onData only — do not
-  // inject CSI focus sequences here; they get echoed by bash and corrupt TUIs).
   requestAnimationFrame(() => {
-    try {
-      fitAddon.fit();
-    } catch {
-      // ignore during teardown
-    }
+    try { fitAddon.fit(); } catch { /* ignore */ }
     terminal.focus();
     onFitted?.({ cols: terminal.cols, rows: terminal.rows });
   });
 
-  // Wire input to WS
+  // keystrokes → server
   terminal.onData((data) => {
-    wsSend("terminal:data", { id: sessionId, data });
+    wsSend("terminal:data", { terminalId, data });
   });
 
-  // ResizeObserver for auto-fit, debounced. Each pointermove during a popup
-  // resize fires the observer, and a per-frame fit() (a) thrashes xterm's
-  // renderer enough to look like a freeze in production, and (b) detaches the
-  // hidden helper textarea so fast that the focus-restore race keeps losing
-  // — once focus is lost mid-drag the next observer's hadFocus check is
-  // already false. Coalesce all observer fires from a drag into one fit
-  // after the resize settles for SETTLE_MS; the CSS still resizes the
-  // popup visually in real time, the terminal just reflows on release.
-  const SETTLE_MS = 80;
+  // container resize → debounced fit + server resize. Each pointermove during
+  // a popup drag fires the observer; a per-frame fit() thrashes the renderer.
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  let observerFireCount = 0; // [debug] reset each settle window
   const settledFit = () => {
-    const fires = observerFireCount;
-    observerFireCount = 0;
     settleTimer = null;
     requestAnimationFrame(() => {
       try {
-        const rect = container.getBoundingClientRect();
-        const beforeCols = terminal.cols;
-        const beforeRows = terminal.rows;
-        const active = document.activeElement;
-        const hadFocus = !!terminal.element?.contains(active);
-        // eslint-disable-next-line no-console
-        console.log("[term-resize] settledFit RUN", {
-          sessionId,
-          observerFires: fires,
-          container: { w: Math.round(rect.width), h: Math.round(rect.height) },
-          before: { cols: beforeCols, rows: beforeRows },
-          hadFocus,
-          activeTag: active?.tagName,
-          activeIsInTerminal: hadFocus,
-        });
+        const hadFocus = !!terminal.element?.contains(document.activeElement);
         fitAddon.fit();
-        // eslint-disable-next-line no-console
-        console.log("[term-resize] fit() done", {
-          sessionId,
-          after: { cols: terminal.cols, rows: terminal.rows },
-          changed: beforeCols !== terminal.cols || beforeRows !== terminal.rows,
-        });
-        wsSend("terminal:resize", {
-          id: sessionId,
-          cols: terminal.cols,
-          rows: terminal.rows,
-        });
-        if (hadFocus) {
-          terminal.focus();
-          const afterActive = document.activeElement;
-          const focusRestored = !!terminal.element?.contains(afterActive);
-          // eslint-disable-next-line no-console
-          console.log("[term-resize] focus restore", {
-            sessionId,
-            focusRestored,
-            activeTag: afterActive?.tagName,
-          });
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("[term-resize] fit threw", { sessionId, err });
-      }
+        wsSend("terminal:resize", { terminalId, cols: terminal.cols, rows: terminal.rows });
+        if (hadFocus) terminal.focus();
+      } catch { /* tear-down race */ }
     });
   };
-  let lastW = -1;
-  let lastH = -1;
-  let unchangedRun = 0;
-  const resizeObserver = new ResizeObserver((entries) => {
-    observerFireCount++;
-    const e = entries[0];
-    const w = e?.contentRect ? Math.round(e.contentRect.width) : -1;
-    const h = e?.contentRect ? Math.round(e.contentRect.height) : -1;
-    const changed = w !== lastW || h !== lastH;
-    if (changed) {
-      // eslint-disable-next-line no-console
-      console.log(`[term-resize] observer fire #${observerFireCount} w=${w} h=${h} dW=${w - lastW} dH=${h - lastH} (sess=${sessionId})`);
-      lastW = w;
-      lastH = h;
-      unchangedRun = 0;
-    } else {
-      unchangedRun++;
-      if (unchangedRun === 1 || unchangedRun === 5 || unchangedRun === 20) {
-        // eslint-disable-next-line no-console
-        console.warn(`[term-resize] observer fire #${observerFireCount} w=${w} h=${h} NO CHANGE (run=${unchangedRun}) — false fire (sess=${sessionId})`);
-      }
-    }
+  const resizeObserver = new ResizeObserver(() => {
     if (settleTimer != null) clearTimeout(settleTimer);
-    settleTimer = setTimeout(settledFit, SETTLE_MS);
+    settleTimer = setTimeout(settledFit, RESIZE_SETTLE_MS);
   });
   resizeObserver.observe(container);
 
-  instances.set(sessionId, { terminal, fitAddon, resizeObserver, sessionId });
-
+  instances.set(terminalId, { terminal, fitAddon, resizeObserver, terminalId });
   return terminal;
 }
 
-// [debug] write timing — log roughly every 32nd write AND any write whose
-// synchronous portion takes >16ms (a dropped frame), so we can see if a
-// single chunk is blocking the main thread and making the popup look frozen.
-let __writeCount = 0;
-export function writeToTerminal(sessionId: string, data: string): void {
-  const inst = instances.get(sessionId);
-  __writeCount++;
-  const t0 = performance.now();
-  inst?.terminal.write(data);
-  const dt = performance.now() - t0;
-  const sampled = (__writeCount & 31) === 0;
-  const slow = dt > 16;
-  if (sampled || slow) {
-    // eslint-disable-next-line no-console
-    (slow ? console.warn : console.log)(
-      `[term-write] ${slow ? "SLOW " : ""}n=${__writeCount} bytes=${data.length} sync=${dt.toFixed(1)}ms cols=${inst?.terminal.cols} rows=${inst?.terminal.rows} hasInstance=${!!inst} (sess=${sessionId})`,
-    );
-  }
-}
-
-export function focusTerminal(sessionId: string): void {
-  instances.get(sessionId)?.terminal.focus();
-}
-
-export function refitTerminal(sessionId: string): void {
-  const inst = instances.get(sessionId);
-  if (!inst) return;
+/** Decode a base64 PTY output frame and feed it to xterm. */
+export function writeToTerminal(terminalId: string, dataB64: string): void {
+  const inst = instances.get(terminalId);
+  if (!inst || !dataB64) return;
   try {
-    inst.fitAddon.fit();
-  } catch {
-    // ignore
+    const bytes = Uint8Array.from(atob(dataB64), (c) => c.charCodeAt(0));
+    inst.terminal.write(bytes);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[term] decode failed (term=${terminalId})`, err);
   }
 }
 
-export function hasTerminal(sessionId: string): boolean {
-  return instances.has(sessionId);
+export function focusTerminal(terminalId: string): void {
+  instances.get(terminalId)?.terminal.focus();
 }
 
-export function reattachTerminal(sessionId: string, newContainer: HTMLElement): boolean {
-  const inst = instances.get(sessionId);
+export function refitTerminal(terminalId: string): void {
+  const inst = instances.get(terminalId);
+  if (!inst) return;
+  try { inst.fitAddon.fit(); } catch { /* ignore */ }
+}
+
+export function hasTerminal(terminalId: string): boolean {
+  return instances.has(terminalId);
+}
+
+/** Move an existing xterm to a new container (used when the popup re-mounts). */
+export function reattachTerminal(terminalId: string, newContainer: HTMLElement): boolean {
+  const inst = instances.get(terminalId);
   if (!inst) return false;
 
-  // Disconnect old observer
   inst.resizeObserver.disconnect();
-
-  // Move xterm DOM to new container
-  const xtermElement = inst.terminal.element;
-  if (xtermElement && xtermElement.parentElement !== newContainer) {
-    newContainer.appendChild(xtermElement);
+  const xtermEl = inst.terminal.element;
+  if (xtermEl && xtermEl.parentElement !== newContainer) {
+    newContainer.appendChild(xtermEl);
   }
 
-  // Create new ResizeObserver on the new container — debounced + instrumented
-  // for the same reasons as in createTerminal.
-  const SETTLE_MS = 80;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  let observerFireCount = 0;
   const settledFit = () => {
-    const fires = observerFireCount;
-    observerFireCount = 0;
     settleTimer = null;
     requestAnimationFrame(() => {
       try {
-        const rect = newContainer.getBoundingClientRect();
-        const before = { cols: inst.terminal.cols, rows: inst.terminal.rows };
         const hadFocus = !!inst.terminal.element?.contains(document.activeElement);
-        // eslint-disable-next-line no-console
-        console.log("[term-resize:reattach] settledFit RUN", {
-          sessionId,
-          observerFires: fires,
-          container: { w: Math.round(rect.width), h: Math.round(rect.height) },
-          before,
-          hadFocus,
-        });
         inst.fitAddon.fit();
-        // eslint-disable-next-line no-console
-        console.log("[term-resize:reattach] fit() done", {
-          sessionId,
-          after: { cols: inst.terminal.cols, rows: inst.terminal.rows },
-        });
-        wsSend("terminal:resize", {
-          id: sessionId,
-          cols: inst.terminal.cols,
-          rows: inst.terminal.rows,
-        });
+        wsSend("terminal:resize", { terminalId, cols: inst.terminal.cols, rows: inst.terminal.rows });
         if (hadFocus) inst.terminal.focus();
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("[term-resize:reattach] fit threw", { sessionId, err });
-      }
+      } catch { /* ignore */ }
     });
   };
-  const resizeObserver = new ResizeObserver((entries) => {
-    observerFireCount++;
-    const e = entries[0];
-    // eslint-disable-next-line no-console
-    console.log("[term-resize:reattach] observer fire", {
-      sessionId,
-      n: observerFireCount,
-      contentBox: e?.contentRect ? { w: Math.round(e.contentRect.width), h: Math.round(e.contentRect.height) } : null,
-    });
+  const resizeObserver = new ResizeObserver(() => {
     if (settleTimer != null) clearTimeout(settleTimer);
-    settleTimer = setTimeout(settledFit, SETTLE_MS);
+    settleTimer = setTimeout(settledFit, RESIZE_SETTLE_MS);
   });
   resizeObserver.observe(newContainer);
   inst.resizeObserver = resizeObserver;
 
-  // Refit + focus
   requestAnimationFrame(() => {
-    try {
-      inst.fitAddon.fit();
-      inst.terminal.focus();
-    } catch {}
+    try { inst.fitAddon.fit(); inst.terminal.focus(); } catch { /* ignore */ }
   });
-
   return true;
 }
 
-/** Immediately detach observer and remove from map; defer xterm.dispose() */
-export function disposeTerminal(sessionId: string): void {
-  const inst = instances.get(sessionId);
+export function disposeTerminal(terminalId: string): void {
+  const inst = instances.get(terminalId);
   if (!inst) return;
   inst.resizeObserver.disconnect();
-  instances.delete(sessionId);
-  setTimeout(() => {
-    try { inst.terminal.dispose(); } catch { /* element may already be detached */ }
-  }, 0);
+  instances.delete(terminalId);
+  setTimeout(() => { try { inst.terminal.dispose(); } catch { /* ignore */ } }, 0);
 }
 
 export function disposeAllTerminals(): void {
   const all = [...instances.values()];
-  for (const inst of all) {
-    inst.resizeObserver.disconnect();
-  }
+  for (const inst of all) inst.resizeObserver.disconnect();
   instances.clear();
   setTimeout(() => {
     for (const inst of all) {

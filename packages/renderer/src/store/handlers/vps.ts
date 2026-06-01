@@ -4,8 +4,10 @@ import {
   $doSnapshotsLoading,
   $doTokenValid,
   $railwayTestResult,
+  $vmConnections,
   $vpsDeploy,
   $vpsMonitor,
+  $vpsStatsSync,
 } from "../subjects/vps";
 import type { VpsProcessInfo } from "../types/vps";
 import { ensureInstanceState, execCallbacks, updateInstanceState } from "../actions/vps";
@@ -131,11 +133,26 @@ export const handlers: HandlerMap = {
     }
   },
 
+  // Live daemon stats, pushed by the VM over HTTPS and fanned out by the
+  // manager. Updates the deploy/manage surfaces ($vpsDeploy) and, for any open
+  // VM-connection window targeting this VM, its simplified gauges ($vmConnections).
   "vps:stats:update": (payload) => {
-    const { instanceId: statsInstId } = payload;
-    if (statsInstId) {
-      ensureInstanceState(statsInstId);
-      updateInstanceState(statsInstId, { stats: payload.stats, statsError: null });
+    const { projectId, instanceId: statsInstId, stats } = payload;
+    if (!statsInstId) return;
+    ensureInstanceState(statsInstId);
+    updateInstanceState(statsInstId, { stats, statsError: null });
+
+    if (stats) {
+      const conns = $vmConnections.getValue().connections;
+      const now = Date.now();
+      batch(() => {
+        for (const slot of Object.values(conns)) {
+          if (slot.projectId !== projectId || slot.instanceId !== statsInstId) continue;
+          slot.stats = { cpu: stats.cpuPercent, mem: stats.memPercent, disk: stats.diskPercent };
+          slot.statsError = null;
+          slot.lastStatsAt = now;
+        }
+      });
     }
   },
 
@@ -145,6 +162,35 @@ export const handlers: HandlerMap = {
       ensureInstanceState(statsErrInstId);
       updateInstanceState(statsErrInstId, { statsError: payload.message });
     }
+  },
+
+  // "Sync stats agent" lifecycle — drives the SyncStatsAgentButton in the
+  // Manage popup. Keyed by `${projectId}:${instanceId}`.
+  "vps:stats:sync:progress": (payload) => {
+    const { projectId, instanceId, message } = payload;
+    const key = `${projectId}:${instanceId}`;
+    $vpsStatsSync.next({
+      ...$vpsStatsSync.getValue(),
+      [key]: { running: true, message: message || "Syncing…", error: null },
+    });
+  },
+
+  "vps:stats:sync:done": (payload) => {
+    const { projectId, instanceId } = payload;
+    const key = `${projectId}:${instanceId}`;
+    $vpsStatsSync.next({
+      ...$vpsStatsSync.getValue(),
+      [key]: { running: false, message: "Stats agent synced", error: null },
+    });
+  },
+
+  "vps:stats:sync:error": (payload) => {
+    const { projectId, instanceId, message } = payload;
+    const key = `${projectId}:${instanceId}`;
+    $vpsStatsSync.next({
+      ...$vpsStatsSync.getValue(),
+      [key]: { running: false, message: "", error: message || "Sync failed" },
+    });
   },
 
   "vps:stats:history:result": (payload) => {

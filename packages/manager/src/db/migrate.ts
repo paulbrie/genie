@@ -65,6 +65,21 @@ export async function migrateServerCredentials(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_server_credentials_project ON server_credentials(project_id)`);
 }
 
+/** Create the vps_stats_tokens table (per-instance bearer token for the on-VM
+ *  genie-stats daemon's HTTPS postback). Idempotent; safe to call every boot. */
+export async function migrateVpsStatsTokens(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS vps_stats_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    token TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uniq_vps_stats_tokens_token ON vps_stats_tokens(token)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uniq_vps_stats_tokens_instance ON vps_stats_tokens(project_id, instance_id)`);
+}
+
 export async function migrateOrgs(): Promise<void> {
   const db = getDb();
 
@@ -155,6 +170,54 @@ export async function migrateTeamInvites(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_team_invites_token ON team_invites(token)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_team_invites_team ON team_invites(team_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_team_invites_org ON team_invites(org_id)`);
+}
+
+/** User-definable AI agents (and their runs). Idempotent.
+ *  See `agents` / `agent_runs` in schema.ts for column-level docs. */
+export async function migrateAgents(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS agents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    description TEXT DEFAULT '' NOT NULL,
+    system_prompt TEXT DEFAULT '' NOT NULL,
+    model_id TEXT DEFAULT 'claude-sonnet' NOT NULL,
+    max_tool_rounds INTEGER DEFAULT 40 NOT NULL,
+    tools JSONB DEFAULT '[]'::jsonb NOT NULL,
+    sandbox JSONB DEFAULT '{}'::jsonb NOT NULL,
+    owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    is_builtin BOOLEAN DEFAULT FALSE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_user_id)`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS agent_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    parent_run_id UUID,
+    triggered_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+    instance_id TEXT,
+    status TEXT DEFAULT 'queued' NOT NULL
+      CHECK (status IN ('queued','running','succeeded','failed','timeout','cancelled')),
+    input JSONB DEFAULT '{}'::jsonb NOT NULL,
+    output JSONB,
+    error TEXT,
+    input_tokens INTEGER DEFAULT 0 NOT NULL,
+    output_tokens INTEGER DEFAULT 0 NOT NULL,
+    cost_usd REAL DEFAULT 0 NOT NULL,
+    tool_events JSONB DEFAULT '[]'::jsonb NOT NULL,
+    sandbox_ref TEXT,
+    started_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    finished_at TIMESTAMP
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_agent_runs_project ON agent_runs(project_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at)`);
 }
 
 /** Scalar VPS metric samples for historical charts. Idempotent. */

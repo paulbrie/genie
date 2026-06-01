@@ -6,6 +6,7 @@ import {
   $railwayTestResult,
   $vpsDeploy,
   $vpsMonitor,
+  $vpsStatsSync,
 } from "../subjects/vps";
 import type { VpsConnectionConfig, VpsInstanceState } from "../types/vps";
 
@@ -121,14 +122,42 @@ export function fetchVpsStats(projectId: string, instanceId: string): void {
   wsSend("vps:stats", { projectId, instanceId });
 }
 
-/** Start persistent stats stream (daemon over SSH); updates arrive as vps:stats:update. */
+// Live daemon stats (pushed by the VM over HTTPS, fanned out by the manager as
+// `vps:stats:update`). Multiple UI surfaces — the Manage popup, the instance
+// card, the topology graph, each open VM-connection window — can watch the same
+// VM at once, but the browser has a single shared WS. Ref-count per key so one
+// surface unmounting doesn't tear down another's subscription.
+const watchRefs = new Map<string, number>();
+const watchKey = (projectId: string, instanceId: string) => `${projectId}:${instanceId}`;
+
 export function watchVpsStats(projectId: string, instanceId: string): void {
   if (!sshStatsPostbackEnabled()) return;
-  wsSend("vps:stats:watch", { projectId, instanceId });
+  const key = watchKey(projectId, instanceId);
+  const n = (watchRefs.get(key) ?? 0) + 1;
+  watchRefs.set(key, n);
+  if (n === 1) wsSend("vps:stats:watch", { projectId, instanceId });
 }
 
 export function unwatchVpsStats(projectId: string, instanceId: string): void {
-  wsSend("vps:stats:unwatch", { projectId, instanceId });
+  const key = watchKey(projectId, instanceId);
+  const n = (watchRefs.get(key) ?? 0) - 1;
+  if (n <= 0) {
+    watchRefs.delete(key);
+    wsSend("vps:stats:unwatch", { projectId, instanceId });
+  } else {
+    watchRefs.set(key, n);
+  }
+}
+
+/** Push the latest stats daemon + postback config to a VM and restart its
+ *  service — without re-running the whole Genie Standard Setup recipe. */
+export function syncVmStatsAgent(projectId: string, instanceId: string): void {
+  const key = `${projectId}:${instanceId}`;
+  $vpsStatsSync.next({
+    ...$vpsStatsSync.getValue(),
+    [key]: { running: true, message: "Syncing stats agent…", error: null },
+  });
+  wsSend("vps:stats:sync", { projectId, instanceId });
 }
 
 /** Load historical scalar metrics for all VMs the user can see (Monitor tab). */

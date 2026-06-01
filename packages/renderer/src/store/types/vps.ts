@@ -214,7 +214,7 @@ export interface SshConfig {
   privateKeyPath?: string;
 }
 
-export type TerminalLaunchKind = "shell" | "claude" | "claude-tmux";
+export type TerminalLaunchKind = "shell" | "claude" | "claude-tmux" | "claude-direct";
 
 export interface ClaudeLaunchOptions {
   cwd?: string;
@@ -247,12 +247,6 @@ export interface TerminalTab {
   /** Whether the dropped session is tmux-backed and can be reattached (shell /
    *  claude-tmux) vs not (plain claude). */
   reattachable?: boolean;
-  /** Which rendering frontend to use in the popup. "xterm" (default) mounts
-   *  xterm.js via terminal-bridge; "custom" mounts the in-house VT parser +
-   *  React renderer (lib/custom-term/* + components/terminal/custom-terminal.tsx).
-   *  Picked at launch time by the Claude (xterm) vs Claude (Custom) buttons,
-   *  defaults to xterm so persisted tabs from older releases keep working. */
-  renderer?: "xterm" | "custom";
 }
 
 export interface PersistedTerminalSession {
@@ -294,4 +288,40 @@ export interface TerminalState {
   bottomPanelOpen: boolean;
   bottomPanelHeight: number;
   shareInvites: TerminalShareInvite[];
+}
+
+// --- VM SSH connection (new terminal layer) ---
+
+export interface VmTmuxSession {
+  name: string;
+  windows: number | null;
+  attached: boolean | null;
+}
+
+export interface VmConnectionState {
+  /** Stable key — `${projectId}:${instanceId}` for project-attached VMs,
+   *  or `direct:${host}:${username}` for one-off direct SSH connections. */
+  key: string;
+  projectId: string | null;
+  instanceId: string | null;
+  host: string;
+  port: number;
+  username: string;
+  vmLabel: string;
+  /** terminalId driving the xterm in the popup. */
+  terminalId: string;
+  status: "connecting" | "connected" | "error" | "closed";
+  errorMessage: string | null;
+  bytesIn: number;
+  bytesOut: number;
+  stats: { cpu: number; mem: number; disk: number } | null;
+  statsError: string | null;
+  tmuxSessions: VmTmuxSession[];
+  lastStatsAt: number | null;
+  openedAt: number;
+}
+
+export interface VmConnectionsState {
+  /** Keyed by `VmConnectionState.key`. */
+  connections: Record<string, VmConnectionState>;
 }
