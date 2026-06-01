@@ -17,7 +17,7 @@ import { Client } from "ssh2";
 import { buildConnectOptions, dialSock } from "./vps/ssh-client.js";
 import type { SshConnectionConfig } from "./vps/ssh-client.js";
 import { authorizeDebugAccess } from "./debug-api.js";
-import { projectService } from "./project-service.js";
+import * as projectService from "./project-service.js";
 
 export interface SocksProbeSample {
   t: number;          // ms since connection ready
