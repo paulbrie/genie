@@ -5,16 +5,12 @@
 // on `vps:fs:result` with `ok: false`.
 
 import { type WebSocket } from "ws";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh, type SftpWriteHandle, type SshSession } from "../vps/ssh-client.js";
 import { execCached } from "../vps/ssh-session-cache.js";
 import * as projectService from "../project-service.js";
 
-export interface WsMessage extends Omit<WsMessageBase, "payload"> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 interface PendingUpload {
   session: SshSession;

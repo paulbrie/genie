@@ -4,13 +4,9 @@
 // it as a parameter avoids reaching back across modules for shared state.
 
 import { type WebSocket } from "ws";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import * as recipesService from "../recipes-service.js";
 
-export interface WsMessage extends Omit<WsMessageBase, "payload"> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 export async function handleRecipesMessage(
   ws: WebSocket,

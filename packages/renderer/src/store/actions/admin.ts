@@ -179,6 +179,17 @@ export function resizeAdminDroplet(dropletId: number, size: string, disk: boolea
   wsSend("admin:droplets:resize", { dropletId, size, disk });
 }
 
+/** Soft-reboot a droplet (DO `dropletAction(id, "reboot")` — OS-level shutdown
+ *  + start). Streams `admin:droplets:reboot:progress` and finishes with
+ *  `:done` / `:error`. Open SSH sessions will drop. */
+export function rebootAdminDroplet(dropletId: number): void {
+  batch(() => {
+    const v = $admin.getValue();
+    v.dropletReboot[dropletId] = { messages: [], error: null, done: false };
+  });
+  wsSend("admin:droplets:reboot", { dropletId });
+}
+
 // --- Droplet custom-domain actions ---
 //
 // Attaches a custom subdomain + automatic HTTPS to a DO droplet: the manager

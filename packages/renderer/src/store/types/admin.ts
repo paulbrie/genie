@@ -337,6 +337,10 @@ export interface AdminState {
    *  shows a streaming progress strip and other actions are disabled.
    *  Entries are cleared on `:done` or `:error`. */
   dropletResize: Record<number, { messages: string[]; targetSize: string; error: string | null; done: boolean }>;
+  /** Per-droplet soft-reboot progress. Keyed by dropletId. While present and
+   *  not done/error, the row's Restart menu item is disabled. Cleared on
+   *  `:done` or `:error`. */
+  dropletReboot: Record<number, { messages: string[]; error: string | null; done: boolean }>;
   /** Per-droplet domain-attach/detach in-flight flag. Keyed by dropletId. */
   dropletDomainBusy: Record<number, boolean>;
   /** Banner error from the latest domain attach/detach attempt. */

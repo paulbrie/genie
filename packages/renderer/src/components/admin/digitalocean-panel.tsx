@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink, Globe } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, RotateCw, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink, Globe } from "lucide-react";
 import type { AdminDroplet, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
-import { addSshTerminalTab, attachAdminDropletDomain, createAdminDroplet, detachAdminDropletDomain, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, attachAdminDropletDomain, createAdminDroplet, detachAdminDropletDomain, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, rebootAdminDroplet, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { wsRequest } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -365,6 +365,8 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
           const renderActionsMenu = (d: AdminDroplet, isActive: boolean, isRenaming: boolean) => {
             const resizeState = admin.dropletResize[d.id];
             const resizing = !!resizeState && !resizeState.done && !resizeState.error;
+            const rebootState = admin.dropletReboot[d.id];
+            const rebooting = !!rebootState && !rebootState.done && !rebootState.error;
             return (
               <div className="relative inline-flex items-center">
                 <button
@@ -440,6 +442,22 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                       >
                         <Maximize2 size={12} className="text-blue" />
                         Resize droplet…
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActionMenuOpenFor(null);
+                          if (window.confirm(`Reboot "${d.name}" now?\n\nThis issues a soft reboot via DigitalOcean (OS shutdown + start). Open SSH sessions will drop.`)) {
+                            rebootAdminDroplet(d.id);
+                          }
+                        }}
+                        disabled={!isActive || rebooting || resizing}
+                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={rebooting ? "Reboot in progress…" : isActive ? "Soft reboot via DigitalOcean" : "Droplet is not active"}
+                      >
+                        {rebooting
+                          ? <Loader2 size={12} className="text-peach animate-spin" />
+                          : <RotateCw size={12} className="text-peach" />}
+                        {rebooting ? "Restarting…" : "Restart droplet…"}
                       </button>
                       {d.domain ? (
                         <button

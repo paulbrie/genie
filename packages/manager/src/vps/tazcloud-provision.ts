@@ -3,6 +3,8 @@ import { createTazClient, defaultSshUserForVm, type TazVm } from "./tazcloud-api
 import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
 import { vpsDeploy } from "./deploy-service.js";
 import { buildUfwRules } from "./do-provision.js";
+import * as cloudVmAliases from "../cloud-vm-alias-service.js";
+import * as projectService from "../project-service.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -207,7 +209,9 @@ export async function tazcloudProvisionAndDeploy(
       "wait_apt() { local i=0; while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do i=$((i+1)); [ \"$i\" -gt 600 ] && { echo 'Timeout waiting for apt lock'; exit 1; }; sleep 1; done; }",
       "if command -v apt-get >/dev/null 2>&1; then",
       "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq",
-      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates > /dev/null",
+      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq git curl ca-certificates > /dev/null",
+      // docker.io conflicts with a pre-installed docker-ce (download.docker.com repo) — only install when no engine exists.
+      "  command -v docker >/dev/null 2>&1 || { wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io > /dev/null; }",
       "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1",
       "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null",
       "elif command -v dnf >/dev/null 2>&1; then",
@@ -343,4 +347,77 @@ export async function tazcloudDestroyVm(
   onProgress(`Destroying TazCloud VM ${vmId}...`);
   await client.deleteVm(vmId);
   onProgress("VM destroyed");
+}
+
+/** Async firewall preset for newly-created TazCloud VMs: poll SSH up to 3 min,
+ *  then apply default-deny + allow 22/3000 via UFW. Used by both the admin and
+ *  the org-scoped create paths so both produce VMs with the same baseline.
+ *  Snapshot-booted VMs are skipped — they carry their own firewall config and
+ *  the SSH user depends on the snapshot's source image. Fire-and-forget. */
+export function applyTazcloudFirewallPreset(
+  vm: { id: string; ssh_host: string; image?: string | null; snapshot_id?: string | null },
+  privateKey: string | null | undefined,
+  label: string,
+): void {
+  if (!privateKey || !vm.ssh_host || vm.snapshot_id) return;
+  void (async () => {
+    const keyPath = ensureTazcloudKeyOnDisk(privateKey);
+    // v2.0.0 vxlan-bastion VMs ship with `genie`, reached over WireGuard.
+    // Legacy v6: image-default user, direct SSH.
+    const sshUser = defaultSshUserForVm(vm);
+    const conn = { host: vm.ssh_host, port: 22, username: sshUser, privateKeyPath: keyPath };
+    // Poll SSH up to 3 minutes.
+    const sshStart = Date.now();
+    let ready = false;
+    while (Date.now() - sshStart < 180_000) {
+      try {
+        const s = await connectSsh(conn, { timeoutMs: 10_000 });
+        await s.exec("true");
+        s.close();
+        ready = true;
+        break;
+      } catch { /* not yet */ }
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+    if (!ready) {
+      console.warn(`[${label}] firewall preset: SSH didn't come up for ${vm.id} (${vm.ssh_host}) within 3min — skipping`);
+      return;
+    }
+    try {
+      const ufwSession = await connectSsh(conn);
+      await ufwSession.exec([
+        "sudo ufw --force reset",
+        "sudo ufw default deny incoming",
+        "sudo ufw default allow outgoing",
+        "sudo ufw allow 22/tcp",
+        "sudo ufw allow 3000/tcp",
+        "sudo ufw --force enable",
+      ].join(" && "));
+      ufwSession.close();
+      console.log(`[${label}] firewall preset applied to ${vm.id} (${vm.ssh_host}): SSH + 3000 open`);
+    } catch (err) {
+      console.warn(`[${label}] firewall preset failed for ${vm.id}:`, err);
+    }
+  })().catch(() => { /* fire-and-forget */ });
+}
+
+/** When a TazCloud VM is deleted (from either the admin path or the org-scoped
+ *  one), strip its renderer-side display alias and detach it from any owning
+ *  project so the project's `vpsInstances` list doesn't keep a dangling
+ *  `tazcloud.vmId` reference. Caller passes the broadcast callback so this
+ *  module stays free of ws-server dependencies. */
+export async function cleanupTazcloudVmReferences(
+  vmId: string,
+  onProjectListChanged: () => Promise<void> | void,
+): Promise<void> {
+  await cloudVmAliases.clearAlias("tazcloud", vmId);
+  const projects = await projectService.getAll();
+  for (const p of projects) {
+    const inst = p.vpsInstances.find((v) => v.tazcloud?.vmId === vmId);
+    if (inst) {
+      await projectService.removeVpsInstance(p.id, inst.id);
+      await onProjectListChanged();
+      break;
+    }
+  }
 }

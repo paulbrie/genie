@@ -7,15 +7,11 @@
 
 import { type WebSocket } from "ws";
 import { eq } from "drizzle-orm";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import * as trackerService from "../tracker-service.js";
 
-export interface WsMessage extends Omit<WsMessageBase, "payload"> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 export async function handleTrackerMessage(
   ws: WebSocket,

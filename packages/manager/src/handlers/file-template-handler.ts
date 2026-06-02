@@ -6,15 +6,11 @@
 
 import { type WebSocket } from "ws";
 import { eq } from "drizzle-orm";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { fileTemplates } from "../db/schema.js";
 import * as projectService from "../project-service.js";
 
-export interface WsMessage extends Omit<WsMessageBase, "payload"> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 export async function handleFileTemplateMessage(
   ws: WebSocket,

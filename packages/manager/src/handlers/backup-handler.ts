@@ -4,13 +4,9 @@
 // them next to the related db-handler for future drizzle-push / restore work.
 
 import { type WebSocket } from "ws";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import * as backupService from "../backup-service.js";
 
-export interface WsMessage extends Omit<WsMessageBase, "payload"> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 export async function handleBackupMessage(
   ws: WebSocket,

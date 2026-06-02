@@ -5,16 +5,12 @@
 // postgres:16-alpine docker image otherwise.
 
 import { type WebSocket } from "ws";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh } from "../vps/ssh-client.js";
 import { parseTableList, parseCsvResult } from "./db-handler.js";
 import * as projectService from "../project-service.js";
 
-export interface WsMessage extends Omit<WsMessageBase, "payload"> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 export async function handleVpsDbMessage(
   ws: WebSocket,

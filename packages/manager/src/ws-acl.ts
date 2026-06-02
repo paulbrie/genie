@@ -25,6 +25,13 @@ export const ROLE_LEVEL: Record<Role, number> = {
   superadmin: 3,
 };
 
+/** True if `role` is tazcloud or higher — the level at which a caller may
+ *  exec/manage any cloud VM regardless of project ownership. Handlers use
+ *  this to short-circuit the per-VM `userCanAccessVm` lookup. */
+export function isPrivilegedRole(role: Role | null): boolean {
+  return role === "tazcloud" || role === "admin" || role === "superadmin";
+}
+
 export interface AclEntry {
   /** Minimum role required to emit this type from client → server. Omitted → not sendable from a client. */
   send?: Role;

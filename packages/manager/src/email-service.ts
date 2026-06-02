@@ -98,3 +98,26 @@ export async function getEmailLogs(limit = 200) {
   const db = getDb();
   return db.select().from(emailLogs).orderBy(desc(emailLogs.createdAt)).limit(limit);
 }
+
+
+/**
+ * Fire-and-forget email notification to the app's superadmin. Silent no-op when
+ * SENDGRID_API_KEY is not configured — never throws into the caller. Pattern mirrors
+ * the new-user-signup notification in auth.ts.
+ */
+export async function notifySuperadmin(subject: string, text: string): Promise<void> {
+  const sgApiKey = process.env.SENDGRID_API_KEY;
+  if (!sgApiKey) return;
+  try {
+    const sgMail = (await import("@sendgrid/mail")).default;
+    sgMail.setApiKey(sgApiKey);
+    await sgMail.send({
+      to: "paul.brie@teleporthq.io",
+      from: process.env.BACKUP_EMAIL || "noreply@teleporthq.io",
+      subject,
+      text,
+    });
+  } catch (err: unknown) {
+    console.warn("[notify] Failed to send admin email:", err instanceof Error ? err.message : String(err));
+  }
+}

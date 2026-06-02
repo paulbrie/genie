@@ -9,6 +9,21 @@ import { getActiveSshConnections, sshConnRegister, sshConnUnregister, sshConnMar
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
 import { recordSshEvent, classifySshDisconnect } from "./ssh-events.js";
 
+/** Reject obvious SSRF / internal targets when a user connects an arbitrary SSH
+ *  host. Blocks loopback, link-local, and cloud metadata addresses. Not a full
+ *  egress firewall (the manager already dials user hosts via terminal:ssh:spawn),
+ *  just a guard against the most dangerous self-/metadata targets. */
+export function isBlockedSshHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!h) return true;
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h === "::1" || h === "0.0.0.0") return true;
+  if (h.startsWith("127.")) return true;          // loopback
+  if (h.startsWith("169.254.")) return true;       // link-local + cloud metadata (169.254.169.254)
+  if (h.startsWith("fe80:") || h.startsWith("fd") || h.startsWith("fc")) return true; // v6 link-local / ULA
+  return false;
+}
+
 export interface SshConnectionConfig {
   host: string;
   port: number;

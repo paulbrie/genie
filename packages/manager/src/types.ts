@@ -118,7 +118,8 @@ export interface ProjectDef {
 
 export interface WsMessage {
   type: string;
-  payload: unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: Record<string, any>;
 }
 
 export interface MemoryInfo {

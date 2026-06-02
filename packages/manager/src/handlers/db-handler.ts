@@ -1,14 +1,10 @@
 import { type WebSocket } from "ws";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import * as adminService from "../admin-service.js";
 import * as backupService from "../backup-service.js";
 
-export interface WsMessage extends Omit<WsMessageBase, 'payload'> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 export function parseTableList(out: string): { name: string; rowCount: number | null }[] {
   return out.trim().split("\n").filter(Boolean).map((line) => {

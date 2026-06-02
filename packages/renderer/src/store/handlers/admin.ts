@@ -279,6 +279,32 @@ export const handlers: HandlerMap = {
     });
   },
 
+  "admin:droplets:reboot:progress": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.dropletId as number;
+    batch(() => {
+      const cur = v.dropletReboot[id] ?? { messages: [], error: null, done: false };
+      cur.messages = [...cur.messages, payload.message];
+      v.dropletReboot[id] = cur;
+    });
+  },
+
+  "admin:droplets:reboot:done": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.dropletId as number;
+    batch(() => { delete v.dropletReboot[id]; });
+  },
+
+  "admin:droplets:reboot:error": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.dropletId as number;
+    batch(() => {
+      const cur = v.dropletReboot[id] ?? { messages: [], error: null, done: false };
+      cur.error = payload.message;
+      v.dropletReboot[id] = cur;
+    });
+  },
+
   // Broadcast by the server after any droplet mutation — refetch to pick
   // up new rows/state.
   "admin:droplets:list:stale": (_payload) => {

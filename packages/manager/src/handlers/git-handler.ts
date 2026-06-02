@@ -6,14 +6,10 @@
 // short-circuit through a single `git:error` reply.
 
 import { type WebSocket } from "ws";
-import type { WsMessage as WsMessageBase } from "../types.js";
+import type { WsMessage } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";
 
-export interface WsMessage extends Omit<WsMessageBase, "payload"> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: Record<string, any>;
-}
 
 const GIT_TYPES = new Set([
   "git:status", "git:log", "git:branches", "git:diff",
