@@ -16,7 +16,7 @@ import { $projects, $vmConnections, $vpsDeploy } from "@/store/subjects";
 import type { VmConnectionState, VmTmuxSession } from "@/store/types/vps";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
-import type { Project } from "@/store/types";
+import type { ProjectDef } from "@/store/types";
 
 const PROBE_TIMEOUT_MS = 16_000;
 const AUTO_PROBE_MS = 8_000;
@@ -74,7 +74,7 @@ export function resolveManageVmLinked(
     provider: "tazcloud" | "do" | "ssh";
     instanceId?: string;
   },
-  projects: Project[],
+  projects: ProjectDef[],
 ): { project: { id: string }; instance: { id: string } } | null {
   if (!vm.projectId) return null;
   const project = projects.find((p) => p.id === vm.projectId);
