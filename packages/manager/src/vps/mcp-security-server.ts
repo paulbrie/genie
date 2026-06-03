@@ -1,5 +1,5 @@
 import * as securityService from "../security-service.js";
-import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult, createMcpHttpServer } from "./mcp-jsonrpc.js";
+import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult } from "./mcp-jsonrpc.js";
 
 const TOOLS = [
   {
@@ -168,9 +168,4 @@ export async function handleSecurityMcpRequest(parsed: JsonRpcRequest): Promise<
     const message = err instanceof Error ? err.message : String(err);
     return jsonRpcError(id, -32000, message || "Internal error");
   }
-}
-
-/** Local HTTP server for MCP reverse tunnels. */
-export function createMcpSecurityServer(): Promise<{ port: number; close(): void }> {
-  return createMcpHttpServer((parsed) => handleSecurityMcpRequest(parsed));
 }

@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { S3Client, PutObjectCommand, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { SshSession } from "./ssh-client.js";
-import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult, createMcpHttpServer } from "./mcp-jsonrpc.js";
+import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult } from "./mcp-jsonrpc.js";
 
 /** Per-instance context the storage handler needs to reach the VM + scope keys. */
 export interface StorageMcpContext {
@@ -367,13 +367,4 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
     const message = err instanceof Error ? err.message : String(err);
     return jsonRpcError(id, -32000, message || "Internal error");
   }
-}
-
-/** Local HTTP server for MCP reverse tunnels. */
-export function createMcpStorageServer(
-  sshSession: SshSession,
-  projectName: string,
-): Promise<{ port: number; close(): void }> {
-  const ctx: StorageMcpContext = { sshSession, projectName };
-  return createMcpHttpServer((parsed) => handleStorageMcpRequest(parsed, ctx));
 }

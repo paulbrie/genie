@@ -13,7 +13,6 @@ import {
 import { listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "../vps/ssh-metrics.js";
 import { listRecentSshEvents } from "../vps/ssh-events.js";
 import { evictAllSessionsForHost, evictSession, listSharedTunnels } from "../vps/ssh-session-cache.js";
-import { reconnectPersistentMcpTunnelForHost, listPersistentMcpTunnels, closePersistentMcpTunnelForHost } from "../vps/mcp-tunnel-pool.js";
 /** Handle every `ssh:*` and `terminal:*` message. Returns true if handled. */
 export async function handleTerminalMessage(
   ws: WebSocket,
@@ -23,7 +22,8 @@ export async function handleTerminalMessage(
 ): Promise<boolean> {
   const sshListPayload = () => ({
     sessions: listSshConnections(),
-    tunnels: listPersistentMcpTunnels(),
+    // genie-* MCPs run over REST now — no per-host MCP tunnels to report.
+    tunnels: [],
     events: listRecentSshEvents(100),
     sharedTunnels: listSharedTunnels(),
   });
@@ -40,15 +40,9 @@ export async function handleTerminalMessage(
         send(ws, { type: "ssh:tunnel:reconnect:result", payload: { host, ok: false, error: "host is required" } });
         return true;
       }
-      try {
-        await reconnectPersistentMcpTunnelForHost(host);
-        send(ws, { type: "ssh:tunnel:reconnect:result", payload: { host, ok: true } });
-      } catch (err: unknown) {
-        send(ws, {
-          type: "ssh:tunnel:reconnect:result",
-          payload: { host, ok: false, error: err instanceof Error ? err.message : String(err) },
-        });
-      }
+      // genie-* MCPs run over REST — nothing to reconnect. Ack so the existing
+      // "Reconnect" UI control still resolves cleanly.
+      send(ws, { type: "ssh:tunnel:reconnect:result", payload: { host, ok: true } });
       broadcast({ type: "ssh:list", payload: sshListPayload() });
       return true;
     }
@@ -58,7 +52,6 @@ export async function handleTerminalMessage(
       let killed = 0;
       if (typeof killHost === "string" && killHost) {
         killed = killSshConnectionsForHost(killHost);
-        closePersistentMcpTunnelForHost(killHost);
         evictAllSessionsForHost(killHost);
       } else if (typeof id === "string") {
         const info = getSshConnectionInfo(id);

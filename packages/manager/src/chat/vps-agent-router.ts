@@ -1,19 +1,12 @@
 import { type WebSocket } from "ws";
-import { v4 as uuidv4 } from "uuid";
 import type { WsMessage } from "../types.js";
 import * as projectService from "../project-service.js";
 import * as assistantLogService from "../assistant-log-service.js";
 import { getResumeState, saveResumeSessionId } from "../assistant-session-state-service.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";
 import { remoteDir } from "../vps/deploy-service.js";
-import { setupMcpTunnel } from "../vps/mcp-tunnel.js";
-import { setupMcpStreamTunnel } from "../vps/mcp-stream-tunnel.js";
-import { setupMcpSecurityTunnel } from "../vps/mcp-security-tunnel.js";
-import { setupMcpNotifyTunnel } from "../vps/mcp-notify-tunnel.js";
-import { setupMcpStorageTunnel } from "../vps/mcp-storage-tunnel.js";
-import { buildMcpConfigMergeScript } from "../vps/mcp-config-merge.js";
-import { createDomActionExecutor, registerDomBrokerSession, activeChatAbortControllers, broadcastToUsers, broadcastTrackerList } from "../ws-server.js";
-import { MCP_BROWSER_REMOTE_PORT, MCP_SECURITY_REMOTE_PORT, MCP_NOTIFY_REMOTE_PORT, MCP_STORAGE_REMOTE_PORT, persistentMcpTunnels, tunnelKey, connectTunnelSsh } from "../vps/mcp-tunnel-pool.js";
+import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";
+import { activeChatAbortControllers } from "../ws-server.js";
 // `send` is private to ws-server, so the caller passes it in.
 type Send = (ws: WebSocket, message: WsMessage) => void;
 
@@ -87,102 +80,24 @@ export async function routeChatToVpsAgent(
 
   const dest = remoteDir(project.name);
 
-  const hostKey = tunnelKey(instance.connection.host);
-  const brokerSessionId = assistantSessionId || uuidv4();
-  registerDomBrokerSession(
-    brokerSessionId,
-    userId,
-    instance.connection.host,
-    project.id,
-    instance.id,
-  );
-
-  // Ensure shared MCP tunnels are active for this VPS instance.
-  {
-    let tunnel = persistentMcpTunnels.get(hostKey);
-    const needsAnyTunnel = !tunnel || !tunnel.streamTunnel || !tunnel.securityTunnel || !tunnel.notifyTunnel || !tunnel.storageTunnel;
-    try {
-      const tunnelSsh = tunnel?.sshSession ?? await connectTunnelSsh(instance.connection.host, instance.connection);
-
-      if (!tunnel) {
-        const mcpTunnel = await setupMcpTunnel(
-          tunnelSsh,
-          createDomActionExecutor(instance.connection.host),
-          { remotePort: MCP_BROWSER_REMOTE_PORT },
-        );
-        tunnel = {
-          sshSession: tunnelSsh,
-          mcpTunnel,
-          projectName: project.name,
-          instanceHost: instance.connection.host,
-          openedAt: Date.now(),
-          alive: true,
-        };
-        persistentMcpTunnels.set(hostKey, tunnel);
-      }
-
-      if (needsAnyTunnel) {
-        if (!tunnel.streamTunnel) {
-          try {
-            tunnel.streamTunnel = await setupMcpStreamTunnel(tunnelSsh, { projectId: project.id, onIssueUpdated: () => { broadcastTrackerList().catch(() => { /* noop */ }); } });
-            console.log(`[claude-code] Stream tunnel established for ${project.name} at ${tunnel.streamTunnel.socketPath}`);
-          } catch (err: unknown) {
-            console.error(`[claude-code] Stream tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
-          }
-        }
-
-        if (!tunnel.securityTunnel) {
-          try {
-            tunnel.securityTunnel = await setupMcpSecurityTunnel(tunnelSsh, { remotePort: MCP_SECURITY_REMOTE_PORT });
-            console.log(`[claude-code] Security tunnel established for ${project.name}`);
-          } catch (err: unknown) {
-            console.error(`[claude-code] Security tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
-          }
-        }
-
-        if (!tunnel.notifyTunnel) {
-          try {
-            tunnel.notifyTunnel = await setupMcpNotifyTunnel(tunnelSsh, (memberIds, conversationId, message) => {
-              broadcastToUsers(memberIds, { type: "chat:message:new", payload: { conversationId, message } });
-            }, { remotePort: MCP_NOTIFY_REMOTE_PORT });
-            console.log(`[claude-code] Notify tunnel established for ${project.name}`);
-          } catch (err: unknown) {
-            console.error(`[claude-code] Notify tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
-          }
-        }
-
-        if (!tunnel.storageTunnel) {
-          try {
-            tunnel.storageTunnel = await setupMcpStorageTunnel(tunnelSsh, project.name, { remotePort: MCP_STORAGE_REMOTE_PORT });
-            console.log(`[claude-code] Storage tunnel established for ${project.name}`);
-          } catch (err: unknown) {
-            console.error(`[claude-code] Storage tunnel failed for ${project.name}: ${(err instanceof Error ? err.message : String(err))}`);
-          }
-        }
-      }
-
-      const mergeScript = buildMcpConfigMergeScript(
-        dest,
-        {
-          "x-genie-user-id": userId,
-          "x-genie-session-id": brokerSessionId,
-          "x-genie-host": instance.connection.host,
-          "x-genie-project-id": project.id,
-          "x-genie-instance-id": instance.id,
-        },
-        {
-          streamTunnelSocketPath: tunnel.streamTunnel?.socketPath ?? null,
-          hasSecurityTunnel: !!tunnel.securityTunnel,
-          hasNotifyTunnel: !!tunnel.notifyTunnel,
-          hasStorageTunnel: !!tunnel.storageTunnel,
-        },
-      );
-      await tunnelSsh.exec(mergeScript);
-
-      console.log(`[claude-code] MCP tunnels ready for ${project.name}`);
-    } catch (err: unknown) {
-      console.error(`[claude-code] Failed to set up MCP tunnels: ${(err instanceof Error ? err.message : String(err))}`);
-    }
+  // Point the project's .mcp.json at the manager's MCP REST endpoints
+  // (genie-tracker/security/notify/storage). No tunnels — the VM reaches the
+  // manager over HTTPS with its per-instance bearer token. This is idempotent,
+  // so doing it on every launch keeps the config fresh after a token rotation.
+  try {
+    const wrote = await provisionMcpRestConfig(
+      (cmd) => sshSession.exec(cmd),
+      dest,
+      project.id,
+      instance.id,
+    );
+    console.log(
+      wrote
+        ? `[claude-code] MCP REST config written for ${project.name}`
+        : `[claude-code] MANAGER_URL unset — skipped MCP REST config for ${project.name}`,
+    );
+  } catch (err: unknown) {
+    console.error(`[claude-code] Failed to write MCP REST config: ${(err instanceof Error ? err.message : String(err))}`);
   }
 
   try {
@@ -228,35 +143,16 @@ export async function routeChatToVpsAgent(
 
     let systemContext = chatContext || "";
     const serverIp = instance.connection.host;
-    const isExtension = (chatContext || "").includes("Client: chrome-extension");
     systemContext += `\n\nServer public IP: ${serverIp}`;
-    if (isExtension) {
-      systemContext += `\n\n=== Browser & MCP Tools ===`;
-      systemContext += `\nThis server runs in the cloud at ${serverIp}. When using browser tools:`;
-      systemContext += `\n- The app is accessible at http://${serverIp}:3000 (or whichever port it runs on). NEVER use localhost or 127.0.0.1 URLs — those refer to the VPS loopback, not your app.`;
-      systemContext += `\n- genie-browser: Use this for DOM interactions. Always use the public IP (http://${serverIp}:PORT) for navigation. Never pass localhost URLs.`;
-      systemContext += `\n- chrome-devtools: This runs Puppeteer on the VPS. The VPS has no display server — always use headless mode. Navigate to http://${serverIp}:PORT, never localhost.`;
-    } else {
-      systemContext += `\n\n=== Browser Notes ===`;
-      systemContext += `\nYou are running from the Genie web app (not the Chrome extension). The genie-browser MCP server is NOT available — do NOT attempt to use it. If you need to test or interact with the app in a browser, use chrome-devtools (Puppeteer) in headless mode. The app is accessible at http://${serverIp}:3000 (or whichever port it runs on). NEVER use localhost or 127.0.0.1 URLs.`;
-    }
+    systemContext += `\n\n=== Browser Notes ===`;
+    systemContext += `\nThis server runs in the cloud at ${serverIp}. To test or interact with the app in a browser, use chrome-devtools (Puppeteer) in headless mode (the VPS has no display server). The app is accessible at http://${serverIp}:3000 (or whichever port it runs on). NEVER use localhost or 127.0.0.1 URLs — those refer to the VPS loopback, not your app.`;
 
-    const tKey = tunnelKey(serverIp);
-    if (persistentMcpTunnels.get(tKey)?.streamTunnel) {
-      systemContext += `\n\n=== Tracker ===\nYou have access to the project's issue tracker via MCP tools (genie-tracker server). Use tracker_list_issues to see all tickets, tracker_get_issue to read a specific ticket by its number, tracker_update_issue to change status/priority, and tracker_comment_on_issue to leave notes.\n\nWorkflow: set status to in_progress when you start working on a ticket. When you finish, leave a concise summary comment (bullet list of changes) using tracker_comment_on_issue, then set status to in_review (NEVER set to done — a human reviews and marks done).`;
-    }
-
-    if (persistentMcpTunnels.get(tKey)?.securityTunnel) {
-      systemContext += `\n\n=== Security Scanner ===\nYou have access to a security scanner via MCP tools (genie-security server). Use security_scan to run a full security scan on a target URL (port scan + web vulnerability checks — takes a few minutes). Use security_list_scans to see previous scan results. Use security_get_scan to retrieve full details of a specific scan by ID.`;
-    }
-
-    if (persistentMcpTunnels.get(tKey)?.notifyTunnel) {
-      systemContext += `\n\n=== Notifications ===\nYou can contact the admin via MCP tools (genie-notify server). Use notify_send_email to send an email to the admin (for important alerts, completed tasks, errors). Use notify_send_chat_message to send a message in the admin's Genie chat (appears as a DM from Claude — good for progress updates, questions, or results).`;
-    }
-
-    if (persistentMcpTunnels.get(tKey)?.storageTunnel) {
-      systemContext += `\n\n=== Cloud Storage ===\nYou have access to cloud storage via MCP tools (genie-storage server). Use storage_screenshot to take a screenshot of a URL (runs Puppeteer on the VPS, uploads the PNG to cloud storage, returns a presigned URL). Use storage_upload to upload any file from the VPS to cloud storage. Use storage_list to browse stored files, storage_get_url to get a fresh presigned URL, and storage_delete to remove files. All files are scoped to this project.`;
-    }
+    // The genie-* MCP services reach the manager over HTTPS, so they're always
+    // available to Claude on the VM (no tunnel to be up or down).
+    systemContext += `\n\n=== Tracker ===\nYou have access to the project's issue tracker via MCP tools (genie-tracker server). Use tracker_list_issues to see all tickets, tracker_get_issue to read a specific ticket by its number, tracker_update_issue to change status/priority, and tracker_comment_on_issue to leave notes.\n\nWorkflow: set status to in_progress when you start working on a ticket. When you finish, leave a concise summary comment (bullet list of changes) using tracker_comment_on_issue, then set status to in_review (NEVER set to done — a human reviews and marks done).`;
+    systemContext += `\n\n=== Security Scanner ===\nYou have access to a security scanner via MCP tools (genie-security server). Use security_scan to run a full security scan on a target URL (port scan + web vulnerability checks — takes a few minutes). Use security_list_scans to see previous scan results. Use security_get_scan to retrieve full details of a specific scan by ID.`;
+    systemContext += `\n\n=== Notifications ===\nYou can contact the admin via MCP tools (genie-notify server). Use notify_send_email to send an email to the admin (for important alerts, completed tasks, errors). Use notify_send_chat_message to send a message in the admin's Genie chat (appears as a DM from Claude — good for progress updates, questions, or results).`;
+    systemContext += `\n\n=== Cloud Storage ===\nYou have access to cloud storage via MCP tools (genie-storage server). Use storage_screenshot to take a screenshot of a URL (runs Puppeteer on the VPS, uploads the PNG to cloud storage, returns a presigned URL). Use storage_upload to upload any file from the VPS to cloud storage. Use storage_list to browse stored files, storage_get_url to get a fresh presigned URL, and storage_delete to remove files. All files are scoped to this project.`;
 
     if (agentMd) {
       systemContext += `\n\n=== Agent Memory (AGENT.md) ===\n${agentMd}`;

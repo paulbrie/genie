@@ -32,8 +32,6 @@ import { v4 as uuidv4 } from "uuid";
 
 import { connectSsh, type SshConnectionConfig } from "./vps/ssh-client.js";
 
-import { remoteDir } from "./vps/deploy-service.js";
-
 import { ingestVpsStats, startStatsDbPoll, unwatchVpsStatsForClient } from "./vps/stats-stream.js";
 
 import { resolveStatsToken } from "./vps/stats-token-service.js";
@@ -43,19 +41,8 @@ import { ensureGenieKeyOnDisk } from "./vps/do-provision.js";
 
 import { ensureTazcloudKeyOnDisk } from "./vps/tazcloud-provision.js";
 import { syncDropletStatuses } from "./vps/droplet-sync.js";
-import { buildMcpConfigMergeScript } from "./vps/mcp-config-merge.js";
 import { activeAgentSessions } from "./vps/vps-agent-rsync.js";
-import { MCP_BROWSER_REMOTE_PORT, MCP_SECURITY_REMOTE_PORT, MCP_NOTIFY_REMOTE_PORT, MCP_STORAGE_REMOTE_PORT, persistentMcpTunnels, tunnelKey, isTunnelLive, connectTunnelSsh, closeAllPersistentMcpTunnels } from "./vps/mcp-tunnel-pool.js";
-
-import { setupMcpTunnel } from "./vps/mcp-tunnel.js";
-
-import { setupMcpStreamTunnel, type McpStreamTunnel } from "./vps/mcp-stream-tunnel.js";
-
-import { setupMcpSecurityTunnel, type McpSecurityTunnel } from "./vps/mcp-security-tunnel.js";
-
-import { setupMcpNotifyTunnel, type McpNotifyTunnel } from "./vps/mcp-notify-tunnel.js";
-
-import { setupMcpStorageTunnel, type McpStorageTunnel } from "./vps/mcp-storage-tunnel.js";
+import { handleMcpRestRequest, type McpRestService } from "./vps/mcp-rest-router.js";
 
 import { type ClientType, type DomActionExecutor, type DomActionRequestContext, type StatsPayload } from "./types.js";
 
@@ -454,97 +441,15 @@ export function createDomActionExecutor(host: string): DomActionExecutor {
   };
 }
 
-async function setupPersistentMcpTunnels(extensionWs: WebSocket, userId: string): Promise<void> {
+// The genie-* MCP services now reach the manager over REST (see
+// mcp-rest-router.ts), so there are no per-host tunnels to build when the
+// Chrome extension attaches. We still track the extension socket so the
+// browser DOM broker (createDomActionExecutor) can route to it.
+async function registerExtensionSocket(extensionWs: WebSocket, userId: string): Promise<void> {
   registerExtensionClient(userId, extensionWs);
-
-  // Find all projects this user can access.
-  const projects = await projectService.getAllForUser(userId);
-
-  const seenHosts = new Set<string>();
-  let newTunnelCount = 0;
-  for (const project of projects) {
-    for (const instance of project.vpsInstances) {
-      if (instance.deployFailed) continue;
-      const key = tunnelKey(instance.connection.host);
-      if (seenHosts.has(key)) continue;
-      seenHosts.add(key);
-      const dest = remoteDir(project.name);
-
-      try {
-        if (isTunnelLive(instance.connection.host)) continue;
-        const sshSession = await connectTunnelSsh(instance.connection.host, instance.connection);
-        const mcpTunnel = await setupMcpTunnel(sshSession, createDomActionExecutor(instance.connection.host), { remotePort: MCP_BROWSER_REMOTE_PORT });
-
-        // Set up stdio stream tunnel (carries tracker + future MCPs)
-        let streamTunnel: McpStreamTunnel | undefined;
-        try {
-          streamTunnel = await setupMcpStreamTunnel(sshSession, { projectId: project.id, onIssueUpdated: () => { broadcastTrackerList().catch(() => {}); } });
-          console.log(`[mcp-persistent] Stream tunnel ready for ${project.name} at ${streamTunnel.socketPath}`);
-        } catch (streamErr: unknown) {
-          console.error(`[mcp-persistent] Stream tunnel failed for ${project.name}: ${(streamErr instanceof Error ? streamErr.message : String(streamErr))}`);
-        }
-
-        // Set up security tunnel
-        let securityTunnel: McpSecurityTunnel | undefined;
-        try {
-          securityTunnel = await setupMcpSecurityTunnel(sshSession, { remotePort: MCP_SECURITY_REMOTE_PORT });
-          console.log(`[mcp-persistent] Security tunnel ready for ${project.name}`);
-        } catch (secErr: unknown) {
-          console.error(`[mcp-persistent] Security tunnel failed for ${project.name}: ${(secErr instanceof Error ? secErr.message : String(secErr))}`);
-        }
-
-        // Set up notify tunnel
-        let notifyTunnel: McpNotifyTunnel | undefined;
-        try {
-          notifyTunnel = await setupMcpNotifyTunnel(sshSession, (memberIds, conversationId, message) => {
-            broadcastToUsers(memberIds, { type: "chat:message:new", payload: { conversationId, message } });
-          }, { remotePort: MCP_NOTIFY_REMOTE_PORT });
-          console.log(`[mcp-persistent] Notify tunnel ready for ${project.name}`);
-        } catch (notifyErr: unknown) {
-          console.error(`[mcp-persistent] Notify tunnel failed for ${project.name}: ${(notifyErr instanceof Error ? notifyErr.message : String(notifyErr))}`);
-        }
-
-        // Set up storage tunnel
-        let storageTunnel: McpStorageTunnel | undefined;
-        try {
-          storageTunnel = await setupMcpStorageTunnel(sshSession, project.name, { remotePort: MCP_STORAGE_REMOTE_PORT });
-          console.log(`[mcp-persistent] Storage tunnel ready for ${project.name}`);
-        } catch (storageErr: unknown) {
-          console.error(`[mcp-persistent] Storage tunnel failed for ${project.name}: ${(storageErr instanceof Error ? storageErr.message : String(storageErr))}`);
-        }
-
-        persistentMcpTunnels.set(key, { sshSession, mcpTunnel, streamTunnel, securityTunnel, notifyTunnel, storageTunnel, projectName: project.name, instanceHost: instance.connection.host, openedAt: Date.now(), alive: true });
-
-        // Merge MCP servers into .mcp.json on the VPS. Browser headers are set per
-        // chat session in routeChatToVpsAgent, not here.
-        const mergeScript = buildMcpConfigMergeScript(
-          dest,
-          null,
-          {
-            streamTunnelSocketPath: streamTunnel?.socketPath ?? null,
-            hasSecurityTunnel: !!securityTunnel,
-            hasNotifyTunnel: !!notifyTunnel,
-            hasStorageTunnel: !!storageTunnel,
-          },
-        );
-        await sshSession.exec(mergeScript);
-
-        newTunnelCount++;
-        console.log(`[mcp-persistent] Shared tunnel ready for host ${instance.connection.host}:${MCP_BROWSER_REMOTE_PORT} (${project.name})`);
-      } catch (err: unknown) {
-        console.error(`[mcp-persistent] Failed shared tunnel to ${instance.connection.host} (${project.name}): ${(err instanceof Error ? err.message : String(err))}`);
-      }
-    }
-  }
-
-  if (seenHosts.size === 0) {
-    console.log(`[mcp-persistent] No VPS instances found for user ${userId}`);
-  } else {
-    console.log(`[mcp-persistent] User ${userId} attached to ${seenHosts.size} host(s); ${newTunnelCount} new shared tunnel(s) created`);
-  }
 }
 
-async function teardownPersistentMcpTunnels(userId: string): Promise<void> {
+async function unregisterExtensionSocket(userId: string): Promise<void> {
   clearDomBrokerSessionsForUser(userId);
   const ws = extensionClientsByUser.get(userId);
   if (ws) unregisterExtensionClient(userId, ws);
@@ -937,9 +842,9 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (msg.type === "extension:identify") {
     state.clientType = "chrome-extension";
     send(ws, { type: "extension:identified", payload: {} });
-    // Set up persistent MCP browser tunnel in background
-    setupPersistentMcpTunnels(ws, userId).catch(err =>
-      console.error(`[mcp-persistent] Setup error: ${(err instanceof Error ? err.message : String(err))}`)
+    // Track the extension socket for the browser DOM broker (no MCP tunnels).
+    registerExtensionSocket(ws, userId).catch(err =>
+      console.error(`[extension] Register error: ${(err instanceof Error ? err.message : String(err))}`)
     );
     return;
   }
@@ -1205,6 +1110,21 @@ export async function createServer(): Promise<WebSocketServer> {
       return;
     }
 
+    // genie-* MCP services over REST: the VM's Claude reaches these directly
+    // over HTTPS with its per-instance bearer token (no reverse tunnels). The
+    // router authenticates and frames JSON-RPC; we inject the manager-side
+    // broadcast side effects so it doesn't import this module back.
+    const mcpMatch = req.url?.match(/^\/api\/vps\/mcp\/(tracker|security|notify|storage)$/);
+    if (mcpMatch) {
+      await handleMcpRestRequest(req, res, mcpMatch[1] as McpRestService, {
+        broadcastChatMessage: (memberIds, conversationId, message) => {
+          broadcastToUsers(memberIds, { type: "chat:message:new", payload: { conversationId, message } });
+        },
+        onIssueUpdated: () => { broadcastTrackerList().catch(() => { /* noop */ }); },
+      });
+      return;
+    }
+
     const match = req.url?.match(/^\/api\/public\/doc\/([A-Za-z0-9_-]+)$/);
     if (match && req.method === "GET") {
       try {
@@ -1322,7 +1242,7 @@ export async function createServer(): Promise<WebSocketServer> {
       const wasAuthenticated = closingState?.userId != null;
       // Tear down persistent MCP tunnel if this was the extension
       if (closingState?.clientType === "chrome-extension" && closingState?.userId) {
-        teardownPersistentMcpTunnels(closingState.userId).catch(() => {});
+        unregisterExtensionSocket(closingState.userId).catch(() => {});
       }
       // Dispose any interactive SSH terminals tied to this socket. One SSH
       // per terminal, no persistent reuse — closing the WS kills the dial.
@@ -1370,7 +1290,6 @@ export function shutdown(wss: WebSocketServer): void {
     session.stop();
   }
   activeAgentSessions.clear();
-  closeAllPersistentMcpTunnels();
   for (const [ws] of clients) {
     ws.close();
   }

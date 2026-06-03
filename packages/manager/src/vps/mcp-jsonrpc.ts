@@ -47,73 +47,67 @@ function sendSseResponse(res: http.ServerResponse, payload: object) {
   res.end();
 }
 
-/** Local HTTP server for MCP reverse tunnels (Streamable HTTP transport). */
-export function createMcpHttpServer(
+/**
+ * Frame one Streamable-HTTP MCP request/response over a raw Node HTTP exchange:
+ * method gating, body parse, notification 202s, and JSON-vs-SSE result framing.
+ * `handler` is the transport-agnostic JSON-RPC handler. Shared by the manager's
+ * /api/vps/mcp/:service REST route — the only HTTP transport now that the MCP
+ * servers reach the manager directly instead of through reverse tunnels.
+ */
+export async function respondMcp(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
   handler: (parsed: JsonRpcRequest) => Promise<object | null>,
-): Promise<{ port: number; close(): void }> {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer(async (req, res) => {
-      if (req.method === "GET") {
-        res.writeHead(405).end();
-        return;
-      }
-      if (req.method === "DELETE") {
-        res.writeHead(200).end();
-        return;
-      }
-      if (req.method !== "POST") {
-        res.writeHead(405).end();
-        return;
-      }
+): Promise<void> {
+  if (req.method === "GET") {
+    res.writeHead(405).end();
+    return;
+  }
+  if (req.method === "DELETE") {
+    res.writeHead(200).end();
+    return;
+  }
+  if (req.method !== "POST") {
+    res.writeHead(405).end();
+    return;
+  }
 
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
-      const body = Buffer.concat(chunks).toString();
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  const body = Buffer.concat(chunks).toString();
 
-      let parsed: JsonRpcRequest;
-      try {
-        parsed = JSON.parse(body) as JsonRpcRequest;
-      } catch {
-        res.writeHead(400, { "Content-Type": "application/json" })
-          .end(JSON.stringify(jsonRpcError(null, -32700, "Parse error")));
-        return;
-      }
+  let parsed: JsonRpcRequest;
+  try {
+    parsed = JSON.parse(body) as JsonRpcRequest;
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" })
+      .end(JSON.stringify(jsonRpcError(null, -32700, "Parse error")));
+    return;
+  }
 
-      if (isNotification(parsed)) {
-        await handler(parsed);
-        res.writeHead(202).end();
-        return;
-      }
+  if (isNotification(parsed)) {
+    await handler(parsed);
+    res.writeHead(202).end();
+    return;
+  }
 
-      try {
-        const result = await handler(parsed);
-        if (!result) {
-          res.writeHead(202).end();
-          return;
-        }
-        const accept = req.headers.accept || "";
-        if (accept.includes("text/event-stream")) {
-          sendSseResponse(res, result);
-        } else {
-          res.writeHead(200, { "Content-Type": "application/json" })
-            .end(JSON.stringify(result));
-        }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        const errResp = jsonRpcError(parsed.id, -32000, message || "Internal error");
-        res.writeHead(200, { "Content-Type": "application/json" })
-          .end(JSON.stringify(errResp));
-      }
-    });
-
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address() as { port: number };
-      resolve({
-        port: addr.port,
-        close() { server.close(); },
-      });
-    });
-
-    server.on("error", reject);
-  });
+  try {
+    const result = await handler(parsed);
+    if (!result) {
+      res.writeHead(202).end();
+      return;
+    }
+    const accept = req.headers.accept || "";
+    if (accept.includes("text/event-stream")) {
+      sendSseResponse(res, result);
+    } else {
+      res.writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify(result));
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errResp = jsonRpcError(parsed.id, -32000, message || "Internal error");
+    res.writeHead(200, { "Content-Type": "application/json" })
+      .end(JSON.stringify(errResp));
+  }
 }

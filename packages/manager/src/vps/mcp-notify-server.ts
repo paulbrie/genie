@@ -3,7 +3,7 @@ import { getDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import * as chatService from "../chat-service.js";
 import { getClaudeUserId } from "../db/seed.js";
-import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult, createMcpHttpServer } from "./mcp-jsonrpc.js";
+import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult } from "./mcp-jsonrpc.js";
 
 /** Side-channel the notify handler needs back into the manager. */
 export interface NotifyMcpContext {
@@ -199,12 +199,4 @@ export async function handleNotifyMcpRequest(parsed: JsonRpcRequest, ctx: Notify
     const message = err instanceof Error ? err.message : String(err);
     return jsonRpcError(id, -32000, message || "Internal error");
   }
-}
-
-/** Local HTTP server for MCP reverse tunnels. */
-export function createMcpNotifyServer(
-  broadcastChatMessage: NotifyMcpContext["broadcastChatMessage"],
-): Promise<{ port: number; close(): void }> {
-  const ctx: NotifyMcpContext = { broadcastChatMessage };
-  return createMcpHttpServer((parsed) => handleNotifyMcpRequest(parsed, ctx));
 }

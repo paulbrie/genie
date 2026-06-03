@@ -1,5 +1,4 @@
 import * as trackerService from "../tracker-service.js";
-import { createMcpHttpServer, type JsonRpcRequest } from "./mcp-jsonrpc.js";
 
 const TOOLS = [
   {
@@ -121,10 +120,9 @@ function jsonRpcError(id: unknown, code: number, message: string) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-/** Pure JSON-RPC handler for the tracker MCP. Both the legacy HTTP server and
- *  the new stdio bridge (mcp-stream-tunnel) dispatch through here, so the
- *  transport is the only thing that varies. Returns the full JSON-RPC envelope
- *  (with `id`), or `null` for notifications that don't expect a reply. */
+/** Pure JSON-RPC handler for the tracker MCP, dispatched from the manager's
+ *  /api/vps/mcp/tracker REST route. Returns the full JSON-RPC envelope (with
+ *  `id`), or `null` for notifications that don't expect a reply. */
 export async function handleTrackerRequest(
   projectId: string,
   req: { id?: unknown; method?: string; params?: Record<string, unknown> },
@@ -263,14 +261,4 @@ export async function handleTrackerRequest(
     const message = err instanceof Error ? err.message : String(err);
     return jsonRpcError(id, -32000, message || "Internal error");
   }
-}
-
-/** Local HTTP server for MCP reverse tunnels. */
-export function createMcpTrackerServer(
-  projectId: string,
-  onIssueUpdated?: () => void,
-): Promise<{ port: number; close(): void }> {
-  return createMcpHttpServer((parsed) =>
-    handleTrackerRequest(projectId, parsed as JsonRpcRequest, { onIssueUpdated }),
-  );
 }

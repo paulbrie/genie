@@ -15,7 +15,6 @@ import { getVpsMetricHistory, getBulkVpsMetricHistory } from "../vps/vps-metric-
 import { GENIE_STANDARD_RECIPE_SLUG, syncGenieStatsOnVm } from "../vps/ensure-vps-stats.js";
 import { pollVpsStats } from "../ssh/index.js";
 import { broadcastProjectList } from "../ws-server.js";
-import { ensureMcpTunnelsForHost } from "../vps/mcp-tunnel-pool.js";
 /** Handle runtime `vps:*` ops — status, stats (except `vps:stats` itself which
  *  touches mutable droplet-sync state in ws-server.ts), monitor, process, exec,
  *  recipes, logs, docker logs, MCP ensure. Returns true if handled. */
@@ -423,7 +422,9 @@ export async function handleVpsRuntimeMessage(
             return true;
           }
         }
-        await ensureMcpTunnelsForHost(host, { force: true });
+        // genie-* MCPs run over REST and are written into .mcp.json at chat
+        // launch — there's nothing host-scoped to ensure. Ack so the existing
+        // UI control resolves.
         send(ws, { type: "vps:mcp:ensure:result", payload: { host, ok: true } });
       } catch (err: unknown) {
         send(ws, { type: "vps:mcp:ensure:result", payload: { host, ok: false, error: err instanceof Error ? err.message : String(err) } });
