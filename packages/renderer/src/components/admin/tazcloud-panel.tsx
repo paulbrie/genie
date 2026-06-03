@@ -11,9 +11,9 @@ import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
-import { VpsResourceBar, vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
+import { vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
-import { CloudMetricSparklines } from "@/components/cloud/cloud-metric-sparklines";
+import { CloudVmResourceBlock } from "@/components/cloud/cloud-vm-resource-block";
 import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
@@ -1002,8 +1002,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                       </div>
 
                       {isActive && vm.ipv6 && (
-                        <VpsResourceBar
-                          className="mt-3"
+                        <CloudVmResourceBlock
                           host={vm.ipv6}
                           ipv6
                           isPrivateHost={vm.isPrivateHost ?? isPrivateHostAddress(vm.ipv6)}
@@ -1020,12 +1019,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                             else loadAdminTazcloudStats();
                           }}
                           refreshLoading={vmStatsLoading}
-                        />
-                      )}
-
-                      {isActive && historyKey && (
-                        <CloudMetricSparklines
-                          history={monitor.history[historyKey]}
+                          history={historyKey ? monitor.history[historyKey] : undefined}
                           hours={monitor.hours}
                         />
                       )}

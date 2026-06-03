@@ -235,6 +235,64 @@ function sampleToBarStats(sample: Sample): VpsResourceBarStats {
   };
 }
 
+/** Ring gauges for CPU / MEM / DISK — used inline on Clouds cards beside history legend. */
+export function ResourceGaugeCluster({
+  stats,
+  statsLoading = false,
+  statsError,
+  className,
+}: {
+  stats?: VpsResourceBarStats | null;
+  statsLoading?: boolean;
+  statsError?: string | null;
+  className?: string;
+}) {
+  const gaugesDimmed = statsLoading && !stats;
+  return (
+    <div className={cn("flex flex-col gap-0.5 shrink-0", className)}>
+      <div className={cn("flex items-center gap-3", gaugesDimmed && "opacity-50")}>
+        {statsLoading && !stats ? (
+          <div className="flex items-center gap-2 text-overlay0 text-xs py-2 pr-2">
+            <Loader2 size={12} className="animate-spin shrink-0" />
+            Probing…
+          </div>
+        ) : (
+          <>
+            <Gauge
+              label="CPU"
+              pct={stats ? stats.cpuPercent : null}
+              detail="Total CPU usage."
+            />
+            <Gauge
+              label="MEM"
+              pct={stats ? stats.memPercent : null}
+              detail={
+                stats?.memUsedBytes != null && stats.memTotalBytes != null
+                  ? `${fmtBytes(stats.memUsedBytes)} used of ${fmtBytes(stats.memTotalBytes)}`
+                  : "Memory usage."
+              }
+            />
+            <Gauge
+              label="DISK"
+              pct={stats ? stats.diskPercent : null}
+              detail={
+                stats?.diskUsedBytes != null && stats.diskTotalBytes != null
+                  ? `${fmtBytes(stats.diskUsedBytes)} used of ${fmtBytes(stats.diskTotalBytes)} on /`
+                  : "Root filesystem usage."
+              }
+            />
+          </>
+        )}
+      </div>
+      {statsError && !stats && (
+        <div className="text-[10px] text-red font-mono truncate max-w-[12rem]" title={statsError}>
+          {statsError}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export interface VpsResourceBarProps {
   host: string;
   ipv6?: boolean;
@@ -244,6 +302,8 @@ export interface VpsResourceBarProps {
   stats?: VpsResourceBarStats | null;
   statsLoading?: boolean;
   statsError?: string | null;
+  /** Hide ring gauges (Clouds cards render them on a shared row with history legend). */
+  hideGauges?: boolean;
   /** @deprecated Stats are live-pushed now; the manual refresh button was removed.
    *  Kept for call-site compatibility — both are ignored. */
   onRefresh?: () => void;
@@ -261,6 +321,7 @@ export function VpsResourceBar({
   stats,
   statsLoading = false,
   statsError,
+  hideGauges = false,
   className,
 }: VpsResourceBarProps) {
   const isPrivateHost = isPrivateHostProp ?? isPrivateHostAddress(host);
@@ -269,7 +330,6 @@ export function VpsResourceBar({
   const ipUrl = `http://${hostBracketed}${appPort ? `:${appPort}` : ""}`;
   const domainUrl = domain ? (domain.url || `https://${domain.name}`) : null;
   const ports = stats?.externalPorts ?? [];
-  const gaugesDimmed = statsLoading && !stats;
 
   return (
     <section
@@ -279,7 +339,7 @@ export function VpsResourceBar({
       )}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center gap-4">
+      <div className={cn("flex items-center gap-4", hideGauges && "gap-0")}>
         <div className="flex flex-col gap-1 flex-1 min-w-0 justify-center">
           {domainUrl ? (
             <UrlRow
@@ -332,46 +392,14 @@ export function VpsResourceBar({
           )}
         </div>
 
-        <div className={cn("flex items-center gap-3 shrink-0", gaugesDimmed && "opacity-50")}>
-          {statsLoading && !stats ? (
-            <div className="flex items-center gap-2 text-overlay0 text-xs py-2 pr-2">
-              <Loader2 size={12} className="animate-spin shrink-0" />
-              Probing…
-            </div>
-          ) : (
-            <>
-              <Gauge
-                label="CPU"
-                pct={stats ? stats.cpuPercent : null}
-                detail="Total CPU usage."
-              />
-              <Gauge
-                label="MEM"
-                pct={stats ? stats.memPercent : null}
-                detail={
-                  stats?.memUsedBytes != null && stats.memTotalBytes != null
-                    ? `${fmtBytes(stats.memUsedBytes)} used of ${fmtBytes(stats.memTotalBytes)}`
-                    : "Memory usage."
-                }
-              />
-              <Gauge
-                label="DISK"
-                pct={stats ? stats.diskPercent : null}
-                detail={
-                  stats?.diskUsedBytes != null && stats.diskTotalBytes != null
-                    ? `${fmtBytes(stats.diskUsedBytes)} used of ${fmtBytes(stats.diskTotalBytes)} on /`
-                    : "Root filesystem usage."
-                }
-              />
-            </>
-          )}
-        </div>
+        {!hideGauges && (
+          <ResourceGaugeCluster
+            stats={stats}
+            statsLoading={statsLoading}
+            statsError={statsError}
+          />
+        )}
       </div>
-      {statsError && !stats && (
-        <div className="text-[10px] text-red font-mono truncate" title={statsError}>
-          {statsError}
-        </div>
-      )}
     </section>
   );
 }

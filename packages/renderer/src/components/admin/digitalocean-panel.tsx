@@ -21,8 +21,8 @@ import {
   ActionMenuPanel,
 } from "@/components/ui/action-menu";
 import { cardStatusPill } from "@/components/admin/tazcloud-panel";
-import { VpsResourceBar, vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
-import { CloudMetricSparklines } from "@/components/cloud/cloud-metric-sparklines";
+import { vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
+import { CloudVmResourceBlock } from "@/components/cloud/cloud-vm-resource-block";
 import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
 import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
 
@@ -712,8 +712,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                         </div>
 
                         {isActive && d.ip && (
-                          <VpsResourceBar
-                            className="mt-3"
+                          <CloudVmResourceBlock
                             host={d.ip}
                             isPrivateHost={isPrivateHostAddress(d.ip)}
                             stats={dropletStats ? vpsStatsToBarStats(dropletStats) : null}
@@ -724,12 +723,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                               else loadAdminDropletStats();
                             }}
                             refreshLoading={dropletStatsLoading}
-                          />
-                        )}
-
-                        {isActive && historyKey && (
-                          <CloudMetricSparklines
-                            history={monitor.history[historyKey]}
+                            history={historyKey ? monitor.history[historyKey] : undefined}
                             hours={monitor.hours}
                           />
                         )}
