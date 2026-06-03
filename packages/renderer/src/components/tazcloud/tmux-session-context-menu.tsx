@@ -1,14 +1,25 @@
 "use client";
 
-import { ContextMenu, ContextMenuItem } from "@/components/ui/context-menu";
+import { useCallback, useState } from "react";
+import { Pencil, Trash2 } from "lucide-react";
+import {
+  ActionMenuItem,
+  ContextActionMenu,
+} from "@/components/ui/action-menu";
 
-interface TmuxSessionContextMenuProps {
+export type TmuxSessionMenuHandlers = {
+  onRename: (sessionName: string) => void;
+  /** Kill the tmux session on the VM. Resolves when the manager round-trip finishes. */
+  onDelete: (sessionName: string) => Promise<void>;
+};
+
+interface TmuxSessionContextMenuProps extends TmuxSessionMenuHandlers {
   sessionName: string;
   x: number;
   y: number;
   onClose: () => void;
-  onRename: (sessionName: string) => void;
-  onDelete: (sessionName: string) => void;
+  /** Override confirm prompt (e.g. persisted-terminal sessions tab). */
+  deleteConfirmMessage?: string;
 }
 
 export function TmuxSessionContextMenu({
@@ -18,37 +29,54 @@ export function TmuxSessionContextMenu({
   onClose,
   onRename,
   onDelete,
+  deleteConfirmMessage,
 }: TmuxSessionContextMenuProps) {
+  const [deleting, setDeleting] = useState(false);
+
+  const runDelete = useCallback(async () => {
+    const msg =
+      deleteConfirmMessage ?? `Kill tmux session "${sessionName}"?`;
+    if (!window.confirm(msg)) return;
+    setDeleting(true);
+    try {
+      await onDelete(sessionName);
+      onClose();
+    } catch {
+      // Parent surfaces errors via alert; keep menu open for retry.
+    } finally {
+      setDeleting(false);
+    }
+  }, [sessionName, deleteConfirmMessage, onDelete, onClose]);
+
   return (
-    <ContextMenu x={x} y={y} onClose={onClose}>
-      <ContextMenuItem
+    <ContextActionMenu x={x} y={y} onClose={onClose} blockClose={deleting}>
+      <ActionMenuItem
+        icon={Pencil}
+        disabled={deleting}
         onClick={() => {
           onRename(sessionName);
           onClose();
         }}
       >
         Rename
-      </ContextMenuItem>
-      <ContextMenuItem
-        onClick={() => {
-          onDelete(sessionName);
-          onClose();
-        }}
-        className="text-red"
+      </ActionMenuItem>
+      <ActionMenuItem
+        icon={Trash2}
+        variant="danger"
+        loading={deleting}
+        onClick={() => void runDelete()}
       >
-        Delete
-      </ContextMenuItem>
-    </ContextMenu>
+        {deleting ? "Deleting session…" : "Delete session…"}
+      </ActionMenuItem>
+    </ContextActionMenu>
   );
 }
 
-interface TmuxCompactContextMenuProps {
+interface TmuxCompactContextMenuProps extends TmuxSessionMenuHandlers {
   sessions: { name: string }[];
   x: number;
   y: number;
   onClose: () => void;
-  onRename: (sessionName: string) => void;
-  onDelete: (sessionName: string) => void;
 }
 
 /** Multi-session menu for the compact title-bar badge. */
@@ -74,32 +102,71 @@ export function TmuxCompactContextMenu({
   }
 
   return (
-    <ContextMenu x={x} y={y} onClose={onClose}>
+    <ContextActionMenu x={x} y={y} onClose={onClose}>
       {sessions.map((s, i) => (
-        <div key={s.name}>
-          {i > 0 && <div className="my-1 border-t border-surface1" />}
-          <div className="px-3 py-1 text-xs font-mono text-overlay0 truncate max-w-[14rem]" title={s.name}>
-            {s.name}
-          </div>
-          <ContextMenuItem
-            onClick={() => {
-              onRename(s.name);
-              onClose();
-            }}
-          >
-            Rename
-          </ContextMenuItem>
-          <ContextMenuItem
-            onClick={() => {
-              onDelete(s.name);
-              onClose();
-            }}
-            className="text-red"
-          >
-            Delete
-          </ContextMenuItem>
-        </div>
+        <TmuxSessionMenuSection
+          key={s.name}
+          sessionName={s.name}
+          showDivider={i > 0}
+          onRename={onRename}
+          onDelete={onDelete}
+          onClose={onClose}
+        />
       ))}
-    </ContextMenu>
+    </ContextActionMenu>
+  );
+}
+
+function TmuxSessionMenuSection({
+  sessionName,
+  showDivider,
+  onRename,
+  onDelete,
+  onClose,
+}: {
+  sessionName: string;
+  showDivider: boolean;
+} & TmuxSessionMenuHandlers & { onClose: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+
+  const runDelete = useCallback(async () => {
+    if (!window.confirm(`Kill tmux session "${sessionName}"?`)) return;
+    setDeleting(true);
+    try {
+      await onDelete(sessionName);
+      onClose();
+    } finally {
+      setDeleting(false);
+    }
+  }, [sessionName, onDelete, onClose]);
+
+  return (
+    <div>
+      {showDivider && <div className="my-1 border-t border-overlay0/15" />}
+      <div
+        className="px-3 py-1 text-xs font-mono text-overlay0 truncate max-w-[14rem]"
+        title={sessionName}
+      >
+        {sessionName}
+      </div>
+      <ActionMenuItem
+        icon={Pencil}
+        disabled={deleting}
+        onClick={() => {
+          onRename(sessionName);
+          onClose();
+        }}
+      >
+        Rename
+      </ActionMenuItem>
+      <ActionMenuItem
+        icon={Trash2}
+        variant="danger"
+        loading={deleting}
+        onClick={() => void runDelete()}
+      >
+        {deleting ? "Deleting session…" : "Delete session…"}
+      </ActionMenuItem>
+    </div>
   );
 }

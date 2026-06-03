@@ -1165,12 +1165,13 @@ function VmSessionsTab({ vmHost }: { vmHost: string }) {
     });
   }, [renameTarget, refresh]);
 
-  const handleSessionDelete = useCallback((session: PersistedTerminalSession) => {
-    if (!window.confirm(`Kill terminal session "${session.commandLabel || session.id}"?`)) return;
+  const handleSessionDelete = useCallback(async (session: PersistedTerminalSession) => {
     if (session.projectId && session.instanceId) {
-      void killVmTmuxSession(session.projectId, session.instanceId, session.id).then((res) => {
-        if (res.error) window.alert(res.output || "Delete failed");
-      });
+      const res = await killVmTmuxSession(session.projectId, session.instanceId, session.id);
+      if (res.error) {
+        window.alert(res.output || "Delete failed");
+        throw new Error(res.output || "Delete failed");
+      }
     }
     killPersistedTerminal(session.id);
     refresh();
@@ -1267,7 +1268,8 @@ function VmSessionsTab({ vmHost }: { vmHost: string }) {
           y={contextMenu.y}
           onClose={closeContextMenu}
           onRename={() => handleSessionRename(contextMenu.session)}
-          onDelete={() => handleSessionDelete(contextMenu.session)}
+          onDelete={async () => handleSessionDelete(contextMenu.session)}
+          deleteConfirmMessage={`Kill terminal session "${contextMenu.session.commandLabel || contextMenu.session.id}"?`}
         />
       )}
       {renameTarget && (

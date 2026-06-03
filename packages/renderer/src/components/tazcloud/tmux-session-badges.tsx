@@ -357,12 +357,13 @@ export function TmuxSessionBadges({
   );
 
   const handleDelete = useCallback(
-    (sessionName: string) => {
-      if (!window.confirm(`Kill tmux session "${sessionName}"?`)) return;
-      void killVmTmuxSession(projectId, instanceId, sessionName).then((res) => {
-        if (res.error) window.alert(res.output || "Delete failed");
-        else if (onProbe) onProbe();
-      });
+    async (sessionName: string) => {
+      const res = await killVmTmuxSession(projectId, instanceId, sessionName);
+      if (res.error) {
+        window.alert(res.output || "Delete failed");
+        throw new Error(res.output || "Delete failed");
+      }
+      if (onProbe) onProbe();
     },
     [projectId, instanceId, onProbe],
   );

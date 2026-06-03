@@ -14,6 +14,12 @@ import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
+import {
+  ActionMenuBackdrop,
+  ActionMenuDivider,
+  ActionMenuItem,
+  ActionMenuPanel,
+} from "@/components/ui/action-menu";
 import { cardStatusPill } from "@/components/admin/tazcloud-panel";
 import { VpsResourceBar, vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
 import { CloudMetricSparklines } from "@/components/cloud/cloud-metric-sparklines";
@@ -381,116 +387,119 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                 </button>
                 {actionMenuOpenFor === d.id && (
                   <>
-                    <div className="fixed inset-0 z-10" onClick={() => setActionMenuOpenFor(null)} />
-                    <div className="absolute right-0 top-full mt-1 z-20 bg-mantle border border-overlay0/30 rounded-md shadow-lg py-1 min-w-[220px]">
+                    <ActionMenuBackdrop onClose={() => setActionMenuOpenFor(null)} />
+                    <ActionMenuPanel className="absolute right-0 top-full mt-1 z-20">
                       {!isRenaming && (
-                        <button
+                        <ActionMenuItem
+                          icon={Pencil}
                           onClick={() => { setActionMenuOpenFor(null); startRename(d); }}
-                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
                         >
-                          <Pencil size={12} className="text-overlay0" />
                           Rename
-                        </button>
+                        </ActionMenuItem>
                       )}
                       {d.locked ? (
-                        <button
-                          onClick={() => { setActionMenuOpenFor(null); unlockAdminDroplet(d.id); }}
-                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                        <ActionMenuItem
+                          icon={Unlock}
+                          iconClassName="text-red"
                           title="Unlock (allow deletion)"
+                          onClick={() => { setActionMenuOpenFor(null); unlockAdminDroplet(d.id); }}
                         >
-                          <Unlock size={12} className="text-red" />
                           Unlock
-                        </button>
+                        </ActionMenuItem>
                       ) : (
-                        <button
-                          onClick={() => { setActionMenuOpenFor(null); lockAdminDroplet(d.id); }}
-                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
+                        <ActionMenuItem
+                          icon={Lock}
                           title="Lock this droplet to prevent accidental deletion"
+                          onClick={() => { setActionMenuOpenFor(null); lockAdminDroplet(d.id); }}
                         >
-                          <Lock size={12} className="text-overlay0" />
                           Lock (prevent deletion)
-                        </button>
+                        </ActionMenuItem>
                       )}
-                      <button
-                        onClick={() => { setActionMenuOpenFor(null); openManageDropletWindow(d); }}
+                      <ActionMenuItem
+                        icon={SettingsIcon}
                         disabled={!isActive}
-                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                        onClick={() => { setActionMenuOpenFor(null); openManageDropletWindow(d); }}
                       >
-                        <SettingsIcon size={12} className="text-overlay0" />
                         Manage firewall &amp; services…
-                      </button>
-                      <div className="my-1 border-t border-overlay0/15" />
-                      <button
-                        onClick={() => { setActionMenuOpenFor(null); if (d.ip) { startSecurityScan(d.ip); switchNav("security"); } }}
+                      </ActionMenuItem>
+                      <ActionMenuDivider />
+                      <ActionMenuItem
+                        icon={Shield}
+                        iconClassName="text-mauve"
                         disabled={!isActive || !d.ip}
-                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                         title={isActive && d.ip ? `Run security scan against ${d.ip}` : "Droplet is not active"}
+                        onClick={() => {
+                          setActionMenuOpenFor(null);
+                          if (d.ip) {
+                            startSecurityScan(d.ip);
+                            switchNav("security");
+                          }
+                        }}
                       >
-                        <Shield size={12} className="text-mauve" />
                         Run security scan
-                      </button>
-                      <button
+                      </ActionMenuItem>
+                      <ActionMenuItem
+                        icon={Maximize2}
+                        iconClassName="text-blue"
+                        disabled={resizing}
+                        title={resizing ? "Resize in progress…" : "Resize droplet (powers off briefly)"}
                         onClick={() => {
                           setActionMenuOpenFor(null);
                           setResizeDraftFor(d.id);
                           setResizeSize(d.size);
                           setResizeDisk(false);
                         }}
-                        disabled={resizing}
-                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={resizing ? "Resize in progress…" : "Resize droplet (powers off briefly)"}
                       >
-                        <Maximize2 size={12} className="text-blue" />
                         Resize droplet…
-                      </button>
-                      <button
+                      </ActionMenuItem>
+                      <ActionMenuItem
+                        icon={rebooting ? Loader2 : RotateCw}
+                        iconClassName="text-peach"
+                        loading={rebooting}
+                        disabled={!isActive || rebooting || resizing}
+                        title={rebooting ? "Reboot in progress…" : isActive ? "Soft reboot via DigitalOcean" : "Droplet is not active"}
                         onClick={() => {
                           setActionMenuOpenFor(null);
                           if (window.confirm(`Reboot "${d.name}" now?\n\nThis issues a soft reboot via DigitalOcean (OS shutdown + start). Open SSH sessions will drop.`)) {
                             rebootAdminDroplet(d.id);
                           }
                         }}
-                        disabled={!isActive || rebooting || resizing}
-                        className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={rebooting ? "Reboot in progress…" : isActive ? "Soft reboot via DigitalOcean" : "Droplet is not active"}
                       >
-                        {rebooting
-                          ? <Loader2 size={12} className="text-peach animate-spin" />
-                          : <RotateCw size={12} className="text-peach" />}
                         {rebooting ? "Restarting…" : "Restart droplet…"}
-                      </button>
+                      </ActionMenuItem>
                       {d.domain ? (
-                        <button
+                        <ActionMenuItem
+                          icon={Globe}
+                          title={`Remove ${d.domain.fqdn}`}
                           onClick={() => {
                             setActionMenuOpenFor(null);
                             if (window.confirm(`Remove domain ${d.domain!.fqdn} from "${d.name}"?\n\nThis deletes the Namecheap A record and the Caddy site config on the VM. The droplet keeps running.`)) {
                               detachAdminDropletDomain(d.id);
                             }
                           }}
-                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
-                          title={`Remove ${d.domain.fqdn}`}
                         >
-                          <Globe size={12} className="text-overlay0" />
                           Remove domain
-                        </button>
+                        </ActionMenuItem>
                       ) : (
-                        <button
+                        <ActionMenuItem
+                          icon={Globe}
+                          iconClassName="text-green"
+                          disabled={!isActive}
+                          title={isActive ? "Attach a custom subdomain with automatic HTTPS" : "Droplet is not active"}
                           onClick={() => {
                             setActionMenuOpenFor(null);
                             setDomainDraftFor(d.id);
                             setDomainFqdn("");
                             setDomainPort("3000");
                           }}
-                          disabled={!isActive}
-                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={isActive ? "Attach a custom subdomain with automatic HTTPS" : "Droplet is not active"}
                         >
-                          <Globe size={12} className="text-green" />
                           Attach domain…
-                        </button>
+                        </ActionMenuItem>
                       )}
                       {d.projectName && d.projectId && (
-                        <button
+                        <ActionMenuItem
+                          icon={Unlink}
+                          title={`Remove the link to "${d.projectName}" without touching the droplet`}
                           onClick={() => {
                             setActionMenuOpenFor(null);
                             const project = projects.find((p) => p.id === d.projectId);
@@ -504,23 +513,20 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                             }
                             disconnectVps(d.projectId!, instance.id);
                           }}
-                          className="w-full text-left px-3 py-1.5 text-md hover:bg-surface0 flex items-center gap-2"
-                          title={`Remove the link to "${d.projectName}" without touching the droplet`}
                         >
-                          <Unlink size={12} className="text-overlay0" />
                           Detach from {d.projectName}
-                        </button>
+                        </ActionMenuItem>
                       )}
-                      <div className="my-1 border-t border-overlay0/15" />
-                      <button
-                        onClick={() => { setActionMenuOpenFor(null); confirmDelete(d.id); }}
-                        className="w-full text-left px-3 py-1.5 text-md hover:bg-red/10 text-red flex items-center gap-2"
+                      <ActionMenuDivider />
+                      <ActionMenuItem
+                        icon={Trash2}
+                        variant="danger"
                         title={d.locked ? "Locked — superadmin can still confirm" : "Delete this droplet"}
+                        onClick={() => { setActionMenuOpenFor(null); confirmDelete(d.id); }}
                       >
-                        <Trash2 size={12} className="text-red" />
                         Delete droplet…
-                      </button>
-                    </div>
+                      </ActionMenuItem>
+                    </ActionMenuPanel>
                   </>
                 )}
               </div>
