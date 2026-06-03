@@ -12,7 +12,7 @@ export function getDb(): PostgresJsDatabase<typeof schema> {
       throw new Error("DB environment variable is not set");
     }
     const ssl = process.env.DB_CERT ? { ca: process.env.DB_CERT } : undefined;
-    client = postgres(url, { ssl });
+    client = postgres(url, { ssl, onnotice: () => {} });
     db = drizzle(client, { schema });
   }
   return db;

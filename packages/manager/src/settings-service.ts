@@ -443,19 +443,6 @@ export async function saveRoutedSettings(userId: string, fields: Record<string, 
 // --- Ensure defaults + history table ---
 
 export async function ensureBaseImageDefaults(): Promise<void> {
-  const db = getDb();
-
-  // Create history table if not exists
-  await db.execute(sql`CREATE TABLE IF NOT EXISTS base_image_template_history (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    template_name TEXT NOT NULL,
-    action TEXT NOT NULL CHECK (action IN ('created', 'updated', 'deleted', 'restored')),
-    data JSONB NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL
-  )`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_base_image_tpl_hist_name ON base_image_template_history (template_name)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_base_image_tpl_hist_created ON base_image_template_history (created_at)`);
-
   // Seed default config + template if both are empty
   const configs = await getAllBaseImageConfigs();
   if (Object.keys(configs).length === 0) {

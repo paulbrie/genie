@@ -1,16 +1,19 @@
-// Per-instance bearer tokens for the on-VM genie-stats daemon's HTTPS postback.
+// Per-instance bearer tokens for VM → manager HTTPS calls.
 //
-// `ensureStatsToken` is called at provisioning time (syncGenieStatsOnVm) and is
-// idempotent so re-provisioning a VM keeps the same token. `resolveStatsToken`
-// is the hot path on every POST /api/vps/stats — backed by an in-memory cache
-// since tokens are long-lived and ingest fires every few seconds per VM.
+// Originally minted for the genie-stats daemon's postback, the same token now
+// also authenticates the VM's MCP REST calls (POST /api/vps/mcp/:service) — one
+// secret per instance, written into both the stats drop-in and the VM's
+// .mcp.json. `ensureStatsToken` is called at provisioning time
+// (syncGenieStatsOnVm) and is idempotent so re-provisioning keeps the same
+// token. `resolveStatsToken` is the hot path on every postback / MCP call —
+// backed by an in-memory cache since tokens are long-lived.
 
 import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { vpsStatsTokens } from "../db/schema.js";
 
-interface TokenOwner {
+export interface TokenOwner {
   projectId: string;
   instanceId: string;
 }
@@ -70,3 +73,8 @@ export async function resolveStatsToken(token: string): Promise<TokenOwner | nul
   tokenCache.set(token, owner);
   return owner;
 }
+
+// The MCP REST endpoints reuse the same per-instance token as stats; these
+// aliases document that intent at the call sites without a second token table.
+export const ensureInstanceToken = ensureStatsToken;
+export const resolveInstanceToken = resolveStatsToken;

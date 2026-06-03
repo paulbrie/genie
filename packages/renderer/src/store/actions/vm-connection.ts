@@ -1,14 +1,15 @@
 /**
  * Actions for the live SSH terminal popup (new connection layer).
- * One SSH connection per (projectId, instanceId) — never reused across popups.
+ * Terminals lease PTY channels on the manager's shared SSH tunnel per host:user.
  */
 import { batch } from "subjecto";
 
-import { wsSend } from "@/lib/ws";
-import { disposeTerminal } from "@/lib/terminal-bridge";
-import { $vmConnections } from "../subjects/vps";
-import type { VmConnectionState } from "../types/vps";
-import { watchVpsStats, unwatchVpsStats } from "./vps";
+import { onWsClose, wsSend } from "@/lib/ws";
+import { clearTerminal, disposeTerminal, getTerminalSize } from "@/lib/terminal-bridge";
+import { $vmConnections, $vpsDeploy } from "../subjects/vps";
+import type { VmConnectionState, VmTmuxSession } from "../types/vps";
+import { ensureInstanceState, watchVpsStats, unwatchVpsStats, resubscribeVpsStatsWatches, refreshVmTmuxSessions } from "./vps";
+import { $manager } from "../subjects";
 
 /** Each call to openProjectVmConnection / openDirectVmConnection mints a fresh
  *  key so the same VM can have multiple independent popups open at once. The
@@ -29,6 +30,45 @@ function freshTerminalId(): string {
   return `term-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 }
 
+/** Apply `vm:conn:stats` probe results to $vmConnections slots and $vpsDeploy. */
+export function applyVmConnStats(payload: {
+  projectId: string;
+  instanceId: string;
+  stats: { cpu: number; mem: number; disk: number } | null;
+  tmux: VmTmuxSession[];
+  error: string | null;
+  tmuxProbePath?: "exec" | "pty";
+}): void {
+  const { projectId, instanceId, stats, tmux, error, tmuxProbePath } = payload;
+  if (error === "in_flight") return;
+
+  const tmuxList = tmux || [];
+  const now = Date.now();
+
+  // Only replace the session list when we got sessions, or exec confirmed empty.
+  // PTY probes inside an attached tmux often return unparseable noise — never
+  // wipe a good list with an empty PTY result.
+  const trustEmpty = tmuxProbePath === "exec" || tmuxProbePath == null;
+  const shouldUpdateTmux = tmuxList.length > 0 || (trustEmpty && !error);
+
+  batch(() => {
+    const conns = $vmConnections.getValue().connections;
+    for (const slot of Object.values(conns)) {
+      if (slot.projectId !== projectId || slot.instanceId !== instanceId) continue;
+      if (stats) slot.stats = stats;
+      if (shouldUpdateTmux) slot.tmuxSessions = tmuxList;
+      if (error) slot.statsError = error;
+      else slot.statsError = null;
+      slot.lastTmuxAt = now;
+    }
+    ensureInstanceState(instanceId);
+    const inst = $vpsDeploy.getValue().instances[instanceId];
+    if (shouldUpdateTmux) inst.tmuxSessions = tmuxList;
+    inst.lastTmuxAt = now;
+    inst.tmuxProbeError = error;
+  });
+}
+
 export type OpenProjectVmArgs = {
   projectId: string;
   instanceId: string;
@@ -38,6 +78,11 @@ export type OpenProjectVmArgs = {
   vmLabel: string;
   /** Shell command to run once the session is ready (e.g. launch Claude). */
   initialCommand?: string;
+  /** tmux launch mode. `"new"` + `initialCommand` runs the command inside a
+   *  fresh (attach-or-create) tmux session; `"attach"` reattaches to an existing
+   *  `tmuxSessionName`. Omit for a plain shell / direct command. */
+  tmuxIntent?: "new" | "attach";
+  tmuxSessionName?: string;
 };
 
 export type OpenDirectVmArgs = {
@@ -72,7 +117,11 @@ export function openProjectVmConnection(args: OpenProjectVmArgs): string {
       sshSessions: null,
       tmuxSessions: [],
       lastStatsAt: null,
+      lastTmuxAt: null,
       openedAt: Date.now(),
+      ...(args.initialCommand ? { initialCommand: args.initialCommand } : {}),
+      ...(args.tmuxIntent ? { tmuxIntent: args.tmuxIntent } : {}),
+      ...(args.tmuxSessionName ? { tmuxSessionName: args.tmuxSessionName } : {}),
     };
   });
   wsSend("terminal:start", {
@@ -82,13 +131,15 @@ export function openProjectVmConnection(args: OpenProjectVmArgs): string {
     cols: 80,
     rows: 24,
     ...(args.initialCommand ? { initialCommand: args.initialCommand } : {}),
+    ...(args.tmuxIntent ? { tmuxIntent: args.tmuxIntent } : {}),
+    ...(args.tmuxSessionName ? { tmuxSessionName: args.tmuxSessionName } : {}),
   });
   // Subscribe to the VM's live daemon stats — each HTTPS postback the VM sends
   // is fanned out by the manager as `vps:stats:update` and updates the gauges in
   // real time. The one-shot refresh below just populates gauges + tmux instantly
   // (tmux only comes from the SSH probe, not the daemon payload).
   watchVpsStats(args.projectId, args.instanceId);
-  wsSend("vps:stats:refresh", { projectId: args.projectId, instanceId: args.instanceId });
+  refreshVmTmuxSessions(args.projectId, args.instanceId, { force: true });
   return key;
 }
 
@@ -115,7 +166,9 @@ export function openDirectVmConnection(args: OpenDirectVmArgs): string {
       sshSessions: null,
       tmuxSessions: [],
       lastStatsAt: null,
+      lastTmuxAt: null,
       openedAt: Date.now(),
+      privateKeyPath: args.privateKeyPath,
     };
   });
   wsSend("terminal:start", {
@@ -130,18 +183,30 @@ export function openDirectVmConnection(args: OpenDirectVmArgs): string {
   return key;
 }
 
-export function refreshVmStats(key: string): void {
+export function refreshVmStats(key: string, opts?: { force?: boolean }): void {
   const c = $vmConnections.getValue().connections[key];
-  if (!c) return;
-  if (c.projectId && c.instanceId) {
-    wsSend("vps:stats:refresh", { projectId: c.projectId, instanceId: c.instanceId });
-  }
+  if (!c?.projectId || !c.instanceId) return;
+  refreshVmTmuxSessions(c.projectId, c.instanceId, { force: opts?.force ?? false });
 }
 
-export function injectVmCommand(key: string, command: string): void {
+export function injectVmCommand(
+  key: string,
+  command: string,
+  opts?: { silent?: boolean },
+): void {
   const c = $vmConnections.getValue().connections[key];
   if (!c) return;
-  wsSend("terminal:inject", { terminalId: c.terminalId, command });
+  wsSend("terminal:inject", { terminalId: c.terminalId, command, silent: opts?.silent ?? false });
+}
+
+/** Track which tmux session a live popup is attached to (drives badge selection). */
+export function setVmConnectionTmuxSession(key: string, sessionName: string): void {
+  const c = $vmConnections.getValue().connections[key];
+  if (!c) return;
+  batch(() => {
+    c.tmuxSessionName = sessionName;
+    c.tmuxIntent = "attach";
+  });
 }
 
 /** Ship a clipboard image to the live PTY. Manager writes the bytes via SFTP
@@ -169,6 +234,74 @@ function extFromMime(mime: string): string | null {
   if (sub === "svg+xml") return "svg";
   return sub.replace(/\W+/g, "");
 }
+
+export function reconnectVmConnection(key: string): void {
+  const c = $vmConnections.getValue().connections[key];
+  if (!c) return;
+  clearTerminal(c.terminalId);
+  batch(() => {
+    c.status = "connecting";
+    c.errorMessage = null;
+    c.bytesIn = 0;
+    c.bytesOut = 0;
+  });
+  wsSend("terminal:close", { terminalId: c.terminalId });
+  const size = getTerminalSize(c.terminalId) ?? { cols: 80, rows: 24 };
+  const tmuxIntent = c.tmuxSessionName
+    ? c.tmuxIntent === "new"
+      ? "attach"
+      : (c.tmuxIntent ?? "attach")
+    : c.tmuxIntent;
+  const startPayload = {
+    terminalId: c.terminalId,
+    cols: size.cols,
+    rows: size.rows,
+    ...(tmuxIntent ? { tmuxIntent } : {}),
+    ...(c.tmuxSessionName ? { tmuxSessionName: c.tmuxSessionName } : {}),
+    ...(tmuxIntent === "new" && c.initialCommand ? { initialCommand: c.initialCommand } : {}),
+  };
+  if (c.projectId && c.instanceId) {
+    wsSend("terminal:start", {
+      ...startPayload,
+      projectId: c.projectId,
+      instanceId: c.instanceId,
+    });
+    watchVpsStats(c.projectId, c.instanceId);
+    refreshVmTmuxSessions(c.projectId, c.instanceId, { force: true });
+    return;
+  }
+  if (c.privateKeyPath) {
+    wsSend("terminal:start", {
+      ...startPayload,
+      host: c.host,
+      port: c.port,
+      username: c.username,
+      privateKeyPath: c.privateKeyPath,
+    });
+  }
+}
+
+function markVmConnectionsDisconnected(reason: string): void {
+  batch(() => {
+    for (const slot of Object.values($vmConnections.getValue().connections)) {
+      if (slot.status !== "connecting" && slot.status !== "connected") continue;
+      slot.status = "closed";
+      slot.errorMessage = reason;
+    }
+  });
+}
+
+onWsClose((reason) => {
+  markVmConnectionsDisconnected(reason);
+});
+
+let lastManagerRunning = $manager.getValue().running;
+$manager.subscribe((m) => {
+  if (!lastManagerRunning && m.running) {
+    resubscribeVpsStatsWatches();
+  }
+  lastManagerRunning = m.running;
+});
 
 export function closeVmConnection(key: string): void {
   const c = $vmConnections.getValue().connections[key];

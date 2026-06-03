@@ -1,27 +1,79 @@
-import { connectSsh, type SshConnectionConfig, type SshSession } from "./ssh-client.js";
+import {
+  connectSsh,
+  type ShellHandle,
+  type SshConnectionConfig,
+  type SshSession,
+} from "./ssh-client.js";
+import { sshConnRegister, sshConnUnregister } from "./ssh-metrics.js";
 
-// One SSH client per (host, port, username). Callers use ensureServerTunnel() to
-// pin a server while the Manage UI (or similar) is open; execCached multiplexes
-// commands as channels on that single connection.
+// One SSH client per (host, port, username). Manage UI pins via manageRefs;
+// interactive terminals lease PTY shell channels on the same connection.
 
 const IDLE_TTL_MS = 5 * 60_000;
 const SWEEP_INTERVAL_MS = 60_000;
 
-interface Entry {
-  /** Resolved session — null while a dial is in flight or after eviction. */
-  session: SshSession | null;
-  cfg: SshConnectionConfig;
-  /** ms timestamp of the last successful getCachedSession/execCached use. */
-  lastUsed: number;
+export type ServerTunnelKey = string;
+
+export function serverTunnelKey(cfg: SshConnectionConfig): ServerTunnelKey {
+  return `${cfg.host}:${cfg.port}:${cfg.username}`;
 }
 
-const cache = new Map<string, Entry>();
-/** One in-flight dial per cache key — prevents parallel WS handlers from each
- *  calling connectSsh() before the cache entry exists (which orphaned ~50
- *  connections when opening the Manage popup). */
+function keyOf(cfg: SshConnectionConfig): ServerTunnelKey {
+  return serverTunnelKey(cfg);
+}
+
+export interface SharedChannelSnapshot {
+  terminalId: string;
+  status: "open" | "closed";
+  cols: number;
+  rows: number;
+  projectId: string | null;
+  instanceId: string | null;
+  openedAt: number;
+  bytesIn: number;
+  bytesOut: number;
+}
+
+export interface SharedTunnelSnapshot {
+  key: ServerTunnelKey;
+  host: string;
+  port: number;
+  username: string;
+  status: "connecting" | "connected" | "disconnected";
+  manageRefs: number;
+  channelCount: number;
+  execInFlight: boolean;
+  pinned: boolean;
+  openedAt: number;
+  channels: SharedChannelSnapshot[];
+}
+
+interface ChannelEntry {
+  terminalId: string;
+  cols: number;
+  rows: number;
+  projectId: string | null;
+  instanceId: string | null;
+  openedAt: number;
+  handle: ShellHandle | null;
+  ptyRegistryId: string | null;
+  onReady?: () => void;
+  onError?: (message: string) => void;
+  onClose?: () => void;
+}
+
+interface SharedTunnelEntry {
+  cfg: SshConnectionConfig;
+  session: SshSession | null;
+  manageRefs: number;
+  channels: Map<string, ChannelEntry>;
+  lastUsed: number;
+  openedAt: number;
+  execInFlight: boolean;
+}
+
+const cache = new Map<string, SharedTunnelEntry>();
 const inflightDials = new Map<string, Promise<SshSession>>();
-/** Servers with an explicit open tunnel (Manage popup, etc.) — skip idle reaper. */
-const pinnedTunnels = new Set<ServerTunnelKey>();
 
 /** ssh2 allows multiple channels per connection, but overlapping execs on one
  *  cached session (stats fan-out + bundle upload) can stall probes for 30s+ on
@@ -35,14 +87,35 @@ function execSerialized<T>(session: SshSession, run: () => Promise<T>): Promise<
   return next;
 }
 
-export type ServerTunnelKey = string;
-
-export function serverTunnelKey(cfg: SshConnectionConfig): ServerTunnelKey {
-  return `${cfg.host}:${cfg.port}:${cfg.username}`;
+function isActive(entry: SharedTunnelEntry): boolean {
+  return entry.manageRefs > 0 || entry.channels.size > 0;
 }
 
-function keyOf(cfg: SshConnectionConfig): ServerTunnelKey {
-  return serverTunnelKey(cfg);
+function evictIfIdle(key: string): void {
+  const entry = cache.get(key);
+  if (!entry || isActive(entry)) return;
+  try { entry.session?.close(); } catch { /* ignore */ }
+  for (const ch of entry.channels.values()) {
+    if (ch.ptyRegistryId) sshConnUnregister(ch.ptyRegistryId);
+    try { ch.handle?.close(); } catch { /* ignore */ }
+  }
+  entry.channels.clear();
+  entry.session = null;
+  cache.delete(key);
+}
+
+function onSharedSessionClosed(key: string): void {
+  const entry = cache.get(key);
+  if (!entry) return;
+  entry.session = null;
+  for (const ch of [...entry.channels.values()]) {
+    if (ch.ptyRegistryId) {
+      sshConnUnregister(ch.ptyRegistryId);
+      ch.ptyRegistryId = null;
+    }
+    ch.handle = null;
+    ch.onClose?.();
+  }
 }
 
 function startDial(key: string, cfg: SshConnectionConfig): Promise<SshSession> {
@@ -56,10 +129,7 @@ function startDial(key: string, cfg: SshConnectionConfig): Promise<SshSession> {
     inflightDials.set(key, dial);
 
     void connectSsh(cfg, {
-      onSessionClosed: () => {
-        const entry = cache.get(key);
-        if (entry?.session) entry.session = null;
-      },
+      onSessionClosed: () => onSharedSessionClosed(key),
     })
       .then((session) => {
         const entry = cache.get(key);
@@ -67,14 +137,24 @@ function startDial(key: string, cfg: SshConnectionConfig): Promise<SshSession> {
           entry.session = session;
           entry.lastUsed = Date.now();
         } else {
-          cache.set(key, { session, cfg, lastUsed: Date.now() });
+          cache.set(key, {
+            cfg,
+            session,
+            manageRefs: 0,
+            channels: new Map(),
+            lastUsed: Date.now(),
+            openedAt: Date.now(),
+            execInFlight: false,
+          });
         }
         resolveDial(session);
         return session;
       })
       .catch((err) => {
         const entry = cache.get(key);
-        if (entry && !entry.session) cache.delete(key);
+        if (entry && !entry.session && entry.manageRefs === 0 && entry.channels.size === 0) {
+          cache.delete(key);
+        }
         rejectDial(err);
       })
       .finally(() => {
@@ -84,91 +164,239 @@ function startDial(key: string, cfg: SshConnectionConfig): Promise<SshSession> {
   return inflightDials.get(key)!;
 }
 
-/** Return a cached SSH session for `cfg`, dialing once on first use. Concurrent
- *  callers for the same key share the same in-flight dial. The session is NOT
- *  closed by callers — let the idle reaper or `evictSession` handle teardown. */
-export function pinServerTunnel(cfg: SshConnectionConfig): void {
-  pinnedTunnels.add(serverTunnelKey(cfg));
-}
-
-export function unpinServerTunnel(cfg: SshConnectionConfig): void {
-  pinnedTunnels.delete(serverTunnelKey(cfg));
-}
-
-export function isServerTunnelPinned(cfg: SshConnectionConfig): boolean {
-  return pinnedTunnels.has(serverTunnelKey(cfg));
-}
-
-function isServerTunnelPinnedByKey(key: ServerTunnelKey): boolean {
-  return pinnedTunnels.has(key);
-}
-
-/** Establish (or reuse) one SSH tunnel for this server and pin until release. */
-export async function ensureServerTunnel(cfg: SshConnectionConfig): Promise<SshSession> {
-  pinServerTunnel(cfg);
-  return getCachedSession(cfg);
-}
-
-/** Close the tunnel and allow idle reaper to drop the cache entry. */
-export function releaseServerTunnel(cfg: SshConnectionConfig): void {
-  unpinServerTunnel(cfg);
-  evictSession(cfg);
+function ensureEntry(cfg: SshConnectionConfig): SharedTunnelEntry {
+  const key = keyOf(cfg);
+  let entry = cache.get(key);
+  if (!entry) {
+    entry = {
+      cfg,
+      session: null,
+      manageRefs: 0,
+      channels: new Map(),
+      lastUsed: Date.now(),
+      openedAt: Date.now(),
+      execInFlight: false,
+    };
+    cache.set(key, entry);
+  }
+  return entry;
 }
 
 export async function getCachedSession(cfg: SshConnectionConfig): Promise<SshSession> {
   const key = keyOf(cfg);
-  const existing = cache.get(key);
-  if (existing?.session) {
-    existing.lastUsed = Date.now();
-    return existing.session;
+  const entry = ensureEntry(cfg);
+  if (entry.session) {
+    entry.lastUsed = Date.now();
+    return entry.session;
   }
-
-  if (!existing) {
-    cache.set(key, { session: null, cfg, lastUsed: Date.now() });
-  }
-
   return startDial(key, cfg);
 }
 
-/** Forcibly drop the cached session for `cfg`. Closes the underlying SSH
- *  connection if one is still open. Safe to call on a missing entry.
- *  Does NOT clear `inflightDials` — parallel retry callers must share one redial. */
+/** @deprecated Use manage ref API — kept for callers that only need pin semantics. */
+export function pinServerTunnel(cfg: SshConnectionConfig): void {
+  ensureEntry(cfg).manageRefs++;
+}
+
+/** @deprecated */
+export function unpinServerTunnel(cfg: SshConnectionConfig): void {
+  releaseManageRef(cfg);
+}
+
+export function isServerTunnelPinned(cfg: SshConnectionConfig): boolean {
+  const entry = cache.get(keyOf(cfg));
+  return (entry?.manageRefs ?? 0) > 0;
+}
+
+/** Establish (or reuse) one SSH tunnel for this server and pin until release. */
+export async function ensureServerTunnel(cfg: SshConnectionConfig): Promise<SshSession> {
+  ensureEntry(cfg).manageRefs++;
+  return getCachedSession(cfg);
+}
+
+/** Decrement Manage popup ref; evict only when no terminals are attached. */
+export function releaseServerTunnel(cfg: SshConnectionConfig): void {
+  releaseManageRef(cfg);
+}
+
+export function releaseManageRef(cfg: SshConnectionConfig): void {
+  const key = keyOf(cfg);
+  const entry = cache.get(key);
+  if (!entry) return;
+  entry.manageRefs = Math.max(0, entry.manageRefs - 1);
+  evictIfIdle(key);
+}
+
+/** Ensure shared tunnel exists for a terminal (does not bump manageRefs). */
+export async function acquireTerminalTunnel(cfg: SshConnectionConfig): Promise<SshSession> {
+  return getCachedSession(cfg);
+}
+
+export type OpenTerminalChannelOpts = {
+  terminalId: string;
+  cols: number;
+  rows: number;
+  projectId: string | null;
+  instanceId: string | null;
+  onData: (data: Buffer) => void;
+  onReady: () => void;
+  onError: (message: string) => void;
+  onClose: () => void;
+};
+
+export async function openTerminalChannel(
+  cfg: SshConnectionConfig,
+  opts: OpenTerminalChannelOpts,
+): Promise<void> {
+  const key = keyOf(cfg);
+  const entry = ensureEntry(cfg);
+  closeTerminalChannel(opts.terminalId);
+
+  const ch: ChannelEntry = {
+    terminalId: opts.terminalId,
+    cols: opts.cols,
+    rows: opts.rows,
+    projectId: opts.projectId,
+    instanceId: opts.instanceId,
+    openedAt: Date.now(),
+    handle: null,
+    ptyRegistryId: null,
+    onReady: opts.onReady,
+    onError: opts.onError,
+    onClose: opts.onClose,
+  };
+  entry.channels.set(opts.terminalId, ch);
+  entry.lastUsed = Date.now();
+
+  try {
+    const session = await getCachedSession(cfg);
+    const handle = await session.openShell({
+      cols: opts.cols,
+      rows: opts.rows,
+      onData: opts.onData,
+      onClose: () => {
+        const live = entry.channels.get(opts.terminalId);
+        if (!live) return;
+        if (live.ptyRegistryId) {
+          sshConnUnregister(live.ptyRegistryId);
+          live.ptyRegistryId = null;
+        }
+        live.handle = null;
+        entry.channels.delete(opts.terminalId);
+        evictIfIdle(key);
+        live.onClose?.();
+      },
+    });
+    ch.handle = handle;
+    ch.ptyRegistryId = sshConnRegister({
+      host: cfg.host,
+      port: cfg.port,
+      username: cfg.username,
+      kind: "pty",
+      parentKey: key,
+      end: () => { try { handle.close(); } catch { /* ignore */ } },
+    });
+    ch.onReady?.();
+  } catch (err) {
+    entry.channels.delete(opts.terminalId);
+    evictIfIdle(key);
+    opts.onError(err instanceof Error ? err.message : "Failed to open shell channel");
+    throw err;
+  }
+}
+
+export function closeTerminalChannel(terminalId: string): void {
+  for (const [key, entry] of cache) {
+    const ch = entry.channels.get(terminalId);
+    if (!ch) continue;
+    if (ch.ptyRegistryId) {
+      sshConnUnregister(ch.ptyRegistryId);
+      ch.ptyRegistryId = null;
+    }
+    try { ch.handle?.close(); } catch { /* ignore */ }
+    entry.channels.delete(terminalId);
+    evictIfIdle(key);
+    return;
+  }
+}
+
+export function getTerminalChannelHandle(terminalId: string): ShellHandle | null {
+  for (const entry of cache.values()) {
+    const ch = entry.channels.get(terminalId);
+    if (ch?.handle?.isOpen()) return ch.handle;
+  }
+  return null;
+}
+
+export function listSharedTunnels(): SharedTunnelSnapshot[] {
+  const out: SharedTunnelSnapshot[] = [];
+  for (const [key, entry] of cache) {
+    const channels: SharedChannelSnapshot[] = [];
+    for (const ch of entry.channels.values()) {
+      const traffic = ch.handle?.getTraffic() ?? { bytesIn: 0, bytesOut: 0 };
+      channels.push({
+        terminalId: ch.terminalId,
+        status: ch.handle?.isOpen() ? "open" : "closed",
+        cols: ch.cols,
+        rows: ch.rows,
+        projectId: ch.projectId,
+        instanceId: ch.instanceId,
+        openedAt: ch.openedAt,
+        bytesIn: traffic.bytesIn,
+        bytesOut: traffic.bytesOut,
+      });
+    }
+    out.push({
+      key,
+      host: entry.cfg.host,
+      port: entry.cfg.port,
+      username: entry.cfg.username,
+      status: entry.session ? "connected" : inflightDials.has(key) ? "connecting" : "disconnected",
+      manageRefs: entry.manageRefs,
+      channelCount: entry.channels.size,
+      execInFlight: entry.execInFlight,
+      pinned: entry.manageRefs > 0,
+      openedAt: entry.openedAt,
+      channels,
+    });
+  }
+  return out.sort((a, b) => a.openedAt - b.openedAt);
+}
+
+/** Forcibly drop the cached session for `cfg`. Closes all channels first. */
 export function evictSession(cfg: SshConnectionConfig): void {
   const key = keyOf(cfg);
   const entry = cache.get(key);
-  if (entry) {
-    try { entry.session?.close(); } catch { /* ignore */ }
-    entry.session = null;
+  if (!entry) return;
+  for (const ch of [...entry.channels.values()]) {
+    if (ch.ptyRegistryId) sshConnUnregister(ch.ptyRegistryId);
+    try { ch.handle?.close(); } catch { /* ignore */ }
   }
+  entry.channels.clear();
+  entry.manageRefs = 0;
+  try { entry.session?.close(); } catch { /* ignore */ }
+  entry.session = null;
   cache.delete(key);
 }
 
-/** Drop every cached session targeting `host` (all ports/users). Used when
- *  /ssh kills a pile of leaked connections so the stats cache can't revive
- *  them on the next probe. */
+/** Drop every cached session targeting `host` (all ports/users). */
 export function evictAllSessionsForHost(host: string): void {
   const clearedInflight = [...inflightDials.keys()].filter((k) => k.startsWith(`${host}:`));
-  for (const key of clearedInflight) inflightDials.delete(key);
-  const clearedCache: string[] = [];
+  for (const k of clearedInflight) inflightDials.delete(k);
   for (const [key, entry] of cache) {
     if (entry.cfg.host !== host) continue;
-    clearedCache.push(key);
-    try { entry.session?.close(); } catch { /* ignore */ }
-    cache.delete(key);
+    evictSession(entry.cfg);
   }
 }
 
-/** Run `command` over the cached session and return its stdout/stderr. On
- *  failure (the cached session may have silently died between probes —
- *  network glitch, VM restart, idle SSH timeout) the entry is evicted and the
- *  command is retried once on a fresh dial. Probe commands are read-only and
- *  idempotent, so retry is safe for the stats path. */
 export async function execCached(
   cfg: SshConnectionConfig,
   command: string,
   onData?: (data: string) => void,
   opts?: { timeoutMs?: number; idleTimeoutMs?: number },
 ): Promise<string> {
+  const key = keyOf(cfg);
+  const entry = ensureEntry(cfg);
+  entry.execInFlight = true;
   try {
     const session = await getCachedSession(cfg);
     return await execSerialized(session, () => session.exec(command, onData, opts));
@@ -177,34 +405,29 @@ export async function execCached(
     if (err instanceof Error && err.message.includes("timed out")) throw err;
     const session = await getCachedSession(cfg);
     return await execSerialized(session, () => session.exec(command, onData, opts));
+  } finally {
+    const live = cache.get(key);
+    if (live) live.execInFlight = false;
   }
 }
 
-/** Close every cached session and clear the cache. Intended for graceful
- *  shutdown — callers that just want one entry gone should use evictSession. */
 export function evictAllSessions(): void {
   inflightDials.clear();
-  for (const entry of cache.values()) {
-    try { entry.session?.close(); } catch { /* ignore */ }
+  for (const entry of [...cache.values()]) {
+    evictSession(entry.cfg);
   }
-  cache.clear();
 }
 
-/** For tests / diagnostics: number of currently-cached SSH sessions. */
 export function cachedSessionCount(): number {
   return cache.size;
 }
 
-// Reap idle sessions so a VM that hasn't been probed in a while doesn't keep
-// an SSH connection open indefinitely. unref() so this timer never blocks
-// process shutdown.
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of cache) {
-    if (isServerTunnelPinnedByKey(key)) continue;
+    if (isActive(entry)) continue;
     if (entry.session && now - entry.lastUsed > IDLE_TTL_MS) {
-      try { entry.session.close(); } catch { /* ignore */ }
-      cache.delete(key);
+      evictIfIdle(key);
     }
   }
 }, SWEEP_INTERVAL_MS).unref();

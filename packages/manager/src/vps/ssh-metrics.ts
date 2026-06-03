@@ -18,6 +18,8 @@ export interface SshConnectionInfo {
   username: string;
   /** "client" = programmatic connectSsh, "pty" = interactive terminal session. */
   kind: "client" | "pty";
+  /** Shared tunnel key (host:port:username) for pty channels multiplexed on a client. */
+  parentKey?: string;
   /** "connecting" = dial in flight (registered before ssh2 `ready`), "connected"
    *  = handshake done. Lets the /ssh panel surface a HUNG handshake — previously
    *  a connection was invisible until `ready`, so a dial stuck behind a dead
@@ -69,6 +71,7 @@ export function sshConnRegister(args: {
   port: number;
   username: string;
   kind: "client" | "pty";
+  parentKey?: string;
   /** Initial status — defaults to "connected" so existing callers that register
    *  on `ready` are unchanged. Pass "connecting" to register a dial in flight,
    *  then flip with sshConnMarkConnected once `ready` fires. */
@@ -86,6 +89,7 @@ export function sshConnRegister(args: {
     port: args.port,
     username: args.username,
     kind: args.kind,
+    parentKey: args.parentKey,
     status: args.status ?? "connected",
     openedAt: Date.now(),
     opener: captureOpener(args.openerStack),
@@ -133,6 +137,7 @@ export function listSshConnections(): SshConnectionInfo[] {
       port: e.port,
       username: e.username,
       kind: e.kind,
+      parentKey: e.parentKey,
       status: e.status,
       openedAt: e.openedAt,
       opener: e.opener,
@@ -150,6 +155,7 @@ export function getSshConnectionInfo(id: string): SshConnectionInfo | null {
     port: entry.port,
     username: entry.username,
     kind: entry.kind,
+    parentKey: entry.parentKey,
     status: entry.status,
     openedAt: entry.openedAt,
     opener: entry.opener,

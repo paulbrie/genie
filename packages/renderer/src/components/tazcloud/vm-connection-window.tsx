@@ -22,7 +22,7 @@ import {
   updateWindowPosition,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
-import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
+import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { VmConnectionPopup } from "./vm-connection-popup";
 
@@ -39,6 +39,8 @@ export function openVmConnectionWindow(args: {
   username: string;
   vmLabel: string;
   initialCommand?: string;
+  tmuxIntent?: "new" | "attach";
+  tmuxSessionName?: string;
 }): void {
   const key = openProjectVmConnection(args);
   const wid = VM_CONN_WINDOW_PREFIX + key;
@@ -51,8 +53,9 @@ function VmConnectionWindowInstance({ windowId }: { windowId: string }) {
   const [windowManager] = useSubject($windowManager);
   const windowState = windowManager.windows[windowId];
   const key = windowId.slice(VM_CONN_WINDOW_PREFIX.length);
-  const conns = useDeepSubjectAll($vmConnections);
-  const conn = conns.connections[key];
+  // Read connection metadata without subscribing to live stats/traffic — those
+  // updates re-render the shell and used to reset left/top mid-drag (xterm flicker).
+  const conn = $vmConnections.getValue().connections[key];
 
   const [maximized, setMaximized] = useState(false);
   const storedPos = windowState?.position;
@@ -74,6 +77,9 @@ function VmConnectionWindowInstance({ windowId }: { windowId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const position =
+    storedPos && storedPos.x >= 0 && storedPos.y >= 0 ? storedPos : initial;
+
   useEffect(() => {
     if (!windowState) return;
     if (storedPos && (storedPos.x < 0 || storedPos.y < 0)) {
@@ -86,7 +92,7 @@ function VmConnectionWindowInstance({ windowId }: { windowId: string }) {
     (pos: { x: number; y: number }) => updateWindowPosition(windowId, pos),
     [windowId],
   );
-  const { elRef, onPointerDown } = useDraggable(initial, handleDragEnd);
+  const { elRef, onPointerDown } = useDraggable(position, handleDragEnd);
   const { onResizePointerDown } = useResizable(elRef, { w: W, h: H });
   const isFocused = useIsWindowFocused(windowState ?? null);
 
@@ -95,7 +101,7 @@ function VmConnectionWindowInstance({ windowId }: { windowId: string }) {
 
   const containerStyle: React.CSSProperties = maximized
     ? { left: 0, top: 0, width: "100vw", height: "100vh", zIndex: windowState.zIndex }
-    : { left: initial.x, top: initial.y, width: W, height: H, zIndex: windowState.zIndex };
+    : { left: position.x, top: position.y, width: W, height: H, zIndex: windowState.zIndex };
 
   const handleClose = () => {
     closeVmConnection(key);

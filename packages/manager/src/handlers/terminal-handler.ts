@@ -12,7 +12,7 @@ import {
 } from "../ssh/index.js";
 import { listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "../vps/ssh-metrics.js";
 import { listRecentSshEvents } from "../vps/ssh-events.js";
-import { evictAllSessionsForHost, evictSession } from "../vps/ssh-session-cache.js";
+import { evictAllSessionsForHost, evictSession, listSharedTunnels } from "../vps/ssh-session-cache.js";
 import { reconnectPersistentMcpTunnelForHost, listPersistentMcpTunnels, closePersistentMcpTunnelForHost } from "../vps/mcp-tunnel-pool.js";
 /** Handle every `ssh:*` and `terminal:*` message. Returns true if handled. */
 export async function handleTerminalMessage(
@@ -21,9 +21,16 @@ export async function handleTerminalMessage(
   send: (ws: WebSocket, message: WsMessage) => void,
   broadcast: (message: WsMessage) => void,
 ): Promise<boolean> {
+  const sshListPayload = () => ({
+    sessions: listSshConnections(),
+    tunnels: listPersistentMcpTunnels(),
+    events: listRecentSshEvents(100),
+    sharedTunnels: listSharedTunnels(),
+  });
+
   switch (msg.type) {
     case "ssh:list": {
-      send(ws, { type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels(), events: listRecentSshEvents(100) } });
+      send(ws, { type: "ssh:list", payload: sshListPayload() });
       return true;
     }
 
@@ -42,7 +49,7 @@ export async function handleTerminalMessage(
           payload: { host, ok: false, error: err instanceof Error ? err.message : String(err) },
         });
       }
-      broadcast({ type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels() } });
+      broadcast({ type: "ssh:list", payload: sshListPayload() });
       return true;
     }
 
@@ -68,7 +75,7 @@ export async function handleTerminalMessage(
         }
       }
       send(ws, { type: "ssh:kill:result", payload: { id, host: killHost, ok: killed > 0, killed } });
-      broadcast({ type: "ssh:list", payload: { sessions: listSshConnections(), tunnels: listPersistentMcpTunnels() } });
+      broadcast({ type: "ssh:list", payload: sshListPayload() });
       return true;
     }
 
@@ -120,8 +127,12 @@ export async function handleTerminalMessage(
     }
 
     case "terminal:inject": {
-      const { terminalId, command } = msg.payload as { terminalId?: string; command?: string };
-      if (terminalId && command) handleTerminalInject(ws, terminalId, command);
+      const { terminalId, command, silent } = msg.payload as {
+        terminalId?: string;
+        command?: string;
+        silent?: boolean;
+      };
+      if (terminalId && command) handleTerminalInject(ws, terminalId, command, { silent: !!silent });
       return true;
     }
 

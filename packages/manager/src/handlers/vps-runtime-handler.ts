@@ -9,7 +9,7 @@ import { vpsStatus, vpsLogs, vpsStats } from "../vps/deploy-service.js";
 import { watchVpsStats, unwatchVpsStats, getCachedVpsStats } from "../vps/stats-stream.js";
 import { dropletSync, syncDropletStatuses } from "../vps/droplet-sync.js";
 import { execCached, evictSession } from "../vps/ssh-session-cache.js";
-import { sshStatsPostbackEnabled, sshStatsProbeEnabled } from "../vps/ssh-stats-disabled.js";
+import { sshStatsPostbackEnabled, sshStatsProbeEnabled, sshTmuxProbeEnabled } from "../vps/ssh-stats-disabled.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { getVpsMetricHistory, getBulkVpsMetricHistory } from "../vps/vps-metric-service.js";
 import { GENIE_STANDARD_RECIPE_SLUG, syncGenieStatsOnVm } from "../vps/ensure-vps-stats.js";
@@ -432,10 +432,42 @@ export async function handleVpsRuntimeMessage(
     }
 
     case "vps:stats:refresh": {
-      const { projectId, instanceId } = msg.payload as { projectId?: string; instanceId?: string };
+      const { projectId, instanceId, force } = msg.payload as {
+        projectId?: string;
+        instanceId?: string;
+        force?: boolean;
+      };
       if (!projectId || !instanceId) return true;
+      if (!sshTmuxProbeEnabled()) {
+        send(ws, {
+          type: "vm:conn:stats",
+          payload: {
+            projectId,
+            instanceId,
+            stats: null,
+            tmux: [],
+            error: "SSH tmux probe disabled",
+            tmuxProbePath: "exec",
+          },
+        });
+        return true;
+      }
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, {
+          type: "vm:conn:stats",
+          payload: {
+            projectId,
+            instanceId,
+            stats: null,
+            tmux: [],
+            error: "Not authorized for this project",
+            tmuxProbePath: "exec",
+          },
+        });
+        return true;
+      }
       try {
-        const result = await pollVpsStats(projectId, instanceId);
+        const result = await pollVpsStats(projectId, instanceId, { force: !!force });
         send(ws, { type: "vm:conn:stats", payload: result });
       } catch (err) {
         send(ws, {
@@ -443,6 +475,7 @@ export async function handleVpsRuntimeMessage(
           payload: {
             projectId, instanceId, stats: null, tmux: [],
             error: err instanceof Error ? err.message : "stats failed",
+            tmuxProbePath: "exec",
           },
         });
       }

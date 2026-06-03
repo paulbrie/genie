@@ -9,6 +9,19 @@ export function formatSshAge(openedAt: number, now: number): string {
   return `${h}h ${m % 60}m`;
 }
 
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+export function tunnelStatusDot(status: "connecting" | "connected" | "disconnected"): string {
+  if (status === "connected") return "bg-green";
+  if (status === "connecting") return "bg-yellow animate-pulse";
+  return "bg-red";
+}
+
 export function mcpTunnelServices(t: {
   browser: boolean;
   stream: boolean;

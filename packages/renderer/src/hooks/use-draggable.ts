@@ -29,6 +29,7 @@ export function useDraggable(
 ) {
   const elRef = useRef<HTMLDivElement>(null);
   const posRef = useRef(initialPos);
+  const dragOriginRef = useRef(initialPos);
   const dragging = useRef(false);
   const offset = useRef({ x: 0, y: 0 });
 
@@ -36,13 +37,32 @@ export function useDraggable(
   const initialPosRef = useRef(initialPos);
   if (initialPos.x !== initialPosRef.current.x || initialPos.y !== initialPosRef.current.y) {
     initialPosRef.current = initialPos;
-    posRef.current = initialPos;
+    if (!dragging.current) {
+      posRef.current = initialPos;
+      dragOriginRef.current = initialPos;
+      const el = elRef.current;
+      if (el) {
+        el.style.transform = "";
+        el.style.willChange = "";
+        el.style.left = `${initialPos.x}px`;
+        el.style.top = `${initialPos.y}px`;
+      }
+    }
   }
 
   const measure = useCallback(() => {
     const el = elRef.current;
     if (!el) return null;
     return { w: el.offsetWidth, h: el.offsetHeight };
+  }, []);
+
+  const commitPosition = useCallback((pos: { x: number; y: number }) => {
+    const el = elRef.current;
+    if (!el) return;
+    el.style.transform = "";
+    el.style.willChange = "";
+    el.style.left = `${pos.x}px`;
+    el.style.top = `${pos.y}px`;
   }, []);
 
   useEffect(() => {
@@ -54,27 +74,30 @@ export function useDraggable(
       };
       const pos = clampToViewport(raw, measure());
       posRef.current = pos;
-      if (elRef.current) {
-        elRef.current.style.left = `${pos.x}px`;
-        elRef.current.style.top = `${pos.y}px`;
-      }
+      const el = elRef.current;
+      if (!el) return;
+      // Use transform while dragging so React re-renders (stats, focus, etc.)
+      // don't reset left/top and thrash xterm's canvas renderer.
+      const dx = pos.x - dragOriginRef.current.x;
+      const dy = pos.y - dragOriginRef.current.y;
+      el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
     }
     function onUp() {
-      if (dragging.current) {
-        dragging.current = false;
-        onDragEnd?.(posRef.current);
-      }
+      if (!dragging.current) return;
+      dragging.current = false;
+      commitPosition(posRef.current);
+      onDragEnd?.(posRef.current);
     }
     // When the viewport shrinks (resize, devtools opening, mobile keyboard,
     // etc.), make sure the popup is still grabbable. Re-clamp the current
     // position and persist via onDragEnd if it actually moved.
     function onResize() {
-      if (!elRef.current) return;
+      if (!elRef.current || dragging.current) return;
       const clamped = clampToViewport(posRef.current, measure());
       if (clamped.x === posRef.current.x && clamped.y === posRef.current.y) return;
       posRef.current = clamped;
-      elRef.current.style.left = `${clamped.x}px`;
-      elRef.current.style.top = `${clamped.y}px`;
+      dragOriginRef.current = clamped;
+      commitPosition(clamped);
       onDragEnd?.(clamped);
     }
     window.addEventListener("pointermove", onMove);
@@ -85,13 +108,15 @@ export function useDraggable(
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("resize", onResize);
     };
-  }, [measure, onDragEnd]);
+  }, [measure, onDragEnd, commitPosition]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest("button, input, a")) return;
     e.preventDefault();
     dragging.current = true;
+    dragOriginRef.current = { ...posRef.current };
     offset.current = { x: e.clientX - posRef.current.x, y: e.clientY - posRef.current.y };
+    if (elRef.current) elRef.current.style.willChange = "transform";
   }, []);
 
   return { elRef, posRef, initialPos, onPointerDown };

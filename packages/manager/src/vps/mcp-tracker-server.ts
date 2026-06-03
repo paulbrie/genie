@@ -1,5 +1,5 @@
-import http from "node:http";
 import * as trackerService from "../tracker-service.js";
+import { createMcpHttpServer, type JsonRpcRequest } from "./mcp-jsonrpc.js";
 
 const TOOLS = [
   {
@@ -265,77 +265,12 @@ export async function handleTrackerRequest(
   }
 }
 
-function sendSseResponse(res: http.ServerResponse, payload: object) {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  res.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
-  res.end();
-}
-
-/**
- * Create a local MCP HTTP server that exposes tracker tools for a specific project.
- * This server is tunneled to the VPS so Claude Code can use it as an MCP server.
- */
+/** Local HTTP server for MCP reverse tunnels. */
 export function createMcpTrackerServer(
   projectId: string,
   onIssueUpdated?: () => void,
 ): Promise<{ port: number; close(): void }> {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer(async (req, res) => {
-      if (req.method === "GET") {
-        res.writeHead(405).end();
-        return;
-      }
-      if (req.method === "DELETE") {
-        res.writeHead(200).end();
-        return;
-      }
-      if (req.method !== "POST") {
-        res.writeHead(405).end();
-        return;
-      }
-
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
-      const body = Buffer.concat(chunks).toString();
-
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(body);
-      } catch {
-        res.writeHead(400, { "Content-Type": "application/json" })
-          .end(JSON.stringify(jsonRpcError(null, -32700, "Parse error")));
-        return;
-      }
-
-      const result = await handleTrackerRequest(projectId, parsed as Parameters<typeof handleTrackerRequest>[1], { onIssueUpdated });
-      // Notifications (no id) — handler returns null; ack with 202.
-      if (result === null) {
-        res.writeHead(202).end();
-        return;
-      }
-      const accept = req.headers.accept || "";
-      if (accept.includes("text/event-stream")) {
-        sendSseResponse(res, result);
-      } else {
-        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
-      }
-    });
-
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address() as { port: number };
-      console.log(`[mcp-tracker] Local HTTP server on port ${addr.port}`);
-      resolve({
-        port: addr.port,
-        close() {
-          server.close();
-        },
-      });
-    });
-
-    server.on("error", reject);
-  });
+  return createMcpHttpServer((parsed) =>
+    handleTrackerRequest(projectId, parsed as JsonRpcRequest, { onIssueUpdated }),
+  );
 }

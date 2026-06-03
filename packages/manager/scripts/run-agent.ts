@@ -22,7 +22,7 @@
 
 import "../src/load-env.js";
 import { closeDb } from "../src/db/index.js";
-import { migrateAgents } from "../src/db/migrate.js";
+import { ensureBootMigration } from "../src/db/migrate.js";
 import { upsertAgentBySlug } from "../src/agents/registry.js";
 import { runAgent } from "../src/agents/runner.js";
 
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
 
   // Make sure the agents tables exist — in case this script is the first thing
   // to talk to the DB on a freshly-pulled branch.
-  await migrateAgents();
+  await ensureBootMigration("agents");
 
   const agent = await upsertAgentBySlug(
     {

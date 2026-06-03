@@ -4,12 +4,40 @@ export interface SshSessionInfo {
   port: number;
   username: string;
   kind: "client" | "pty";
+  /** Shared tunnel key (host:port:username) when kind is pty. */
+  parentKey?: string;
   /** "connecting" = dial in flight (a hung handshake shows here instead of being
    *  invisible until ready); "connected" = handshake complete. Optional so older
    *  manager builds that omit it still parse. */
   status?: "connecting" | "connected";
   openedAt: number;
   opener: string;
+}
+
+export interface SshChannelSnapshot {
+  terminalId: string;
+  status: "open" | "closed";
+  cols: number;
+  rows: number;
+  projectId: string | null;
+  instanceId: string | null;
+  openedAt: number;
+  bytesIn: number;
+  bytesOut: number;
+}
+
+export interface SharedTunnelSnapshot {
+  key: string;
+  host: string;
+  port: number;
+  username: string;
+  status: "connecting" | "connected" | "disconnected";
+  manageRefs: number;
+  channelCount: number;
+  execInFlight: boolean;
+  pinned: boolean;
+  openedAt: number;
+  channels: SshChannelSnapshot[];
 }
 
 export interface SshTunnelInfo {
@@ -43,6 +71,7 @@ export interface SshEventInfo {
 export interface SshState {
   sessions: SshSessionInfo[];
   tunnels: SshTunnelInfo[];
+  sharedTunnels: SharedTunnelSnapshot[];
   /** Recent disconnects / wireproxy events, newest first (in-memory ring). */
   events: SshEventInfo[];
   loading: boolean;

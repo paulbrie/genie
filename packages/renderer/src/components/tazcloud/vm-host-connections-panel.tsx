@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Loader2, Plug, RefreshCw, RotateCcw, X } from "lucide-react";
+import { Loader2, Plug, RefreshCw, RotateCcw, Terminal, X } from "lucide-react";
 import { $auth, $ssh } from "@/store/subjects";
 import {
   ensureMcpForHost,
@@ -13,7 +13,7 @@ import {
 } from "@/store/actions/ssh";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
-import { formatSshAge, mcpTunnelServices } from "@/lib/ssh-format";
+import { formatSshAge, formatBytes, mcpTunnelServices, tunnelStatusDot } from "@/lib/ssh-format";
 import { cn } from "@/lib/utils";
 import type { ManageVmProvider } from "./manage-vm-popup";
 
@@ -74,7 +74,16 @@ export function useVmHostSshRegistry(host: string) {
     [ssh.tunnels, host],
   );
 
-  return { ssh, sessions, tunnels, now, canViewRegistry, reconnecting };
+  const sharedTunnels = useMemo(
+    () => ssh.sharedTunnels.filter((t) => t.host === host),
+    [ssh.sharedTunnels, host],
+  );
+  const hostEvents = useMemo(
+    () => (ssh.events ?? []).filter((e) => e.host === host).slice(0, 8),
+    [ssh.events, host],
+  );
+
+  return { ssh, sessions, tunnels, sharedTunnels, hostEvents, now, canViewRegistry, reconnecting };
 }
 
 function ConnectionDetailsCard(props: VmHostConnectionsPanelProps) {
@@ -182,7 +191,9 @@ export function VmHostConnectionsPanel({
   view = "all",
 }: VmHostConnectionsPanelProps) {
   const props = { host, provider, sshUser, projectName, isPrivateHost, ingress, connection };
-  const { ssh, sessions, tunnels, now, canViewRegistry, reconnecting } = useVmHostSshRegistry(host);
+  const { ssh, sessions, tunnels, sharedTunnels, hostEvents, now, canViewRegistry, reconnecting } = useVmHostSshRegistry(host);
+
+  const totalChannels = sharedTunnels.reduce((n, t) => n + t.channelCount, 0);
 
   const showConnection = view === "all" || view === "connection" || view === "ssh";
   const showSsh = view === "all" || view === "ssh";
@@ -199,7 +210,7 @@ export function VmHostConnectionsPanel({
           {(showSsh || showTunnels) && (
             <RegistryToolbar
               host={host}
-              sessionCount={sessions.length}
+              sessionCount={sharedTunnels.length + totalChannels}
               showReconnect={showTunnels}
               showKillAll={showSsh || showTunnels}
               ssh={ssh}
@@ -207,60 +218,127 @@ export function VmHostConnectionsPanel({
           )}
 
           {showSsh && (
-            <section>
+            <section className="flex flex-col gap-3">
               {view === "all" && (
-                <h3 className="text-xs font-medium text-subtext0 uppercase tracking-wide mb-2">Live connections</h3>
+                <h3 className="text-xs font-medium text-subtext0 uppercase tracking-wide">Shared SSH tunnels</h3>
               )}
-              {sessions.length === 0 ? (
+              {sharedTunnels.length === 0 ? (
                 <div className="text-overlay0 text-md py-4 text-center border border-surface0 rounded">
-                  No active SSH connections to this host.
+                  No shared SSH tunnel to this host. Open Manage or a terminal to dial.
                 </div>
               ) : (
-                <div className="overflow-x-auto rounded border border-surface0">
-                  <table className="w-full text-md font-mono">
-                    <thead className="text-subtext0 text-left bg-surface0/40">
-                      <tr className="border-b border-surface0">
-                        <th className="py-1.5 px-2 font-normal">User</th>
-                        <th className="py-1.5 px-2 font-normal">Kind</th>
-                        <th className="py-1.5 px-2 font-normal">Age</th>
-                        <th className="py-1.5 px-2 font-normal">Opener</th>
-                        <th className="py-1.5 px-2 font-normal w-10" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sessions.map((s) => {
-                        const killing = ssh.killing[s.id];
-                        return (
-                          <tr key={s.id} className="border-b border-surface0/50 hover:bg-surface0/30">
-                            <td className="py-1.5 px-2 text-subtext1">{s.username}</td>
-                            <td className="py-1.5 px-2">
-                              <span
-                                className={cn(
-                                  "px-1.5 py-0.5 rounded text-xs",
-                                  s.kind === "pty" ? "bg-mauve/20 text-mauve" : "bg-teal/20 text-teal",
-                                )}
-                              >
-                                {s.kind}
-                              </span>
-                            </td>
-                            <td className="py-1.5 px-2 text-subtext1 tabular-nums">{formatSshAge(s.openedAt, now)}</td>
-                            <td className="py-1.5 px-2 text-subtext0 truncate max-w-[200px]" title={s.opener}>{s.opener}</td>
-                            <td className="py-1.5 px-2">
-                              <button
-                                className="px-1.5 py-0.5 rounded text-xs bg-red/10 hover:bg-red/20 text-red disabled:opacity-50"
-                                disabled={killing}
-                                onClick={() => killSshSession(s.id)}
-                                title="Close this SSH connection"
-                              >
-                                {killing ? "…" : <X size={11} />}
-                              </button>
-                            </td>
+                sharedTunnels.map((tunnel) => (
+                  <div key={tunnel.key} className="rounded border border-surface0 overflow-hidden">
+                    <div className="flex items-center gap-2 px-3 py-2 bg-surface0/40 border-b border-surface0 text-md font-mono">
+                      <span className={cn("w-2 h-2 rounded-full shrink-0", tunnelStatusDot(tunnel.status))} />
+                      <span className="text-subtext1">{tunnel.username}@{tunnel.host}:{tunnel.port}</span>
+                      <span className="text-overlay0 text-xs">{tunnel.status}</span>
+                      {tunnel.pinned && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-teal/15 text-teal">Manage pinned</span>
+                      )}
+                      {tunnel.execInFlight && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-yellow/15 text-yellow">exec</span>
+                      )}
+                      <span className="ml-auto text-overlay0 tabular-nums">
+                        {tunnel.channelCount} ch · refs {tunnel.manageRefs}
+                      </span>
+                    </div>
+                    {tunnel.channels.length === 0 ? (
+                      <div className="px-3 py-2 text-xs text-overlay0">No PTY channels — exec-only tunnel.</div>
+                    ) : (
+                      <table className="w-full text-md font-mono">
+                        <thead className="text-subtext0 text-left bg-surface0/20">
+                          <tr className="border-b border-surface0/50">
+                            <th className="py-1.5 px-2 font-normal">Channel</th>
+                            <th className="py-1.5 px-2 font-normal">Size</th>
+                            <th className="py-1.5 px-2 font-normal">Traffic</th>
+                            <th className="py-1.5 px-2 font-normal">Age</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                        </thead>
+                        <tbody>
+                          {tunnel.channels.map((ch) => (
+                            <tr key={ch.terminalId} className="border-b border-surface0/30">
+                              <td className="py-1.5 px-2">
+                                <span className="inline-flex items-center gap-1 text-mauve">
+                                  <Terminal size={10} />
+                                  {ch.terminalId.slice(0, 20)}…
+                                </span>
+                                <span className={cn("ml-2 text-[10px] uppercase", ch.status === "open" ? "text-green" : "text-red")}>
+                                  {ch.status}
+                                </span>
+                              </td>
+                              <td className="py-1.5 px-2 text-subtext0 tabular-nums">{ch.cols}×{ch.rows}</td>
+                              <td className="py-1.5 px-2 text-subtext0 tabular-nums">
+                                ↓ {formatBytes(ch.bytesOut)} · ↑ {formatBytes(ch.bytesIn)}
+                              </td>
+                              <td className="py-1.5 px-2 text-subtext0 tabular-nums">{formatSshAge(ch.openedAt, now)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                ))
+              )}
+
+              {hostEvents.length > 0 && (
+                <details className="rounded border border-surface0">
+                  <summary className="px-3 py-2 text-xs text-subtext0 cursor-pointer select-none">
+                    Recent disconnects ({hostEvents.length})
+                  </summary>
+                  <ul className="px-3 pb-2 text-xs font-mono text-overlay1 space-y-1">
+                    {hostEvents.map((e, i) => (
+                      <li key={`${e.occurredAt}-${i}`}>
+                        {formatSshAge(e.occurredAt, now)} ago · {e.kind} · {e.cause ?? e.event}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {sessions.length > 0 && (
+                <details className="rounded border border-surface0">
+                  <summary className="px-3 py-2 text-xs text-subtext0 cursor-pointer select-none">
+                    Raw registry ({sessions.length})
+                  </summary>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-md font-mono">
+                      <thead className="text-subtext0 text-left bg-surface0/40">
+                        <tr className="border-b border-surface0">
+                          <th className="py-1.5 px-2 font-normal">User</th>
+                          <th className="py-1.5 px-2 font-normal">Kind</th>
+                          <th className="py-1.5 px-2 font-normal">Age</th>
+                          <th className="py-1.5 px-2 font-normal w-10" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sessions.map((s) => {
+                          const killing = ssh.killing[s.id];
+                          return (
+                            <tr key={s.id} className="border-b border-surface0/50">
+                              <td className="py-1.5 px-2 text-subtext1">{s.username}</td>
+                              <td className="py-1.5 px-2">
+                                <span className={cn("px-1.5 py-0.5 rounded text-xs", s.kind === "pty" ? "bg-mauve/20 text-mauve" : "bg-teal/20 text-teal")}>
+                                  {s.kind}
+                                </span>
+                              </td>
+                              <td className="py-1.5 px-2 text-subtext1 tabular-nums">{formatSshAge(s.openedAt, now)}</td>
+                              <td className="py-1.5 px-2">
+                                <button
+                                  className="px-1.5 py-0.5 rounded text-xs bg-red/10 hover:bg-red/20 text-red disabled:opacity-50"
+                                  disabled={killing}
+                                  onClick={() => killSshSession(s.id)}
+                                >
+                                  {killing ? "…" : <X size={11} />}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
               )}
             </section>
           )}
@@ -286,8 +364,13 @@ export function VmHostConnectionsPanel({
                     </thead>
                     <tbody>
                       {tunnels.map((t) => (
-                        <tr key={`${t.host}:${t.openedAt}`} className="border-b border-surface0/50 hover:bg-surface0/30">
-                          <td className="py-1.5 px-2 text-subtext1">{t.projectName}</td>
+                        <tr key={`${t.host}:${t.openedAt}`} className={cn("border-b border-surface0/50 hover:bg-surface0/30", t.alive === false && "opacity-60")}>
+                          <td className="py-1.5 px-2 text-subtext1">
+                            {t.projectName}
+                            {t.alive === false && (
+                              <span className="ml-2 text-[10px] uppercase text-red">dead</span>
+                            )}
+                          </td>
                           <td className="py-1.5 px-2 text-subtext1 tabular-nums">{formatSshAge(t.openedAt, now)}</td>
                           <td className="py-1.5 px-2 text-subtext0">{mcpTunnelServices(t) || "—"}</td>
                         </tr>

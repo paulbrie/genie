@@ -119,12 +119,14 @@ function SingleTerminalWindow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const position = storedPos.x >= 0 && storedPos.y >= 0 ? storedPos : initial;
+
   const handleDragEnd = useCallback(
     (pos: { x: number; y: number }) => updateWindowPosition(windowId, pos),
     [windowId]
   );
 
-  const { elRef, onPointerDown } = useDraggable(initial, handleDragEnd);
+  const { elRef, onPointerDown } = useDraggable(position, handleDragEnd);
   const { onResizePointerDown } = useResizable(elRef, {
     w: DEFAULT_W,
     h: DEFAULT_H,
@@ -241,8 +243,8 @@ function SingleTerminalWindow({
         zIndex: windowState.zIndex,
       }
     : {
-        left: initial.x,
-        top: initial.y,
+        left: position.x,
+        top: position.y,
         width: DEFAULT_W,
         height: DEFAULT_H,
         zIndex: windowState.zIndex,

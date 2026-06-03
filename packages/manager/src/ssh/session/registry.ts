@@ -31,6 +31,16 @@ export function findShellSessionForVps(
   return null;
 }
 
+export function findTerminalIdForVps(
+  projectId: string,
+  instanceId: string,
+): string | null {
+  for (const [terminalId, meta] of sessionMeta) {
+    if (meta.projectId === projectId && meta.instanceId === instanceId) return terminalId;
+  }
+  return null;
+}
+
 export function getSessionCountForHost(host: string): number {
   let n = 0;
   for (const meta of sessionMeta.values()) {

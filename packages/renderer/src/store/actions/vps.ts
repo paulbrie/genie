@@ -1,5 +1,6 @@
 import { batch } from "subjecto";
 import { sshStatsPostbackEnabled, sshStatsProbeEnabled } from "@/lib/ssh-stats-enabled";
+import { tmuxKillSessionCommand, tmuxRenameCommand } from "@/lib/tmux-shell";
 import { wsSend } from "@/lib/ws";
 import {
   $doSnapshotsLoading,
@@ -17,6 +18,11 @@ export const DEFAULT_INSTANCE_STATE: VpsInstanceState = {
   progress: [], error: null, logs: null,
   startedAt: null, endedAt: null, stats: null, statsError: null, deployLogs: [],
   recipes: {},
+  // Seeded so the DeepSubject tracks this key from creation — a field added
+  // only by a later mutation isn't reactive (subscribers never re-render).
+  tmuxSessions: [],
+  lastTmuxAt: null,
+  tmuxProbeError: null,
 };
 
 export function ensureInstanceState(instanceId: string): void {
@@ -27,11 +33,13 @@ export function ensureInstanceState(instanceId: string): void {
 }
 
 export function updateInstanceState(instanceId: string, updates: Partial<VpsInstanceState>): void {
-  const v = $vpsDeploy.getValue();
-  if (!v.instances[instanceId]) {
-    v.instances[instanceId] = { ...DEFAULT_INSTANCE_STATE };
-  }
-  Object.assign(v.instances[instanceId], updates);
+  batch(() => {
+    const v = $vpsDeploy.getValue();
+    if (!v.instances[instanceId]) {
+      v.instances[instanceId] = { ...DEFAULT_INSTANCE_STATE };
+    }
+    Object.assign(v.instances[instanceId], updates);
+  });
 }
 
 export function testVpsConnection(connection: VpsConnectionConfig): void {
@@ -135,6 +143,50 @@ export function fetchVpsStats(projectId: string, instanceId: string): void {
   wsSend("vps:stats", { projectId, instanceId });
 }
 
+/** One-shot SSH probe that enumerates live tmux sessions on the VM. The manager
+ *  replies with `vm:conn:stats` (handled in handlers/vps.ts), which mirrors
+ *  the session list onto $vmConnections + the instance deploy-state. Drives the
+ *  Manage popup's tmux badge row; works without an open terminal connection. */
+export function refreshVmTmuxSessions(
+  projectId: string,
+  instanceId: string,
+  opts?: { force?: boolean },
+): void {
+  wsSend("vps:stats:refresh", { projectId, instanceId, force: opts?.force ?? false });
+}
+
+export async function killVmTmuxSession(
+  projectId: string,
+  instanceId: string,
+  sessionName: string,
+): Promise<{ output: string; error?: boolean }> {
+  const result = await vpsExec(projectId, instanceId, tmuxKillSessionCommand(sessionName));
+  refreshVmTmuxSessions(projectId, instanceId, { force: true });
+  return result;
+}
+
+export async function renameVmTmuxSession(
+  projectId: string,
+  instanceId: string,
+  sessionName: string,
+  newName: string,
+): Promise<{ output: string; error?: boolean }> {
+  const trimmed = newName.trim();
+  if (!trimmed || trimmed === sessionName) {
+    return { output: "Invalid session name", error: true };
+  }
+  const result = await vpsExec(projectId, instanceId, tmuxRenameCommand(sessionName, trimmed));
+  const output = result.output?.trim() ?? "";
+  const looksFailed =
+    result.error
+    || /can't find session|session not found|no server running|rename verification failed|tmux: command not found/i.test(output);
+  if (looksFailed) {
+    return { output: output || "Rename failed", error: true };
+  }
+  refreshVmTmuxSessions(projectId, instanceId, { force: true });
+  return { output, error: false };
+}
+
 // Live daemon stats (pushed by the VM over HTTPS, fanned out by the manager as
 // `vps:stats:update`). Multiple UI surfaces — the Manage popup, the instance
 // card, the topology graph, each open VM-connection window — can watch the same
@@ -159,6 +211,18 @@ export function unwatchVpsStats(projectId: string, instanceId: string): void {
     wsSend("vps:stats:unwatch", { projectId, instanceId });
   } else {
     watchRefs.set(key, n);
+  }
+}
+
+/** Re-send watch messages after WS reconnect (manager drops watchers on disconnect). */
+export function resubscribeVpsStatsWatches(): void {
+  if (!sshStatsPostbackEnabled()) return;
+  for (const key of watchRefs.keys()) {
+    const sep = key.indexOf(":");
+    if (sep <= 0) continue;
+    const projectId = key.slice(0, sep);
+    const instanceId = key.slice(sep + 1);
+    wsSend("vps:stats:watch", { projectId, instanceId });
   }
 }
 

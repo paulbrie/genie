@@ -1,6 +1,6 @@
 import "./load-env.js";
 import { seedClaude } from "./db/seed.js";
-import { migrateAgents, migrateOrgCredentials, migrateOrgs, migrateServerCredentials, migrateTeamInvites, migrateVpsMetricSamples, migrateVpsStatsTokens } from "./db/migrate.js";
+import { runBootMigrations } from "./db/migrate.js";
 import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-service.js";
 import { startSshEventFlusher, stopSshEventFlusher } from "./vps/ssh-events.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
@@ -55,39 +55,9 @@ try {
 // default-recipes.ts).
 await seedClaude();
 try {
-  await migrateOrgs();
+  await runBootMigrations();
 } catch (err) {
-  console.error("[migrate] Orgs migration failed:", err);
-}
-try {
-  await migrateServerCredentials();
-} catch (err) {
-  console.error("[migrate] server_credentials migration failed:", err);
-}
-try {
-  await migrateOrgCredentials();
-} catch (err) {
-  console.error("[migrate] org_credentials migration failed:", err);
-}
-try {
-  await migrateTeamInvites();
-} catch (err) {
-  console.error("[migrate] team_invites migration failed:", err);
-}
-try {
-  await migrateVpsMetricSamples();
-} catch (err) {
-  console.error("[migrate] vps_metric_samples migration failed:", err);
-}
-try {
-  await migrateVpsStatsTokens();
-} catch (err) {
-  console.error("[migrate] vps_stats_tokens migration failed:", err);
-}
-try {
-  await migrateAgents();
-} catch (err) {
-  console.error("[migrate] agents migration failed:", err);
+  console.error("[migrate] Boot migrations failed:", err);
 }
 startVpsMetricFlusher();
 try {

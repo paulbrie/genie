@@ -11,10 +11,123 @@
 //      links the team, and rolls each team-member into the new org as
 //      owner (if their team role is owner/superadmin) or member.
 //
-// Idempotent: safe to call on every boot.
+// Idempotent DDL steps tracked in `_genie_boot_migrations` — run once per DB.
 
 import { sql } from "drizzle-orm";
 import { getDb } from "./index.js";
+
+const LEDGER_TABLE = "_genie_boot_migrations";
+
+const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
+  { id: "orgs", run: migrateOrgs },
+  { id: "server_credentials", run: migrateServerCredentials },
+  { id: "org_credentials", run: migrateOrgCredentials },
+  { id: "team_invites", run: migrateTeamInvites },
+  { id: "vps_metric_samples", run: migrateVpsMetricSamples },
+  { id: "vps_stats_tokens", run: migrateVpsStatsTokens },
+  { id: "agents", run: migrateAgents },
+  { id: "base_image_history", run: migrateBaseImageHistory },
+];
+
+async function tableExists(tableName: string): Promise<boolean> {
+  const db = getDb();
+  const rows = await db.execute<{ exists: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = ${tableName}
+    ) AS exists
+  `);
+  return Boolean((rows as unknown as { exists: boolean }[])[0]?.exists);
+}
+
+async function ensureLedgerTable(): Promise<void> {
+  if (await tableExists(LEDGER_TABLE)) return;
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE ${sql.raw(LEDGER_TABLE)} (
+    id TEXT PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+}
+
+async function getAppliedMigrationIds(): Promise<Set<string>> {
+  const db = getDb();
+  const rows = await db.execute<{ id: string }>(sql`
+    SELECT id FROM ${sql.raw(LEDGER_TABLE)}
+  `);
+  return new Set((rows as unknown as { id: string }[]).map((r) => r.id));
+}
+
+async function markMigrationApplied(id: string): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`
+    INSERT INTO ${sql.raw(LEDGER_TABLE)} (id) VALUES (${id})
+    ON CONFLICT (id) DO NOTHING
+  `);
+}
+
+async function migrationTablesExist(id: string): Promise<boolean> {
+  switch (id) {
+    case "orgs": return tableExists("organizations");
+    case "server_credentials": return tableExists("server_credentials");
+    case "org_credentials": return tableExists("org_credentials");
+    case "team_invites": return tableExists("team_invites");
+    case "vps_metric_samples": return tableExists("vps_metric_samples");
+    case "vps_stats_tokens": return tableExists("vps_stats_tokens");
+    case "agents": return tableExists("agents");
+    case "base_image_history": return tableExists("base_image_template_history");
+    default: return false;
+  }
+}
+
+/** Run any boot migrations not yet recorded in `_genie_boot_migrations`. */
+export async function runBootMigrations(): Promise<void> {
+  await ensureLedgerTable();
+  const applied = await getAppliedMigrationIds();
+
+  // DBs migrated before the ledger existed: mark steps whose tables are
+  // already present; run any catch-up steps that were added later.
+  if (applied.size === 0 && await tableExists("organizations")) {
+    let catchUp = 0;
+    for (const m of BOOT_MIGRATIONS) {
+      if (await migrationTablesExist(m.id)) {
+        await markMigrationApplied(m.id);
+      } else {
+        await m.run();
+        await markMigrationApplied(m.id);
+        catchUp++;
+        console.log(`[migrate] applied ${m.id} (legacy catch-up)`);
+      }
+    }
+    console.log(catchUp === 0
+      ? "[migrate] boot migrations already applied (existing schema)"
+      : `[migrate] bootstrapped legacy schema (${catchUp} catch-up migration(s))`);
+    return;
+  }
+
+  let ran = 0;
+  for (const m of BOOT_MIGRATIONS) {
+    if (applied.has(m.id)) continue;
+    await m.run();
+    await markMigrationApplied(m.id);
+    ran++;
+    console.log(`[migrate] applied ${m.id}`);
+  }
+  if (ran === 0) {
+    console.log("[migrate] boot migrations up to date");
+  }
+}
+
+/** Ensure a single boot migration has run (for one-off scripts). */
+export async function ensureBootMigration(id: string): Promise<void> {
+  await ensureLedgerTable();
+  const applied = await getAppliedMigrationIds();
+  if (applied.has(id)) return;
+  const m = BOOT_MIGRATIONS.find((entry) => entry.id === id);
+  if (!m) throw new Error(`Unknown boot migration: ${id}`);
+  await m.run();
+  await markMigrationApplied(id);
+  console.log(`[migrate] applied ${id}`);
+}
 
 /** Create the org_credentials table (encrypted per-org cloud-provider tokens
  *  + SSH keys — currently TazCloud, room for DO / GitHub later). Idempotent. */
@@ -238,4 +351,18 @@ export async function migrateVpsMetricSamples(): Promise<void> {
   )`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_lookup ON vps_metric_samples(project_id, instance_id, sampled_at)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_sampled_at ON vps_metric_samples(sampled_at)`);
+}
+
+/** Base image template edit history. Idempotent. */
+export async function migrateBaseImageHistory(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS base_image_template_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    template_name TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('created', 'updated', 'deleted', 'restored')),
+    data JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_base_image_tpl_hist_name ON base_image_template_history (template_name)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_base_image_tpl_hist_created ON base_image_template_history (created_at)`);
 }

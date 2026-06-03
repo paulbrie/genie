@@ -90,11 +90,22 @@ log "Applying Genie standard setup (Docker, Node 20, Claude Code, /opt/project).
 if command -v apt-get > /dev/null 2>&1; then
   log "apt-get update..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
-  log "apt-get install docker.io git curl ca-certificates dtach..."
+  log "apt-get install git curl ca-certificates dtach..."
   # dtach is the persistence wrapper for remote PTYs (Claude popup + shell tabs):
   # closing the popup/tab/laptop detaches the SSH channel without killing the
   # inner process. Tiny (~50KB), no daemon, no escape keys to surprise users.
-  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates dtach > /dev/null
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq git curl ca-certificates dtach > /dev/null
+  # Only install Ubuntu's docker.io when no Docker engine is present yet. Some
+  # base images (e.g. DigitalOcean's Docker droplet) ship docker-ce from
+  # download.docker.com with its own apt repo; installing docker.io on top makes
+  # apt's resolver break on the containerd.io conflict ("pkgProblemResolver::
+  # Resolve generated breaks, this may be caused by held packages").
+  if command -v docker > /dev/null 2>&1; then
+    log "docker already present ($(docker --version 2>/dev/null)) — skipping docker.io."
+  else
+    log "apt-get install docker.io..."
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io > /dev/null
+  fi
   # Always run NodeSource's setup — Ubuntu 22.04 ships nodejs 12 without npm,
   # so even when 'command -v node' succeeds we can't trust the version. NodeSource
   # installs a higher-priority apt pin so the subsequent 'apt install nodejs'
@@ -765,8 +776,18 @@ if command -v apt-get > /dev/null 2>&1; then
   log "Installing Docker via apt..."
   log "apt-get update..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
-  log "apt-get install docker.io (~250MB, 1-2 min)..."
-  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io curl ca-certificates > /dev/null
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates > /dev/null
+  # Only install Ubuntu's docker.io when no Docker engine is present yet. Some
+  # base images (e.g. DigitalOcean's Docker droplet) ship docker-ce from
+  # download.docker.com with its own apt repo; installing docker.io on top makes
+  # apt's resolver break on the containerd.io conflict ("pkgProblemResolver::
+  # Resolve generated breaks, this may be caused by held packages").
+  if command -v docker > /dev/null 2>&1; then
+    log "docker already present ($(docker --version 2>/dev/null)) — skipping docker.io."
+  else
+    log "apt-get install docker.io (~250MB, 1-2 min)..."
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io > /dev/null
+  fi
 elif command -v dnf > /dev/null 2>&1; then
   log "Installing Docker via dnf..."
   sudo dnf install -y -q docker curl > /dev/null
@@ -814,7 +835,9 @@ log "Docker removed."`,
     setupShSnippet: `# Install Docker + Compose v2 (Compose binary from GitHub release for distro-independent install)
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get > /dev/null 2>&1; then
-  apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io curl ca-certificates > /dev/null
+  apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq curl ca-certificates > /dev/null
+  # docker.io conflicts with a pre-installed docker-ce (download.docker.com repo) — only install it when no engine exists.
+  command -v docker > /dev/null 2>&1 || apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io > /dev/null
 elif command -v dnf > /dev/null 2>&1; then
   dnf install -y -q docker curl > /dev/null
 fi

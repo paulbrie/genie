@@ -113,6 +113,8 @@ describe("ws-acl", () => {
       expect(canReceive("user", "chat:message")).toBe(true);
       expect(canSend("user", "terminal:write")).toBe(true);
       expect(canSend("user", "vps:deploy")).toBe(true);
+      expect(canSend("user", "vps:stats:refresh")).toBe(true);
+      expect(canReceive("user", "vm:conn:stats")).toBe(true);
     });
 
     it("stats and monitor are admin-only (audit MEDIUM)", () => {

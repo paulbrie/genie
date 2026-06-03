@@ -1,14 +1,20 @@
 /**
- * VPS stats poller — one CPU/mem/disk + tmux probe per VPS.
- * Piggybacks on an existing live shell session when one is open (no extra
- * SSH dial); falls back to a short-lived exec via genie's connectSsh.
+ * VPS stats poller — tmux session list always via SSH exec on the shared tunnel
+ * (never injected into the user's live PTY).
  */
-import { connectSsh } from "../../vps/ssh-client.js";
+import { execCached } from "../../vps/ssh-session-cache.js";
 import { getVpsConnection } from "../../vps/connection-resolver.js";
-import { findShellSessionForVps } from "../session/registry.js";
-import { parseProbeOutput, STATS_COMMAND, statsToClient, tmuxSessionsToClient, type TmuxSessionInfo } from "./commands.js";
+import { sshStatsProbeEnabled } from "../../vps/ssh-stats-disabled.js";
+import {
+  parseProbeOutput,
+  STATS_COMMAND,
+  TMUX_PROBE_COMMAND,
+  statsToClient,
+  tmuxSessionsToClient,
+  type TmuxSessionInfo,
+} from "./commands.js";
 
-const STATS_EXEC_TIMEOUT_MS = 12_000;
+const PROBE_TIMEOUT_MS = 12_000;
 
 export type VpsStatsPayload = {
   projectId: string;
@@ -16,9 +22,11 @@ export type VpsStatsPayload = {
   stats: { cpu: number; mem: number; disk: number } | null;
   tmux: TmuxSessionInfo[];
   error: string | null;
+  /** How tmux sessions were probed — client only trusts an empty list from exec. */
+  tmuxProbePath: "exec" | "pty";
 };
 
-const inFlight = new Set<string>();
+const inFlight = new Map<string, Promise<VpsStatsPayload>>();
 
 function key(projectId: string, instanceId: string) {
   return `${projectId}-${instanceId}`;
@@ -27,46 +35,96 @@ function key(projectId: string, instanceId: string) {
 export async function pollVpsStats(
   projectId: string,
   instanceId: string,
+  opts?: { force?: boolean },
 ): Promise<VpsStatsPayload> {
   const k = key(projectId, instanceId);
-  if (inFlight.has(k)) {
-    return { projectId, instanceId, stats: null, tmux: [], error: "in_flight" };
+  if (!opts?.force) {
+    const existing = inFlight.get(k);
+    if (existing) return existing;
   }
-  inFlight.add(k);
 
+  const promise = pollVpsStatsOnce(projectId, instanceId);
+  inFlight.set(k, promise);
   try {
-    const shellSession = findShellSessionForVps(projectId, instanceId);
-    let output: string;
-    if (shellSession?.isExecReady()) {
-      output = await Promise.race([
-        shellSession.exec(STATS_COMMAND),
-        new Promise<string>((_r, rej) => setTimeout(() => rej(new Error("stats_exec_timeout")), STATS_EXEC_TIMEOUT_MS)),
-      ]);
-    } else {
-      const conn = await getVpsConnection(projectId, instanceId);
-      const sshSession = await connectSsh(
-        {
-          host: conn.host,
-          port: conn.port ?? 22,
-          username: conn.username,
-          privateKeyPath: conn.privateKeyPath,
-        },
-        { timeoutMs: STATS_EXEC_TIMEOUT_MS },
-      );
-      try {
-        output = await sshSession.exec(STATS_COMMAND, undefined, { timeoutMs: STATS_EXEC_TIMEOUT_MS });
-      } finally {
-        sshSession.close();
-      }
-    }
+    return await promise;
+  } finally {
+    if (inFlight.get(k) === promise) inFlight.delete(k);
+  }
+}
 
-    const probe = parseProbeOutput(output);
+async function execRemote(
+  cfg: Parameters<typeof execCached>[0],
+  command: string,
+): Promise<string> {
+  try {
+    return await execCached(cfg, command, undefined, { timeoutMs: PROBE_TIMEOUT_MS });
+  } catch (err) {
+    const partial = extractProbeOutput(err);
+    if (partial) return partial;
+    throw err;
+  }
+}
+
+function extractProbeOutput(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  const marker = "Command exited with code ";
+  const idx = err.message.indexOf(marker);
+  if (idx < 0) return null;
+  const body = err.message.slice(idx + marker.length);
+  const nl = body.indexOf("\n");
+  if (nl < 0) return null;
+  const output = body.slice(nl + 1);
+  return output.includes("GENIE_STATS") || output.includes("GENIE_TMUX") || output.includes("windows")
+    ? output
+    : null;
+}
+
+async function probeTmuxViaExec(
+  sshCfg: Parameters<typeof execCached>[0],
+): Promise<string> {
+  return execRemote(sshCfg, TMUX_PROBE_COMMAND).catch(() => "");
+}
+
+async function pollVpsStatsOnce(
+  projectId: string,
+  instanceId: string,
+): Promise<VpsStatsPayload> {
+  try {
+    const conn = await getVpsConnection(projectId, instanceId);
+    const sshCfg = {
+      host: conn.host,
+      port: conn.port ?? 22,
+      username: conn.username,
+      privateKeyPath: conn.privateKeyPath,
+    };
+
+    const includeStats = sshStatsProbeEnabled();
+    const tmuxPromise = probeTmuxViaExec(sshCfg);
+    const race = includeStats
+      ? Promise.race([
+          Promise.all([tmuxPromise, execRemote(sshCfg, STATS_COMMAND).catch(() => "")]),
+          new Promise<[string, string]>((_r, rej) =>
+            setTimeout(() => rej(new Error("stats_exec_timeout")), PROBE_TIMEOUT_MS),
+          ),
+        ])
+      : Promise.race([
+          tmuxPromise.then((tmuxOutput): [string, string] => [tmuxOutput, ""]),
+          new Promise<[string, string]>((_r, rej) =>
+            setTimeout(() => rej(new Error("stats_exec_timeout")), PROBE_TIMEOUT_MS),
+          ),
+        ]);
+
+    const [tmuxOutput, statsOutput] = await race;
+
+    const statsProbe = parseProbeOutput(statsOutput);
+    const tmuxProbeParsed = parseProbeOutput(tmuxOutput);
     return {
       projectId,
       instanceId,
-      stats: probe.stats ? statsToClient(probe.stats) : null,
-      tmux: tmuxSessionsToClient(probe.tmuxSessions),
-      error: probe.stats ? null : "parse_failed",
+      stats: statsProbe.stats ? statsToClient(statsProbe.stats) : null,
+      tmux: tmuxSessionsToClient(tmuxProbeParsed.tmuxSessions),
+      error: null,
+      tmuxProbePath: "exec",
     };
   } catch (err) {
     return {
@@ -75,8 +133,7 @@ export async function pollVpsStats(
       stats: null,
       tmux: [],
       error: err instanceof Error ? err.message : "stats_exec_failed",
+      tmuxProbePath: "exec",
     };
-  } finally {
-    inFlight.delete(k);
   }
 }

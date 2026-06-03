@@ -1,5 +1,5 @@
-import http from "node:http";
 import * as securityService from "../security-service.js";
+import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult, createMcpHttpServer } from "./mcp-jsonrpc.js";
 
 const TOOLS = [
   {
@@ -44,221 +44,133 @@ const TOOLS = [
   },
 ];
 
-function jsonRpcResponse(id: unknown, result: unknown) {
-  return { jsonrpc: "2.0", id, result };
-}
-
-function jsonRpcError(id: unknown, code: number, message: string) {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
-
-function sendSseResponse(res: http.ServerResponse, payload: object) {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  res.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
-  res.end();
-}
-
 /**
- * Create a local MCP HTTP server that exposes security scanning tools.
- * This server is tunneled to the VPS so Claude Code can use it as an MCP server.
+ * Handle one JSON-RPC request for the genie-security MCP service. Security scans
+ * are global ("system"-scoped), so no per-instance context is needed. Returns a
+ * JSON-RPC response object, or null for a notification.
  */
-export function createMcpSecurityServer(): Promise<{ port: number; close(): void }> {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer(async (req, res) => {
-      if (req.method === "GET") {
-        res.writeHead(405).end();
-        return;
-      }
-      if (req.method === "DELETE") {
-        res.writeHead(200).end();
-        return;
-      }
-      if (req.method !== "POST") {
-        res.writeHead(405).end();
-        return;
-      }
+export async function handleSecurityMcpRequest(parsed: JsonRpcRequest): Promise<object | null> {
+  if (isNotification(parsed)) return null;
+  const { id, method, params } = parsed;
 
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
-      const body = Buffer.concat(chunks).toString();
+  try {
+    if (method === "initialize") {
+      return initializeResult(id, "genie-security-mcp");
+    }
+    if (method === "tools/list") {
+      return jsonRpcResponse(id, { tools: TOOLS });
+    }
+    if (method !== "tools/call") {
+      return jsonRpcError(id, -32601, `Method not found: ${method}`);
+    }
 
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(body);
-      } catch {
-        res.writeHead(400, { "Content-Type": "application/json" })
-          .end(JSON.stringify(jsonRpcError(null, -32700, "Parse error")));
-        return;
+    const toolName = params?.name as string;
+    const args = (params?.arguments ?? {}) as Record<string, unknown>;
+
+    if (toolName === "security_scan") {
+      const target = args.target as string;
+      if (!target) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: "Error: target is required." }],
+          isError: true,
+        });
       }
+      // Run a full scan (blocking) with a no-op progress callback
+      const ac = new AbortController();
+      const scan = await securityService.runSecurityScan(target, {
+        onProgress: () => {},
+        signal: ac.signal,
+      });
 
-      const { id, method, params } = parsed as {
-        id?: unknown;
-        method?: string;
-        params?: Record<string, unknown>;
+      // Save scan to DB under "system" user
+      await securityService.saveScan("system", scan);
+
+      const summary = {
+        id: scan.id,
+        target: scan.target,
+        status: scan.status,
+        startedAt: scan.startedAt,
+        completedAt: scan.completedAt,
+        openPorts: scan.ports.filter((p) => p.state === "open").map((p) => ({ port: p.port, service: p.service, banner: p.banner })),
+        findings: scan.findings.map((f) => ({
+          severity: f.severity,
+          category: f.category,
+          title: f.title,
+          description: f.description,
+          url: f.url,
+          evidence: f.evidence,
+        })),
+        error: scan.error,
       };
 
-      // Notifications (no id) — acknowledge with 202
-      if (id === undefined || id === null) {
-        res.writeHead(202).end();
-        return;
+      return jsonRpcResponse(id, {
+        content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
+      });
+    }
+
+    if (toolName === "security_list_scans") {
+      const scans = await securityService.listScans("system");
+      const summary = scans.map((s) => ({
+        id: s.id,
+        target: s.target,
+        status: s.status,
+        startedAt: s.startedAt,
+        completedAt: s.completedAt,
+        findingsCount: s.findings.length,
+        openPortsCount: s.ports.filter((p) => p.state === "open").length,
+      }));
+      return jsonRpcResponse(id, {
+        content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
+      });
+    }
+
+    if (toolName === "security_get_scan") {
+      const scanId = args.scanId as string;
+      if (!scanId) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: "Error: scanId is required." }],
+          isError: true,
+        });
       }
-
-      try {
-        let result: object;
-
-        if (method === "initialize") {
-          result = jsonRpcResponse(id, {
-            protocolVersion: "2024-11-05",
-            serverInfo: { name: "genie-security-mcp", version: "1.0.0" },
-            capabilities: { tools: {} },
-          });
-        } else if (method === "tools/list") {
-          result = jsonRpcResponse(id, { tools: TOOLS });
-        } else if (method === "tools/call") {
-          const toolName = params?.name as string;
-          const args = (params?.arguments ?? {}) as Record<string, unknown>;
-
-          if (toolName === "security_scan") {
-            const target = args.target as string;
-            if (!target) {
-              result = jsonRpcResponse(id, {
-                content: [{ type: "text", text: "Error: target is required." }],
-                isError: true,
-              });
-            } else {
-              // Run a full scan (blocking) with a no-op progress callback
-              const ac = new AbortController();
-              const scan = await securityService.runSecurityScan(target, {
-                onProgress: () => {},
-                signal: ac.signal,
-              });
-
-              // Save scan to DB under "system" user
-              await securityService.saveScan("system", scan);
-
-              const summary = {
+      const scans = await securityService.listScans("system", 1000);
+      const scan = scans.find((s) => s.id === scanId);
+      if (!scan) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: `Scan ${scanId} not found.` }],
+          isError: true,
+        });
+      }
+      return jsonRpcResponse(id, {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
                 id: scan.id,
                 target: scan.target,
                 status: scan.status,
                 startedAt: scan.startedAt,
                 completedAt: scan.completedAt,
                 openPorts: scan.ports.filter((p) => p.state === "open").map((p) => ({ port: p.port, service: p.service, banner: p.banner })),
-                findings: scan.findings.map((f) => ({
-                  severity: f.severity,
-                  category: f.category,
-                  title: f.title,
-                  description: f.description,
-                  url: f.url,
-                  evidence: f.evidence,
-                })),
+                findings: scan.findings,
                 error: scan.error,
-              };
-
-              result = jsonRpcResponse(id, {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(summary, null, 2),
-                  },
-                ],
-              });
-            }
-          } else if (toolName === "security_list_scans") {
-            const scans = await securityService.listScans("system");
-
-            const summary = scans.map((s) => ({
-              id: s.id,
-              target: s.target,
-              status: s.status,
-              startedAt: s.startedAt,
-              completedAt: s.completedAt,
-              findingsCount: s.findings.length,
-              openPortsCount: s.ports.filter((p) => p.state === "open").length,
-            }));
-
-            result = jsonRpcResponse(id, {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(summary, null, 2),
-                },
-              ],
-            });
-          } else if (toolName === "security_get_scan") {
-            const scanId = args.scanId as string;
-            if (!scanId) {
-              result = jsonRpcResponse(id, {
-                content: [{ type: "text", text: "Error: scanId is required." }],
-                isError: true,
-              });
-            } else {
-              const scans = await securityService.listScans("system", 1000);
-              const scan = scans.find((s) => s.id === scanId);
-
-              if (!scan) {
-                result = jsonRpcResponse(id, {
-                  content: [{ type: "text", text: `Scan ${scanId} not found.` }],
-                  isError: true,
-                });
-              } else {
-                result = jsonRpcResponse(id, {
-                  content: [
-                    {
-                      type: "text",
-                      text: JSON.stringify(
-                        {
-                          id: scan.id,
-                          target: scan.target,
-                          status: scan.status,
-                          startedAt: scan.startedAt,
-                          completedAt: scan.completedAt,
-                          openPorts: scan.ports.filter((p) => p.state === "open").map((p) => ({ port: p.port, service: p.service, banner: p.banner })),
-                          findings: scan.findings,
-                          error: scan.error,
-                        },
-                        null,
-                        2,
-                      ),
-                    },
-                  ],
-                });
-              }
-            }
-          } else {
-            result = jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
-          }
-        } else {
-          result = jsonRpcError(id, -32601, `Method not found: ${method}`);
-        }
-
-        const accept = req.headers.accept || "";
-        if (accept.includes("text/event-stream")) {
-          sendSseResponse(res, result);
-        } else {
-          res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
-        }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        const errResp = jsonRpcError(id, -32000, message || "Internal error");
-        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(errResp));
-      }
-    });
-
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address() as { port: number };
-      console.log(`[mcp-security] Local HTTP server on port ${addr.port}`);
-      resolve({
-        port: addr.port,
-        close() {
-          server.close();
-        },
+              },
+              null,
+              2,
+            ),
+          },
+        ],
       });
-    });
+    }
 
-    server.on("error", reject);
-  });
+    return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return jsonRpcError(id, -32000, message || "Internal error");
+  }
+}
+
+/** Local HTTP server for MCP reverse tunnels. */
+export function createMcpSecurityServer(): Promise<{ port: number; close(): void }> {
+  return createMcpHttpServer((parsed) => handleSecurityMcpRequest(parsed));
 }

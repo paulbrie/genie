@@ -19,8 +19,8 @@ import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } fr
 import {
   adminDropletExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
   ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, loadRecipes,
-  releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, loadPersistedTerminals,
-  minimizeWindow, openWindow, reattachPersistedTerminal, registerWindow, syncVmStatsAgent, unwatchVpsStats,
+  releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, killVmTmuxSession, loadPersistedTerminals,
+  minimizeWindow, openWindow, reattachPersistedTerminal, refreshVmTmuxSessions, registerWindow, renameVmTmuxSession, syncVmStatsAgent, unwatchVpsStats,
   updateWindowPosition, vpsExec, watchVpsStats,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
@@ -29,7 +29,6 @@ import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/proje
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
 import { VpsResourceBar, VpsResourceGauges, vpsStatsToBarStats } from "@/components/project/vps-resource-gauges";
-import { clientSessionsForHost } from "@/components/tazcloud/server-tunnel-indicator";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { DbExplorer } from "@/components/admin/db-explorer";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
@@ -40,6 +39,9 @@ import type { AdminServerTunnelPayload } from "@/store/actions/admin";
 import { Button } from "@/components/ui/button";
 import { imageDefaultUser } from "./helpers";
 import { VmHostConnectionsPanel, useVmHostSshRegistry } from "./vm-host-connections-panel";
+import { resolveManageVmLinked, TmuxSessionBadges } from "./tmux-session-badges";
+import { TmuxSessionContextMenu } from "./tmux-session-context-menu";
+import { TmuxRenameDialog } from "./tmux-rename-dialog";
 
 const MANAGE_VM_WINDOW_PREFIX = "manage-vm-";
 /** Default size + cascade offset for any Manage popup variant. Exported so the
@@ -306,8 +308,15 @@ function SyncStatsAgentButton({ projectId, instanceId }: { projectId: string; in
   );
 }
 
-/** Claude Terminal — opens the live SSH popup for this VM and launches
- *  Claude inside it (xterm.js renderer). */
+/** Generate a fresh, human-readable tmux session name for a Claude launch.
+ *  The `claude-` prefix lets the Sessions tab + badge row label it as Claude. */
+function freshClaudeTmuxName(): string {
+  return `claude-${Date.now().toString(36)}`;
+}
+
+/** Claude Terminal — opens the live SSH popup for this VM and launches Claude
+ *  inside a fresh tmux session (xterm.js renderer). tmux-backed so the session
+ *  survives SSH drops, shows up in the tmux badge row, and can be reattached. */
 function ClaudeManageButton({
   vm,
   sshUser,
@@ -320,15 +329,23 @@ function ClaudeManageButton({
   const enabled = !!linked;
   const openClaude = () => {
     if (!linked) return;
+    const projectId = linked.project.id;
+    const instanceId = linked.instance.id;
     openVmConnectionWindow({
-      projectId: linked.project.id,
-      instanceId: linked.instance.id,
+      projectId,
+      instanceId,
       host: vm.host,
       port: 22,
       username: sshUser,
       vmLabel: `Claude · ${vm.name}`,
       initialCommand: "cd /opt/project && claude --dangerously-skip-permissions",
+      tmuxIntent: "new",
+      tmuxSessionName: freshClaudeTmuxName(),
     });
+    // Re-probe so the new tmux session lands in the badge row once it's up
+    // (session creation lags the connect by the shell-command delay).
+    window.setTimeout(() => refreshVmTmuxSessions(projectId, instanceId, { force: true }), 2500);
+    window.setTimeout(() => refreshVmTmuxSessions(projectId, instanceId, { force: true }), 6000);
   };
   const reason = enabled ? undefined : "Attach this VM to a project to enable Claude/SSH terminals";
   return (
@@ -339,7 +356,7 @@ function ClaudeManageButton({
         "flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach transition-colors",
         enabled ? "hover:bg-peach/10" : "opacity-40 cursor-not-allowed",
       )}
-      title={reason ?? `Launch Claude — ${sshUser}@${vm.host}`}
+      title={reason ?? `Launch Claude in a tmux session (survives SSH drops, reattach from the tmux row) — ${sshUser}@${vm.host}`}
     >
       <ClaudeLogo size={11} />
       Claude
@@ -426,52 +443,6 @@ function SshLaunchButton({
 }
 
 
-/** Live SSH tunnel (client) + PTY shells + MCP tunnels for the title bar. */
-function ManageVmTitleBarStats({ host }: { host: string }) {
-  const { sessions, tunnels, canViewRegistry } = useVmHostSshRegistry(host);
-
-  if (!canViewRegistry || !host) return null;
-
-  const clientCount = clientSessionsForHost(host, sessions);
-  const ptyCount = sessions.filter((s) => s.kind === "pty").length;
-  const mcpCount = tunnels.length;
-  const title = [
-    `${clientCount} SSH tunnel${clientCount === 1 ? "" : "s"} (programmatic client)`,
-    `${ptyCount} terminal shell${ptyCount === 1 ? "" : "s"}`,
-    `${mcpCount} MCP tunnel${mcpCount === 1 ? "" : "s"}`,
-  ].join(" · ");
-
-  return (
-    <span
-      className="shrink-0 px-1.5 py-0.5 rounded text-xs font-mono tabular-nums bg-surface0/60 text-overlay1 inline-flex items-center gap-1.5"
-      title={title}
-    >
-      <span className={cn("inline-flex items-center gap-0.5", clientCount > 0 && "text-green")}>
-        <Link2 size={11} className="shrink-0" />
-        {clientCount}
-      </span>
-      {ptyCount > 0 && (
-        <>
-          <span className="text-surface1">·</span>
-          <span className="inline-flex items-center gap-0.5">
-            <Terminal size={11} className="shrink-0" />
-            {ptyCount}
-          </span>
-        </>
-      )}
-      {mcpCount > 0 && (
-        <>
-          <span className="text-surface1">·</span>
-          <span className="inline-flex items-center gap-0.5">
-            <Plug size={11} className="shrink-0" />
-            {mcpCount}
-          </span>
-        </>
-      )}
-    </span>
-  );
-}
-
 /** Draggable popup wrapper around ManageVmInline. Replaces the modal so admins
  *  can keep multiple manage panels open side-by-side and still see the VM list
  *  beneath them. Uses the shared window-manager so it cascades against other
@@ -545,7 +516,6 @@ export function ManageVmPopup({ vm, windowId, windowState }: {
         <span className="text-text font-medium text-md">Manage</span>
         <span className="text-overlay0 text-md font-mono truncate">{vm.name}</span>
         <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-medium bg-surface0 text-subtext0">{providerLabel(vm.provider)}</span>
-        <ManageVmTitleBarStats host={vm.host} />
         <div className="flex-1" />
         <button onClick={() => minimizeWindow(windowId)} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1" title="Minimize">
           <Minus size={14} />
@@ -840,8 +810,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     };
   }, [tunnelPayloadKey, tunnelPayload]);
 
-  const { sessions, tunnels, canViewRegistry } = useVmHostSshRegistry(vm.host);
-  const sshClientCount = clientSessionsForHost(vm.host, sessions);
+  const { sharedTunnels, tunnels, canViewRegistry } = useVmHostSshRegistry(vm.host);
+  const sshTunnelCount = sharedTunnels.length;
+  const sshChannelCount = sharedTunnels.reduce((n, t) => n + t.channelCount, 0);
 
   const connectionPanelProps = {
     host: vm.host,
@@ -877,7 +848,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     { key: "manage", label: "Manage", icon: SettingsIcon, enabled: true },
     {
       key: "ssh",
-      label: canViewRegistry ? `SSH tunnel (${sshClientCount})` : "SSH tunnel",
+      label: canViewRegistry
+        ? (sshTunnelCount > 0 ? `SSH (${sshTunnelCount} tun · ${sshChannelCount} ch)` : "SSH")
+        : "SSH",
       icon: Link2,
       enabled: true,
     },
@@ -974,6 +947,16 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
                   <SshLaunchButton vm={vm} linked={linked} />
                 </div>
               </div>
+              {linked && (
+                <TmuxSessionBadges
+                  variant="row"
+                  projectId={linked.project.id}
+                  instanceId={linked.instance.id}
+                  host={vm.host}
+                  sshUser={claudeSshUser}
+                  vmName={vm.name}
+                />
+              )}
               {vm.provider === "do" && linked && (
                 <DropletSleepControl projectId={linked.project.id} instanceId={linked.instance.id} />
               )}
@@ -1132,6 +1115,8 @@ function VmSessionsTab({ vmHost }: { vmHost: string }) {
   const [auth] = useSubject($auth);
   const [pt] = useSubject($persistedTerminals);
   const isSuperAdmin = auth.user?.role === "superadmin";
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; session: PersistedTerminalSession } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<PersistedTerminalSession | null>(null);
 
   const refresh = useCallback(() => {
     loadPersistedTerminals({
@@ -1159,6 +1144,37 @@ function VmSessionsTab({ vmHost }: { vmHost: string }) {
   const clearStale = useCallback(() => {
     for (const s of staleSessions) killPersistedTerminal(s.id);
   }, [staleSessions]);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const handleSessionRename = useCallback((session: PersistedTerminalSession) => {
+    if (!session.projectId || !session.instanceId) {
+      window.alert("Cannot rename — session is not linked to a project VPS.");
+      return;
+    }
+    setRenameTarget(session);
+  }, []);
+
+  const submitSessionRename = useCallback((newName: string) => {
+    if (!renameTarget?.projectId || !renameTarget.instanceId) return;
+    const tmuxName = renameTarget.id;
+    void renameVmTmuxSession(renameTarget.projectId, renameTarget.instanceId, tmuxName, newName).then((res) => {
+      setRenameTarget(null);
+      if (res.error) window.alert(res.output || "Rename failed");
+      else refresh();
+    });
+  }, [renameTarget, refresh]);
+
+  const handleSessionDelete = useCallback((session: PersistedTerminalSession) => {
+    if (!window.confirm(`Kill terminal session "${session.commandLabel || session.id}"?`)) return;
+    if (session.projectId && session.instanceId) {
+      void killVmTmuxSession(session.projectId, session.instanceId, session.id).then((res) => {
+        if (res.error) window.alert(res.output || "Delete failed");
+      });
+    }
+    killPersistedTerminal(session.id);
+    refresh();
+  }, [refresh]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -1199,7 +1215,14 @@ function VmSessionsTab({ vmHost }: { vmHost: string }) {
             const tmuxSuffix = s.kind === "claude-tmux" ? " (tmux)" : "";
             const title = s.commandLabel ? `${s.commandLabel}${tmuxSuffix}` : `${baseLabel}${tmuxSuffix}`;
             return (
-              <li key={s.id} className="flex items-center gap-3 px-3 py-2 hover:bg-surface0/40 transition-colors">
+              <li
+                key={s.id}
+                className="flex items-center gap-3 px-3 py-2 hover:bg-surface0/40 transition-colors"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setContextMenu({ x: e.clientX, y: e.clientY, session: s });
+                }}
+              >
                 <Terminal size={14} className={cn("shrink-0", isClaude ? "text-mauve" : "text-overlay1")} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
@@ -1236,6 +1259,23 @@ function VmSessionsTab({ vmHost }: { vmHost: string }) {
             );
           })}
         </ul>
+      )}
+      {contextMenu && (
+        <TmuxSessionContextMenu
+          sessionName={contextMenu.session.commandLabel || contextMenu.session.id}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={closeContextMenu}
+          onRename={() => handleSessionRename(contextMenu.session)}
+          onDelete={() => handleSessionDelete(contextMenu.session)}
+        />
+      )}
+      {renameTarget && (
+        <TmuxRenameDialog
+          sessionName={renameTarget.id}
+          onConfirm={submitSessionRename}
+          onClose={() => setRenameTarget(null)}
+        />
       )}
     </div>
   );

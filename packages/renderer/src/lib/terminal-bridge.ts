@@ -145,6 +145,20 @@ export function refitTerminal(terminalId: string): void {
   try { inst.fitAddon.fit(); } catch { /* ignore */ }
 }
 
+export function getTerminalSize(terminalId: string): { cols: number; rows: number } | null {
+  const inst = instances.get(terminalId);
+  if (!inst) return null;
+  return { cols: inst.terminal.cols, rows: inst.terminal.rows };
+}
+
+/** Wipe scrollback + screen — use before reconnecting so a fresh PTY doesn't
+ *  append to a stale partial prompt line. */
+export function clearTerminal(terminalId: string): void {
+  const inst = instances.get(terminalId);
+  if (!inst) return;
+  inst.terminal.clear();
+}
+
 export function hasTerminal(terminalId: string): boolean {
   return instances.has(terminalId);
 }

@@ -7,6 +7,7 @@ export const handlers: HandlerMap = {
     $ssh.next({
       sessions: payload.sessions ?? [],
       tunnels: payload.tunnels ?? [],
+      sharedTunnels: payload.sharedTunnels ?? [],
       events: payload.events ?? [],
       loading: false,
       killing: {},

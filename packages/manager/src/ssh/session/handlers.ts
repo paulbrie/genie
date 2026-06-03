@@ -11,8 +11,8 @@
  *   terminal:close  {terminalId}             terminal:closed   {terminalId}
  *   terminal:inject {terminalId,command}     terminal:traffic  {terminalId,bytesIn,bytesOut}
  *
- * One SSH connection per terminalId. No tunnel-per-server, no shared session
- * across tabs.
+ * One shared SSH connection per (host, port, username); each terminalId gets
+ * a leased PTY channel on that connection.
  */
 import type { WebSocket } from "ws";
 
@@ -21,7 +21,13 @@ import { SshShellSession, type SshShellOptions } from "./shell.js";
 import { sessions, sessionMeta, getSshSession } from "./registry.js";
 import { clearOutputBatch, scheduleOutputBatch } from "./output-batch.js";
 import { scheduleShellCommand, SHELL_COMMAND_DELAY_MS, type ShellCommandCancel } from "./shell-line.js";
-import { resolveTmuxShellCommand, type TmuxShellIntent } from "../tmux/commands.js";
+import {
+  createTmuxSessionName,
+  resolveTmuxShellCommand,
+  tmuxNewSessionWithCommandShellCommand,
+  wrapSilentPtyCommand,
+  type TmuxShellIntent,
+} from "../tmux/commands.js";
 
 export type WsSendFn = (ws: WebSocket, msg: { type: string; payload: unknown }) => void;
 
@@ -84,9 +90,11 @@ function scheduleSessionCommand(
   session: SshShellSession,
   command: string,
   delayMs = SHELL_COMMAND_DELAY_MS,
+  opts?: { silent?: boolean },
 ) {
   clearInjectTimer(terminalId);
-  injectCancellers.set(terminalId, scheduleShellCommand(session, command, delayMs));
+  const line = opts?.silent ? wrapSilentPtyCommand(command) : command;
+  injectCancellers.set(terminalId, scheduleShellCommand(session, line, delayMs));
 }
 
 function isCurrentSession(terminalId: string, session: SshShellSession) {
@@ -109,7 +117,7 @@ export function closeSshSession(terminalId: string, notifyWs?: WebSocket) {
 
 export function closeAllSessionsForWs(ws: WebSocket) {
   for (const [terminalId, meta] of [...sessionMeta]) {
-    if (meta.ws === ws) closeSshSession(terminalId);
+    if (meta.ws === ws) closeSshSession(terminalId, ws);
   }
 }
 
@@ -155,7 +163,7 @@ export async function startSshSession(
     host = params.host;
   }
 
-  const session = new SshShellSession(shellOpts, {
+  const session = new SshShellSession(shellOpts, terminalId, {
     onData: (data) => {
       if (!isCurrentSession(terminalId, session)) return;
       scheduleOutputBatch(ws, terminalId, data, sendOutput, scheduleTrafficEmit);
@@ -176,10 +184,21 @@ export async function startSshSession(
           instanceId,
         },
       });
-      if (tmuxIntent && tmuxSessionName) {
-        scheduleSessionCommand(terminalId, session, resolveTmuxShellCommand(tmuxIntent, tmuxSessionName));
+      if (tmuxIntent === "new" && initialCommand) {
+        // The Claude button: launch `cd /opt/project && claude …` inside a fresh
+        // tmux session so it survives SSH drops and is reattachable. `-A` makes a
+        // re-launch with the same name reattach instead of duplicating.
+        const name = tmuxSessionName ?? createTmuxSessionName();
+        scheduleSessionCommand(terminalId, session, tmuxNewSessionWithCommandShellCommand(name, initialCommand));
+      } else if (tmuxIntent && tmuxSessionName) {
+        scheduleSessionCommand(
+          terminalId,
+          session,
+          resolveTmuxShellCommand(tmuxIntent, tmuxSessionName),
+          SHELL_COMMAND_DELAY_MS,
+          { silent: true },
+        );
       } else if (initialCommand) {
-        // e.g. the Claude button: `cd /opt/project && claude --dangerously-skip-permissions`
         scheduleSessionCommand(terminalId, session, initialCommand);
       }
     },
@@ -193,7 +212,7 @@ export async function startSshSession(
       if (!isCurrentSession(terminalId, session)) return;
       closeSshSession(terminalId, ws);
     },
-  });
+  }, { projectId, instanceId });
 
   sessions.set(terminalId, session);
   session.start(cols, rows);
@@ -208,10 +227,15 @@ export function handleTerminalResize(terminalId: string, cols: number, rows: num
   getSshSession(terminalId)?.resize(cols, rows);
 }
 
-export function handleTerminalInject(ws: WebSocket, terminalId: string, command: string) {
+export function handleTerminalInject(
+  ws: WebSocket,
+  terminalId: string,
+  command: string,
+  opts?: { silent?: boolean },
+) {
   const session = getSshSession(terminalId);
   if (!session) return;
-  scheduleSessionCommand(terminalId, session, command, 0);
+  scheduleSessionCommand(terminalId, session, command, 0, opts);
   scheduleTrafficEmit(terminalId, ws);
 }
 

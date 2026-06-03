@@ -11,6 +11,7 @@ import {
 } from "../subjects/vps";
 import type { VpsProcessInfo } from "../types/vps";
 import { ensureInstanceState, execCallbacks, updateInstanceState } from "../actions/vps";
+import { applyVmConnStats } from "../actions/vm-connection";
 import type { HandlerMap } from "./types";
 
 // --- VPS / DO / deploy messages ---
@@ -131,6 +132,12 @@ export const handlers: HandlerMap = {
       ensureInstanceState(statsInstId);
       updateInstanceState(statsInstId, { stats: payload.stats, statsError: null });
     }
+  },
+
+  // One-shot SSH stats probe (tmux + cpu/mem/disk snapshot). Distinct from the
+  // live daemon push (`vps:stats:update`) because only the SSH probe can list tmux.
+  "vm:conn:stats": (payload) => {
+    applyVmConnStats(payload);
   },
 
   // Live daemon stats, pushed by the VM over HTTPS and fanned out by the

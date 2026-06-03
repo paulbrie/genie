@@ -142,6 +142,13 @@ export interface VpsInstanceState {
   statsError: string | null;
   deployLogs: DeployLogEntry[];
   recipes: Record<string, RecipeState>;
+  /** Live tmux sessions on the VM, from the on-demand SSH probe
+   *  (`vps:stats:refresh` → `vm:conn:stats`). Drives the Manage popup's tmux
+   *  badge row. Undefined until the first probe completes. */
+  tmuxSessions?: VmTmuxSession[];
+  /** Set on every tmux probe response (success or error) — clears the probing spinner. */
+  lastTmuxAt?: number | null;
+  tmuxProbeError?: string | null;
 }
 
 export interface PendingDeploy {
@@ -321,7 +328,15 @@ export interface VmConnectionState {
   sshSessions: number | null;
   tmuxSessions: VmTmuxSession[];
   lastStatsAt: number | null;
+  /** Set only by the SSH tmux probe (`vm:conn:stats`), not daemon stats pushes. */
+  lastTmuxAt: number | null;
   openedAt: number;
+  /** Stored for reconnect after WS/SSH drop. */
+  initialCommand?: string;
+  tmuxIntent?: "new" | "attach";
+  tmuxSessionName?: string;
+  /** Direct SSH only — needed to re-dial after disconnect. */
+  privateKeyPath?: string;
 }
 
 export interface VmConnectionsState {

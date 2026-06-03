@@ -43,7 +43,9 @@ async function runBootstrap(
     "wait_apt() { local i=0; while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do i=$((i+1)); [ \"$i\" -gt 600 ] && { echo 'Timeout waiting for apt lock'; exit 1; }; sleep 1; done; }",
     "if command -v apt-get >/dev/null 2>&1; then",
     "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq",
-    "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io git curl ca-certificates > /dev/null",
+    "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq git curl ca-certificates > /dev/null",
+    // docker.io conflicts with a pre-installed docker-ce (download.docker.com repo) — only install when no engine exists.
+    "  command -v docker >/dev/null 2>&1 || { wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io > /dev/null; }",
     "  if ! command -v node >/dev/null 2>&1; then",
     "    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1",
     "    wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null",

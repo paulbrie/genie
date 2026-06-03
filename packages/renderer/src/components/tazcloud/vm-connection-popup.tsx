@@ -6,12 +6,20 @@
  * resource gauges, tmux session row, terminal pane.
  */
 import { useEffect, useRef, useState } from "react";
-import { Check, Image as ImageIcon, Loader2, RefreshCw, X } from "lucide-react";
+import { Check, Image as ImageIcon, Loader2, RotateCcw } from "lucide-react";
 
 import { $vmConnections } from "@/store/subjects";
-import { closeVmConnection, injectVmCommand, pasteVmImage, refreshVmStats } from "@/store/actions";
-import type { VmConnectionState, VmTmuxSession } from "@/store/types/vps";
-import { createTerminal, disposeTerminal, hasTerminal, reattachTerminal } from "@/lib/terminal-bridge";
+import {
+  injectVmCommand,
+  pasteVmImage,
+  reconnectVmConnection,
+  refreshVmStats,
+  setVmConnectionTmuxSession,
+} from "@/store/actions";
+import type { VmConnectionState } from "@/store/types/vps";
+import { TmuxSessionBadges } from "@/components/tazcloud/tmux-session-badges";
+import { tmuxAttachShellCommand } from "@/lib/tmux-shell";
+import { createTerminal, hasTerminal, reattachTerminal } from "@/lib/terminal-bridge";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
@@ -44,11 +52,14 @@ function StatusPill({ status }: { status: VmConnectionState["status"] }) {
       </span>
     );
   }
-  return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-overlay0/20 text-overlay1">
-      Closed
-    </span>
-  );
+  if (status === "closed") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red/15 text-red">
+        Disconnected
+      </span>
+    );
+  }
+  return null;
 }
 
 function Gauge({ label, value }: { label: string; value: number | null }) {
@@ -77,33 +88,10 @@ function Gauge({ label, value }: { label: string; value: number | null }) {
   );
 }
 
-function TmuxTabPill({
-  session,
-  onClick,
-}: {
-  session: VmTmuxSession;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={session.attached ? "attached" : "click to attach"}
-      className={cn(
-        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono transition-colors",
-        session.attached
-          ? "bg-mauve/15 text-mauve"
-          : "bg-surface0 text-overlay1 hover:text-text hover:bg-surface1",
-      )}
-    >
-      <span>{session.name}</span>
-      {session.windows != null && <span className="text-overlay0">{session.windows}w</span>}
-    </button>
-  );
-}
-
 export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) {
   const state = useDeepSubjectAll($vmConnections);
   const conn = state.connections[connectionKey];
+  const isLive = conn?.status === "connected";
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const [pasteNotice, setPasteNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
@@ -132,6 +120,7 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
     if (!conn || !terminalRef.current) return;
     const container = terminalRef.current;
     const onPaste = (e: ClipboardEvent) => {
+      if (!isLive) return;
       const items = e.clipboardData?.items;
       if (!items) return;
       for (let i = 0; i < items.length; i++) {
@@ -150,7 +139,7 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
     };
     container.addEventListener("paste", onPaste, true);
     return () => container.removeEventListener("paste", onPaste, true);
-  }, [connectionKey, conn?.terminalId]);
+  }, [connectionKey, conn?.terminalId, isLive]);
 
   // Listen for the manager's paste-image result so we can flash a short status
   // line under the header. Auto-clears after 3s.
@@ -175,27 +164,29 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
     return () => window.clearTimeout(t);
   }, [pasteNotice]);
 
-  // Resource gauges update live from the VM's HTTPS stats postback (the manager
-  // fans each one out over the WS subscription opened in openProjectVmConnection)
-  // — no SSH polling. The manual Refresh button below still does a one-shot SSH
-  // probe, the only way to enumerate tmux sessions (absent from the daemon push).
+  // tmux sessions only come from the SSH stats probe — poll while this popup is open.
+  useEffect(() => {
+    if (!conn?.projectId || !conn.instanceId) return;
+    refreshVmStats(connectionKey);
+    const intervalMs = conn.status === "connected" ? 5_000 : 15_000;
+    const t = window.setInterval(() => refreshVmStats(connectionKey), intervalMs);
+    return () => window.clearInterval(t);
+  }, [connectionKey, conn?.projectId, conn?.instanceId, conn?.status]);
 
   if (!conn) return null;
 
-  const handleClose = () => {
-    disposeTerminal(conn.terminalId);
-    closeVmConnection(connectionKey);
-  };
-
   const handleAttachTmux = (sessionName: string) => {
-    // Inject a tmux attach line into the live shell. Works whether the
-    // session exists (attaches) or not (no-op + error line on stderr).
-    injectVmCommand(connectionKey, `tmux attach -t '${sessionName}' 2>/dev/null || tmux new -s '${sessionName}'`);
+    if (!isLive) return;
+    if (conn.tmuxSessionName === sessionName) return;
+    setVmConnectionTmuxSession(connectionKey, sessionName);
+    // Switch/attach inside the live PTY without echoing the shell line into Claude.
+    injectVmCommand(connectionKey, tmuxAttachShellCommand(sessionName), { silent: true });
+    window.setTimeout(() => refreshVmStats(connectionKey, { force: true }), 1500);
   };
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-crust text-text">
-      {/* Header — status pills + traffic counter + Refresh / Close */}
+      {/* Header — status pills + traffic counter */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-surface0 shrink-0">
         <span className="font-medium text-md truncate">{conn.vmLabel}</span>
         <StatusPill status={conn.status} />
@@ -206,21 +197,6 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         <span className="text-[11px] font-mono tabular-nums text-overlay1 ml-1">
           ↓ {formatBytes(conn.bytesOut)} · ↑ {formatBytes(conn.bytesIn)}
         </span>
-        <div className="flex-1" />
-        <button
-          onClick={() => refreshVmStats(connectionKey)}
-          title="Refresh stats"
-          className="flex items-center gap-1 px-2 py-0.5 rounded border border-overlay0/30 text-[11px] text-overlay1 hover:text-text hover:bg-surface0 transition-colors"
-        >
-          <RefreshCw size={11} /> Refresh
-        </button>
-        <button
-          onClick={handleClose}
-          title="Close connection"
-          className="flex items-center gap-1 px-2 py-0.5 rounded border border-red/30 text-[11px] text-red hover:bg-red/10 transition-colors"
-        >
-          <X size={11} /> Close
-        </button>
       </div>
 
       {/* Connection line + resource gauges */}
@@ -238,13 +214,43 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         </div>
       </div>
 
-      {/* tmux session row */}
-      {conn.tmuxSessions.length > 0 && (
-        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-surface0 shrink-0 flex-wrap">
-          <span className="text-[10px] uppercase tracking-wide text-overlay0 mr-1">TMUX</span>
-          {conn.tmuxSessions.map((s) => (
-            <TmuxTabPill key={s.name} session={s} onClick={() => handleAttachTmux(s.name)} />
-          ))}
+      {/* tmux session badges — SSH probe, re-probe via refresh row */}
+      {conn.projectId && conn.instanceId && (
+        <TmuxSessionBadges
+          variant="inline"
+          projectId={conn.projectId}
+          instanceId={conn.instanceId}
+          host={conn.host}
+          sshUser={conn.username}
+          vmName={conn.vmLabel}
+          sessionsOverride={conn.tmuxSessions}
+          onAttach={handleAttachTmux}
+          onProbe={() => refreshVmStats(connectionKey, { force: true })}
+          probedAt={conn.lastTmuxAt}
+          pendingProbe={conn.lastTmuxAt == null && conn.status === "connected"}
+          probeError={conn.statsError}
+          activeSessionName={
+            conn.status === "connected" || conn.status === "connecting"
+              ? conn.tmuxSessionName ?? null
+              : null
+          }
+          autoProbe={false}
+        />
+      )}
+
+      {/* Disconnected banner — tmux may still be running on the VM */}
+      {conn.status === "closed" && (
+        <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-yellow bg-yellow/10 border-b border-yellow/30 shrink-0">
+          <span className="flex-1">
+            SSH connection lost — Claude may still be running in tmux on the VM.
+            {conn.errorMessage ? ` (${conn.errorMessage})` : ""}
+          </span>
+          <button
+            onClick={() => reconnectVmConnection(connectionKey)}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-yellow/40 text-yellow hover:bg-yellow/15 transition-colors shrink-0"
+          >
+            <RotateCcw size={11} /> Reconnect
+          </button>
         </div>
       )}
 
@@ -273,7 +279,13 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
       {/* Terminal pane — pad the xterm off the edges; back it with the terminal
           background (#1e1e2e) so the inset reads as part of the terminal. The
           FitAddon measures the padded content box, so cols/rows stay correct. */}
-      <div className="flex-1 min-h-0 relative" style={{ background: "#1e1e2e" }}>
+      <div
+        className={cn(
+          "flex-1 min-h-0 relative",
+          !isLive && "opacity-60 pointer-events-none",
+        )}
+        style={{ background: "#1e1e2e" }}
+      >
         <div ref={terminalRef} className="absolute inset-0 px-2.5 py-2" />
       </div>
     </div>

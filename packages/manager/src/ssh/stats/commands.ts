@@ -1,8 +1,6 @@
 /**
- * Remote stats probe — single bash one-liner that emits `GENIE_STATS …` and
- * one `GENIE_TMUX <name>|<windows>|<attached>` line per tmux session.
- *
- * Single round trip per poll: cpu/mem/disk + tmux session list.
+ * Remote stats / tmux probe helpers.
+ * Prefers `tmux list-sessions -F` machine output; falls back to parsing `tmux ls`.
  */
 
 export type VpsResourceStats = {
@@ -16,24 +14,46 @@ export type RemoteProbeResult = {
   tmuxSessions: string[];
 };
 
+const TMUX_BIN_PREAMBLE =
+  'export PATH="/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; ' +
+  'T=$(command -v tmux 2>/dev/null || true); ' +
+  '[ -z "$T" ] && [ -e /snap/bin/tmux ] && T=/snap/bin/tmux; ' +
+  '[ -z "$T" ] && [ -e /usr/bin/tmux ] && T=/usr/bin/tmux';
+
+const TMUX_LIST_WITH_BIN =
+  '"$T" list-sessions -F \'GENIE_TMUX #{session_name}|#{session_windows}|#{session_attached}\' 2>/dev/null ' +
+  '|| "$T" ls 2>&1 || true';
+
+const TMUX_LIST_BODY =
+  "tmux list-sessions -F 'GENIE_TMUX #{session_name}|#{session_windows}|#{session_attached}' 2>/dev/null " +
+  "|| tmux ls 2>&1 || true";
+
+/** SSH exec fallback when no live terminal — always exits 0. */
+export const TMUX_PROBE_COMMAND =
+  `${TMUX_BIN_PREAMBLE}; if [ -n "$T" ]; then ${TMUX_LIST_WITH_BIN}; else true; fi`;
+
 const STATS_SCRIPT = `cpu=$(awk '/^cpu /{print int(($2+$4)*100/($2+$3+$4+$5))}' /proc/stat)
 mem=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END {if(t>0) print int((t-a)*100/t); else print 0}' /proc/meminfo)
 disk=$(df -P / | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
 printf 'GENIE_STATS cpu=%s mem=%s disk=%s\\n' "$cpu" "$mem" "$disk"
-export PATH="/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-T=$(command -v tmux 2>/dev/null || true)
-[ -z "$T" ] && [ -e /snap/bin/tmux ] && T=/snap/bin/tmux
-[ -z "$T" ] && [ -e /usr/bin/tmux ] && T=/usr/bin/tmux
-if [ -n "$T" ]; then
-  "$T" list-sessions -F '#{session_name}|#{session_windows}|#{session_attached}' 2>/dev/null | while IFS= read -r line; do
-    [ -n "$line" ] && printf 'GENIE_TMUX %s\\n' "$line"
-  done
-fi`;
+${TMUX_BIN_PREAMBLE}
+if [ -n "$T" ]; then ${TMUX_LIST_WITH_BIN}; fi
+exit 0`;
 
 export const STATS_COMMAND = `echo ${Buffer.from(STATS_SCRIPT).toString("base64")} | base64 -d | bash`;
 
 const STATS_PATTERN = /GENIE_STATS cpu=(\d+(?:\.\d+)?) mem=(\d+(?:\.\d+)?) disk=(\d+(?:\.\d+)?)/;
 const TMUX_PATTERN = /^GENIE_TMUX\s+(.+)$/;
+/** Matches `name: N windows (created …)( attached)` from `tmux ls`. */
+const TMUX_LS_PATTERN = /^([^\s:]+):\s+(\d+)\s+windows\b/;
+
+function parseTmuxLsLine(line: string): string | null {
+  const trimmed = line.trim();
+  const m = trimmed.match(TMUX_LS_PATTERN);
+  if (!m) return null;
+  const attached = /\(attached\)/.test(trimmed) ? "1" : "0";
+  return `${m[1]}|${m[2]}|${attached}`;
+}
 
 export function parseProbeOutput(output: string): RemoteProbeResult {
   const lines = output.replace(/\r/g, "").split("\n");
@@ -55,6 +75,14 @@ export function parseProbeOutput(output: string): RemoteProbeResult {
       };
     }
   }
+
+  if (tmuxSessions.length === 0) {
+    for (const line of lines) {
+      const entry = parseTmuxLsLine(line);
+      if (entry) tmuxSessions.push(entry);
+    }
+  }
+
   return { stats, tmuxSessions };
 }
 
@@ -78,4 +106,8 @@ export function tmuxSessionsToClient(sessions: string[]): TmuxSessionInfo[] {
       attached: attached === "1" ? true : attached === "0" ? false : null,
     };
   });
+}
+
+export function probeSucceeded(probe: RemoteProbeResult): boolean {
+  return probe.stats != null || probe.tmuxSessions.length > 0;
 }

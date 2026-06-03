@@ -72,6 +72,8 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   docs: { send: "user", receive: "user", scope: "self" },
   terminal: { send: "user", receive: "user", scope: "owner" },
   "terminal-share": { send: "user", receive: "user", scope: "owner" },
+  // VM connection popup stats/tmux probe responses (vps:stats:refresh → vm:conn:stats).
+  vm: { send: "user", receive: "user", scope: "owner" },
   tracker: { send: "user", receive: "user", scope: "team" },
   settings: { send: "user", receive: "user", scope: "self" },
   feedback: { send: "user", receive: "user", scope: "self" },

@@ -32,9 +32,31 @@ export interface SshConnectionConfig {
   privateKey?: string | Buffer;  // raw key content — takes precedence over privateKeyPath
 }
 
+/** Interactive PTY channel on a shared SSH client. `close()` tears down the
+ *  channel only — not the underlying TCP/SSH connection. */
+export interface ShellHandle {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  /** Close the PTY channel only. */
+  close(): void;
+  writeRemoteFile(remotePath: string, data: Buffer): Promise<void>;
+  exec(command: string): Promise<string>;
+  isOpen(): boolean;
+  getTraffic(): { bytesIn: number; bytesOut: number };
+}
+
 export interface SshSession {
   exec(cmd: string, onData?: (data: string) => void, opts?: { timeoutMs?: number; idleTimeoutMs?: number }): Promise<string>;
   execStreaming(command: string, opts?: { pty?: boolean }): Promise<StreamingChannel>;
+  /** Open an interactive shell (PTY) channel multiplexed on this connection. */
+  openShell(opts: {
+    cols: number;
+    rows: number;
+    term?: string;
+    onData: (data: Buffer) => void;
+    onClose: () => void;
+  }): Promise<ShellHandle>;
+  getChannelCount(): number;
   forwardIn(bindAddr: string, bindPort: number): Promise<number>;
   unforwardIn(bindAddr: string, bindPort: number): Promise<void>;
   onTcpConnection(handler: (info: { destPort: number }, accept: () => ClientChannel) => void): void;
@@ -77,9 +99,14 @@ function makeSession(conn: Client, onClose?: () => void, onSessionClosed?: () =>
   /** Reject in-flight execs when the TCP session drops — otherwise a dead
    *  connection can leave promises pending until the 15m manager timeout. */
   const pendingExecAbort = new Set<(err: Error) => void>();
+  const openShellStreams = new Set<ClientChannel>();
   conn.on("close", () => {
     for (const abort of pendingExecAbort) abort(new Error("SSH connection closed"));
     pendingExecAbort.clear();
+    for (const stream of [...openShellStreams]) {
+      try { stream.close(); } catch { /* ignore */ }
+    }
+    openShellStreams.clear();
   });
 
   return {
@@ -280,6 +307,123 @@ function makeSession(conn: Client, onClose?: () => void, onSessionClosed?: () =>
           });
         },
       };
+    },
+
+    openShell(opts): Promise<ShellHandle> {
+      return new Promise((resolve, reject) => {
+        conn.shell(
+          { cols: opts.cols, rows: opts.rows, term: opts.term ?? "xterm-256color" },
+          (err, stream) => {
+            if (err) return reject(err);
+
+            let closed = false;
+            let bytesIn = 0;
+            let bytesOut = 0;
+            openShellStreams.add(stream);
+
+            const trackIn = (data: string | Buffer) => {
+              bytesIn += typeof data === "string" ? Buffer.byteLength(data) : data.length;
+            };
+            const trackOut = (data: Buffer) => {
+              bytesOut += data.length;
+            };
+
+            stream.on("data", (data: Buffer) => {
+              trackOut(data);
+              opts.onData(data);
+            });
+            stream.stderr.on("data", (data: Buffer) => {
+              trackOut(data);
+              opts.onData(data);
+            });
+            stream.on("close", () => {
+              openShellStreams.delete(stream);
+              if (!closed) {
+                closed = true;
+                opts.onClose();
+              }
+            });
+
+            const handle: ShellHandle = {
+              write(data: string) {
+                if (closed) return;
+                trackIn(data);
+                try { stream.write(data); } catch { /* ignore */ }
+              },
+              resize(cols: number, rows: number) {
+                if (closed) return;
+                try { stream.setWindow(rows, cols, 0, 0); } catch { /* ignore */ }
+              },
+              close() {
+                if (closed) return;
+                closed = true;
+                openShellStreams.delete(stream);
+                try { stream.close(); } catch { /* ignore */ }
+              },
+              writeRemoteFile(remotePath: string, data: Buffer): Promise<void> {
+                return new Promise((res, rej) => {
+                  if (closed) {
+                    rej(new Error("SSH shell channel closed"));
+                    return;
+                  }
+                  conn.sftp((sftpErr, sftp) => {
+                    if (sftpErr) return rej(sftpErr);
+                    sftp.open(remotePath, "w", (openErr, fh) => {
+                      if (openErr) {
+                        try { sftp.end(); } catch { /* ignore */ }
+                        return rej(openErr);
+                      }
+                      sftp.write(fh, data, 0, data.length, 0, (writeErr) => {
+                        if (writeErr) {
+                          try { sftp.close(fh, () => sftp.end()); } catch { /* ignore */ }
+                          return rej(writeErr);
+                        }
+                        sftp.close(fh, (closeErr) => {
+                          try { sftp.end(); } catch { /* ignore */ }
+                          if (closeErr) return rej(closeErr);
+                          trackIn(data);
+                          res();
+                        });
+                      });
+                    });
+                  });
+                });
+              },
+              exec(command: string): Promise<string> {
+                return new Promise((res, rej) => {
+                  if (closed) {
+                    rej(new Error("SSH shell channel closed"));
+                    return;
+                  }
+                  trackIn(command);
+                  conn.exec(command, (execErr, execStream) => {
+                    if (execErr) return rej(execErr);
+                    let output = "";
+                    let stderr = "";
+                    execStream.on("data", (d: Buffer) => { output += d.toString("utf8"); trackOut(d); });
+                    execStream.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); trackOut(d); });
+                    execStream.on("close", (code: number | null) => {
+                      const combined = `${output}${stderr}`;
+                      if (code !== 0 && !combined.includes("GENIE_STATS")) {
+                        rej(new Error(combined.trim() || `Remote command exited with code ${code ?? "unknown"}`));
+                        return;
+                      }
+                      res(combined);
+                    });
+                  });
+                });
+              },
+              isOpen() { return !closed; },
+              getTraffic() { return { bytesIn, bytesOut }; },
+            };
+            resolve(handle);
+          },
+        );
+      });
+    },
+
+    getChannelCount() {
+      return openShellStreams.size;
     },
 
     close() {
