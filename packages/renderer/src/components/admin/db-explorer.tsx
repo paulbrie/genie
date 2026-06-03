@@ -46,6 +46,11 @@ export interface DbExplorerProject {
   vpsInstances: { id: string; connection: { host: string } }[];
 }
 
+export interface DbExplorerInstance {
+  id: string;
+  connection: { host: string };
+}
+
 function formatCellValue(val: any): string {
   if (val === null || val === undefined) return "NULL";
   if (typeof val === "object") return JSON.stringify(val);
@@ -54,8 +59,13 @@ function formatCellValue(val: any): string {
 
 // --- Component ---
 
-export function DbExplorer({ project }: { project: DbExplorerProject }) {
-  const inst = project.vpsInstances[0];
+/** Pass `instance` to lock the explorer to a specific VM (used by the
+ *  Manage popup); omit it to fall back to `vpsInstances[0]`. */
+export function DbExplorer({ project, instance }: {
+  project: DbExplorerProject;
+  instance?: DbExplorerInstance;
+}) {
+  const inst = instance ?? project.vpsInstances[0];
   const [tables, setTables] = useState<DbTableInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

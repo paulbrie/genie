@@ -1015,18 +1015,18 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
       )}
 
       {tab === "commands" && linked && (
-        <CommandsTab project={linked.project} />
+        <CommandsTab project={linked.project} instance={linked.instance} />
       )}
 
       {tab === "files" && linked && (
         <div className="h-[600px]">
-          <FileExplorer project={linked.project} />
+          <FileExplorer project={linked.project} instance={linked.instance} />
         </div>
       )}
 
       {tab === "db" && linked && (
         <div className="h-[600px]">
-          <DbExplorer project={linked.project} />
+          <DbExplorer project={linked.project} instance={linked.instance} />
         </div>
       )}
     </div>

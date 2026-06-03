@@ -802,7 +802,13 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
 }
 
 
-export function CommandsTab({ project }: { project: ProjectDef }) {
+/** Pass `instance` to lock the tab to a specific VM (used by the Manage
+ *  popup so commands run on the droplet you opened, not on a sibling). Omit
+ *  it on the project-detail surface, where the existing picker chooses. */
+export function CommandsTab({ project, instance }: {
+  project: ProjectDef;
+  instance?: { id: string };
+}) {
   const [commandRunOutputs] = useSubject($commandRunOutputs);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -810,16 +816,18 @@ export function CommandsTab({ project }: { project: ProjectDef }) {
   const [formCommand, setFormCommand] = useState("");
   const [formMode, setFormMode] = useState<"inline" | "terminal">("inline");
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(
-    project.vpsInstances.length === 1 ? project.vpsInstances[0].id : null,
+    instance?.id ?? (project.vpsInstances.length === 1 ? project.vpsInstances[0].id : null),
   );
   const [expandedCommandId, setExpandedCommandId] = useState<string | null>(null);
   const outputEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (project.vpsInstances.length === 1) {
+    if (instance?.id) {
+      setSelectedInstanceId(instance.id);
+    } else if (project.vpsInstances.length === 1) {
       setSelectedInstanceId(project.vpsInstances[0].id);
     }
-  }, [project.vpsInstances.length]);
+  }, [instance?.id, project.vpsInstances.length]);
 
   // Auto-scroll output
   useEffect(() => {

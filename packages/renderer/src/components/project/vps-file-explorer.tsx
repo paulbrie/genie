@@ -33,6 +33,11 @@ export interface FileExplorerProject {
   vpsInstances: { id: string; connection: { host: string } }[];
 }
 
+export interface FileExplorerInstance {
+  id: string;
+  connection: { host: string };
+}
+
 // --- Monaco theme ---
 
 const catppuccinMocha = {
@@ -199,7 +204,14 @@ function FsFileEntry({ entry, isActive, onOpen, onRename, onDelete, onDownload, 
 
 // --- Main component ---
 
-export function FileExplorer({ project }: { project: FileExplorerProject }) {
+/** When `instance` is provided, the explorer is locked to that specific VM —
+ *  use this from the Manage popup so a project with multiple droplets routes
+ *  fs ops to the droplet the user opened, not blindly to `vpsInstances[0]`.
+ *  Omit `instance` for the project-detail surface, which picks the only one. */
+export function FileExplorer({ project, instance }: {
+  project: FileExplorerProject;
+  instance?: FileExplorerInstance;
+}) {
   const [currentPath, setCurrentPath] = useState("/opt/project");
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -225,7 +237,7 @@ export function FileExplorer({ project }: { project: FileExplorerProject }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const inst = project.vpsInstances[0];
+  const inst = instance ?? project.vpsInstances[0];
   if (!inst) return <div className="p-4 text-overlay0 text-md">No VPS instance available.</div>;
 
   const loadDirectory = useCallback(async (dirPath: string) => {
