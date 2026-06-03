@@ -20,3 +20,6 @@ TESTER-CREDENTIALS.md
 packages/*/playwright-report/
 packages/*/test-results/
 .playwright-mcp/
+
+# Cursor IDE local files (debug logs etc.)
+.cursor/
