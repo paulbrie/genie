@@ -17,7 +17,7 @@ export function AttachVmToProject({
   provider,
   vmId,
 }: {
-  provider: "digitalocean" | "tazcloud";
+  provider: "digitalocean" | "tazcloud" | "hetzner";
   vmId: string | number;
 }) {
   const [projects] = useSubject($projects);

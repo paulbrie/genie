@@ -90,6 +90,7 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // Cloud namespaces — tazcloud role can also access these.
   do: { send: "tazcloud", receive: "tazcloud" },
   tazcloud: { send: "tazcloud", receive: "tazcloud" },
+  hetzner: { send: "tazcloud", receive: "tazcloud" },
 
   // Admin namespaces.
   admin: { send: "admin", receive: "admin" },
@@ -102,9 +103,10 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // userCanManageOrg(callerId, orgId); the ACL just lets the message reach
   // the handler.
   org: { send: "user", receive: "user", scope: "team", notes: "handler enforces userCanManageOrg(callerId, orgId)" },
-  // The Clouds panel uses admin:droplets:* and admin:tazcloud:* — exposed to tazcloud.
+  // The Clouds panel uses admin:droplets:*, admin:tazcloud:* and admin:hetzner:* — exposed to tazcloud.
   "admin:droplets": { send: "tazcloud", receive: "tazcloud" },
   "admin:tazcloud": { send: "tazcloud", receive: "tazcloud" },
+  "admin:hetzner": { send: "tazcloud", receive: "tazcloud" },
   // Communication panel — mass-emailing the user base is superadmin-only.
   "admin:email": { send: "superadmin", receive: "superadmin" },
   db: { send: "admin", receive: "admin" },
@@ -151,6 +153,7 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   // runtime so a lower role can't unlock-then-delete in one round-trip.
   "admin:droplets:unlock": { send: "superadmin", receive: "tazcloud" },
   "admin:tazcloud:unlock": { send: "superadmin", receive: "tazcloud" },
+  "admin:hetzner:unlock": { send: "superadmin", receive: "tazcloud" },
 
   // Recipe catalog reads inside an otherwise superadmin-only namespace. Any
   // authenticated user may LIST recipes so the Add-ons panel populates for the
@@ -176,6 +179,9 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   "admin:tazcloud:exec": { send: "user", notes: "handler enforces project ownership for non-admins" },
   "admin:tazcloud:exec:result": { receive: "user" },
   "admin:tazcloud:exec:progress": { receive: "user" },
+  "admin:hetzner:exec": { send: "user", notes: "handler enforces project ownership for non-admins" },
+  "admin:hetzner:exec:result": { receive: "user" },
+  "admin:hetzner:exec:progress": { receive: "user" },
   "admin:server:tunnel:ensure": { send: "user", notes: "open one SSH tunnel per server (handler enforces access)" },
   "admin:server:tunnel:ready": { receive: "user" },
   "admin:server:tunnel:error": { receive: "user" },

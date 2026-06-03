@@ -107,7 +107,7 @@ export const projects = pgTable("projects", {
   commands: jsonb("commands").default([]).notNull(),           // ProjectCommand[]
   commandStatuses: jsonb("command_statuses").default({}).notNull(), // Record<string, ProcessStatus>
   vps: jsonb("vps"),                                            // VpsInfo | null
-  vpsProvider: text("vps_provider").default("digitalocean").notNull(),  // "digitalocean" | "tazcloud"
+  vpsProvider: text("vps_provider").default("digitalocean").notNull(),  // "digitalocean" | "tazcloud" | "hetzner"
   vpsRegion: text("vps_region"),
   vpsSize: text("vps_size"),
   vpsImage: text("vps_image"),                                  // TazCloud image slug (ubuntu-22 etc.); null for DO
@@ -564,8 +564,8 @@ export const cloudVmAliases = pgTable(
   "cloud_vm_aliases",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    provider: text("provider", { enum: ["digitalocean", "tazcloud"] }).notNull(),
-    vmId: text("vm_id").notNull(),                  // text — DO ids are numeric, taz ids are uuid
+    provider: text("provider", { enum: ["digitalocean", "tazcloud", "hetzner"] }).notNull(),
+    vmId: text("vm_id").notNull(),                  // text — DO/Hetzner ids are numeric, taz ids are uuid
     name: text("name").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -610,7 +610,7 @@ export const cloudVmLocks = pgTable(
   "cloud_vm_locks",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    provider: text("provider", { enum: ["digitalocean", "tazcloud"] }).notNull(),
+    provider: text("provider", { enum: ["digitalocean", "tazcloud", "hetzner"] }).notNull(),
     vmId: text("vm_id").notNull(),
     lockedBy: text("locked_by"),                    // user id of whoever set the lock; null if unknown
     lockedAt: timestamp("locked_at").defaultNow().notNull(),

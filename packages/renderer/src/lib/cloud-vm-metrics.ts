@@ -6,7 +6,7 @@ export function vpsMetricKey(projectId: string, instanceId: string): string {
 
 export function findLinkedInstance(
   projects: ProjectDef[],
-  match: { tazVmId?: string; dropletId?: number },
+  match: { tazVmId?: string; dropletId?: number; serverId?: number },
 ): { projectId: string; instanceId: string; instance: VpsInstance } | null {
   for (const project of projects) {
     for (const instance of project.vpsInstances) {
@@ -14,6 +14,9 @@ export function findLinkedInstance(
         return { projectId: project.id, instanceId: instance.id, instance };
       }
       if (match.dropletId != null && instance.digitalocean?.dropletId === match.dropletId) {
+        return { projectId: project.id, instanceId: instance.id, instance };
+      }
+      if (match.serverId != null && instance.hetzner?.serverId === match.serverId) {
         return { projectId: project.id, instanceId: instance.id, instance };
       }
     }

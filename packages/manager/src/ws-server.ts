@@ -82,6 +82,8 @@ import { handleDoMessage } from "./handlers/do-handler.js";
 
 import { handleTazcloudMessage } from "./handlers/tazcloud-handler.js";
 
+import { handleHetznerMessage } from "./handlers/hetzner-handler.js";
+
 import { handleBaseimageMessage } from "./handlers/baseimage-handler.js";
 
 import { handleOrgMessage } from "./handlers/org-handler.js";
@@ -876,6 +878,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleDocsMessage(ws, msg, send, userId, sendToUser)) return;
   if (await handleDoMessage(ws, msg, send, userId, state.role, broadcast)) return;
   if (await handleTazcloudMessage(ws, msg, send, userId, state.role, broadcast)) return;
+  if (await handleHetznerMessage(ws, msg, send, userId, state.role, broadcast)) return;
   if (await handleBaseimageMessage(ws, msg, send, broadcast)) return;
   if (await handleOrgMessage(ws, msg, send, userId, state.impersonatedBy)) return;
   if (await handleAdminUsersMessage(ws, msg, send, state)) return;

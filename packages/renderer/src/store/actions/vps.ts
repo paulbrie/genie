@@ -296,7 +296,7 @@ export function clearVpsDeployState(instanceId?: string): void {
  *  `vps:attach-existing:ok` or `vps:attach-existing:error`. */
 export function attachExistingVmToProject(
   projectId: string,
-  provider: "digitalocean" | "tazcloud",
+  provider: "digitalocean" | "tazcloud" | "hetzner",
   vmId: string | number,
   label?: string,
 ): void {
@@ -340,9 +340,23 @@ export function deployToDo(projectId: string, label?: string, instanceId?: strin
   deployToProvider(projectId, "digitalocean", label, instanceId);
 }
 
+type DeployProvider = "digitalocean" | "tazcloud" | "hetzner";
+
+const DEPLOY_WS_TYPE: Record<DeployProvider, string> = {
+  digitalocean: "do:deploy",
+  tazcloud: "tazcloud:deploy",
+  hetzner: "hetzner:deploy",
+};
+
+const CANCEL_WS_TYPE: Record<DeployProvider, string> = {
+  digitalocean: "do:cancel",
+  tazcloud: "tazcloud:cancel",
+  hetzner: "hetzner:cancel",
+};
+
 export function deployToProvider(
   projectId: string,
-  provider: "digitalocean" | "tazcloud",
+  provider: DeployProvider,
   label?: string,
   instanceId?: string,
 ): void {
@@ -351,12 +365,11 @@ export function deployToProvider(
     projectId, instanceId: id, deploying: true, progress: [], error: null,
     startedAt: Date.now(), endedAt: null, failedDroplet: null, destroyingDroplet: false,
   };
-  const wsType = provider === "tazcloud" ? "tazcloud:deploy" : "do:deploy";
-  wsSend(wsType, { projectId, label, instanceId: id });
+  wsSend(DEPLOY_WS_TYPE[provider], { projectId, label, instanceId: id });
 }
 
-export function cancelVpsDeploy(projectId: string, provider: "digitalocean" | "tazcloud" = "digitalocean"): void {
-  wsSend(provider === "tazcloud" ? "tazcloud:cancel" : "do:cancel", { projectId });
+export function cancelVpsDeploy(projectId: string, provider: DeployProvider = "digitalocean"): void {
+  wsSend(CANCEL_WS_TYPE[provider], { projectId });
 }
 
 export function loadDoSnapshots(): void {

@@ -8,6 +8,7 @@ import { ViewHeader } from "@/components/ui/view-header";
 import { ViewTabs } from "@/components/ui/view-tabs";
 import { DigitalOceanPanel } from "@/components/admin/digitalocean-panel";
 import { TazCloudPanel } from "@/components/admin/tazcloud-panel";
+import { HetznerPanel } from "@/components/admin/hetzner-panel";
 import { $auth } from "@/store/subjects";
 import type { CloudSubTab, VpsMonitorState } from "@/store/types";
 import { buildCloudPath } from "@/lib/routes";
@@ -37,7 +38,7 @@ export function CloudsPanel() {
       router.replace(buildCloudPath("taz"));
       return;
     }
-    if (subFromUrl === "do" || subFromUrl === "taz") {
+    if (subFromUrl === "do" || subFromUrl === "taz" || subFromUrl === "hetzner") {
       const target = tazOnly ? "taz" : subFromUrl;
       if (active !== target) setActive(target);
     }
@@ -53,6 +54,7 @@ export function CloudsPanel() {
     : [
         { key: "do" as CloudSubTab, label: "DigitalOcean" },
         { key: "taz" as CloudSubTab, label: "TazCloud" },
+        { key: "hetzner" as CloudSubTab, label: "Hetzner" },
       ];
 
   return (
@@ -80,6 +82,8 @@ export function CloudsPanel() {
       <div className="flex-1 overflow-auto">
         {active === "do" ? (
           <DigitalOceanPanel monitor={monitor} />
+        ) : active === "hetzner" ? (
+          <HetznerPanel monitor={monitor} />
         ) : (
           <TazCloudPanel monitor={monitor} />
         )}

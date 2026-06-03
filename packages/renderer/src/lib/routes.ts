@@ -62,7 +62,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   agents: "agents",
 };
 
-const VALID_CLOUD_SUBTABS = new Set<CloudSubTab>(["do", "taz"]);
+const VALID_CLOUD_SUBTABS = new Set<CloudSubTab>(["do", "taz", "hetzner"]);
 
 const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
   Object.entries(NAV_TO_PATH).map(([k, v]) => [v, k as NavKey])

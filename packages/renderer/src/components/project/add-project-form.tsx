@@ -8,8 +8,12 @@ import { hideAddProjectForm, loadBaseImageConfigs } from "@/store/actions";
 import { wsSend } from "@/lib/ws";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import {
+  HETZNER_LOCATIONS, DEFAULT_HETZNER_LOCATION,
+  hetznerTypesForLocation, defaultHetznerTypeForLocation,
+} from "@/lib/hetzner-options";
 
-type Provider = "digitalocean" | "tazcloud";
+type Provider = "digitalocean" | "tazcloud" | "hetzner";
 
 export function AddProjectForm() {
   const [name, setName] = useState("");
@@ -18,6 +22,8 @@ export function AddProjectForm() {
   const [vpsSize, setVpsSize] = useState("s-2vcpu-4gb");
   const [vpsImage, setVpsImage] = useState("ubuntu-22");
   const [vpsTazSize, setVpsTazSize] = useState("small");
+  const [vpsHzLocation, setVpsHzLocation] = useState(DEFAULT_HETZNER_LOCATION);
+  const [vpsHzSize, setVpsHzSize] = useState(defaultHetznerTypeForLocation(DEFAULT_HETZNER_LOCATION));
   const [vpsBaseImageConfigName, setVpsBaseImageConfigName] = useState("");
   const [doToken, setDoToken] = useState("");
   const [gitlabDeployKey, setGitlabDeployKey] = useState("");
@@ -33,11 +39,21 @@ export function AddProjectForm() {
     const trimName = name.trim();
     if (!trimName) return;
 
+    // Region/size map to provider-specific fields: DO uses region+droplet size,
+    // Hetzner uses location+server type (both stored in vpsRegion/vpsSize),
+    // TazCloud uses image+size.
+    const region =
+      vpsProvider === "digitalocean" ? vpsRegion :
+      vpsProvider === "hetzner" ? vpsHzLocation : undefined;
+    const size =
+      vpsProvider === "digitalocean" ? vpsSize :
+      vpsProvider === "hetzner" ? vpsHzSize : vpsTazSize;
+
     wsSend("project:add", {
       name: trimName,
       vpsProvider,
-      vpsRegion: vpsProvider === "digitalocean" ? vpsRegion : undefined,
-      vpsSize: vpsProvider === "digitalocean" ? vpsSize : vpsTazSize,
+      vpsRegion: region,
+      vpsSize: size,
       vpsImage: vpsProvider === "tazcloud" ? vpsImage : undefined,
       vpsBaseImageConfigName: vpsProvider === "digitalocean" && vpsBaseImageConfigName ? vpsBaseImageConfigName : undefined,
       doToken: vpsProvider === "digitalocean" && doToken ? doToken : undefined,
@@ -79,6 +95,7 @@ export function AddProjectForm() {
           >
             <option value="digitalocean">DigitalOcean</option>
             <option value="tazcloud">TazCloud</option>
+            <option value="hetzner">Hetzner</option>
           </Select>
         </div>
 
@@ -140,6 +157,36 @@ export function AddProjectForm() {
                 placeholder="Leave blank to use global default from Settings"
                 className="bg-surface0 border border-surface1 rounded-md px-2.5 py-2 text-base text-text outline-none font-sans placeholder:text-overlay0 focus:border-mauve font-mono"
               />
+            </div>
+          </>
+        ) : vpsProvider === "hetzner" ? (
+          <>
+            <div className="flex gap-2">
+              <div className="flex-1 flex flex-col gap-1">
+                <label className="text-md text-overlay0">Location</label>
+                <Select
+                  value={vpsHzLocation}
+                  onChange={(e) => {
+                    const loc = e.target.value;
+                    setVpsHzLocation(loc);
+                    const valid = hetznerTypesForLocation(loc);
+                    if (!valid.some((t) => t.name === vpsHzSize)) setVpsHzSize(defaultHetznerTypeForLocation(loc));
+                  }}
+                  className="py-2 text-base font-sans focus:border-mauve"
+                >
+                  {HETZNER_LOCATIONS.map((l) => <option key={l.name} value={l.name}>{l.label}</option>)}
+                </Select>
+              </div>
+              <div className="flex-1 flex flex-col gap-1">
+                <label className="text-md text-overlay0">Server Type</label>
+                <Select
+                  value={vpsHzSize}
+                  onChange={(e) => setVpsHzSize(e.target.value)}
+                  className="py-2 text-base font-sans focus:border-mauve"
+                >
+                  {hetznerTypesForLocation(vpsHzLocation).map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
+                </Select>
+              </div>
             </div>
           </>
         ) : (

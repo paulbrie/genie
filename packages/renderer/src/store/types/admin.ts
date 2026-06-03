@@ -36,6 +36,34 @@ export interface AdminDroplet {
   };
 }
 
+export interface AdminHetznerServer {
+  id: number;
+  name: string;
+  status: string;       // normalized: "active" when running, else the raw status
+  ip: string | null;
+  region: string;       // Hetzner location slug (nbg1 / fsn1 / …)
+  size: string;         // Hetzner server type (cx22 / cpx21 / …)
+  vcpus: number;
+  memoryMb: number;
+  diskGb: number;
+  createdAt: string | null;
+  projectId: string | null;
+  projectName: string | null;
+  /** Deletion lock — when true, only a superadmin can delete (typed-name confirm). */
+  locked: boolean;
+}
+
+export interface AdminHetznerState {
+  servers: AdminHetznerServer[];
+  loading: boolean;
+  error: string | null;
+  creating: boolean;
+  createError: string | null;
+  stats: Record<number, VpsStats>;
+  /** Per-server soft-reboot progress, keyed by serverId. Cleared on :done/:error. */
+  reboot: Record<number, { messages: string[]; error: string | null; done: boolean }>;
+}
+
 export interface AdminTazVm {
   id: string;
   name: string;
@@ -347,6 +375,7 @@ export interface AdminState {
   dropletDomainError: string | null;
   /** Streamed progress lines for the in-flight domain op, keyed by dropletId. */
   dropletDomainProgress: Record<number, string[]>;
+  hetzner: AdminHetznerState;
   tazcloud: AdminTazState;
   baseImage: AdminBaseImageState;
   sshKey: {

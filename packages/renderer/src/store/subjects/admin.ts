@@ -9,6 +9,7 @@ export const $admin = new DeepSubject<AdminState>({
   sqlQuery: "", sqlResult: null, sqlError: null, sqlLoading: false, sqlOpen: false,
   droplets: [], dropletsLoading: false, dropletsError: null, dropletsCreating: false, dropletsCreateError: null, dropletStats: {}, dropletResize: {}, dropletReboot: {},
   dropletDomainBusy: {}, dropletDomainError: null, dropletDomainProgress: {},
+  hetzner: { servers: [], loading: false, error: null, creating: false, createError: null, stats: {}, reboot: {} },
   tazcloud: { vms: [], loading: false, error: null, creating: false, createError: null, projects: [], projectsLoading: false, projectsError: null, projectCreating: false, projectError: null, capabilityImages: [], capabilitiesLoading: false, capabilitiesError: null, vmStats: {}, vmStatsErrors: {}, vmStatsLoading: false, snapshots: [], snapshotsLoading: false, snapshotsError: null, snapshotCreating: {}, snapshotCreateError: null, ingressBusy: {}, ingressError: null },
   baseImage: { configs: {}, templates: {}, deletedTemplates: {}, buildingName: null, progress: [], error: null, failedDropletId: null, failedDropletIp: null, history: [] },
   sshKey: { exists: false, publicKey: null, fingerprint: null, createdAt: null, history: [], loading: false, regenerating: false },

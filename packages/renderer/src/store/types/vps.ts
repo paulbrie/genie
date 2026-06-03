@@ -72,11 +72,19 @@ export interface TazVmInfo {
   sshUser: string;
 }
 
+export interface HetznerServerInfo {
+  serverId: number;
+  ipAddress: string;
+  location: string;
+  serverType: string;
+}
+
 export interface VpsInfo {
   connection: VpsConnectionConfig;
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
   tazcloud?: TazVmInfo;
+  hetzner?: HetznerServerInfo;
 }
 
 export interface VpsHibernateInfo {
@@ -94,6 +102,7 @@ export interface VpsInstance {
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
   tazcloud?: TazVmInfo;
+  hetzner?: HetznerServerInfo;
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;
@@ -183,7 +192,7 @@ export interface ProjectDef {
   commands: ProjectCommand[];
   commandStatuses: Record<string, ProcessStatus>;
   vpsInstances: VpsInstance[];
-  vpsProvider?: "digitalocean" | "tazcloud";
+  vpsProvider?: "digitalocean" | "tazcloud" | "hetzner";
   vpsRegion?: string;
   vpsSize?: string;
   vpsImage?: string;
@@ -239,10 +248,6 @@ export interface TerminalTab {
   cwd?: string;
   projectId?: string;
   commandId?: string;
-  shared?: boolean;
-  ownerId?: string;
-  ownerName?: string;
-  viewerIds?: string[];
   ssh?: SshConfig;
   /** True when this tab is reopening a persisted server-side session. The
    *  bottom panel sends `terminal:reattach` instead of a fresh spawn so the
@@ -283,19 +288,11 @@ export interface PersistedTerminalsState {
   };
 }
 
-export interface TerminalShareInvite {
-  sessionId: string;
-  ownerId: string;
-  ownerName: string;
-  conversationId?: string;
-}
-
 export interface TerminalState {
   tabs: TerminalTab[];
   activeTabId: string | null;
   bottomPanelOpen: boolean;
   bottomPanelHeight: number;
-  shareInvites: TerminalShareInvite[];
 }
 
 // --- VM SSH connection (new terminal layer) ---

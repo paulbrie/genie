@@ -124,6 +124,9 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
   const [showDoToken, setShowDoToken] = useState(false);
   const [doTokenInput, setDoTokenInput] = useState("");
   const [doTokenDirty, setDoTokenDirty] = useState(false);
+  const [showHetznerToken, setShowHetznerToken] = useState(false);
+  const [hetznerTokenInput, setHetznerTokenInput] = useState("");
+  const [hetznerTokenDirty, setHetznerTokenDirty] = useState(false);
   const [showGitlabKey, setShowGitlabKey] = useState(false);
   const [gitlabKeyInput, setGitlabKeyInput] = useState("");
   const [gitlabKeyDirty, setGitlabKeyDirty] = useState(false);
@@ -151,6 +154,11 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
     setDoTokenInput(settings.digitaloceanApiToken || "");
     setDoTokenDirty(false);
   }, [settings.digitaloceanApiToken]);
+
+  useEffect(() => {
+    setHetznerTokenInput(settings.hetznerApiToken || "");
+    setHetznerTokenDirty(false);
+  }, [settings.hetznerApiToken]);
 
   useEffect(() => {
     setGitlabKeyInput(settings.gitlabDeployKey || "");
@@ -190,6 +198,11 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
     saveSettingsField("digitaloceanApiToken", doTokenInput);
     setDoTokenDirty(false);
     setTimeout(() => validateDoToken(), 300);
+  }
+
+  function handleSaveHetznerToken() {
+    saveSettingsField("hetznerApiToken", hetznerTokenInput);
+    setHetznerTokenDirty(false);
   }
 
   function handleSaveGitlabKey() {
@@ -333,6 +346,49 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
             <p className="text-md text-overlay0 mt-2">
               Get your token from DigitalOcean dashboard &rarr; API &rarr; Tokens.
               Can be overridden per project.
+            </p>
+          </div>
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Hetzner API Token
+              <span className="ml-2 text-md text-overlay0 font-normal">Global default</span>
+            </label>
+            <div className="flex items-center gap-2 max-w-md">
+              <div className="relative flex-1">
+                <input
+                  type={showHetznerToken ? "text" : "password"}
+                  value={hetznerTokenInput}
+                  onChange={(e) => {
+                    setHetznerTokenInput(e.target.value);
+                    setHetznerTokenDirty(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && hetznerTokenDirty) handleSaveHetznerToken();
+                  }}
+                  placeholder="Hetzner Cloud API token"
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowHetznerToken(!showHetznerToken)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showHetznerToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {hetznerTokenDirty && (
+                <button
+                  onClick={handleSaveHetznerToken}
+                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+            </div>
+            <p className="text-md text-overlay0 mt-2">
+              Create a token in the Hetzner Cloud Console &rarr; Security &rarr; API Tokens
+              (Read &amp; Write). Falls back to the HETZNER_API_TOKEN env var.
             </p>
           </div>
 

@@ -54,13 +54,21 @@ export interface TazVmInfo {
   projectId?: string;
 }
 
-export type VpsProvider = "digitalocean" | "tazcloud";
+export interface HetznerServerInfo {
+  serverId: number;
+  ipAddress: string;
+  location: string;     // Hetzner location slug (nbg1 / fsn1 / hel1 / ash / hil)
+  serverType: string;   // Hetzner server type (cx22 / cpx21 / ...)
+}
+
+export type VpsProvider = "digitalocean" | "tazcloud" | "hetzner";
 
 export interface VpsInfo {
   connection: VpsConnectionConfig;
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
   tazcloud?: TazVmInfo;
+  hetzner?: HetznerServerInfo;
 }
 
 export interface VpsHibernateInfo {
@@ -78,6 +86,7 @@ export interface VpsInstance {
   services: VpsServiceInfo[];
   digitalocean?: DoDropletInfo;
   tazcloud?: TazVmInfo;
+  hetzner?: HetznerServerInfo;
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;

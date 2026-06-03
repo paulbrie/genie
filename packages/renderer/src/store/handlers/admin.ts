@@ -2,6 +2,7 @@ import { batch } from "subjecto";
 import { $admin } from "../subjects/admin";
 import type {
   AdminDroplet,
+  AdminHetznerServer,
   AdminOrg,
   AdminOrgMember,
   AdminTazVm,
@@ -14,6 +15,7 @@ import {
   deletePendingAdminExec,
   getPendingAdminExec,
   loadAdminDroplets,
+  loadAdminHetznerServers,
   loadAdminRows,
   loadAdminTables,
   loadAdminTazVms,
@@ -319,6 +321,97 @@ export const handlers: HandlerMap = {
   },
 
   "admin:droplets:exec:result": (payload) => {
+    const pending = getPendingAdminExec(payload.execId);
+    if (!pending) return;
+    deletePendingAdminExec(payload.execId);
+    pending.resolve({ output: payload.output, error: payload.error });
+  },
+
+  // ── Hetzner admin (Clouds panel) ──────────────────────────────────────────
+
+  "admin:hetzner:list": (payload) => {
+    const v = $admin.getValue();
+    if (payload.error) {
+      batch(() => { v.hetzner.error = payload.error; v.hetzner.servers = []; v.hetzner.loading = false; });
+    } else {
+      const projectMap = payload.projectMap || {};
+      // The manager already normalizes each server; just attach the project link.
+      const servers: AdminHetznerServer[] = (payload.servers || []).map((s: any) => {
+        const pm = projectMap[s.id];
+        return { ...s, projectId: pm?.projectId || null, projectName: pm?.projectName || null } as AdminHetznerServer;
+      });
+      batch(() => { v.hetzner.servers = servers; v.hetzner.error = null; v.hetzner.loading = false; });
+    }
+  },
+
+  "admin:hetzner:stats": (payload) => {
+    if (payload.stats) Object.assign($admin.getValue().hetzner.stats, payload.stats);
+  },
+
+  "admin:hetzner:deleted": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.serverId;
+    batch(() => {
+      v.hetzner.servers = v.hetzner.servers.filter((s) => s.id !== id);
+      delete v.hetzner.stats[id];
+    });
+  },
+
+  "admin:hetzner:created": (_payload) => {
+    batch(() => { const v = $admin.getValue(); v.hetzner.creating = false; v.hetzner.createError = null; });
+    loadAdminHetznerServers();
+  },
+
+  "admin:hetzner:create:error": (payload) => {
+    batch(() => { const v = $admin.getValue(); v.hetzner.creating = false; v.hetzner.createError = payload.message ?? "Unknown error"; });
+  },
+
+  "admin:hetzner:renamed": (payload) => {
+    const s = $admin.getValue().hetzner.servers.find((x) => x.id === payload.serverId);
+    if (s) s.name = payload.name;
+  },
+
+  "admin:hetzner:locked": (payload) => {
+    const s = $admin.getValue().hetzner.servers.find((x) => x.id === payload.serverId);
+    if (s) s.locked = payload.locked === true;
+  },
+
+  "admin:hetzner:reboot:progress": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.serverId as number;
+    batch(() => {
+      const cur = v.hetzner.reboot[id] ?? { messages: [], error: null, done: false };
+      cur.messages = [...cur.messages, payload.message];
+      v.hetzner.reboot[id] = cur;
+    });
+  },
+
+  "admin:hetzner:reboot:done": (payload) => {
+    batch(() => { delete $admin.getValue().hetzner.reboot[payload.serverId as number]; });
+  },
+
+  "admin:hetzner:reboot:error": (payload) => {
+    const v = $admin.getValue();
+    const id = payload.serverId as number;
+    batch(() => {
+      const cur = v.hetzner.reboot[id] ?? { messages: [], error: null, done: false };
+      cur.error = payload.message;
+      v.hetzner.reboot[id] = cur;
+    });
+  },
+
+  "admin:hetzner:list:stale": (_payload) => {
+    loadAdminHetznerServers();
+  },
+
+  "admin:hetzner:exec:progress": (payload) => {
+    const pending = getPendingAdminExec(payload.execId);
+    if (!pending) return;
+    pending.output += payload.chunk;
+    pending.onChunk?.(payload.chunk);
+  },
+
+  "admin:hetzner:exec:result": (payload) => {
     const pending = getPendingAdminExec(payload.execId);
     if (!pending) return;
     deletePendingAdminExec(payload.execId);

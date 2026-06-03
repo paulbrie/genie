@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { cloudVmAliases } from "./db/schema.js";
 
-export type CloudProvider = "digitalocean" | "tazcloud";
+export type CloudProvider = "digitalocean" | "tazcloud" | "hetzner";
 
 /** Set or update a Genie-side display name for a cloud VM. Trimmed name is stored. */
 export async function setAlias(provider: CloudProvider, vmId: string, name: string): Promise<void> {

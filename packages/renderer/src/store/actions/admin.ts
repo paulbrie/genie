@@ -216,6 +216,69 @@ export function detachAdminDropletDomain(dropletId: number): void {
   wsSend("admin:droplets:domain:detach", { dropletId });
 }
 
+// --- Hetzner admin actions (Clouds panel) ---
+
+export function loadAdminHetznerServers(): void {
+  batch(() => { const v = $admin.getValue(); v.hetzner.loading = true; v.hetzner.error = null; });
+  wsSend("admin:hetzner:list", {});
+}
+
+export function loadAdminHetznerStats(): void {
+  if (!sshStatsProbeEnabled()) return;
+  wsSend("admin:hetzner:stats", {});
+}
+
+export function adminDeleteHetznerServer(serverId: number): void {
+  wsSend("admin:hetzner:delete", { serverId });
+}
+
+/** Create a bare Hetzner server via the manager (no Genie setup.sh run). Replies
+ *  with `admin:hetzner:created` / `admin:hetzner:create:error`. */
+export function createAdminHetznerServer(opts: { name: string; region: string; size: string; image: string }): void {
+  batch(() => { const v = $admin.getValue(); v.hetzner.creating = true; v.hetzner.createError = null; });
+  wsSend("admin:hetzner:create", opts);
+}
+
+export function renameAdminHetznerServer(serverId: number, name: string): void {
+  wsSend("admin:hetzner:rename", { serverId, name });
+}
+
+export function rebootAdminHetznerServer(serverId: number): void {
+  batch(() => { $admin.getValue().hetzner.reboot[serverId] = { messages: [], error: null, done: false }; });
+  wsSend("admin:hetzner:reboot", { serverId });
+}
+
+export function lockAdminHetznerServer(serverId: number): void {
+  wsSend("admin:hetzner:lock", { serverId });
+}
+
+export function unlockAdminHetznerServer(serverId: number): void {
+  wsSend("admin:hetzner:unlock", { serverId });
+}
+
+/** Run a command on a Hetzner server by id, as the genie user. Mirrors
+ *  `adminDropletExec` — resolves once `admin:hetzner:exec:result` arrives. */
+export function adminHetznerExec(
+  serverId: number,
+  command: string,
+  onChunk?: ExecChunk,
+  signal?: AbortSignal,
+): Promise<ExecResult> {
+  const execId = crypto.randomUUID();
+  return new Promise((resolve) => {
+    pendingAdminExecs.set(execId, { resolve, onChunk, output: "" });
+    wsSend("admin:hetzner:exec", { serverId, command, execId });
+    attachAbort(execId, signal);
+    setTimeout(() => {
+      const pending = pendingAdminExecs.get(execId);
+      if (pending) {
+        pendingAdminExecs.delete(execId);
+        pending.resolve({ output: pending.output || "Command timed out", error: true });
+      }
+    }, 900_000);
+  });
+}
+
 // --- TazCloud actions ---
 
 /** SSH-probe every ACTIVE TazCloud VM for runtime port info. Mirrors the

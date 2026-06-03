@@ -71,7 +71,7 @@ function rowToProjectDef(row: typeof projects.$inferSelect): ProjectDef {
     commands: (row.commands as ProjectCommand[]) || [],
     commandStatuses: (row.commandStatuses as Record<string, ProcessStatus>) || {},
     vpsInstances: migrateVpsInstances(row.vps),
-    vpsProvider: (row.vpsProvider as "digitalocean" | "tazcloud" | null) || "digitalocean",
+    vpsProvider: (row.vpsProvider as "digitalocean" | "tazcloud" | "hetzner" | null) || "digitalocean",
     vpsRegion: row.vpsRegion || undefined,
     vpsSize: row.vpsSize || undefined,
     vpsImage: row.vpsImage || undefined,
@@ -194,14 +194,15 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
  *  one of their own projects. Admins are handled by the caller (they bypass this). */
 export async function userCanAccessVm(
   userId: string | null,
-  match: { dropletId?: number; vmId?: string },
+  match: { dropletId?: number; vmId?: string; serverId?: number },
 ): Promise<boolean> {
   if (!userId) return false;
   const projects = await getAllForUser(userId);
   return projects.some((p) =>
     p.vpsInstances.some((v) =>
       (match.dropletId !== undefined && v.digitalocean?.dropletId === match.dropletId) ||
-      (match.vmId !== undefined && v.tazcloud?.vmId === match.vmId),
+      (match.vmId !== undefined && v.tazcloud?.vmId === match.vmId) ||
+      (match.serverId !== undefined && v.hetzner?.serverId === match.serverId),
     ),
   );
 }
@@ -392,7 +393,7 @@ export async function getById(id: string): Promise<ProjectDef | null> {
 export async function add(entry: {
   name: string;
   commands?: { name: string; command: string; mode?: "inline" | "terminal" }[];
-  vpsProvider?: "digitalocean" | "tazcloud";
+  vpsProvider?: "digitalocean" | "tazcloud" | "hetzner";
   vpsRegion?: string;
   vpsSize?: string;
   vpsImage?: string;
@@ -455,7 +456,7 @@ export async function update(
   fields: {
     name?: string;
     commands?: { id?: string; name: string; command: string; mode?: "inline" | "terminal" }[];
-    vpsProvider?: "digitalocean" | "tazcloud";
+    vpsProvider?: "digitalocean" | "tazcloud" | "hetzner";
     vpsRegion?: string;
     vpsSize?: string;
     vpsImage?: string;

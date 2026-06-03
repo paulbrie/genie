@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { cloudVmLocks } from "./db/schema.js";
 
-export type CloudProvider = "digitalocean" | "tazcloud";
+export type CloudProvider = "digitalocean" | "tazcloud" | "hetzner";
 
 /** Mark a VM as locked. Idempotent — calling twice does not duplicate rows. */
 export async function setLock(provider: CloudProvider, vmId: string, lockedBy: string | null): Promise<void> {

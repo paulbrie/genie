@@ -151,6 +151,10 @@ export async function getGlobalDoToken(): Promise<string> {
   return (await getGlobalSetting<string>("digitaloceanApiToken")) || "";
 }
 
+export async function getGlobalHetznerToken(): Promise<string> {
+  return (await getGlobalSetting<string>("hetznerApiToken")) || process.env.HETZNER_API_TOKEN || "";
+}
+
 export async function getGlobalGitlabDeployKey(): Promise<string> {
   return (await getGlobalSetting<string>("gitlabDeployKey")) || "";
 }
@@ -334,6 +338,14 @@ export async function resolveDoToken(projectId: string): Promise<string> {
   return getGlobalDoToken();
 }
 
+// Hetzner has no per-project token column (one cloud account is the norm), so this
+// resolves straight to the global setting, which itself falls back to
+// HETZNER_API_TOKEN. The `projectId` param keeps the resolver signature uniform
+// with resolveDoToken and gives a single seam to add a per-project override later.
+export async function resolveHetznerToken(_projectId: string): Promise<string> {
+  return getGlobalHetznerToken();
+}
+
 export async function resolveGitlabDeployKey(projectId: string): Promise<string> {
   const db = getDb();
   const [row] = await db.select({ gitlabDeployKey: projects.gitlabDeployKey }).from(projects).where(eq(projects.id, projectId)).limit(1);
@@ -380,6 +392,7 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
     return {
       ...base,
       digitaloceanApiToken: "",
+      hetznerApiToken: "",
       gitlabDeployKey: "",
       railwayToken: "",
       railwayProjectId: "",
@@ -391,6 +404,7 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
   }
 
   const globalDoToken = await getGlobalDoToken();
+  const globalHetznerToken = await getGlobalHetznerToken();
   const globalGitlabDeployKey = await getGlobalGitlabDeployKey();
   const railwayToken = await getGlobalRailwayToken();
   const railwayProjectId = await getGlobalRailwayProjectId();
@@ -398,6 +412,7 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
   return {
     ...base,
     digitaloceanApiToken: globalDoToken || "",
+    hetznerApiToken: globalHetznerToken || "",
     gitlabDeployKey: globalGitlabDeployKey || "",
     railwayToken: railwayToken || "",
     railwayProjectId: railwayProjectId || "",
@@ -415,7 +430,7 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
 // gates this in the UI, but the server enforces it too so a hand-rolled WS
 // message can't sneak admin-only writes.
 const GLOBAL_FIELDS = new Set([
-  "digitaloceanApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId",
+  "digitaloceanApiToken", "hetznerApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId",
   "namecheapApiUser", "namecheapApiKey", "namecheapUserName", "namecheapDomain",
 ]);
 

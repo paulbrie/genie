@@ -29,6 +29,7 @@ export interface FsResult {
 export interface AppSettings {
   defaultEditor: string;
   digitaloceanApiToken: string;
+  hetznerApiToken: string;
   gitlabDeployKey: string;
   railwayToken: string;
   railwayProjectId: string;
@@ -60,6 +61,7 @@ export const genie = {
     wsRequest<AppSettings>("settings:get").then(({ reqId, ...rest }: any) => ({
       defaultEditor: "",
       digitaloceanApiToken: "",
+      hetznerApiToken: "",
       gitlabDeployKey: "",
       railwayToken: "",
       railwayProjectId: "",

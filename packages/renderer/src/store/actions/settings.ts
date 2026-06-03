@@ -8,6 +8,7 @@ export async function loadSettings(): Promise<void> {
   $settings.next({
     defaultEditor: result.defaultEditor || "",
     digitaloceanApiToken: result.digitaloceanApiToken || "",
+    hetznerApiToken: result.hetznerApiToken || "",
     gitlabDeployKey: result.gitlabDeployKey || "",
     railwayToken: result.railwayToken || "",
     railwayProjectId: result.railwayProjectId || "",

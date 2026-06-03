@@ -17,7 +17,7 @@ import {
 import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $vpsStatsSync, $windowManager } from "@/store/subjects";
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
 import {
-  adminDropletExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
+  adminDropletExec, adminHetznerExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
   ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, loadRecipes,
   releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, killVmTmuxSession, loadPersistedTerminals,
   minimizeWindow, openWindow, reattachPersistedTerminal, refreshVmTmuxSessions, registerWindow, renameVmTmuxSession, syncVmStatsAgent, unwatchVpsStats,
@@ -61,7 +61,7 @@ export function openManageVmWindow(vm: { id: string; name: string }) {
   focusWindow(wid);
 }
 
-export type ManageVmProvider = "tazcloud" | "do" | "ssh";
+export type ManageVmProvider = "tazcloud" | "do" | "ssh" | "hetzner";
 
 /** Provider-agnostic shape consumed by ManageVmInline + the floating popup.
  *  `host` is whatever address SSH should target — IPv6 for legacy TazCloud
@@ -88,7 +88,9 @@ export interface ManageVm {
 
 /** Human-readable cloud provider name, shown in the Manage popup title bar. */
 function providerLabel(provider: ManageVmProvider): string {
-  return provider === "do" ? "DigitalOcean" : provider === "ssh" ? "SSH" : "TazCloud";
+  return provider === "do" ? "DigitalOcean"
+    : provider === "hetzner" ? "Hetzner"
+    : provider === "ssh" ? "SSH" : "TazCloud";
 }
 
 /** SSH key file used to log in to a VM. Cloud providers roll a separate key
@@ -101,7 +103,7 @@ function sshKeyPathFor(vm: ManageVm): string {
 /** Default SSH user candidates shown in the SSH split-button dropdown. */
 function sshUserChoicesFor(vm: ManageVm): string[] {
   if (vm.provider === "ssh") return [vm.connection?.username || "root"];
-  if (vm.provider === "do") return ["genie", "root"];
+  if (vm.provider === "do" || vm.provider === "hetzner") return ["genie", "root"];
   return ["genie", "ubuntu", "debian", "almalinux", "root"];
 }
 
@@ -116,6 +118,11 @@ function makeVmExec(vm: ManageVm, sshUser: string) {
   if (vm.provider === "tazcloud") {
     return (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
       adminTazcloudExec(vm.id, sshUser, command, vm.host, onChunk, signal);
+  }
+  if (vm.provider === "hetzner") {
+    // Like DO: exec runs as `genie` server-side; serverId is a number.
+    return (command: string, onChunk?: (chunk: string) => void, signal?: AbortSignal) =>
+      adminHetznerExec(Number(vm.id), command, onChunk, signal);
   }
   // DigitalOcean: exec runs as `genie` server-side; the username is fixed and
   // the dropletId is a number, so we ignore sshUser and stringify back to int.
@@ -146,7 +153,7 @@ function useGenieStandardCheck(opts: {
     : undefined;
   const [local, setLocal] = useState<{ checking: boolean; installed: boolean | null }>({
     checking: false,
-    installed: opts.vm.provider === "do" ? true : null,
+    installed: opts.vm.provider === "do" || opts.vm.provider === "hetzner" ? true : null,
   });
 
   useEffect(() => { loadRecipes(); }, []);
@@ -154,7 +161,7 @@ function useGenieStandardCheck(opts: {
   const checking = opts.linked ? (storeRecipe?.checking ?? false) : local.checking;
   const installed = opts.linked
     ? (storeRecipe?.installed ?? null)
-    : (opts.vm.provider === "do" ? true : local.installed);
+    : (opts.vm.provider === "do" || opts.vm.provider === "hetzner" ? true : local.installed);
 
   const runCheck = useCallback(() => {
     if (!opts.enabled || !recipe) return;
@@ -162,7 +169,7 @@ function useGenieStandardCheck(opts: {
       checkVpsRecipe(opts.linked.project.id, opts.linked.instance.id, recipe.id, recipe.checkScript);
       return;
     }
-    if (opts.vm.provider === "do") return;
+    if (opts.vm.provider === "do" || opts.vm.provider === "hetzner") return;
     setLocal({ checking: true, installed: null });
     void Promise.resolve(opts.exec(recipe.checkScript))
       .then((res) => {
@@ -698,7 +705,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   const [resolvedUser, setResolvedUser] = useState<string | null>(() => {
     if (vm.provider === "ssh") return vm.connection?.username || "root";
     if (!canUseAdminExec) return imageDefault;
-    if (vm.provider === "do") return "genie";
+    if (vm.provider === "do" || vm.provider === "hetzner") return "genie";
     if (isV2) return "genie";
     return null;
   });
@@ -706,7 +713,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   useEffect(() => {
     if (vm.provider === "ssh") { setResolvedUser(vm.connection?.username || "root"); return; }
     if (!canUseAdminExec) { setResolvedUser(imageDefault); return; }
-    if (vm.provider === "do") { setResolvedUser("genie"); return; }
+    if (vm.provider === "do" || vm.provider === "hetzner") { setResolvedUser("genie"); return; }
     if (isV2) { setResolvedUser("genie"); return; }
     let cancelled = false;
     const probe = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys; then echo "GENIE"; else echo "DEFAULT"; fi`;
@@ -738,7 +745,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         ? i.id === vm.instanceId
         : vm.provider === "tazcloud"
           ? i.tazcloud?.vmId === vm.id
-          : i.digitalocean?.dropletId === Number(vm.id),
+          : vm.provider === "hetzner"
+            ? i.hetzner?.serverId === Number(vm.id)
+            : i.digitalocean?.dropletId === Number(vm.id),
     );
     if (!instance) return null;
     return { project, instance };
@@ -773,6 +782,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     }
     if (vm.provider === "do") {
       return { provider: "do", dropletId: Number(vm.id), sshUser: user };
+    }
+    if (vm.provider === "hetzner") {
+      // No native hetzner tunnel branch on the manager — pre-warm via the linked
+      // project when attached; bare servers skip the pre-warm (admin exec opens
+      // its own SSH connection on demand).
+      return linked ? { projectId: linked.project.id, instanceId: linked.instance.id } : null;
     }
     if (vm.provider === "ssh" && linked) {
       return { projectId: linked.project.id, instanceId: linked.instance.id };
@@ -839,7 +854,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
   const claudeSshUser = useMemo(() => {
     if (vm.provider === "ssh") return vm.connection?.username || "root";
-    if (vm.provider === "do" || isV2) return "genie";
+    if (vm.provider === "do" || vm.provider === "hetzner" || isV2) return "genie";
     if (genieSetup.installed === true) return "genie";
     return user;
   }, [vm.provider, vm.connection?.username, isV2, genieSetup.installed, user]);

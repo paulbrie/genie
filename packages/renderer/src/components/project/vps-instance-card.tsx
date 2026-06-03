@@ -433,9 +433,9 @@ export function VpsInstanceCard({
           name={instance.label}
           status={isHibernated ? "hibernated" : isFailed ? "unreachable" : unreachable ? "unreachable" : checking ? "checking" : "active"}
           ip={instance.connection.host}
-          region={instance.digitalocean?.region}
-          sizeSlug={instance.digitalocean?.size ?? instance.tazcloud?.size}
-          provider={instance.tazcloud ? "tazcloud" : "digitalocean"}
+          region={instance.digitalocean?.region ?? instance.hetzner?.location}
+          sizeSlug={instance.digitalocean?.size ?? instance.tazcloud?.size ?? instance.hetzner?.serverType}
+          provider={instance.tazcloud ? "tazcloud" : instance.hetzner ? "hetzner" : "digitalocean"}
           stats={stats}
           statsLoading={isFailed ? false : checking}
           statsError={isFailed ? null : statsError}
@@ -452,7 +452,7 @@ export function VpsInstanceCard({
             {instance.deployError && <p className="text-overlay1 mt-0.5">{instance.deployError}</p>}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={() => deployToProvider(project.id, (project.vpsProvider || "digitalocean") as "digitalocean" | "tazcloud", instance.label, instance.id)} className="px-2 py-1 rounded text-md text-blue hover:bg-blue/10 transition-colors font-medium">Retry</button>
+            <button onClick={() => deployToProvider(project.id, (project.vpsProvider || "digitalocean") as "digitalocean" | "tazcloud" | "hetzner", instance.label, instance.id)} className="px-2 py-1 rounded text-md text-blue hover:bg-blue/10 transition-colors font-medium">Retry</button>
             <button onClick={() => teardownVps(project.id, instance.id)} className="flex items-center gap-1 px-2 py-1 rounded text-md text-red hover:bg-red/10 transition-colors"><Trash2 size={12} /> Destroy</button>
           </div>
         </div>
@@ -667,7 +667,7 @@ export function VpsInstanceCard({
             ) : (
               <div className="flex items-center gap-2">
                 <CloudOff size={12} className="text-red shrink-0" />
-                <span className="text-md text-red">{instance.digitalocean ? "Destroy droplet and remove deployment?" : "Remove from VPS?"}</span>
+                <span className="text-md text-red">{instance.digitalocean ? "Destroy droplet and remove deployment?" : instance.hetzner ? "Destroy server and remove deployment?" : "Remove from VPS?"}</span>
                 <Button size="sm" variant="danger" onClick={() => { teardownVps(project.id, instance.id); setConfirmTeardown(false); }}>Confirm</Button>
                 <Button size="sm" onClick={() => setConfirmTeardown(false)}>Cancel</Button>
               </div>

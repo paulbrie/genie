@@ -13,6 +13,8 @@ import { getDb } from "../db/index.js";
 import { deployLogs } from "../db/schema.js";
 import { createDoClient } from "../vps/do-api-client.js";
 import { doDestroyDroplet, ensureGenieKeyPair, sshKeyFingerprint, getGenieKeyPath, buildUfwRules } from "../vps/do-provision.js";
+import { hetznerDestroyServer } from "../vps/hetzner-provision.js";
+import { createHetznerClient, getServerPublicIp } from "../vps/hetzner-api-client.js";
 import { createTazClient, sshUserForImage } from "../vps/tazcloud-api-client.js";
 import { ensureBootstrapped } from "../vps/vps-bootstrap.js";
 import { storeServerCredential, deleteServerCredential, ensureServerKeyOnDisk } from "../vps/server-credential-service.js";
@@ -121,7 +123,7 @@ export async function handleVpsLifecycleMessage(
       // project without re-provisioning. Admin-only because the source lists
       // are admin-scoped.
       const { projectId, provider, vmId, label } = msg.payload as {
-        projectId: string; provider: "digitalocean" | "tazcloud"; vmId: string | number; label?: string;
+        projectId: string; provider: "digitalocean" | "tazcloud" | "hetzner"; vmId: string | number; label?: string;
       };
       try {
         const realCallerId = state.impersonatedBy ?? state.userId ?? null;
@@ -141,7 +143,8 @@ export async function handleVpsLifecycleMessage(
           for (const v of pp.vpsInstances) {
             const matchDo = provider === "digitalocean" && v.digitalocean?.dropletId === Number(vmId);
             const matchTaz = provider === "tazcloud" && v.tazcloud?.vmId === String(vmId);
-            if (matchDo || matchTaz) {
+            const matchHz = provider === "hetzner" && v.hetzner?.serverId === Number(vmId);
+            if (matchDo || matchTaz || matchHz) {
               send(ws, { type: "vps:attach-existing:error", payload: { message: `Already attached to project "${pp.name}"` } });
               return true;
             }
@@ -152,11 +155,40 @@ export async function handleVpsLifecycleMessage(
           send(ws, { type: "vps:attach-existing:progress", payload: { projectId, provider, vmId, message: m } });
 
         let initialConnection: VpsConnectionConfig;
-        let providerMeta: Pick<import("../types.js").VpsInstance, "digitalocean" | "tazcloud">;
+        let providerMeta: Pick<import("../types.js").VpsInstance, "digitalocean" | "tazcloud" | "hetzner">;
         let resolvedLabel: string;
         const newInstanceId = uuidv4();
 
-        if (provider === "digitalocean") {
+        if (provider === "hetzner") {
+          const hzToken = await settingsService.getGlobalHetznerToken();
+          if (!hzToken) throw new Error("Hetzner API token not configured");
+          const hzClient = createHetznerClient(hzToken);
+          const server = await hzClient.getServer(Number(vmId));
+          const publicV4 = getServerPublicIp(server);
+          if (!publicV4) throw new Error("Server has no public IPv4 yet");
+          const probed = await pickWorkingSshUser(
+            { host: publicV4, port: 22, privateKeyPath: "~/.genie/ssh/genie_ed25519" },
+            [VPS_SSH_USERNAME, "root"],
+          );
+          if (!probed) {
+            throw new Error(`Cannot SSH into server ${publicV4} as 'genie' or 'root' with the Genie key`);
+          }
+          initialConnection = {
+            host: publicV4,
+            port: 22,
+            username: probed,
+            privateKeyPath: "~/.genie/ssh/genie_ed25519",
+          };
+          providerMeta = {
+            hetzner: {
+              serverId: server.id,
+              ipAddress: publicV4,
+              location: server.datacenter?.location?.name || "",
+              serverType: server.server_type?.name || "",
+            },
+          };
+          resolvedLabel = (label || server.name).slice(0, 64);
+        } else if (provider === "digitalocean") {
           const doToken = await settingsService.getGlobalDoToken();
           if (!doToken) throw new Error("DigitalOcean API token not configured");
           const doClient = createDoClient(doToken);
@@ -249,6 +281,7 @@ export async function handleVpsLifecycleMessage(
         // Refresh the cloud panels so the "Project" column updates.
         broadcast({ type: "admin:droplets:list:stale", payload: {} });
         broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
+        broadcast({ type: "admin:hetzner:list:stale", payload: {} });
         send(ws, { type: "vps:attach-existing:ok", payload: { projectId, provider, vmId, instanceId: instance.id } });
       } catch (err: unknown) {
         send(ws, { type: "vps:attach-existing:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
@@ -386,6 +419,14 @@ export async function handleVpsLifecycleMessage(
           const doToken = await settingsService.getGlobalDoToken();
           if (doToken) {
             await doDestroyDroplet(doToken, vpsInst.digitalocean.dropletId, (step) => {
+              send(ws, { type: "vps:teardown:progress", payload: { projectId, instanceId, message: step } });
+            });
+          }
+        }
+        if (vpsInst.hetzner) {
+          const hzToken = await settingsService.getGlobalHetznerToken();
+          if (hzToken) {
+            await hetznerDestroyServer(hzToken, vpsInst.hetzner.serverId, (step) => {
               send(ws, { type: "vps:teardown:progress", payload: { projectId, instanceId, message: step } });
             });
           }
