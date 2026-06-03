@@ -33,7 +33,6 @@ export function CloudVmResourceBlock({
         "mt-3 py-2 px-3 bg-mantle rounded-lg border border-overlay0/20 min-w-0",
         className,
       )}
-      onClick={(e) => e.stopPropagation()}
     >
       <VpsResourceBar
         {...barProps}
