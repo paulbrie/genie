@@ -22,18 +22,3 @@ export function tunnelStatusDot(status: "connecting" | "connected" | "disconnect
   return "bg-red";
 }
 
-export function mcpTunnelServices(t: {
-  browser: boolean;
-  stream: boolean;
-  security: boolean;
-  notify: boolean;
-  storage: boolean;
-}): string {
-  return [
-    t.browser ? "browser" : null,
-    t.stream ? "stream" : null,
-    t.security ? "security" : null,
-    t.notify ? "notify" : null,
-    t.storage ? "storage" : null,
-  ].filter(Boolean).join(", ");
-}

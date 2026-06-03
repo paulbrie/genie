@@ -2,19 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { RefreshCw, RotateCcw, Terminal, X } from "lucide-react";
+import { RefreshCw, Terminal, X } from "lucide-react";
 import { $ssh } from "@/store/subjects/ssh";
 import {
-  ensureMcpForHost,
   killSshChannel,
   killSshSession,
   killSshSessionsForHost,
   loadSshSessions,
-  reconnectSshTunnelForHost,
 } from "@/store/actions/ssh";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/ui/view-header";
-import { formatBytes, formatSshAge, mcpTunnelServices, tunnelStatusDot } from "@/lib/ssh-format";
+import { formatBytes, formatSshAge, tunnelStatusDot } from "@/lib/ssh-format";
 import { cn } from "@/lib/utils";
 import type { SharedTunnelSnapshot } from "@/store/types/ssh";
 
@@ -44,7 +42,7 @@ export function SshPanel() {
   const [ssh] = useSubject($ssh);
   const [now, setNow] = useState(() => Date.now());
   const [filter, setFilter] = useState("");
-  const [view, setView] = useState<"tunnels" | "registry" | "mcp" | "disconnects">("tunnels");
+  const [view, setView] = useState<"tunnels" | "registry" | "disconnects">("tunnels");
   const [kindFilter, setKindFilter] = useState<"all" | "client" | "pty">("all");
 
   useEffect(() => {
@@ -87,14 +85,6 @@ export function SshPanel() {
     });
   }, [ssh.sessions, filter, kindFilter]);
 
-  const mcpRows = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return ssh.tunnels.filter((t) => {
-      if (!q) return true;
-      return t.host.toLowerCase().includes(q) || t.projectName.toLowerCase().includes(q);
-    });
-  }, [ssh.tunnels, filter]);
-
   const eventRows = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const events = ssh.events ?? [];
@@ -128,8 +118,6 @@ export function SshPanel() {
       .slice(0, 8);
   }, [ssh.sharedTunnels]);
 
-  const deadMcp = ssh.tunnels.filter((t) => t.alive === false).length;
-
   return (
     <div className="flex-1 flex flex-col h-full">
       <div className="px-6 py-3">
@@ -140,9 +128,6 @@ export function SshPanel() {
               {ssh.sharedTunnels.length} tunnel{ssh.sharedTunnels.length === 1 ? "" : "s"}
               {" · "}
               {totalChannels} channel{totalChannels === 1 ? "" : "s"}
-              {" · "}
-              {ssh.tunnels.length} MCP
-              {deadMcp > 0 ? ` (${deadMcp} dead)` : ""}
             </span>
           }
           actions={
@@ -158,7 +143,6 @@ export function SshPanel() {
           {([
             ["tunnels", `tunnels (${ssh.sharedTunnels.length} · ${totalChannels} ch)`],
             ["registry", `registry (${ssh.sessions.length})`],
-            ["mcp", `MCP (${ssh.tunnels.length})`],
             ["disconnects", `disconnects (${(ssh.events ?? []).length})`],
           ] as const).map(([id, label]) => (
             <button
@@ -380,61 +364,6 @@ export function SshPanel() {
                 <tr>
                   <td colSpan={7} className="py-8 text-center text-subtext0">
                     {ssh.sessions.length === 0 ? "No registry entries." : "No matches."}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        ) : view === "mcp" ? (
-          <table className="w-full text-md font-mono">
-            <thead className="text-subtext0 text-left sticky top-0 bg-base">
-              <tr className="border-b border-surface0">
-                <th className="py-2 pr-3 font-normal">Host</th>
-                <th className="py-2 pr-3 font-normal">Project</th>
-                <th className="py-2 pr-3 font-normal">Age</th>
-                <th className="py-2 pr-3 font-normal">Services</th>
-                <th className="py-2 pr-3 font-normal w-24" />
-              </tr>
-            </thead>
-            <tbody>
-              {mcpRows.map((t) => (
-                <tr
-                  key={`${t.host}:${t.openedAt}`}
-                  className={cn(
-                    "border-b border-surface0/50 hover:bg-surface0/30",
-                    t.alive === false && "opacity-60",
-                  )}
-                >
-                  <td className="py-1.5 pr-3 text-text">
-                    {t.host}
-                    {t.alive === false && <span className="ml-2 text-red text-xs">dead</span>}
-                  </td>
-                  <td className="py-1.5 pr-3 text-subtext1">{t.projectName}</td>
-                  <td className="py-1.5 pr-3 text-subtext1 tabular-nums">{formatSshAge(t.openedAt, now)}</td>
-                  <td className="py-1.5 pr-3 text-subtext0">{mcpTunnelServices(t) || "—"}</td>
-                  <td className="py-1.5 pr-3">
-                    <button
-                      className="mr-1 px-2 py-1 rounded text-md bg-blue/10 hover:bg-blue/20 text-blue disabled:opacity-50"
-                      disabled={!!ssh.reconnectingHosts[t.host]}
-                      onClick={() => ensureMcpForHost(t.host)}
-                      title="Re-establish MCP reverse tunnels for this host"
-                    >
-                      {ssh.reconnectingHosts[t.host] ? "…" : <RotateCcw size={12} />}
-                    </button>
-                    <button
-                      className="px-2 py-1 rounded text-md bg-red/10 hover:bg-red/20 text-red"
-                      onClick={() => killSshSessionsForHost(t.host)}
-                      title="Kill MCP tunnel pool entry for this host"
-                    >
-                      <X size={12} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {mcpRows.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="py-8 text-center text-subtext0">
-                    {ssh.tunnels.length === 0 ? "No MCP reverse tunnels." : "No matches."}
                   </td>
                 </tr>
               )}

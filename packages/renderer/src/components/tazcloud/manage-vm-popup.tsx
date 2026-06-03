@@ -663,7 +663,7 @@ interface ManageVmInlineProps {
   vm: ManageVm;
 }
 
-type ManageTab = "manage" | "ssh" | "tunnels" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
+type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -810,7 +810,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     };
   }, [tunnelPayloadKey, tunnelPayload]);
 
-  const { sharedTunnels, tunnels, canViewRegistry } = useVmHostSshRegistry(vm.host);
+  const { sharedTunnels, canViewRegistry } = useVmHostSshRegistry(vm.host);
   const sshTunnelCount = sharedTunnels.length;
   const sshChannelCount = sharedTunnels.reduce((n, t) => n + t.channelCount, 0);
 
@@ -852,12 +852,6 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
         ? (sshTunnelCount > 0 ? `SSH (${sshTunnelCount} tun · ${sshChannelCount} ch)` : "SSH")
         : "SSH",
       icon: Link2,
-      enabled: true,
-    },
-    {
-      key: "tunnels",
-      label: canViewRegistry ? `MCP (${tunnels.length})` : "MCP",
-      icon: Plug,
       enabled: true,
     },
     { key: "firewall", label: "Firewall", icon: Shield, enabled: true },
@@ -1018,10 +1012,6 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
       {tab === "ssh" && (
         <VmHostConnectionsPanel {...connectionPanelProps} view="ssh" />
-      )}
-
-      {tab === "tunnels" && (
-        <VmHostConnectionsPanel {...connectionPanelProps} view="tunnels" />
       )}
 
       {tab === "commands" && linked && (

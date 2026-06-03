@@ -26,29 +26,7 @@ export function killSshSessionsForHost(host: string): void {
   wsSend("ssh:kill", { host });
 }
 
-export function reconnectSshTunnelForHost(host: string): void {
-  const s = $ssh.getValue();
-  $ssh.next({
-    ...s,
-    reconnectingHosts: { ...s.reconnectingHosts, [host]: true },
-  });
-  wsSend("ssh:tunnel:reconnect", { host });
-}
-
 /** Close one PTY channel (terminal popup) by terminalId. */
 export function killSshChannel(terminalId: string): void {
   wsSend("terminal:close", { terminalId });
-}
-
-/** Member-facing "Reconnect MCP servers" — project/ownership-scoped on the
- *  server (`vps:mcp:ensure`), so any project member (not just admins) can
- *  re-establish the shared MCP tunnels + rewrite the VM's .mcp.json. Reuses the
- *  `reconnectingHosts` in-flight flag so the button can show a spinner. */
-export function ensureMcpForHost(host: string): void {
-  const s = $ssh.getValue();
-  $ssh.next({
-    ...s,
-    reconnectingHosts: { ...s.reconnectingHosts, [host]: true },
-  });
-  wsSend("vps:mcp:ensure", { host });
 }

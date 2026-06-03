@@ -2,18 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Loader2, Plug, RefreshCw, RotateCcw, Terminal, X } from "lucide-react";
+import { RefreshCw, Terminal, X } from "lucide-react";
 import { $auth, $ssh } from "@/store/subjects";
 import {
-  ensureMcpForHost,
   killSshSession,
   killSshSessionsForHost,
   loadSshSessions,
-  reconnectSshTunnelForHost,
 } from "@/store/actions/ssh";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
-import { formatSshAge, formatBytes, mcpTunnelServices, tunnelStatusDot } from "@/lib/ssh-format";
+import { formatSshAge, formatBytes, tunnelStatusDot } from "@/lib/ssh-format";
 import { cn } from "@/lib/utils";
 import type { ManageVmProvider } from "./manage-vm-popup";
 
@@ -28,7 +26,7 @@ export interface VmHostConnectionsPanelProps {
   ingress?: { domain: string; url?: string } | null;
   connection?: { username: string; privateKeyPath: string };
   /** Which slice of the panel to render. Defaults to all sections stacked. */
-  view?: "all" | "connection" | "ssh" | "tunnels";
+  view?: "all" | "connection" | "ssh";
 }
 
 function sshKeyPathFor(props: VmHostConnectionsPanelProps): string {
@@ -69,11 +67,6 @@ export function useVmHostSshRegistry(host: string) {
     () => ssh.sessions.filter((s) => s.host === host),
     [ssh.sessions, host],
   );
-  const tunnels = useMemo(
-    () => ssh.tunnels.filter((t) => t.host === host),
-    [ssh.tunnels, host],
-  );
-
   const sharedTunnels = useMemo(
     () => ssh.sharedTunnels.filter((t) => t.host === host),
     [ssh.sharedTunnels, host],
@@ -83,7 +76,7 @@ export function useVmHostSshRegistry(host: string) {
     [ssh.events, host],
   );
 
-  return { ssh, sessions, tunnels, sharedTunnels, hostEvents, now, canViewRegistry, reconnecting };
+  return { ssh, sessions, sharedTunnels, hostEvents, now, canViewRegistry, reconnecting };
 }
 
 function ConnectionDetailsCard(props: VmHostConnectionsPanelProps) {
@@ -135,31 +128,16 @@ function ConnectionDetailsCard(props: VmHostConnectionsPanelProps) {
 function RegistryToolbar({
   host,
   sessionCount,
-  showReconnect,
   showKillAll,
   ssh,
 }: {
   host: string;
   sessionCount: number;
-  showReconnect: boolean;
   showKillAll: boolean;
   ssh: ReturnType<typeof useVmHostSshRegistry>["ssh"];
 }) {
-  const reconnecting = !!ssh.reconnectingHosts[host];
   return (
     <div className="flex items-center justify-end gap-2 flex-wrap">
-      {showReconnect && (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => reconnectSshTunnelForHost(host)}
-          disabled={reconnecting}
-          title="Reconnect shared MCP tunnel for this host"
-        >
-          {reconnecting ? <Loader2 size={13} className="animate-spin mr-1" /> : <RotateCcw size={13} className="mr-1" />}
-          Reconnect tunnel
-        </Button>
-      )}
       {showKillAll && sessionCount > 0 && (
         <Button
           size="sm"
@@ -191,13 +169,12 @@ export function VmHostConnectionsPanel({
   view = "all",
 }: VmHostConnectionsPanelProps) {
   const props = { host, provider, sshUser, projectName, isPrivateHost, ingress, connection };
-  const { ssh, sessions, tunnels, sharedTunnels, hostEvents, now, canViewRegistry, reconnecting } = useVmHostSshRegistry(host);
+  const { ssh, sessions, sharedTunnels, hostEvents, now, canViewRegistry } = useVmHostSshRegistry(host);
 
   const totalChannels = sharedTunnels.reduce((n, t) => n + t.channelCount, 0);
 
   const showConnection = view === "all" || view === "connection" || view === "ssh";
   const showSsh = view === "all" || view === "ssh";
-  const showTunnels = view === "all" || view === "tunnels";
 
   return (
     <div className="flex flex-col gap-4">
@@ -207,12 +184,11 @@ export function VmHostConnectionsPanel({
 
       {canViewRegistry ? (
         <>
-          {(showSsh || showTunnels) && (
+          {showSsh && (
             <RegistryToolbar
               host={host}
               sessionCount={sharedTunnels.length + totalChannels}
-              showReconnect={showTunnels}
-              showKillAll={showSsh || showTunnels}
+              showKillAll={showSsh}
               ssh={ssh}
             />
           )}
@@ -342,63 +318,10 @@ export function VmHostConnectionsPanel({
               )}
             </section>
           )}
-
-          {showTunnels && (
-            <section>
-              {view === "all" && (
-                <h3 className="text-xs font-medium text-subtext0 uppercase tracking-wide mb-2">MCP tunnels</h3>
-              )}
-              {tunnels.length === 0 ? (
-                <div className="text-overlay0 text-md py-4 text-center border border-surface0 rounded">
-                  No shared MCP tunnels for this host. Tunnels are created when MCP browser/stream tools run against this VM.
-                </div>
-              ) : (
-                <div className="overflow-x-auto rounded border border-surface0">
-                  <table className="w-full text-md font-mono">
-                    <thead className="text-subtext0 text-left bg-surface0/40">
-                      <tr className="border-b border-surface0">
-                        <th className="py-1.5 px-2 font-normal">Project</th>
-                        <th className="py-1.5 px-2 font-normal">Age</th>
-                        <th className="py-1.5 px-2 font-normal">Services</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tunnels.map((t) => (
-                        <tr key={`${t.host}:${t.openedAt}`} className={cn("border-b border-surface0/50 hover:bg-surface0/30", t.alive === false && "opacity-60")}>
-                          <td className="py-1.5 px-2 text-subtext1">
-                            {t.projectName}
-                            {t.alive === false && (
-                              <span className="ml-2 text-[10px] uppercase text-red">dead</span>
-                            )}
-                          </td>
-                          <td className="py-1.5 px-2 text-subtext1 tabular-nums">{formatSshAge(t.openedAt, now)}</td>
-                          <td className="py-1.5 px-2 text-subtext0">{mcpTunnelServices(t) || "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-          )}
         </>
       ) : (
         <>
-          {showTunnels && (
-            <section className="rounded-lg border border-surface0 bg-surface0/20 px-3 py-3">
-              <div className="text-xs font-medium text-subtext0 uppercase tracking-wide mb-1">MCP servers</div>
-              <p className="text-md text-overlay1 mb-3">
-                Genie tools (browser, tracker, security, notify, storage) reach this VM over secure tunnels. If a
-                Claude session shows them as <span className="text-red">failed</span>, reconnect them here, then reopen
-                the Claude session.
-              </p>
-              <Button size="sm" onClick={() => ensureMcpForHost(host)} disabled={reconnecting}>
-                {reconnecting ? <Loader2 size={13} className="animate-spin mr-1.5" /> : <Plug size={13} className="mr-1.5" />}
-                {reconnecting ? "Reconnecting…" : "Reconnect MCP servers"}
-              </Button>
-            </section>
-          )}
-          {showSsh && !showTunnels && (
+          {showSsh && (
             <p className="text-xs text-overlay0 italic">
               Live SSH registry is available to admin users on the SSH panel.
             </p>
