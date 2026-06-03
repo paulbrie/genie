@@ -2,12 +2,12 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useSubject } from "subjecto/react";
-import { Send, Bot, SmilePlus, Reply, Pencil, X, Copy, Terminal, Square, MoreHorizontal } from "lucide-react";
+import { Send, Bot, SmilePlus, Reply, Pencil, X, Copy, Square, MoreHorizontal } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { AuthUser, ConversationMember, ConversationMessage, TerminalShareInvite, ToolUse } from "@/store/types";
+import type { AuthUser, ConversationMember, ConversationMessage, ToolUse } from "@/store/types";
 import { $auth, $conversationChat } from "@/store/subjects";
-import { acceptTerminalShare, cancelEditingMessage, loadOlderMessages, sendConversationMessage, sendEditedMessage, setReplyingTo, startEditingMessage, stopConversationChat, toggleReaction } from "@/store/actions";
+import { cancelEditingMessage, loadOlderMessages, sendConversationMessage, sendEditedMessage, setReplyingTo, startEditingMessage, stopConversationChat, toggleReaction } from "@/store/actions";
 import { cn } from "@/lib/utils";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
@@ -387,19 +387,6 @@ function MessageRow({
   const editInputRef = useRef<HTMLInputElement>(null);
   const isEditing = editingMessageId === message.id;
 
-  // Check for terminal-share metadata
-  let isTerminalShare = false;
-  let terminalShareSessionId = "";
-  if (message.metadata) {
-    try {
-      const parsed = JSON.parse(message.metadata);
-      if (parsed.type === "terminal-share") {
-        isTerminalShare = true;
-        terminalShareSessionId = parsed.sessionId;
-      }
-    } catch {}
-  }
-
   useEffect(() => {
     if (isEditing) setEditText(message.content);
   }, [isEditing, message.content]);
@@ -492,27 +479,7 @@ function MessageRow({
           </button>
         )}
 
-        {/* Terminal share card */}
-        {isTerminalShare ? (
-          <div className="px-3 py-2 rounded-lg bg-surface0 border border-surface1 flex items-center gap-2">
-            <Terminal size={14} className="text-green shrink-0" />
-            <span className="text-md text-text flex-1">{message.content}</span>
-            <button
-              onClick={() => {
-                const invite: TerminalShareInvite = {
-                  sessionId: terminalShareSessionId,
-                  ownerId: message.senderId,
-                  ownerName: message.senderName,
-                  conversationId,
-                };
-                acceptTerminalShare(invite);
-              }}
-              className="px-2 py-0.5 text-md bg-green/20 text-green rounded border-none cursor-pointer hover:bg-green/30 transition-colors"
-            >
-              Join Terminal
-            </button>
-          </div>
-        ) : isEditing ? (
+        {isEditing ? (
           /* Inline edit mode */
           <div className="min-w-[200px]">
             <input

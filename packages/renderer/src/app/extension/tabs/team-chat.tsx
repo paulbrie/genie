@@ -1,16 +1,13 @@
 "use client";
 
-// Extension-side team chat tab + the share-terminal popup that gets mounted
-// in the terminal toolbar. Both depend on the chat store ($conversationChat)
-// and the share-terminal action — colocating them keeps the chat-related
-// surface in one place.
+// Extension-side team chat tab, backed by the chat store ($conversationChat).
 
 import { useEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { ArrowLeft, Bot, Loader2, Send, Share2, Users } from "lucide-react";
-import type { ConversationMessage as ConvMessage, ConversationSummary, TerminalShareInvite } from "@/store/types";
+import { ArrowLeft, Bot, Loader2, Send, Users } from "lucide-react";
+import type { ConversationMessage as ConvMessage, ConversationSummary } from "@/store/types";
 import { $auth, $conversationChat } from "@/store/subjects";
-import { createGenieDm, loadChatUsers, loadConversations, selectConversation, sendConversationMessage, shareTerminal } from "@/store/actions";
+import { createGenieDm, loadChatUsers, loadConversations, selectConversation, sendConversationMessage } from "@/store/actions";
 
 export function ExtTeamChat() {
   const [cc] = useSubject($conversationChat);
@@ -234,83 +231,3 @@ function ExtMessageRow({ msg, isOwn }: { msg: ConvMessage; isOwn: boolean }) {
   );
 }
 
-// --- Share Terminal Popup ---
-
-export function ShareTerminalPopup({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
-  const [cc] = useSubject($conversationChat);
-  const [auth] = useSubject($auth);
-  const { users } = cc;
-  const [status, setStatus] = useState<"idle" | "sent" | "error">("idle");
-  const [errorMsg, setErrorMsg] = useState("");
-
-  const onlineUsers = users.filter((u) => u.online && !u.isAgent && u.id !== auth.user?.id);
-
-  useEffect(() => {
-    function handleSent() { setStatus("sent"); setTimeout(onClose, 1200); }
-    function handleError(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      setStatus("error");
-      setErrorMsg(detail?.message || "Failed to share");
-    }
-    window.addEventListener("genie:terminal:share:sent", handleSent);
-    window.addEventListener("genie:terminal:share:error", handleError);
-    return () => {
-      window.removeEventListener("genie:terminal:share:sent", handleSent);
-      window.removeEventListener("genie:terminal:share:error", handleError);
-    };
-  }, [onClose]);
-
-  return (
-    <div className="absolute top-full right-0 mt-1 w-48 bg-mantle border border-surface0 rounded-lg shadow-lg z-50 overflow-hidden">
-      <div className="px-3 py-2 border-b border-surface0">
-        <span className="text-text font-medium" style={{ fontSize: 12 }}>Share terminal with</span>
-      </div>
-      {status === "sent" && (
-        <div className="px-3 py-3 text-green text-center" style={{ fontSize: 12 }}>Invite sent!</div>
-      )}
-      {status === "error" && (
-        <div className="px-3 py-2 text-red text-center" style={{ fontSize: 12 }}>{errorMsg}</div>
-      )}
-      {status === "idle" && (
-        <div className="max-h-[200px] overflow-y-auto">
-          {onlineUsers.length === 0 && (
-            <div className="px-3 py-3 text-overlay0 text-center" style={{ fontSize: 12 }}>No users online</div>
-          )}
-          {onlineUsers.map((user) => (
-            <button
-              key={user.id}
-              onClick={() => { shareTerminal(sessionId, user.id); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-surface0/50 transition-colors text-left"
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-green shrink-0" />
-              <span className="text-text truncate" style={{ fontSize: 12 }}>{user.name}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// --- Terminal Share Invite Banner ---
-
-export function ShareInviteBanner({ invite, onAccept, onDecline }: { invite: TerminalShareInvite; onAccept: () => void; onDecline: () => void }) {
-  return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-blue/10 border-b border-blue/20 shrink-0">
-      <Share2 size={13} className="text-blue shrink-0" />
-      <span className="flex-1 text-text truncate" style={{ fontSize: 12 }}>
-        <span className="font-medium">{invite.ownerName}</span> shared a terminal
-      </span>
-      <button
-        onClick={onAccept}
-        className="px-2 py-0.5 rounded bg-blue/20 text-blue hover:bg-blue/30 transition-colors font-medium"
-        style={{ fontSize: 11 }}
-      >Join</button>
-      <button
-        onClick={onDecline}
-        className="px-2 py-0.5 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"
-        style={{ fontSize: 11 }}
-      >Dismiss</button>
-    </div>
-  );
-}

@@ -7,10 +7,10 @@ import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { AuthState, ChatMessage, ChatSessionSummary, ChatUser, ConversationMessage as ConvMessage, ConversationSummary, ProjectDef, StreamingStep, TerminalShareInvite, ToolUse, VpsDeployState } from "@/store/types";
-import { $auth, $chat, $commandRunOutputs, $conversationChat, $projects, $terminal, $vpsDeploy } from "@/store/subjects";
+import type { AuthState, ChatMessage, ChatSessionSummary, ChatUser, ConversationMessage as ConvMessage, ConversationSummary, ProjectDef, StreamingStep, ToolUse, VpsDeployState } from "@/store/types";
+import { $auth, $chat, $commandRunOutputs, $conversationChat, $projects, $vpsDeploy } from "@/store/subjects";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, acceptTerminalShare, createGenieDm, createRoom, createTrackerIssue, declineTerminalShare, deleteChatSession, fetchVpsStats, leaveSharedTerminal, loadChatSession, loadChatSessions, loadChatUsers, loadConversations, newChat, renameChatSession, runProjectCommand, selectConversation, sendConversationMessage, setChatModel, setTrackerProject, shareTerminal, stopProjectCommand, unwatchVpsStats, watchVpsStats } from "@/store/actions";
+import { CHAT_MODELS, createGenieDm, createRoom, createTrackerIssue, deleteChatSession, fetchVpsStats, loadChatSession, loadChatSessions, loadChatUsers, loadConversations, newChat, renameChatSession, runProjectCommand, selectConversation, sendConversationMessage, setChatModel, setTrackerProject, stopProjectCommand, unwatchVpsStats, watchVpsStats } from "@/store/actions";
 import dynamic from "next/dynamic";
 import type { BeforeMount } from "@monaco-editor/react";
 import { connectWs, setManagerRunning, wsSend, wsRequest, triggerGoogleLogin, logout, getWsUrl, isWsConnected } from "@/lib/ws";
@@ -22,7 +22,7 @@ import { FileExplorer } from "./tabs/files";
 import { DockerLogs } from "./tabs/docker";
 import { ExtCommandsTab } from "./tabs/commands";
 import { ExtTrackerTab } from "./tabs/tracker";
-import { ExtTeamChat, ShareTerminalPopup, ShareInviteBanner } from "./tabs/team-chat";
+import { ExtTeamChat } from "./tabs/team-chat";
 import { FloatingTerminalWindow, TerminalListPanel, type TerminalTabDef, TERM_WIN_W, TERM_WIN_H, TERM_CASCADE } from "./tabs/terminal";
 import { claudeSessionId } from "@/lib/claude-session-id";
 
@@ -104,7 +104,7 @@ import { UsageLine } from "@/components/ui/usage-line";
 import { LoginScreen } from "@/components/ui/login-screen";
 import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
 import { TrackerPanel } from "@/components/project/tracker-panel";
-import { createTerminal, disposeTerminal, writeToTerminal, refitTerminal, focusTerminal } from "@/lib/terminal-bridge";
+import { createTerminal, disposeTerminal, refitTerminal, focusTerminal } from "@/lib/terminal-bridge";
 
 // --- postMessage protocol types ---
 
@@ -426,7 +426,6 @@ export default function ExtensionPage() {
   const authStatus = auth.status;
   const [chat] = useSubject($chat);
   const [convChat] = useSubject($conversationChat);
-  const [termState] = useSubject($terminal);
   const [storeProjects] = useSubject($projects);
   const chatMessages = chat.messages;
   const streamingContent = chat.streamingContent;
@@ -479,13 +478,7 @@ export default function ExtensionPage() {
   }, [termTabs]);
 
   const closeTermTab = useCallback((tabId: string) => {
-    setTermTabs((prev) => {
-      const tab = prev.find((t) => t.id === tabId);
-      if (tab?.shared) {
-        setTimeout(() => wsSend("terminal:share:leave", { sessionId: tab.sessionId }), 0);
-      }
-      return prev.filter((t) => t.id !== tabId);
-    });
+    setTermTabs((prev) => prev.filter((t) => t.id !== tabId));
   }, []);
 
   const minimizeTermTab = useCallback((tabId: string) => {
@@ -583,35 +576,9 @@ export default function ExtensionPage() {
         }
       }
     }
-    function handleShareViewers(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.sessionId) {
-        setTermTabs((prev) => prev.map((t) =>
-          t.sessionId === detail.sessionId ? { ...t, viewerIds: detail.viewerIds } : t
-        ));
-      }
-    }
-    function handleKicked(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.sessionId) {
-        setTermTabs((prev) => prev.filter((t) => t.sessionId !== detail.sessionId));
-      }
-    }
-    function handleScrollback(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.sessionId && detail?.scrollback) {
-        writeToTerminal(detail.sessionId, detail.scrollback);
-      }
-    }
     window.addEventListener("genie:command:terminal", handleCmdTerminal);
-    window.addEventListener("genie:terminal:share:viewers", handleShareViewers);
-    window.addEventListener("genie:terminal:share:kicked", handleKicked);
-    window.addEventListener("genie:terminal:scrollback", handleScrollback);
     return () => {
       window.removeEventListener("genie:command:terminal", handleCmdTerminal);
-      window.removeEventListener("genie:terminal:share:viewers", handleShareViewers);
-      window.removeEventListener("genie:terminal:share:kicked", handleKicked);
-      window.removeEventListener("genie:terminal:scrollback", handleScrollback);
     };
   }, [openClaudeTerminal, openCommandTerminal]);
 
@@ -856,10 +823,10 @@ export default function ExtensionPage() {
     return `genie:terminal-tabs:${uid}:${project.id}`;
   }, [auth.user?.id, project?.id]);
 
-  // Hydrate tabs from localStorage when the storage key resolves. Strip
-  // transient fields (focused, viewerIds) and treat windowStatus="open" as
-  // "user expected this open" — silent reattach via the same id triggers a
-  // dtach -A which lands on the live socket if any.
+  // Hydrate tabs from localStorage when the storage key resolves. Strip the
+  // transient `focused` flag and treat windowStatus="open" as "user expected
+  // this open" — silent reattach via the same id triggers a dtach -A which
+  // lands on the live socket if any.
   useEffect(() => {
     if (!termStorageKey) return;
     if (termHydrationKeyRef.current === termStorageKey) return;
@@ -873,14 +840,12 @@ export default function ExtensionPage() {
       const parsed = JSON.parse(raw) as TerminalTabDef[];
       if (!Array.isArray(parsed)) return;
       const hydrated = parsed
-        .filter((t) => t && typeof t.id === "string" && !t.shared && !t.injectCommand)
+        .filter((t) => t && typeof t.id === "string" && !t.injectCommand)
         .map((t) => ({
           ...t,
           // Reopen as un-focused, un-minimized so the user sees them.
           focused: false,
           windowStatus: (t.windowStatus === "minimized" ? "minimized" : "open") as "open" | "minimized",
-          // viewerIds will be refreshed by the next terminal:sessions:list.
-          viewerIds: undefined,
           exited: false,
         }));
       setTermTabs(hydrated);
@@ -900,7 +865,7 @@ export default function ExtensionPage() {
     if (termHydrationKeyRef.current !== termStorageKey) return;
     try {
       const persisted = termTabs
-        .filter((t) => !t.shared && !t.injectCommand)
+        .filter((t) => !t.injectCommand)
         .map((t) => ({
           id: t.id,
           sessionId: t.sessionId,
@@ -950,7 +915,6 @@ export default function ExtensionPage() {
 
   const hasVps = project && project.vpsInstances.length > 0;
   const totalUnread = Object.values(convChat.unreadCounts).reduce((a, b) => a + b, 0);
-  const shareInvites = termState.shareInvites;
 
   const TABS: { id: ExtTab | "claude"; icon: React.ReactNode; label: string; requiresVps?: boolean; badge?: number; action?: boolean }[] = [
     { id: "chat", icon: <MessageSquare size={14} />, label: "Chat" },
@@ -1037,27 +1001,6 @@ export default function ExtensionPage() {
           );
         })}
       </div>
-
-      {/* Terminal share invites */}
-      {shareInvites.map((invite) => (
-        <ShareInviteBanner
-          key={invite.sessionId}
-          invite={invite}
-          onAccept={() => {
-            // Accept and open shared terminal tab as floating window
-            const z = ++termZIndexRef.current;
-            const tab: TerminalTabDef = {
-              id: invite.sessionId, sessionId: invite.sessionId,
-              label: `${invite.ownerName}'s Term`, exited: false,
-              shared: true, ownerId: invite.ownerId, ownerName: invite.ownerName,
-              windowStatus: "open", windowZIndex: z, focused: true,
-            };
-            setTermTabs((prev) => [...prev.map((t) => ({ ...t, focused: false })), tab]);
-            acceptTerminalShare(invite);
-          }}
-          onDecline={() => declineTerminalShare(invite.sessionId)}
-        />
-      ))}
 
       {/* Tab content */}
       {activeTab === "chat" && (
@@ -1438,7 +1381,7 @@ export default function ExtensionPage() {
               onClick={() => restoreTermTab(tab.id)}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface0 hover:bg-surface1 text-md text-subtext0 transition-colors"
             >
-              <Terminal size={13} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : "text-green"} />
+              <Terminal size={13} className={tab.exited ? "text-red" : "text-green"} />
               {tab.label}
             </button>
           ))}

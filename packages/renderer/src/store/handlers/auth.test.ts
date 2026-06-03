@@ -12,6 +12,17 @@ vi.mock("@/lib/ws", () => ({
   wsSend: vi.fn(),
 }));
 
+vi.mock("../actions/window-manager", () => ({
+  broadcastWindows: vi.fn(),
+}));
+
+vi.mock("../actions/vm-connection", () => ({
+  reconnectOpenVmConnections: vi.fn(),
+}));
+
+import { reconnectOpenVmConnections } from "../actions/vm-connection";
+import { broadcastWindows } from "../actions/window-manager";
+
 import { handlers } from "./auth";
 import { $auth } from "../subjects/auth";
 import { disconnectWs, getStoredToken, sendAuthToken, setStoredToken } from "@/lib/ws";
@@ -58,6 +69,8 @@ describe("auth:success", () => {
     expect(v.token).toBe("jwt-abc");
     expect(v.impersonatedBy).toBeNull();
     expect(setStoredToken).toHaveBeenCalledWith("jwt-abc");
+    expect(broadcastWindows).toHaveBeenCalled();
+    expect(reconnectOpenVmConnections).toHaveBeenCalled();
   });
 
   it("propagates impersonatedBy when present", () => {

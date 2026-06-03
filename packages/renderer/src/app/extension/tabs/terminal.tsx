@@ -3,24 +3,16 @@
 // Extension-side terminal subsystem:
 //   TerminalTabDef          — shape of an open terminal window
 //   SingleTerminal          — xterm.js mount wired to the manager's vps:terminal:* WS messages
-//   OwnerAvatar / ViewerAvatars — share-related avatars shown in the title bar
 //   FloatingTerminalWindow  — draggable/resizable window wrapping SingleTerminal
 //   TerminalListPanel       — the Terminal tab body (list + "New" button + restore/close controls)
-//
-// The TerminalShareInvite *banner* and the ShareTerminalPopup live in
-// ./team-chat.tsx — both depend on the chat store and we import the popup
-// here for the title-bar share button.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useSubject } from "subjecto/react";
-import { Maximize2, Minimize2, Minus, Plus, RotateCcw, Share2, Terminal, X } from "lucide-react";
+import { Maximize2, Minimize2, Minus, Plus, RotateCcw, Terminal, X } from "lucide-react";
 import { GENIE_PROJECT_DIR } from "@/lib/terminal-spawn";
 import { wsSend } from "@/lib/ws";
-import { $auth, $conversationChat } from "@/store/subjects";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { createTerminal, disposeTerminal, refitTerminal, writeToTerminal } from "@/lib/terminal-bridge";
-import { ShareTerminalPopup } from "./team-chat";
 
 // Minimal projection of the manager's project shape — duplicated rather than
 // imported from `../page` to keep the tab modules independent of the page.
@@ -46,11 +38,6 @@ export interface TerminalTabDef {
   claudeLaunch?: { resume?: boolean };
   /** Non-Claude command to inject after shell prompt (recipe terminals). */
   injectCommand?: string;
-  /** If set, this is a shared terminal from another user */
-  shared?: boolean;
-  ownerId?: string;
-  ownerName?: string;
-  viewerIds?: string[];
   /** Floating window state */
   windowStatus: "open" | "minimized";
   windowPos?: { x: number; y: number };
@@ -68,7 +55,6 @@ function SingleTerminal({
   onExit,
   claudeLaunch,
   injectCommand,
-  shared,
   respawnNonce,
 }: {
   project: ExtensionProject;
@@ -77,7 +63,6 @@ function SingleTerminal({
   onExit: () => void;
   claudeLaunch?: { resume?: boolean };
   injectCommand?: string;
-  shared?: boolean;
   /** Bumped by the parent when the user confirms "Restart" — forces a full
    *  remount so a fresh spawn message goes to the manager (which by then has
    *  destroyed the dtach socket via terminal:restart). */
@@ -93,13 +78,11 @@ function SingleTerminal({
 
   useEffect(() => {
     if (!containerRef.current || mountedRef.current) return;
-    if (!shared && !inst) return;
+    if (!inst) return;
     mountedRef.current = true;
 
     createTerminal(containerRef.current, sessionId, ({ cols, rows }) => {
-      if (shared) {
-        wsSend("terminal:share:replay", { sessionId });
-      } else if (inst) {
+      if (inst) {
         wsSend("vps:terminal:spawn", {
           id: sessionId,
           projectId: project.id,
@@ -146,15 +129,13 @@ function SingleTerminal({
       window.removeEventListener("genie:terminal:exit", handleExit);
       mountedRef.current = false;
       disposeTerminal(sessionId);
-      if (!shared) {
-        // For dtach-wrapped sessions this is a DETACH, not a destroy — the
-        // manager keeps the inner process alive on the VM. To truly end the
-        // session use the "Restart" button (sends terminal:restart instead).
-        setTimeout(() => wsSend("terminal:close", { id: sessionId }), 0);
-      }
+      // For dtach-wrapped sessions this is a DETACH, not a destroy — the
+      // manager keeps the inner process alive on the VM. To truly end the
+      // session use the "Restart" button (sends terminal:restart instead).
+      setTimeout(() => wsSend("terminal:close", { id: sessionId }), 0);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instId, project.id, sessionId, shared, claudeLaunch?.resume, respawnNonce]);
+  }, [instId, project.id, sessionId, claudeLaunch?.resume, respawnNonce]);
 
   return (
     <div className="h-full w-full bg-[#1e1e2e]" style={{ display: visible ? "block" : "none" }}>
@@ -166,63 +147,6 @@ function SingleTerminal({
 export const TERM_WIN_W = 600;
 export const TERM_WIN_H = 400;
 export const TERM_CASCADE = 20;
-
-function OwnerAvatar({ ownerId }: { ownerId: string }) {
-  const [cc] = useSubject($conversationChat);
-  const owner = cc.users.find((u) => u.id === ownerId);
-  if (!owner) return null;
-  return (
-    <div className="flex items-center gap-1" title={`Shared by ${owner.name}`}>
-      {owner.avatarUrl ? (
-        <img src={owner.avatarUrl} alt={owner.name} className="w-5 h-5 rounded-full border border-blue/40" />
-      ) : (
-        <div className="w-5 h-5 rounded-full bg-blue/20 border border-blue/40 flex items-center justify-center text-blue" style={{ fontSize: 9 }}>
-          {owner.name[0]?.toUpperCase()}
-        </div>
-      )}
-      <span className="text-blue" style={{ fontSize: 11 }}>{owner.name}</span>
-    </div>
-  );
-}
-
-function ViewerAvatars({ viewerIds, sessionId }: { viewerIds: string[]; sessionId: string }) {
-  const [cc] = useSubject($conversationChat);
-  const [auth] = useSubject($auth);
-  const { users } = cc;
-  // Exclude the current user (owner) from viewer list
-  const viewers = viewerIds
-    .filter((id) => id !== auth.user?.id)
-    .map((id) => users.find((u) => u.id === id))
-    .filter(Boolean) as { id: string; name: string; avatarUrl?: string | null }[];
-
-  if (viewers.length === 0) return null;
-
-  return (
-    <div className="flex items-center gap-0.5">
-      {viewers.map((v) => (
-        <div key={v.id} className="group relative">
-          {v.avatarUrl ? (
-            <img src={v.avatarUrl} alt={v.name} className="w-5 h-5 rounded-full border border-blue/40" />
-          ) : (
-            <div className="w-5 h-5 rounded-full bg-blue/20 border border-blue/40 flex items-center justify-center text-blue" style={{ fontSize: 9 }}>
-              {v.name[0]?.toUpperCase()}
-            </div>
-          )}
-          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:flex items-center gap-1 bg-crust border border-surface0 rounded px-1.5 py-1 whitespace-nowrap z-50 shadow-lg">
-            <span className="text-text" style={{ fontSize: 11 }}>{v.name}</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); wsSend("terminal:share:kick", { sessionId, userId: v.id }); }}
-              className="text-overlay0 hover:text-red transition-colors ml-1"
-              title="Remove from session"
-            >
-              <X size={11} />
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 export function FloatingTerminalWindow({
   tab,
@@ -246,7 +170,6 @@ export function FloatingTerminalWindow({
   zIndex: number;
 }) {
   const [maximized, setMaximized] = useState(false);
-  const [sharingOpen, setSharingOpen] = useState(false);
   // "Resumed" pill — flashes for 3s when the manager confirms this open
   // attached to a live dtach socket. Driven by terminal:opened.
   const [resumedFlash, setResumedFlash] = useState(false);
@@ -336,7 +259,7 @@ export function FloatingTerminalWindow({
         className="flex items-center gap-2 px-3 py-1.5 border-b border-surface0 cursor-grab active:cursor-grabbing select-none shrink-0 bg-mantle"
         onPointerDown={(e) => { onFocus(tab.id); if (!maximized) onPointerDown(e); }}
       >
-        <Terminal size={12} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : (tab.claudeLaunch || tab.injectCommand) ? "text-mauve" : "text-green"} />
+        <Terminal size={12} className={tab.exited ? "text-red" : (tab.claudeLaunch || tab.injectCommand) ? "text-mauve" : "text-green"} />
         <span className="text-md text-subtext0 font-medium truncate flex-1">{tab.label}</span>
         {resumedFlash && (
           <span
@@ -347,13 +270,7 @@ export function FloatingTerminalWindow({
             ↻ Resumed
           </span>
         )}
-        {tab.shared && tab.ownerId && (
-          <OwnerAvatar ownerId={tab.ownerId} />
-        )}
-        {tab.viewerIds && tab.viewerIds.length > 0 && !tab.shared && (
-          <ViewerAvatars viewerIds={tab.viewerIds} sessionId={tab.sessionId} />
-        )}
-        {!tab.exited && !tab.shared && !restartConfirm && (
+        {!tab.exited && !restartConfirm && (
           <button
             onClick={(e) => { e.stopPropagation(); setRestartConfirm(true); }}
             className="p-1 rounded text-overlay0 hover:text-yellow hover:bg-yellow/10 transition-colors"
@@ -383,20 +300,6 @@ export function FloatingTerminalWindow({
             </button>
           </div>
         )}
-        {!tab.exited && !tab.shared && !restartConfirm && (
-          <div className="relative">
-            <button
-              onClick={() => setSharingOpen((v) => !v)}
-              className={`p-1 rounded transition-colors ${sharingOpen ? "text-blue bg-surface0" : "text-overlay0 hover:text-text hover:bg-surface0"}`}
-              title="Share terminal"
-            >
-              <Share2 size={12} />
-            </button>
-            {sharingOpen && (
-              <ShareTerminalPopup sessionId={tab.sessionId} onClose={() => setSharingOpen(false)} />
-            )}
-          </div>
-        )}
         <button onClick={() => onMinimize(tab.id)} className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors" title="Minimize">
           <Minus size={12} />
         </button>
@@ -417,7 +320,6 @@ export function FloatingTerminalWindow({
           onExit={() => onMarkExited(tab.id)}
           claudeLaunch={tab.claudeLaunch}
           injectCommand={tab.injectCommand}
-          shared={tab.shared}
           respawnNonce={respawnNonce}
         />
       </div>
@@ -477,7 +379,7 @@ export function TerminalListPanel({
             key={tab.id}
             className="flex items-center gap-2 px-3 py-2 bg-mantle rounded-lg border border-surface0 hover:border-surface1 transition-colors"
           >
-            <Terminal size={13} className={tab.exited ? "text-red" : tab.shared ? "text-blue" : (tab.claudeLaunch || tab.injectCommand) ? "text-mauve" : "text-green"} />
+            <Terminal size={13} className={tab.exited ? "text-red" : (tab.claudeLaunch || tab.injectCommand) ? "text-mauve" : "text-green"} />
             <span className="flex-1 text-text truncate" style={{ fontSize: 13 }}>{tab.label}</span>
             {tab.exited && <span className="text-red" style={{ fontSize: 11 }}>exited</span>}
             {tab.windowStatus === "minimized" && (

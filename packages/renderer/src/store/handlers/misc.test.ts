@@ -1,6 +1,5 @@
 // Remaining smaller handlers: apps, presence, do/railway probes,
-// chat:session:deleted, terminal:share:sent, vps exec/logs/status,
-// deploy:logs:list.
+// chat:session:deleted, vps exec/logs/status, deploy:logs:list.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
@@ -31,8 +30,6 @@ import {
   $vpsDeploy,
 } from "../subjects/vps";
 import { execCallbacks } from "../actions/vps";
-
-// terminal:share:sent
 
 // chat:session:deleted
 import { handlers as chatHandlers } from "./chat";

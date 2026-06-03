@@ -12,7 +12,7 @@ import type {
 import type { FileEditorState, FileTemplatesState } from "../types/common";
 
 export const $terminal = new Subject<TerminalState>({
-  tabs: [], activeTabId: null, bottomPanelOpen: false, bottomPanelHeight: 200, shareInvites: [],
+  tabs: [], activeTabId: null, bottomPanelOpen: false, bottomPanelHeight: 200,
 });
 
 export const $persistedTerminals = new Subject<PersistedTerminalsState>({

@@ -2,10 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Terminal, X, UserCheck } from "lucide-react";
-import type { TerminalShareInvite } from "@/store/types";
-import { $auth, $terminal } from "@/store/subjects";
-import { acceptTerminalShare, declineTerminalShare, loadUiState, stopImpersonating } from "@/store/actions";
+import { UserCheck } from "lucide-react";
+import { $auth } from "@/store/subjects";
+import { loadUiState, stopImpersonating } from "@/store/actions";
 import { connectWs, setManagerRunning } from "@/lib/ws";
 import { Sidebar } from "@/components/ui/sidebar";
 import { SuperadminTopBar } from "@/components/ui/superadmin-top-bar";
@@ -64,7 +63,6 @@ export default function AppShellLayout({
         <DeployWindow />
         <BuildLogWindow />
         <TerminalWindows />
-        <TerminalShareToasts />
       </div>
     </div>
   );
@@ -91,57 +89,3 @@ function ImpersonationBanner() {
   );
 }
 
-function TerminalShareToasts() {
-  const [terminal] = useSubject($terminal);
-  const shareInvites = terminal.shareInvites;
-
-  useEffect(() => {
-    if (shareInvites.length === 0) return;
-    const timers = shareInvites.map((invite: TerminalShareInvite) =>
-      setTimeout(() => {
-        declineTerminalShare(invite.sessionId);
-      }, 15000)
-    );
-    return () => timers.forEach(clearTimeout);
-  }, [shareInvites]);
-
-  if (shareInvites.length === 0) return null;
-
-  return (
-    <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50 pointer-events-none">
-      {shareInvites.slice(-3).map((invite: TerminalShareInvite) => (
-        <div
-          key={invite.sessionId}
-          className="pointer-events-auto flex items-start gap-2 bg-mantle border border-surface0 rounded-lg shadow-lg px-3 py-2 max-w-[300px] animate-in slide-in-from-right"
-        >
-          <Terminal size={14} className="text-green shrink-0 mt-0.5" />
-          <div className="flex-1 min-w-0">
-            <p className="text-md font-medium text-text">
-              {invite.ownerName} shared a terminal
-            </p>
-            <div className="flex gap-1.5 mt-1.5">
-              <button
-                onClick={() => acceptTerminalShare(invite)}
-                className="px-2 py-0.5 text-md bg-green/20 text-green rounded border-none cursor-pointer hover:bg-green/30 transition-colors"
-              >
-                Join
-              </button>
-              <button
-                onClick={() => declineTerminalShare(invite.sessionId)}
-                className="px-2 py-0.5 text-md bg-surface0 text-subtext0 rounded border-none cursor-pointer hover:bg-surface1 transition-colors"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-          <button
-            onClick={() => declineTerminalShare(invite.sessionId)}
-            className="p-0.5 bg-transparent border-none cursor-pointer text-overlay0 hover:text-text shrink-0"
-          >
-            <X size={10} />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}

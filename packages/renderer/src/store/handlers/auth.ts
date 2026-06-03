@@ -3,6 +3,7 @@ import { acceptOrgInvite } from "../actions/org-settings";
 import { clearPendingInviteToken, getPendingInviteToken } from "@/lib/invite";
 import { $auth } from "../subjects/auth";
 import { broadcastWindows } from "../actions/window-manager";
+import { reconnectOpenVmConnections } from "../actions/vm-connection";
 import type { HandlerMap } from "./types";
 
 // --- Auth messages ---
@@ -24,6 +25,7 @@ export const handlers: HandlerMap = {
     $auth.next({ status: "authenticated", user, token, impersonatedBy: impersonatedBy ?? null, pasteKeyEnabled: !!pasteKeyEnabled, geniePublicKey: geniePublicKey ?? null });
     setStoredToken(token);
     broadcastWindows();
+    reconnectOpenVmConnections();
     const pendingInvite = getPendingInviteToken();
     if (pendingInvite) {
       clearPendingInviteToken();

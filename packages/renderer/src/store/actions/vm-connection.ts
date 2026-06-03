@@ -295,6 +295,18 @@ onWsClose((reason) => {
   markVmConnectionsDisconnected(reason);
 });
 
+/** Re-dial every open VM popup after the manager socket (and auth) are back.
+ *  Skips slots in `error` — those need manual intervention. */
+export function reconnectOpenVmConnections(): void {
+  for (const key of Object.keys($vmConnections.getValue().connections)) {
+    const c = $vmConnections.getValue().connections[key];
+    if (!c || c.status === "error") continue;
+    if (c.status === "closed" || c.status === "connecting" || c.status === "connected") {
+      reconnectVmConnection(key);
+    }
+  }
+}
+
 let lastManagerRunning = $manager.getValue().running;
 $manager.subscribe((m) => {
   if (!lastManagerRunning && m.running) {

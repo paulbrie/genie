@@ -21,7 +21,7 @@ beforeEach(() => {
   $selectedProjectId.next(null);
   $commandRunOutputs.next({});
   $projectLogBuffers.next({});
-  $terminal.next({ tabs: [], activeTabId: null, bottomPanelOpen: false, bottomPanelHeight: 200, shareInvites: [] });
+  $terminal.next({ tabs: [], activeTabId: null, bottomPanelOpen: false, bottomPanelHeight: 200 });
   vi.clearAllMocks();
 });
 
@@ -106,9 +106,9 @@ describe("project:command:terminal", () => {
     // Seed an existing tab with the id addTerminalTab() mock returns ("term-1")
     $terminal.next({
       tabs: [{
-        id: "term-1", title: "Command", shared: false, ownerId: "u", ownerName: "U", viewerIds: [],
+        id: "term-1", title: "Command",
       }],
-      activeTabId: "term-1", bottomPanelOpen: false, bottomPanelHeight: 200, shareInvites: [],
+      activeTabId: "term-1", bottomPanelOpen: false, bottomPanelHeight: 200,
     });
 
     handlers["project:command:terminal"]({

@@ -7,7 +7,6 @@ import type {
   ClaudeLaunchOptions,
   PersistedTerminalSession,
   SshConfig,
-  TerminalShareInvite,
   TerminalTab,
 } from "../types/vps";
 import { claudeCommandLabel, defaultClaudeTabTitle, GENIE_PROJECT_DIR } from "@/lib/terminal-spawn";
@@ -74,21 +73,6 @@ export function launchClaudeDirectSshTab(
 }
 
 export { claudeCommandLabel, defaultClaudeTabTitle, GENIE_PROJECT_DIR };
-
-// --- Terminal sharing — stubbed ---
-
-export function shareTerminal(_sessionId: string, _targetUserId: string, _conversationId?: string): void {}
-
-export function acceptTerminalShare(_invite: TerminalShareInvite): void {}
-
-export function declineTerminalShare(sessionId: string): void {
-  const t = $terminal.getValue();
-  $terminal.nextAssign({ shareInvites: t.shareInvites.filter((i) => i.sessionId !== sessionId) });
-}
-
-export function leaveSharedTerminal(id: string): void {
-  removeTerminalTab(id);
-}
 
 // --- Persisted sessions registry — stubbed ---
 
