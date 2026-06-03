@@ -118,7 +118,7 @@ function ContextMenu({ x, y, onRename, onDelete, onClose }: {
   return (
     <div
       ref={ref}
-      className="fixed z-50 bg-mantle border border-surface1 rounded-lg shadow-lg py-1 min-w-[120px]"
+      className="fixed z-[100000] bg-mantle border border-surface1 rounded-lg shadow-lg py-1 min-w-[120px]"
       style={{ left: x, top: y }}
     >
       <button

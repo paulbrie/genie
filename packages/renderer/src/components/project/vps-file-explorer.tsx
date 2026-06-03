@@ -121,7 +121,8 @@ function FsContextMenu({ x, y, onRename, onDelete, onDownload, onClose }: {
   return (
     <div
       ref={ref}
-      className="fixed z-50 bg-crust border border-surface0 rounded-lg shadow-xl py-1 min-w-[120px]"
+      // Above the window-manager baseline (nextZIndex starts at 10000) so this menu beats every popup.
+      className="fixed z-[100000] bg-crust border border-surface0 rounded-lg shadow-xl py-1 min-w-[120px]"
       style={{ left: x, top: y }}
     >
       <button
