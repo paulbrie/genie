@@ -9,6 +9,9 @@ beforeEach(() => {
   $tracker.next({
     issues: [], labels: [],
     loading: false, showCreateForm: false, selectedIssueId: null,
+    viewMode: "board", groupBy: "status",
+    filters: { status: [], priority: [], assigneeId: [], labelId: [] },
+    selectedProjectId: null,
   });
 });
 

@@ -12,6 +12,7 @@ const samplePin: PinnedAssistantVm = {
   label: "taz-prod-1",
   host: "2001:470:1f15:97::1",
   projectId: "p-1",
+  projectName: "Prod",
   instanceId: "i-1",
   provider: "tazcloud",
 };

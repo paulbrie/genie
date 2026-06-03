@@ -34,8 +34,8 @@ beforeEach(() => {
 describe("admin:tazcloud:stats", () => {
   it("merges new VM stats over existing ones (per-vmId)", () => {
     $admin.getValue().tazcloud.vmStats = {
-      "vm-1": { cpuPct: 12 },
-      "vm-2": { cpuPct: 30 },
+      "vm-1": { cpuPct: 12 } as never,
+      "vm-2": { cpuPct: 30 } as never,
     };
     $admin.getValue().tazcloud.vmStatsLoading = true;
 

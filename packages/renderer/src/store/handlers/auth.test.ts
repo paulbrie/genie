@@ -23,6 +23,7 @@ const sampleUser = {
   id: "u-1",
   email: "alice@example.com",
   name: "Alice",
+  avatarUrl: null,
   role: "superadmin" as const,
 };
 

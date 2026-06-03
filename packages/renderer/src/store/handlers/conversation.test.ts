@@ -31,7 +31,7 @@ const FRESH: ConversationChatState = {
   loadingOlder: false,
 };
 
-const me = { id: "u-me", email: "me@x", name: "Me", role: "user" as const };
+const me = { id: "u-me", email: "me@x", name: "Me", avatarUrl: null, role: "user" as const };
 
 function viewing(convId: string) {
   $conversationChat.next({ ...FRESH, activeConversationId: convId });
@@ -104,7 +104,7 @@ describe("chat:messages:list", () => {
     $conversationChat.next({
       ...FRESH,
       activeConversationId: "c-1",
-      messages: [{ id: "new-1", content: "newer" }],
+      messages: [{ id: "new-1", content: "newer" } as never],
       loadingOlder: true,
     });
 

@@ -30,7 +30,7 @@ function makeActiveDeploy(instOverrides = {}, deployOverrides = {}) {
     },
     activeDeploys: {
       [INST]: {
-        instanceId: INST, label: "Production", projectId: "p-1", deploying: true,
+        instanceId: INST, projectId: "p-1", deploying: true,
         progress: [], error: null, startedAt: Date.now() - 1000, endedAt: null,
         failedDroplet: null, destroyingDroplet: false,
         ...deployOverrides,
@@ -148,13 +148,13 @@ describe("do:destroy-failed-droplet", () => {
       instances: {},
       activeDeploys: {
         "i-a": {
-          instanceId: "i-a", label: "A", projectId: "p", deploying: false,
+          instanceId: "i-a", projectId: "p", deploying: false,
           progress: [], error: null, startedAt: 0, endedAt: 0,
           failedDroplet: { dropletId: 111, ipAddress: "1.1.1.1" },
           destroyingDroplet: true,
         },
         "i-b": {
-          instanceId: "i-b", label: "B", projectId: "p", deploying: false,
+          instanceId: "i-b", projectId: "p", deploying: false,
           progress: [], error: null, startedAt: 0, endedAt: 0,
           failedDroplet: { dropletId: 222, ipAddress: "2.2.2.2" },
           destroyingDroplet: true,
