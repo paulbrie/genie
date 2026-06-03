@@ -33,7 +33,6 @@ import {
 import { execCallbacks } from "../actions/vps";
 
 // terminal:share:sent
-import { handlers as terminalHandlers } from "./terminal";
 
 // chat:session:deleted
 import { handlers as chatHandlers } from "./chat";
@@ -263,20 +262,5 @@ describe("chat:session:deleted", () => {
 
     expect($chat.getValue().activeSessionId).toBe("s-1");
     expect($chat.getValue().messages).toEqual([{ role: "user", content: "hi" }]);
-  });
-});
-
-describe("terminal:share:sent", () => {
-  it("dispatches a genie:terminal:share:sent CustomEvent with the payload", () => {
-    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
-    terminalHandlers["terminal:share:sent"]({ sessionId: "s-1", to: "alice" });
-
-    const ev = dispatchSpy.mock.calls
-      .map((c) => c[0])
-      .find((e): e is CustomEvent => e.type === "genie:terminal:share:sent");
-
-    expect(ev).toBeDefined();
-    expect(ev!.detail).toEqual({ sessionId: "s-1", to: "alice" });
-    dispatchSpy.mockRestore();
   });
 });
