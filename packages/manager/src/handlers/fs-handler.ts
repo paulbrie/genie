@@ -6,9 +6,10 @@
 
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
+import { VPS_SSH_USERNAME } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
-import { connectSsh, type SftpWriteHandle, type SshSession } from "../vps/ssh-client.js";
-import { execCached } from "../vps/ssh-session-cache.js";
+import { connectSsh, pickWorkingSshUser, type SftpWriteHandle, type SshSession } from "../vps/ssh-client.js";
+import { execCached, evictSession } from "../vps/ssh-session-cache.js";
 import * as projectService from "../project-service.js";
 
 
@@ -20,6 +21,58 @@ interface PendingUpload {
   staleTimer: ReturnType<typeof setTimeout>;
 }
 const pendingUploads = new Map<string, PendingUpload>();
+
+/** Open an SFTP write handle for `filePath`, auto-promoting the stored SSH user
+ *  to `genie` if the first attempt hits `Permission denied`. Common case: a
+ *  droplet was attached with the image-default user (`ubuntu`, `root`, etc.),
+ *  the Genie Standard Setup recipe later created the `genie` user and chowned
+ *  `/opt/project` to it, but `connection.username` was never updated — so SFTP
+ *  writes (which don't sudo) fail. We probe whether `genie` works now; if so,
+ *  persist the new username and retry once. */
+async function openSftpWriteWithUserPromotion(
+  projectId: string,
+  instanceId: string,
+  filePath: string,
+): Promise<{ session: SshSession; handle: SftpWriteHandle }> {
+  const conn = await getVpsConnection(projectId, instanceId);
+  let session = await connectSsh(conn);
+  try {
+    const handle = await session.sftpOpenWrite(filePath);
+    return { session, handle };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/permission denied/i.test(message) || conn.username === VPS_SSH_USERNAME) {
+      session.close();
+      throw err;
+    }
+    session.close();
+
+    const probed = await pickWorkingSshUser(
+      { host: conn.host, port: conn.port, privateKeyPath: conn.privateKeyPath },
+      [VPS_SSH_USERNAME],
+    );
+    if (probed !== VPS_SSH_USERNAME) throw err;
+
+    // Persist the new username so future ops (other SFTP, exec, terminal) all
+    // use `genie` going forward. Evict the cached session under the old
+    // username so the next caller doesn't reuse a stale handle.
+    evictSession(conn);
+    await projectService.updateVpsInstance(projectId, instanceId, {
+      connection: { ...conn, username: VPS_SSH_USERNAME },
+    });
+    console.log(`[vps:fs:upload] auto-promoted ${projectId}:${instanceId} SSH user '${conn.username}' → '${VPS_SSH_USERNAME}' after Permission denied on ${filePath}`);
+
+    const newConn = { ...conn, username: VPS_SSH_USERNAME };
+    session = await connectSsh(newConn);
+    try {
+      const handle = await session.sftpOpenWrite(filePath);
+      return { session, handle };
+    } catch (retryErr) {
+      session.close();
+      throw retryErr;
+    }
+  }
+}
 
 async function cleanupUpload(uploadId: string, opts: { deletePartial?: boolean } = {}) {
   const p = pendingUploads.get(uploadId);
@@ -125,10 +178,8 @@ export async function handleFsMessage(
         }
         if (chunkIndex === 0) {
           await cleanupUpload(uploadId); // wipe any stale leftover with the same id
-          const conn = await getVpsConnection(projectId, instanceId);
-          const session = await connectSsh(conn);
           const filePath = `${(uploadDir as string).replace(/\/$/, "")}/${fileName}`;
-          const handle = await session.sftpOpenWrite(filePath);
+          const { session, handle } = await openSftpWriteWithUserPromotion(projectId, instanceId, filePath);
           const staleTimer = setTimeout(() => { cleanupUpload(uploadId, { deletePartial: true }).catch(() => {}); }, 10 * 60 * 1000);
           pendingUploads.set(uploadId, { session, handle, offset: 0, filePath, staleTimer });
         }
