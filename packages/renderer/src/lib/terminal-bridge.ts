@@ -47,7 +47,41 @@ interface TerminalInstance {
 }
 
 const instances = new Map<string, TerminalInstance>();
-const RESIZE_SETTLE_MS = 80;
+
+/** Wire `container` resizes to `fit() + terminal:resize` in lockstep. rAF-coalesced
+ *  so multiple resize events in one frame trigger one fit. Returns the observer
+ *  so the caller can disconnect on tear-down.
+ *
+ *  Why no setTimeout debounce: an 80ms debounce means up to 80ms of "xterm at
+ *  new size, PTY at old size." During that gap a TUI like Claude Code computes
+ *  its cursor-up-N math against the old size, lands in the wrong spot, and
+ *  appends a fresh copy of its prompt instead of overwriting — visible as the
+ *  "Enter to select..." line stacking up after a popup drag. rAF coalescing
+ *  bounds the mismatch to one animation frame. */
+function installFitOnResize(
+  container: HTMLElement,
+  terminal: Terminal,
+  fitAddon: FitAddon,
+  terminalId: string,
+): ResizeObserver {
+  let pending = false;
+  const flush = () => {
+    pending = false;
+    try {
+      const hadFocus = !!terminal.element?.contains(document.activeElement);
+      fitAddon.fit();
+      wsSend("terminal:resize", { terminalId, cols: terminal.cols, rows: terminal.rows });
+      if (hadFocus) terminal.focus();
+    } catch { /* tear-down race */ }
+  };
+  const observer = new ResizeObserver(() => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(flush);
+  });
+  observer.observe(container);
+  return observer;
+}
 
 export function createTerminal(
   container: HTMLElement,
@@ -98,25 +132,7 @@ export function createTerminal(
     wsSend("terminal:data", { terminalId, data });
   });
 
-  // container resize → debounced fit + server resize. Each pointermove during
-  // a popup drag fires the observer; a per-frame fit() thrashes the renderer.
-  let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  const settledFit = () => {
-    settleTimer = null;
-    requestAnimationFrame(() => {
-      try {
-        const hadFocus = !!terminal.element?.contains(document.activeElement);
-        fitAddon.fit();
-        wsSend("terminal:resize", { terminalId, cols: terminal.cols, rows: terminal.rows });
-        if (hadFocus) terminal.focus();
-      } catch { /* tear-down race */ }
-    });
-  };
-  const resizeObserver = new ResizeObserver(() => {
-    if (settleTimer != null) clearTimeout(settleTimer);
-    settleTimer = setTimeout(settledFit, RESIZE_SETTLE_MS);
-  });
-  resizeObserver.observe(container);
+  const resizeObserver = installFitOnResize(container, terminal, fitAddon, terminalId);
 
   instances.set(terminalId, { terminal, fitAddon, resizeObserver, terminalId });
   return terminal;
@@ -174,24 +190,7 @@ export function reattachTerminal(terminalId: string, newContainer: HTMLElement):
     newContainer.appendChild(xtermEl);
   }
 
-  let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  const settledFit = () => {
-    settleTimer = null;
-    requestAnimationFrame(() => {
-      try {
-        const hadFocus = !!inst.terminal.element?.contains(document.activeElement);
-        inst.fitAddon.fit();
-        wsSend("terminal:resize", { terminalId, cols: inst.terminal.cols, rows: inst.terminal.rows });
-        if (hadFocus) inst.terminal.focus();
-      } catch { /* ignore */ }
-    });
-  };
-  const resizeObserver = new ResizeObserver(() => {
-    if (settleTimer != null) clearTimeout(settleTimer);
-    settleTimer = setTimeout(settledFit, RESIZE_SETTLE_MS);
-  });
-  resizeObserver.observe(newContainer);
-  inst.resizeObserver = resizeObserver;
+  inst.resizeObserver = installFitOnResize(newContainer, inst.terminal, inst.fitAddon, terminalId);
 
   requestAnimationFrame(() => {
     try { inst.fitAddon.fit(); inst.terminal.focus(); } catch { /* ignore */ }
