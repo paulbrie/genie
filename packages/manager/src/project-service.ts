@@ -15,6 +15,7 @@ function normalizeConnection(conn: VpsInstance["connection"]): VpsInstance["conn
 function instanceTargetKey(inst: VpsInstance): string | null {
   if (inst.digitalocean) return `do:${inst.digitalocean.dropletId}`;
   if (inst.tazcloud) return `taz:${inst.tazcloud.vmId}`;
+  if (inst.hetzner) return `hz:${inst.hetzner.serverId}`;
   return null;
 }
 

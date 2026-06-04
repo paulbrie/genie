@@ -76,6 +76,7 @@ import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
 import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
 import { openManageDropletWindow } from "@/components/admin/digitalocean-panel";
+import { openManageServerWindow } from "@/components/admin/hetzner-panel";
 import { ConnectServerForm } from "@/components/project/connect-server-form";
 import { ProjectMembersTab } from "@/components/project/project-members-tab";
 import { VpsRecipes, VpsRunCommands } from "@/components/project/vps-recipes";
@@ -185,12 +186,13 @@ function ServersBar({
           // generic ManageVmPopup machinery.
           const tazVmId = instance.tazcloud?.vmId;
           const doDropletId = instance.digitalocean?.dropletId;
+          const hzServerId = instance.hetzner?.serverId;
           const isSsh = !!instance.ssh;
-          const canManage = !!tazVmId || !!doDropletId || isSsh;
+          const canManage = !!tazVmId || !!doDropletId || !!hzServerId || isSsh;
           // Show the server's address in the button so multiple instances are
           // distinguishable at a glance (and duplicate records pointing at the
           // same droplet are obvious — they'll show the same IP).
-          const host = instance.digitalocean?.ipAddress || instance.tazcloud?.ipv6 || instance.connection.host;
+          const host = instance.digitalocean?.ipAddress || instance.hetzner?.ipAddress || instance.tazcloud?.ipv6 || instance.connection.host;
           return (
             <button
               key={instance.id}
@@ -199,6 +201,8 @@ function ServersBar({
                   openManageVmWindow({ id: tazVmId, name: instance.label });
                 } else if (doDropletId) {
                   openManageDropletWindow({ id: doDropletId, name: instance.label });
+                } else if (hzServerId) {
+                  openManageServerWindow({ id: hzServerId, name: instance.label });
                 } else if (isSsh) {
                   // Generic servers reuse the Manage popup, keyed by instance id.
                   openManageVmWindow({ id: instance.id, name: instance.label });
@@ -223,7 +227,7 @@ function ServersBar({
                   <span className="text-overlay0 text-xs font-mono">{host}</span>
                 )}
                 <span className="text-overlay0 text-xs">
-                  {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : instance.ssh ? "SSH" : ""}
+                  {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : instance.hetzner ? "HZ" : instance.ssh ? "SSH" : ""}
                 </span>
               </span>
             </button>
