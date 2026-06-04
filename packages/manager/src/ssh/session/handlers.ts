@@ -28,6 +28,8 @@ import {
   wrapSilentPtyCommand,
   type TmuxShellIntent,
 } from "../tmux/commands.js";
+import { provisionMcpRestConfig } from "../../vps/mcp-config-merge.js";
+import { execCached } from "../../vps/ssh-session-cache.js";
 
 export type WsSendFn = (ws: WebSocket, msg: { type: string; payload: unknown }) => void;
 
@@ -189,7 +191,25 @@ export async function startSshSession(
         // tmux session so it survives SSH drops and is reattachable. `-A` makes a
         // re-launch with the same name reattach instead of duplicating.
         const name = tmuxSessionName ?? createTmuxSessionName();
-        scheduleSessionCommand(terminalId, session, tmuxNewSessionWithCommandShellCommand(name, initialCommand));
+        const launchClaude = () =>
+          scheduleSessionCommand(terminalId, session, tmuxNewSessionWithCommandShellCommand(name, initialCommand));
+        if (projectId && instanceId) {
+          // Write the genie-* MCP REST config into /opt/project/.mcp.json BEFORE
+          // Claude reads it, so `/mcp` shows the genie servers for terminal
+          // launches too (the browser-chat path already does this). Uses a
+          // separate cached SSH exec; runs only for project-linked instances
+          // (the bearer token is per (project, instance)).
+          void (async () => {
+            try {
+              await provisionMcpRestConfig((cmd) => execCached(shellOpts, cmd), "/opt/project", projectId, instanceId);
+            } catch (err) {
+              console.warn(`[mcp] failed to write MCP config before Claude launch: ${err instanceof Error ? err.message : err}`);
+            }
+            launchClaude();
+          })();
+        } else {
+          launchClaude();
+        }
       } else if (tmuxIntent && tmuxSessionName) {
         scheduleSessionCommand(
           terminalId,
