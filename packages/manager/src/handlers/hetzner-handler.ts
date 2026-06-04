@@ -18,6 +18,7 @@ import { ensureGenieKeyOnDisk, ensureGenieKeyPair, sshKeyFingerprint } from "../
 import { connectSsh, pickWorkingSshUser, type SshConnectionConfig } from "../vps/ssh-client.js";
 import { vpsStatus, vpsStats, remoteDir } from "../vps/deploy-service.js";
 import { execCached } from "../vps/ssh-session-cache.js";
+import { resetSnapshotMcpState } from "../vps/mcp-config-merge.js";
 import { sshStatsProbeEnabled } from "../vps/ssh-stats-disabled.js";
 import { getDb } from "../db/index.js";
 import { deployLogs } from "../db/schema.js";
@@ -176,6 +177,10 @@ export async function handleHetznerMessage(
         } else {
           await projectService.addVpsInstance(hzProjectId, instance);
         }
+        // A server cloned from a base image inherits the snapshot source
+        // project's .mcp.json + live Claude sessions. Reset that so genie-* MCPs
+        // resolve to THIS project, not whatever the image was built from.
+        await resetSnapshotMcpState((cmd) => execCached(connection, cmd), remoteDir(hzProject.name), hzProjectId, newHzInstanceId);
         await broadcastProjectList();
         broadcast({ type: "admin:hetzner:list:stale", payload: {} });
         await hzDb.update(deployLogs).set({ status: "success", progress: hzProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, hzDeployLogId));

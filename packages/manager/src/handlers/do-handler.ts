@@ -17,6 +17,7 @@ import { attachDoDomain, detachDoDomain, loadNamecheapConfig, assertNamecheapCon
 import { connectSsh, pickWorkingSshUser, type SshConnectionConfig } from "../vps/ssh-client.js";
 import { vpsStatus, vpsStats, remoteDir } from "../vps/deploy-service.js";
 import { execCached } from "../vps/ssh-session-cache.js";
+import { resetSnapshotMcpState } from "../vps/mcp-config-merge.js";
 import { sshStatsProbeEnabled } from "../vps/ssh-stats-disabled.js";
 import { getDb } from "../db/index.js";
 import { deployLogs } from "../db/schema.js";
@@ -206,6 +207,10 @@ export async function handleDoMessage(
         } else {
           await projectService.addVpsInstance(doProjectId, instance);
         }
+        // A server cloned from a base image inherits the snapshot source
+        // project's .mcp.json + live Claude sessions. Reset that so genie-* MCPs
+        // resolve to THIS project, not whatever the image was built from.
+        await resetSnapshotMcpState((cmd) => execCached(connection, cmd), remoteDir(doProject.name), doProjectId, newDoInstanceId);
         await broadcastProjectList();
         broadcast({ type: "admin:droplets:list:stale", payload: {} });
         await doDb.update(deployLogs).set({ status: "success", progress: doProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, doDeployLogId));

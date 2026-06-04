@@ -90,3 +90,22 @@ export async function provisionMcpRestConfig(
   await exec(buildMcpConfigMergeScript(remoteProjectDir, baseUrl, token));
   return true;
 }
+
+/** Reset MCP state that a base-image/snapshot baked in from a DIFFERENT project.
+ *  A server cloned from a snapshot inherits that snapshot's `.mcp.json` (the
+ *  source project's bearer token) AND any Claude tmux sessions that were live
+ *  when the snapshot was taken — both still bound to the source project, so its
+ *  tracker tickets/storage show up on the new server. Kill those stale sessions
+ *  (safe on a fresh deploy — no real user sessions exist yet) and rewrite
+ *  `.mcp.json` for THIS instance. Best-effort; never throws. */
+export async function resetSnapshotMcpState(
+  exec: (cmd: string) => Promise<unknown>,
+  remoteProjectDir: string,
+  projectId: string,
+  instanceId: string,
+): Promise<void> {
+  await exec(
+    `for s in $(tmux ls 2>/dev/null | cut -d: -f1 | grep '^claude'); do tmux kill-session -t "$s" 2>/dev/null; done; true`,
+  ).catch(() => {});
+  await provisionMcpRestConfig(exec, remoteProjectDir, projectId, instanceId).catch(() => {});
+}
