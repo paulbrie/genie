@@ -252,8 +252,11 @@ export function killVpsProcess(projectId: string, instanceId: string, pid: numbe
   wsSend("vps:process:kill", { projectId, instanceId, pid });
 }
 
-export function startMcpTunnel(projectId: string, instanceId: string): void {
-  wsSend("mcp:tunnel:start", { projectId, instanceId });
+/** (Re)write the genie-* MCP REST entries into the VM's .mcp.json so Claude on
+ *  the VM can use them. Fire-and-forget; the Manage popup uses a request/response
+ *  variant for feedback. */
+export function installGenieMcps(projectId: string, instanceId: string): void {
+  wsSend("mcp:install", { projectId, instanceId });
 }
 
 // execCallbacks is shared between vpsExec (sender) and the vps:exec:result

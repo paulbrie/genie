@@ -35,6 +35,7 @@ import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { sshStatsPostbackEnabled, sshStatsProbeEnabled } from "@/lib/ssh-stats-enabled";
+import { wsRequest } from "@/lib/ws";
 import type { AdminServerTunnelPayload } from "@/store/actions/admin";
 import { Button } from "@/components/ui/button";
 import { imageDefaultUser } from "./helpers";
@@ -310,6 +311,50 @@ function SyncStatsAgentButton({ projectId, instanceId }: { projectId: string; in
       ) : (
         <Activity size={11} className="shrink-0" />
       )}
+      {label}
+    </button>
+  );
+}
+
+/** Writes the genie-* MCP REST entries into the VM's /opt/project/.mcp.json so
+ *  Claude on the VM can use genie-tracker/security/notify/storage. Project-linked
+ *  only (the MCP bearer token is per project+instance). Re-launch Claude after. */
+function InstallMcpsButton({ projectId, instanceId }: { projectId: string; instanceId: string }) {
+  const [state, setState] = useState<"idle" | "running" | "ok" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function install() {
+    setState("running"); setError(null);
+    try {
+      const res = await wsRequest<{ ok: boolean; error?: string }>("mcp:install", { projectId, instanceId }, 40_000);
+      if (res.ok) setState("ok");
+      else { setState("error"); setError(res.error ?? "Install failed"); }
+    } catch (e: unknown) {
+      setState("error"); setError(e instanceof Error ? e.message : "Request failed");
+    }
+  }
+
+  const label = state === "running" ? "Installing…" : state === "ok" ? "Genie MCPs installed" : state === "error" ? "Install failed" : "Install Genie MCPs";
+  return (
+    <button
+      type="button"
+      onClick={install}
+      disabled={state === "running"}
+      title={
+        state === "error" ? `Failed: ${error}`
+          : state === "ok" ? "Written to /opt/project/.mcp.json — relaunch Claude, then /mcp"
+          : "Write the genie-* MCP servers (tracker/security/notify/storage) into this VM's .mcp.json"
+      }
+      className={cn(
+        "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-60 disabled:cursor-wait",
+        state === "error" ? "border-red/30 text-red hover:bg-red/10"
+          : state === "ok" ? "border-green/30 text-green hover:bg-green/10"
+          : "border-overlay0/30 text-overlay1 hover:bg-surface0",
+      )}
+    >
+      {state === "running" ? <Loader2 size={11} className="animate-spin shrink-0" />
+        : state === "ok" ? <Check size={11} className="shrink-0" />
+        : <Plug size={11} className="shrink-0" />}
       {label}
     </button>
   );
@@ -1013,6 +1058,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
                   />
                   {linked && (
                     <SyncStatsAgentButton
+                      projectId={linked.project.id}
+                      instanceId={linked.instance.id}
+                    />
+                  )}
+                  {linked && (
+                    <InstallMcpsButton
                       projectId={linked.project.id}
                       instanceId={linked.instance.id}
                     />

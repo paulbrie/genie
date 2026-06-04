@@ -6,7 +6,7 @@ import { useDeepSubjectAll } from "@/lib/hooks";
 import type { BaseImageTemplate, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
 import { $admin, $auth, $commandRunOutputs, $projects, $selectedProjectId, $vpsDeploy } from "@/store/subjects";
 import { $orgSettings } from "@/store/subjects/org-settings";
-import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, unwatchVpsStats, uninstallVpsRecipe, vpsExec, watchVpsStats, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, installGenieMcps, stopProjectCommand, teardownVps, unwatchVpsStats, uninstallVpsRecipe, vpsExec, watchVpsStats, wakeVps } from "@/store/actions";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";

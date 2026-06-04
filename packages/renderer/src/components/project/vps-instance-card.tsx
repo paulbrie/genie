@@ -12,7 +12,7 @@ import type {
 import { $vpsDeploy } from "@/store/subjects";
 import {
   addSshTerminalTab, checkVpsStatus, deployToProvider, disconnectVps, fetchVpsLogs, launchClaudeTmuxSshTab,
-  fetchVpsStats, hibernateVps, killVpsProcess, rebootVps, startMcpTunnel, unwatchVpsStats, watchVpsStats,
+  fetchVpsStats, hibernateVps, killVpsProcess, rebootVps, installGenieMcps, unwatchVpsStats, watchVpsStats,
   teardownVps, vpsExec, wakeVps,
 } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -61,7 +61,7 @@ function ClaudeTerminalButton({ projectId, instance }: { projectId: string; inst
     setOpen(false);
     const { host, port, privateKeyPath } = instance.connection;
     const username = genieInstalled ? "genie" : instance.connection.username;
-    startMcpTunnel(projectId, instance.id);
+    installGenieMcps(projectId, instance.id);
     const label = resume ? `Claude (resume) @ ${instance.label || host}` : `Claude @ ${instance.label || host}`;
     launchClaudeTmuxSshTab({ host, port, username, privateKeyPath }, label, { resume });
   };
