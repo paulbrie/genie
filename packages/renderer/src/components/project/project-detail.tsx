@@ -619,16 +619,22 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
   }, [exec, fetchStatus]);
 
   const enableFirewall = useCallback(() => {
-    // Order matters: whitelist SSH on **both** IPv4 and IPv6 before flipping
-    // the default-deny + enabling UFW, otherwise the very next packet (the
-    // active SSH session re-auth) gets dropped and the user is locked out.
-    // `ufw allow 22/tcp` installs one v4 rule and one v6 rule, but only when
+    // Order matters: whitelist SSH (22) and the app port (3000) on **both**
+    // IPv4 and IPv6 before flipping the default-deny + enabling UFW, otherwise
+    // the very next packet (the active SSH session re-auth) gets dropped and the
+    // user is locked out.
+    // `ufw allow <port>/tcp` installs one v4 rule and one v6 rule, but only when
     // /etc/default/ufw has IPV6=yes — which it does on stock Ubuntu/Debian/
     // AlmaLinux, but we set it explicitly here to be safe (idempotent if it
     // is already yes; harmless on images where /etc/default/ufw is missing).
     execAndRefresh([
+      // Bare cloud images (e.g. a freshly created Hetzner server) may not ship
+      // ufw — without it, `ufw enable` is a no-op and the status stays Inactive.
+      // Install it first on apt-based images; a fast no-op where ufw is present.
+      "command -v ufw >/dev/null 2>&1 || (sudo apt-get update -y && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ufw)",
       "sudo test -f /etc/default/ufw && sudo sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw || true",
       "sudo ufw allow 22/tcp",
+      "sudo ufw allow 3000/tcp",
       "sudo ufw default deny incoming",
       "sudo ufw default allow outgoing",
       "sudo ufw --force enable",
