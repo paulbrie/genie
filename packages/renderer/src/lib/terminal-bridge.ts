@@ -108,6 +108,20 @@ export function createTerminal(
     try { terminal.loadAddon(new CanvasAddon()); } catch { /* fall back to DOM */ }
   }).catch(() => { /* ignore */ });
 
+  // In the alternate screen buffer (Claude TUI, vim, etc.) xterm's default
+  // alt-scroll behavior translates mouse-wheel ticks into Up/Down arrow key
+  // sequences. Claude Code interprets those as prompt-history navigation, so
+  // scrolling over the popup cycles previously-sent prompts instead of doing
+  // nothing. Swallow wheel events while the alt buffer is active; in the
+  // normal buffer fall through so xterm scrollback still works.
+  terminal.attachCustomWheelEventHandler((event) => {
+    if (terminal.buffer.active.type === "alternate") {
+      event.preventDefault();
+      return false;
+    }
+    return true;
+  });
+
   // OSC 52 → system clipboard, so tmux/Claude can write selections.
   terminal.parser.registerOscHandler(52, (data) => {
     const semi = data.indexOf(";");
