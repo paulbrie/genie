@@ -46,7 +46,7 @@ import { handleMcpRestRequest, type McpRestService } from "./vps/mcp-rest-router
 
 import { type ClientType, type DomActionExecutor, type DomActionRequestContext, type StatsPayload } from "./types.js";
 
-import { getActiveSshConnections } from "./vps/ssh-metrics.js";
+import { getActiveTunnelCount } from "./vps/ssh-session-cache.js";
 
 import * as settingsService from "./settings-service.js";
 import fsp from "node:fs/promises";
@@ -501,7 +501,7 @@ export function broadcastStats(stats: StatsPayload): void {
   stats.server = {
     wsMessagesPerSec: Math.max(0, Math.round((wsFrameCount - lastWsFrameCount) / elapsedSec)),
     wsConnections: clients.size,
-    sshConnections: getActiveSshConnections(),
+    sshConnections: getActiveTunnelCount(),
   };
   lastWsFrameCount = wsFrameCount;
   lastStatsTs = now;

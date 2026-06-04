@@ -268,10 +268,9 @@ export function SystemStats() {
           </TooltipTrigger>
           <TooltipContent>
             <div className="flex flex-col gap-0.5 text-md max-w-[220px]">
-              <span>Live outbound SSH connections the manager holds open (VMs + pooled bastions).</span>
+              <span>Pooled SSH tunnels the manager holds open — one per VM host. Multiplexed terminal channels riding a tunnel aren&rsquo;t counted separately.</span>
               <span className="text-overlay0">
-                Bar scaled to 20. Sustained spikes can trip a bastion&rsquo;s rate-limiter.
-                Click to inspect &amp; kill connections.
+                Bar scaled to 20. Click to inspect tunnels, channels &amp; kill connections.
               </span>
             </div>
           </TooltipContent>

@@ -327,6 +327,18 @@ export function getTerminalChannelHandle(terminalId: string): ShellHandle | null
   return null;
 }
 
+/** Count of connected pooled SSH tunnels — one per (host, port, username),
+ *  regardless of how many pty channels or cached-exec calls are multiplexed on
+ *  it. This is what the sidebar SSH gauge shows: "how many VM tunnels are open",
+ *  not the raw per-channel registry count (which inflates with every terminal). */
+export function getActiveTunnelCount(): number {
+  let n = 0;
+  for (const entry of cache.values()) {
+    if (entry.session) n++;
+  }
+  return n;
+}
+
 export function listSharedTunnels(): SharedTunnelSnapshot[] {
   const out: SharedTunnelSnapshot[] = [];
   for (const [key, entry] of cache) {
