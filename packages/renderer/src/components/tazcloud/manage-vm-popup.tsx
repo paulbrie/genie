@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { batch } from "subjecto";
 import { useSubject } from "subjecto/react";
 import {
-  Activity, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, Link2, Loader2,
+  Activity, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, KeyRound, Link2, Loader2,
   Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw,
   Settings as SettingsIcon, Shield, Sparkles, Terminal, Trash2, X,
 } from "lucide-react";
@@ -670,6 +670,71 @@ interface ManageVmInlineProps {
   vm: ManageVm;
 }
 
+/** Loose SSH public-key check: `<type> <base64>[ comment]`. */
+function isValidSshPublicKey(s: string): boolean {
+  return /^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-\S+|sk-\S+@openssh\.com)\s+[A-Za-z0-9+/]+=*(\s+\S.*)?$/.test(s.trim());
+}
+
+/** Lets the operator authorize their own SSH public key on the VM so they can
+ *  connect from their own terminal. Appends (idempotently) to the authorized_keys
+ *  of whichever user `exec` runs as (genie on DO/Hetzner). */
+function AddSshKeyForm({ exec, connectUser, host }: { exec: VmExecFn; connectUser: string; host: string }) {
+  const [key, setKey] = useState("");
+  const [state, setState] = useState<"idle" | "running" | "added" | "present" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const valid = isValidSshPublicKey(key);
+
+  async function add() {
+    const k = key.trim();
+    if (!isValidSshPublicKey(k)) return;
+    setState("running"); setError(null);
+    const safe = k.replace(/'/g, "'\\''");
+    const cmd =
+      `mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && ` +
+      `grep -qxF '${safe}' ~/.ssh/authorized_keys && echo GENIE_KEY_PRESENT || { echo '${safe}' >> ~/.ssh/authorized_keys && echo GENIE_KEY_ADDED; }`;
+    try {
+      const res = await exec(cmd);
+      if (res.error) { setState("error"); setError(res.output?.trim().slice(0, 300) || "SSH exec failed"); return; }
+      if (res.output.includes("GENIE_KEY_ADDED")) { setState("added"); setKey(""); }
+      else if (res.output.includes("GENIE_KEY_PRESENT")) { setState("present"); }
+      else { setState("error"); setError(res.output?.trim().slice(0, 300) || "Unexpected response"); }
+    } catch (e: unknown) {
+      setState("error"); setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="mb-3 rounded-md border border-overlay0/15 bg-mantle/40 px-3 py-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <KeyRound size={12} className="text-blue" />
+        <span className="text-md font-medium text-subtext0">Add your SSH key</span>
+      </div>
+      <p className="text-xs text-overlay0 mb-2">
+        Authorize your public key to connect from your own terminal:&nbsp;
+        <span className="font-mono text-overlay1">ssh {connectUser}@{host}</span>
+      </p>
+      <textarea
+        value={key}
+        onChange={(e) => { setKey(e.target.value); setState("idle"); }}
+        placeholder="ssh-ed25519 AAAA... you@laptop"
+        spellCheck={false}
+        rows={2}
+        className="w-full bg-background border border-surface0 rounded px-2 py-1.5 text-xs font-mono text-text outline-none focus:border-blue resize-y"
+      />
+      <div className="flex items-center gap-2 mt-2">
+        <Button size="sm" variant="primary" onClick={add} disabled={!valid || state === "running"}>
+          {state === "running" ? <Loader2 size={12} className="animate-spin mr-1" /> : null}
+          {state === "running" ? "Adding…" : "Add key"}
+        </Button>
+        {key.trim() && !valid && <span className="text-xs text-yellow">Not a valid SSH public key.</span>}
+        {state === "added" && <span className="text-xs text-green inline-flex items-center gap-1"><Check size={11} /> Key authorized.</span>}
+        {state === "present" && <span className="text-xs text-overlay1">Already authorized.</span>}
+        {state === "error" && <span className="text-xs text-red font-mono truncate">{error}</span>}
+      </div>
+    </div>
+  );
+}
+
 type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
@@ -1026,7 +1091,10 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
       )}
 
       {tab === "ssh" && (
-        <VmHostConnectionsPanel {...connectionPanelProps} view="ssh" />
+        <>
+          <AddSshKeyForm exec={exec} connectUser={user} host={vm.host} />
+          <VmHostConnectionsPanel {...connectionPanelProps} view="ssh" />
+        </>
       )}
 
       {tab === "commands" && linked && (
