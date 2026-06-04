@@ -215,7 +215,7 @@ const slides: Slide[] = [
         </h2>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
           {[
-            { icon: <Layers size={18} />, title: "Project Management", desc: "Multi-project dashboard with VPS instances, deploy history, and live stats", color: C.blue },
+            { icon: <Layers size={18} />, title: "Project Management", desc: "Multi-project dashboard with VPS instances and live stats", color: C.blue },
             { icon: <Terminal size={18} />, title: "SSH Terminals", desc: "In-browser terminals with shared sessions and command library", color: C.green },
             { icon: <GitBranch size={18} />, title: "Git Integration", desc: "View branches, commits, and diffs directly from the UI", color: C.mauve },
             { icon: <MessageSquare size={18} />, title: "Team Chat", desc: "DMs and rooms with real-time notifications, reactions, and mentions", color: C.peach },

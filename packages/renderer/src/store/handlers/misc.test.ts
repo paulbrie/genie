@@ -1,5 +1,5 @@
 // Remaining smaller handlers: apps, presence, do/railway probes,
-// chat:session:deleted, vps exec/logs/status, deploy:logs:list.
+// chat:session:deleted, vps exec/logs/status.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
@@ -50,7 +50,7 @@ beforeEach(() => {
   $logBuffers.next({}); $presenceSessions.next([]);
   $doSnapshots.next([]); $doSnapshotsLoading.next(true);
   $doTokenValid.next(null); $railwayTestResult.next(null);
-  $vpsDeploy.next({ instances: {}, activeDeploys: {}, testResult: null, deployLogs: [] });
+  $vpsDeploy.next({ instances: {}, activeDeploys: {}, testResult: null });
   $chat.next({ ...FRESH_CHAT });
   vi.clearAllMocks();
   execCallbacks.clear();
@@ -206,15 +206,6 @@ describe("vps:status:update", () => {
     // The handler intentionally does nothing — it's a server signal that
     // a project:list broadcast is about to arrive. Just ensure it doesn't throw.
     expect(() => vpsHandlers["vps:status:update"]({})).not.toThrow();
-  });
-});
-
-describe("deploy:logs:list", () => {
-  it("writes the deploy log list into $vpsDeploy", () => {
-    vpsHandlers["deploy:logs:list"]({
-      logs: [{ id: "l-1", projectId: "p-1", startedAt: "2026-05-18", status: "success" }],
-    });
-    expect($vpsDeploy.getValue().deployLogs).toHaveLength(1);
   });
 });
 

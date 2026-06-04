@@ -408,8 +408,4 @@ export const handlers: HandlerMap = {
       updateInstanceState(logsInstId, { logs: { serviceName: serviceName || null, logs } });
     }
   },
-
-  "deploy:logs:list": (payload) => {
-    $vpsDeploy.getValue().deployLogs = payload.logs;
-  },
 };

@@ -111,7 +111,6 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   "admin:email": { send: "superadmin", receive: "superadmin" },
   db: { send: "admin", receive: "admin" },
   security: { send: "admin", receive: "admin" },
-  deploy: { send: "admin", receive: "admin" },
   docker: { send: "admin", receive: "admin" },
   logs: { send: "admin", receive: "admin" },
   monitor: { send: "admin", receive: "admin" },

@@ -16,7 +16,7 @@ import type { VpsConnectionConfig, VpsInstanceState } from "../types/vps";
 export const DEFAULT_INSTANCE_STATE: VpsInstanceState = {
   deploying: false, tearingDown: false, hibernating: false, wakingUp: false, rebooting: false,
   progress: [], error: null, logs: null,
-  startedAt: null, endedAt: null, stats: null, statsError: null, deployLogs: [],
+  startedAt: null, endedAt: null, stats: null, statsError: null,
   recipes: {},
   // Seeded so the DeepSubject tracks this key from creation — a field added
   // only by a later mutation isn't reactive (subscribers never re-render).
@@ -319,10 +319,6 @@ export function keepFailedDroplet(instanceId: string): void {
 
 export function clearVpsInstanceState(instanceId: string): void {
   delete $vpsDeploy.getValue().instances[instanceId];
-}
-
-export function loadDeployLogs(projectId: string): void {
-  wsSend("deploy:logs:list", { projectId });
 }
 
 // --- DigitalOcean actions ---

@@ -117,16 +117,6 @@ export interface SshServerInfo {
   credentialId?: string;
 }
 
-export interface DeployLogEntry {
-  id: string;
-  projectId: string;
-  status: "running" | "success" | "error";
-  progress: string[];
-  error: string | null;
-  startedAt: string;
-  endedAt: string | null;
-}
-
 export interface RecipeState {
   recipeId: string;
   checking: boolean;
@@ -149,7 +139,6 @@ export interface VpsInstanceState {
   endedAt: number | null;
   stats: VpsStats | null;
   statsError: string | null;
-  deployLogs: DeployLogEntry[];
   recipes: Record<string, RecipeState>;
   /** Live tmux sessions on the VM, from the on-demand SSH probe
    *  (`vps:stats:refresh` → `vm:conn:stats`). Drives the Manage popup's tmux
@@ -176,7 +165,6 @@ export interface VpsDeployState {
   instances: Record<string, VpsInstanceState>;
   activeDeploys: Record<string, PendingDeploy>;
   testResult: { ok: boolean; hostname?: string; error?: string } | null;
-  deployLogs: DeployLogEntry[];
 }
 
 export interface ProjectCommand {

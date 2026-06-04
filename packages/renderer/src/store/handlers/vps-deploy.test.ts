@@ -10,7 +10,7 @@ const INST = "inst-1";
 
 function resetState() {
   $vpsDeploy.next({
-    instances: {}, activeDeploys: {}, testResult: null, deployLogs: [],
+    instances: {}, activeDeploys: {}, testResult: null,
   });
 }
 
@@ -23,7 +23,7 @@ function makeActiveDeploy(instOverrides = {}, deployOverrides = {}) {
         deploying: true, tearingDown: false, hibernating: false, wakingUp: false, rebooting: false,
         progress: [], error: null, logs: null,
         startedAt: Date.now() - 1000, endedAt: null,
-        stats: null, statsError: null, deployLogs: [],
+        stats: null, statsError: null,
         recipes: {},
         ...instOverrides,
       },
@@ -37,7 +37,6 @@ function makeActiveDeploy(instOverrides = {}, deployOverrides = {}) {
       },
     },
     testResult: null,
-    deployLogs: [],
   });
 }
 
@@ -161,7 +160,6 @@ describe("do:destroy-failed-droplet", () => {
         },
       },
       testResult: null,
-      deployLogs: [],
     });
 
     handlers["do:destroy-failed-droplet:done"]({ dropletId: 111 });

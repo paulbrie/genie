@@ -30,7 +30,7 @@ export const $doTokenValid = new Subject<{ valid: boolean; email?: string } | nu
 export const $railwayTestResult = new Subject<{ ok: boolean; message: string } | null>(null);
 export const $doSnapshots = new Subject<DoSnapshot[]>([]);
 export const $doSnapshotsLoading = new Subject<boolean>(false);
-export const $vpsDeploy = new DeepSubject<VpsDeployState>({ instances: {}, activeDeploys: {}, testResult: null, deployLogs: [] });
+export const $vpsDeploy = new DeepSubject<VpsDeployState>({ instances: {}, activeDeploys: {}, testResult: null });
 
 /** Live VM SSH connections — keyed by `${projectId}:${instanceId}` (or
  *  `direct:${host}:${username}`). One entry per open Manage-popup. */

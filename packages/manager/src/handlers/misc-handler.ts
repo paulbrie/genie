@@ -1,7 +1,7 @@
 import { type WebSocket } from "ws";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { eq, desc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { WsMessage, StatsPayload } from "../types.js";
 import * as projectService from "../project-service.js";
 import * as trackerService from "../tracker-service.js";
@@ -9,7 +9,7 @@ import * as settingsService from "../settings-service.js";
 import { setMonitoringInterval, getDockerBin } from "../monitor.js";
 import { getLogBuffer, clearLogBuffer, getErrorBuffer, clearErrorBuffer } from "../log-capture.js";
 import { getDb } from "../db/index.js";
-import { deployLogs, savedQueries, users } from "../db/schema.js";
+import { savedQueries, users } from "../db/schema.js";
 import {
   type ClientState,
   broadcastStats,
@@ -20,7 +20,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 /** Handle assorted small namespaces: process:kill, docker:*, logs:*,
- *  monitor:set-interval, compose:*, deploy:logs:list, feedback:submit,
+ *  monitor:set-interval, compose:*, feedback:submit,
  *  settings:*, db:saved-queries:*. Returns true if handled. */
 export async function handleMiscMessage(
   ws: WebSocket,
@@ -178,14 +178,6 @@ export async function handleMiscMessage(
       const setupFiles = { ...files, [targetName]: content };
       await projectService.patchProject(projectId, { setupFiles });
       send(ws, { type: "compose:saved", payload: { projectId, ok: true, filePath: targetName, error: null } });
-      return true;
-    }
-
-    case "deploy:logs:list": {
-      const { projectId: logsProjectId } = msg.payload;
-      const logsDb = getDb();
-      const rows = await logsDb.select().from(deployLogs).where(eq(deployLogs.projectId, logsProjectId)).orderBy(desc(deployLogs.startedAt)).limit(20);
-      send(ws, { type: "deploy:logs:list", payload: { projectId: logsProjectId, logs: rows } });
       return true;
     }
 

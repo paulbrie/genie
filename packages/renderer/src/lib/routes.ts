@@ -1,5 +1,5 @@
 import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey } from "@/store/types";
-export type ProjectTab = "deploy-history" | "settings" | "members";
+export type ProjectTab = "settings" | "members";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs";
 export type SettingsTab = "general" | "deploy" | "org";
 
@@ -69,7 +69,6 @@ const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
 ) as Record<string, NavKey>;
 
 const VALID_PROJECT_TABS = new Set<ProjectTab>([
-  "deploy-history",
   "settings",
   "members",
 ]);
@@ -105,7 +104,7 @@ export function buildSettingsPath(tab: SettingsTab, orgId?: string): string {
 }
 
 export function buildProjectPath(slug: string, tab?: ProjectTab): string {
-  const t = tab || "deploy-history";
+  const t = tab || "members";
   return `/projects/${slug}/${t}`;
 }
 
@@ -188,12 +187,12 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
     return { nav };
   }
 
-  // Projects entity + optional tab (default to "deploy-history")
+  // Projects entity + optional tab (default to "members")
   if (nav === "projects") {
     const tab =
       slugSegments.length >= 3 && VALID_PROJECT_TABS.has(slugSegments[2] as ProjectTab)
         ? (slugSegments[2] as ProjectTab)
-        : "deploy-history";
+        : "members";
     return { nav, entitySlug, tab };
   }
 

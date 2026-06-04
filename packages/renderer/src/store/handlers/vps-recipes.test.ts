@@ -6,7 +6,7 @@ const INST = "inst-1";
 const RECIPE = "nodejs-20";
 
 function resetState() {
-  $vpsDeploy.next({ instances: {}, activeDeploys: {}, testResult: null, deployLogs: [] });
+  $vpsDeploy.next({ instances: {}, activeDeploys: {}, testResult: null });
 }
 
 function makeInstanceWithRecipe(overrides = {}) {
@@ -15,7 +15,7 @@ function makeInstanceWithRecipe(overrides = {}) {
       [INST]: {
         deploying: false, tearingDown: false, hibernating: false, wakingUp: false, rebooting: false,
         progress: [], error: null, logs: null,
-        startedAt: null, endedAt: null, stats: null, statsError: null, deployLogs: [],
+        startedAt: null, endedAt: null, stats: null, statsError: null,
         recipes: {
           [RECIPE]: {
             recipeId: RECIPE, checking: false, installed: null,
@@ -25,7 +25,7 @@ function makeInstanceWithRecipe(overrides = {}) {
         },
       },
     },
-    activeDeploys: {}, testResult: null, deployLogs: [],
+    activeDeploys: {}, testResult: null,
   });
 }
 

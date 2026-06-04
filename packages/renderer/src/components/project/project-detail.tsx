@@ -3,10 +3,10 @@
 import { useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import { useSubject, useDeepSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
-import type { BaseImageTemplate, DeployLogEntry, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
+import type { BaseImageTemplate, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
 import { $admin, $auth, $commandRunOutputs, $projects, $selectedProjectId, $vpsDeploy } from "@/store/subjects";
 import { $orgSettings } from "@/store/subjects/org-settings";
-import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadDeployLogs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, unwatchVpsStats, uninstallVpsRecipe, vpsExec, watchVpsStats, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, startMcpTunnel, stopProjectCommand, teardownVps, unwatchVpsStats, uninstallVpsRecipe, vpsExec, watchVpsStats, wakeVps } from "@/store/actions";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
@@ -78,7 +78,6 @@ import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
 import { openManageDropletWindow } from "@/components/admin/digitalocean-panel";
 import { ConnectServerForm } from "@/components/project/connect-server-form";
 import { ProjectMembersTab } from "@/components/project/project-members-tab";
-import { DeployHistoryPanel, DeployHistoryTab } from "@/components/project/deploy-history";
 import { VpsRecipes, VpsRunCommands } from "@/components/project/vps-recipes";
 // Re-export the recipe type interfaces so external imports (default-recipes.ts
 // catalog, admin recipes panel) keep working with their `@/components/project-detail`
@@ -92,38 +91,23 @@ export type { RecipeOption, RecipeSecret, VpsRecipeDef } from "@/components/proj
 export { VpsInstanceCard } from "@/components/project/vps-instance-card";
 
 
-const BASE_PROJECT_TABS: { key: ProjectTab; label: string }[] = [
-  { key: "deploy-history", label: "Deploy History" },
+const PROJECT_TABS: { key: ProjectTab; label: string }[] = [
   { key: "members", label: "Members" },
   { key: "settings", label: "Settings" },
 ];
 
-const badgeCls = "ml-1 text-md bg-surface0 text-overlay1 px-1 py-0.5 rounded-full tabular-nums";
-
-function buildProjectTabs(_project: ProjectDef, vpsDeploy: VpsDeployState): { key: ProjectTab; label: ReactNode }[] {
-  const deployCount = vpsDeploy.deployLogs.length;
-
-  return BASE_PROJECT_TABS.map((tab) => {
-    if (tab.key === "deploy-history" && deployCount > 0) {
-      return { ...tab, label: <>{tab.label}<span className={badgeCls}>{deployCount}</span></> };
-    }
-    return tab;
-  });
-}
-
-export function ProjectDetail({ activeTab = "deploy-history" }: { activeTab?: ProjectTab }) {
+export function ProjectDetail({ activeTab = "members" }: { activeTab?: ProjectTab }) {
   const { navigateToNav, navigateToProjectTab } = useNavigate();
   const [projects] = useSubject($projects);
   const [selectedProjectId] = useSubject($selectedProjectId);
 
   // Subscribe to vpsDeploy state (DeepSubject – listen to all nested changes)
   const vpsDeployState = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
-  const { instances: vpsInstances, activeDeploys: vpsActiveDeploys, testResult: vpsTestResult, deployLogs: vpsDeployLogs } = vpsDeployState;
+  const { instances: vpsInstances, activeDeploys: vpsActiveDeploys, testResult: vpsTestResult } = vpsDeployState;
   const vpsDeploy: VpsDeployState = {
     instances: vpsInstances,
     activeDeploys: vpsActiveDeploys,
     testResult: vpsTestResult,
-    deployLogs: vpsDeployLogs,
   };
 
   const project = projects.find((p) => p.id === selectedProjectId);
@@ -150,7 +134,7 @@ export function ProjectDetail({ activeTab = "deploy-history" }: { activeTab?: Pr
       <ServersBar project={project} vpsDeploy={vpsDeploy} />
 
       <ViewTabs
-        tabs={buildProjectTabs(project, vpsDeploy)}
+        tabs={PROJECT_TABS}
         activeTab={activeTab}
         onTabChange={navigateToProjectTab}
       />
@@ -158,10 +142,6 @@ export function ProjectDetail({ activeTab = "deploy-history" }: { activeTab?: Pr
       {/* Tab content. Files were moved into the Manage popup's Files tab.
           Commands were moved into the Manage popup's Commands tab (so they
           can be run against a specific instance from one place). */}
-      {activeTab === "deploy-history" && (
-        <DeployHistoryTab project={project} vpsDeploy={vpsDeploy} />
-      )}
-
       {activeTab === "members" && (
         <ProjectMembersTab project={project} />
       )}

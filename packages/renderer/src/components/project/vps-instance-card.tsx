@@ -12,7 +12,7 @@ import type {
 import { $vpsDeploy } from "@/store/subjects";
 import {
   addSshTerminalTab, checkVpsStatus, deployToProvider, disconnectVps, fetchVpsLogs, launchClaudeTmuxSshTab,
-  fetchVpsStats, hibernateVps, killVpsProcess, loadDeployLogs, rebootVps, startMcpTunnel, unwatchVpsStats, watchVpsStats,
+  fetchVpsStats, hibernateVps, killVpsProcess, rebootVps, startMcpTunnel, unwatchVpsStats, watchVpsStats,
   teardownVps, vpsExec, wakeVps,
 } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -25,7 +25,6 @@ import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
 import { ProcessCity as IsometricProcessCity } from "@/components/ui/process-city";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
-import { DeployHistoryPanel } from "./deploy-history";
 import { VpsRecipes, VpsRunCommands } from "./vps-recipes";
 
 /** Claude Terminal launch button used inside VpsInstanceCard. Probes for Genie
@@ -396,7 +395,6 @@ export function VpsInstanceCard({
   const [confirmHibernate, setConfirmHibernate] = useState(false);
   const [confirmReboot, setConfirmReboot] = useState(false);
   const [viewingLogs, setViewingLogs] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   const [activeTab, setActiveTab] = useState<InstanceTab>("main");
 
   const isHibernated = !!instance.hibernate;
@@ -579,13 +577,6 @@ export function VpsInstanceCard({
               View all logs
             </button>
             <button
-              onClick={() => { const next = !showHistory; setShowHistory(next); if (next) loadDeployLogs(project.id); }}
-              className="text-md text-peach hover:underline flex items-center gap-1"
-            >
-              <History size={10} />
-              Deploy History
-            </button>
-            <button
               onClick={() => {
                 const { username, host, port, privateKeyPath } = instance.connection;
                 addSshTerminalTab({ host, port, username, privateKeyPath }, `rkhunter @ ${instance.label || host}`, "sudo rkhunter --check --sk");
@@ -597,7 +588,6 @@ export function VpsInstanceCard({
             </button>
           </div>
 
-          {showHistory && <DeployHistoryPanel logs={instanceState?.deployLogs ?? []} onClose={() => setShowHistory(false)} />}
           {viewingLogs && <VpsLogViewer projectId={project.id} instanceId={instance.id} logs={instanceState?.logs ?? null} onClose={() => setViewingLogs(false)} />}
 
           {/* Restart — DO soft reboot. Disabled while other actions are running so
