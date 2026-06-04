@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { forwardRef, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -18,10 +18,50 @@ export function ActionMenuBackdrop({ onClose }: { onClose: () => void }) {
 
 export const ActionMenuPanel = forwardRef<
   HTMLDivElement,
-  { children: ReactNode; className?: string; style?: React.CSSProperties }
->(function ActionMenuPanel({ children, className, style }, ref) {
+  {
+    children: ReactNode;
+    className?: string;
+    style?: React.CSSProperties;
+    /** When set, the panel owns its vertical anchor relative to the trigger:
+     *  it opens downward (`top-full`) by default, and flips upward (`bottom-full`)
+     *  if a downward open would overflow the viewport bottom. Callers must NOT
+     *  pass their own `top-full`/`bottom-full` in `className`. */
+    autoFlip?: boolean;
+  }
+>(function ActionMenuPanel({ children, className, style, autoFlip }, ref) {
+  const innerRef = useRef<HTMLDivElement | null>(null);
+  const [openUp, setOpenUp] = useState(false);
+
+  const setRefs = (node: HTMLDivElement | null) => {
+    innerRef.current = node;
+    if (typeof ref === "function") ref(node);
+    else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
+  };
+
+  useLayoutEffect(() => {
+    if (!autoFlip) return;
+    const el = innerRef.current;
+    if (!el) return;
+    // Measure the default downward render; flip up if it would spill past the
+    // bottom edge and there's more room above the trigger than below it.
+    const rect = el.getBoundingClientRect();
+    const overflowsBottom = rect.bottom > window.innerHeight - 8;
+    const spaceAbove = rect.top; // ≈ trigger bottom in downward mode
+    const spaceBelow = window.innerHeight - rect.top;
+    setOpenUp(overflowsBottom && spaceAbove > spaceBelow);
+  }, [autoFlip, children]);
+
   return (
-    <div ref={ref} className={cn(actionMenuPanelClass, "z-[1000]", className)} style={style}>
+    <div
+      ref={setRefs}
+      className={cn(
+        actionMenuPanelClass,
+        "z-[1000]",
+        autoFlip && (openUp ? "bottom-full mb-1" : "top-full mt-1"),
+        className,
+      )}
+      style={style}
+    >
       {children}
     </div>
   );

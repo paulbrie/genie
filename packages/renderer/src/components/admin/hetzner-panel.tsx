@@ -302,7 +302,7 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
                 {actionMenuOpenFor === s.id && (
                   <>
                     <ActionMenuBackdrop onClose={() => setActionMenuOpenFor(null)} />
-                    <ActionMenuPanel className="absolute right-0 top-full mt-1 z-20">
+                    <ActionMenuPanel autoFlip className="absolute right-0 z-20">
                       {!isRenaming && (
                         <ActionMenuItem icon={Pencil} onClick={() => { setActionMenuOpenFor(null); startRename(s); }}>Rename</ActionMenuItem>
                       )}
