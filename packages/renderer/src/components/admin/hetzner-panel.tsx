@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSubject } from "subjecto/react";
+import { useSubject, useDeepSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Pencil, Check, X, Plus, Lock, Unlock, RotateCw, Shield, MoreVertical, Search, Trash2, Terminal, Unlink } from "lucide-react";
 import type { AdminHetznerServer, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { $orgSettings } from "@/store/subjects/org-settings";
 import {
-  addSshTerminalTab, createAdminHetznerServer, disconnectVps, fetchVpsStats, focusWindow,
+  addSshTerminalTab, disconnectVps, fetchVpsStats, focusWindow,
   loadAdminHetznerServers, loadAdminHetznerStats, lockAdminHetznerServer, openWindow,
   rebootAdminHetznerServer, registerWindow, renameAdminHetznerServer, startSecurityScan,
   switchNav, unlockAdminHetznerServer,
@@ -15,7 +16,6 @@ import { wsRequest, wsSend } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { AttachVmToProject } from "@/components/project/attach-vm-to-project";
 import { ServerDeleteConfirm } from "@/components/ui/server-delete-confirm";
@@ -29,21 +29,10 @@ import { cardStatusPill } from "@/components/admin/tazcloud-panel";
 import { vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
 import { CloudVmResourceBlock } from "@/components/cloud/cloud-vm-resource-block";
 import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
-import {
-  HETZNER_IMAGES, HETZNER_LOCATIONS, DEFAULT_HETZNER_LOCATION,
-  hetznerTypesForLocation, defaultHetznerTypeForLocation,
-} from "@/lib/hetzner-options";
+import { DeployVmModal } from "@/components/cloud/deploy-vm-modal";
 import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
 
 type PendingDeleteId = number | null;
-
-function defaultServerName(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const rand = Math.random().toString(36).slice(2, 5);
-  return `hz-${ts}-${rand}`;
-}
 
 const HZ_STATS_POLL_MS = 60_000;
 
@@ -55,23 +44,7 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
   const [pendingDelete, setPendingDelete] = useState<PendingDeleteId>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [deployOpen, setDeployOpen] = useState(false);
-  const [serverName, setServerName] = useState(defaultServerName());
-  const [serverLocation, setServerLocation] = useState(DEFAULT_HETZNER_LOCATION);
-  const [serverType, setServerType] = useState(defaultHetznerTypeForLocation(DEFAULT_HETZNER_LOCATION));
-  const [serverImage, setServerImage] = useState("ubuntu-22.04");
-  // Server types are location-specific (US vs EU/SIN use different CPX slugs).
-  const typeOptions = hetznerTypesForLocation(serverLocation);
-
-  // When the location changes, snap the selected type to one that location can
-  // actually place — otherwise the create call returns "error during placement".
-  function changeLocation(loc: string) {
-    setServerLocation(loc);
-    const valid = hetznerTypesForLocation(loc);
-    if (!valid.some((t) => t.name === serverType)) {
-      setServerType(defaultHetznerTypeForLocation(loc));
-    }
-  }
+  const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [actionMenuOpenFor, setActionMenuOpenFor] = useState<number | null>(null);
   const [search, setSearch] = useState("");
 
@@ -79,7 +52,13 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
   // Privileged roles manage the whole account; everyone else gets a read-only
   // view of the servers they can access (backend scopes the list/stats).
   const canManage = isSuperAdmin || auth.user?.role === "admin" || auth.user?.role === "tazcloud";
-  const { servers, loading, error, creating, createError } = admin.hetzner;
+  // Bare VMs (no project) are for privileged roles + org owners/admins; everyone
+  // else deploys by attaching to a project they can access. Show the Deploy
+  // button to anyone who can do either.
+  const [orgMine] = useDeepSubject($orgSettings, "mine");
+  const canBare = canManage || orgMine.length > 0;
+  const canDeploy = canBare || projects.length > 0;
+  const { servers, loading, error } = admin.hetzner;
 
   useEffect(() => {
     loadAdminHetznerServers();
@@ -100,28 +79,6 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
     const t = window.setInterval(() => loadAdminHetznerStats(), HZ_STATS_POLL_MS);
     return () => window.clearInterval(t);
   }, []);
-
-  // Auto-close the deploy form when create succeeds.
-  const prevCreatingRef = useRef(false);
-  useEffect(() => {
-    if (prevCreatingRef.current && !creating && !createError) setDeployOpen(false);
-    prevCreatingRef.current = creating;
-  }, [creating, createError]);
-
-  function toggleDeploy() {
-    if (deployOpen) {
-      setDeployOpen(false);
-    } else {
-      setServerName(defaultServerName());
-      setDeployOpen(true);
-    }
-  }
-
-  function submitCreate() {
-    const trimmed = serverName.trim();
-    if (!trimmed) return;
-    createAdminHetznerServer({ name: trimmed, region: serverLocation, size: serverType, image: serverImage });
-  }
 
   function startRename(s: AdminHetznerServer) {
     setRenamingId(s.id);
@@ -162,10 +119,10 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
           )}
         </div>
         <div className="flex-1" />
-        {canManage && (
-          <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
+        {canDeploy && (
+          <Button size="sm" variant="primary" onClick={() => setDeployModalOpen(true)}>
             <Plus size={14} className="mr-1" />
-            {deployOpen ? "Cancel" : "Deploy Server"}
+            Deploy Server
           </Button>
         )}
         <Button size="sm" onClick={() => loadAdminHetznerServers()} disabled={loading}>
@@ -174,48 +131,9 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
         </Button>
       </div>
 
-      {deployOpen && (
-        <div className="mb-3 px-3 py-3 border border-overlay0/20 rounded-lg bg-mantle/60 flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1 min-w-[200px] flex-1">
-            <label className="text-md text-overlay0">Name</label>
-            <input
-              type="text"
-              value={serverName}
-              onChange={(e) => setServerName(e.target.value)}
-              spellCheck={false}
-              disabled={creating}
-              className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue disabled:opacity-50"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-md text-overlay0">Location</label>
-            <Select value={serverLocation} onChange={(e) => changeLocation(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-              {HETZNER_LOCATIONS.map((l) => <option key={l.name} value={l.name}>{l.label}</option>)}
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-md text-overlay0">Server Type</label>
-            <Select value={serverType} onChange={(e) => setServerType(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-              {typeOptions.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-md text-overlay0">Image</label>
-            <Select value={serverImage} onChange={(e) => setServerImage(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-              {HETZNER_IMAGES.map((img) => <option key={img} value={img}>{img}</option>)}
-            </Select>
-          </div>
-          <Button variant="primary" size="sm" onClick={submitCreate} disabled={creating || !serverName.trim()}>
-            {creating ? <Loader2 size={14} className="animate-spin mr-1" /> : null}
-            {creating ? "Creating…" : "Create"}
-          </Button>
-          <p className="basis-full text-xs text-overlay0 italic">
-            Creates a bare Hetzner server via the API — no Genie setup.sh run. The genie SSH key is uploaded and authorized.
-          </p>
-        </div>
-      )}
+      <DeployVmModal open={deployModalOpen} onClose={() => setDeployModalOpen(false)} provider="hetzner" canBare={canBare} />
 
-      {createError && <div className="mb-3"><ErrorMessage variant="banner">Create failed: {createError}</ErrorMessage></div>}
+      {admin.hetzner.createError && <div className="mb-3"><ErrorMessage variant="banner">Create failed: {admin.hetzner.createError}</ErrorMessage></div>}
       {error && <div className="mb-3"><ErrorMessage variant="banner">{error}</ErrorMessage></div>}
 
       <div>

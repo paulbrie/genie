@@ -355,13 +355,17 @@ export function deployToProvider(
   provider: DeployProvider,
   label?: string,
   instanceId?: string,
+  /** Optional provider config overrides (region/location, size/type, image) —
+   *  used by the Clouds deploy modal so the form's selection wins over the
+   *  project's stored vps settings. */
+  overrides?: { region?: string; size?: string; image?: string },
 ): void {
   const id = instanceId || crypto.randomUUID();
   $vpsDeploy.getValue().activeDeploys[id] = {
     projectId, instanceId: id, deploying: true, progress: [], error: null,
     startedAt: Date.now(), endedAt: null, failedDroplet: null, destroyingDroplet: false,
   };
-  wsSend(DEPLOY_WS_TYPE[provider], { projectId, label, instanceId: id });
+  wsSend(DEPLOY_WS_TYPE[provider], { projectId, label, instanceId: id, ...(overrides ?? {}) });
 }
 
 export function cancelVpsDeploy(projectId: string, provider: DeployProvider = "digitalocean"): void {

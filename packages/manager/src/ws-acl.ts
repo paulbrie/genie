@@ -196,6 +196,24 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   "admin:hetzner:list:stale": { receive: "user" },
   "admin:hetzner:stats": { send: "user", receive: "user", notes: "handler probes only the caller's accessible servers" },
   "admin:hetzner:resolve-ssh-user": { send: "user", receive: "user", notes: "handler enforces per-VM ownership for non-admins" },
+
+  // Deploy (create) is available to org owners/admins too, not just tazcloud+.
+  // The create handlers re-check: caller must be privileged OR manage ≥1 org.
+  // Other mutations (delete/rename/reboot/…) stay tazcloud+ via the default.
+  "admin:droplets:create": { send: "user", notes: "handler requires privileged role or org-admin" },
+  "admin:droplets:created": { receive: "user" },
+  "admin:droplets:create:error": { receive: "user" },
+  "admin:hetzner:create": { send: "user", notes: "handler requires privileged role or org-admin" },
+  "admin:hetzner:created": { receive: "user" },
+  "admin:hetzner:create:error": { receive: "user" },
+
+  // Deploy-and-attach-to-project from the Clouds modal: any user may deploy to a
+  // project they can access (the deploy handlers re-check userCanSeeProject).
+  // Progress/done/error come back over the vps:* namespace (already user-level).
+  "do:deploy": { send: "user", notes: "handler enforces project access" },
+  "do:cancel": { send: "user" },
+  "hetzner:deploy": { send: "user", notes: "handler enforces project access" },
+  "hetzner:cancel": { send: "user" },
   "admin:server:tunnel:ensure": { send: "user", notes: "open one SSH tunnel per server (handler enforces access)" },
   "admin:server:tunnel:ready": { receive: "user" },
   "admin:server:tunnel:error": { receive: "user" },

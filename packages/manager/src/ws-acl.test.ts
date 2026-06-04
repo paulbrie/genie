@@ -88,9 +88,11 @@ describe("ws-acl", () => {
       expect(canSend("tazcloud", "admin:droplets:list")).toBe(true);
       expect(canSend("admin", "admin:droplets:list")).toBe(true);
       expect(canReceive("user", "admin:droplets:list:stale")).toBe(true);
-      // Mutations stay tazcloud+ via the namespace default.
-      expect(canSend("user", "admin:droplets:create")).toBe(false);
+      // Deploy (create) is open to users too (handler requires org-admin/privileged).
+      expect(canSend("user", "admin:droplets:create")).toBe(true);
+      // Other mutations stay tazcloud+ via the namespace default.
       expect(canSend("user", "admin:droplets:delete")).toBe(false);
+      expect(canSend("user", "admin:droplets:rename")).toBe(false);
     });
 
     it("admin:tazcloud sub-namespace is tazcloud-accessible", () => {
@@ -99,7 +101,9 @@ describe("ws-acl", () => {
     });
 
     it("longer namespace prefix wins over shorter (admin:droplets beats admin)", () => {
-      const entry = getEntry("admin:droplets:create");
+      // admin:droplets:delete has no per-type override, so it resolves to the
+      // admin:droplets namespace default (tazcloud), not the broader admin one.
+      const entry = getEntry("admin:droplets:delete");
       expect(entry?.receive).toBe("tazcloud");
     });
 
@@ -168,9 +172,9 @@ describe("ws-acl", () => {
       expect(canReceive("user", "admin:tazcloud:exec:progress")).toBe(true);
     });
 
-    it("other admin:droplets / admin:tazcloud ops stay tazcloud+ (exec override doesn't cascade)", () => {
+    it("other admin:droplets / admin:tazcloud ops stay tazcloud+ (exec/create overrides don't cascade)", () => {
       expect(canSend("user", "admin:droplets:delete")).toBe(false);
-      expect(canSend("user", "admin:droplets:create")).toBe(false);
+      expect(canSend("user", "admin:droplets:rename")).toBe(false);
       expect(canSend("user", "admin:tazcloud:create")).toBe(false);
       expect(canSend("tazcloud", "admin:droplets:delete")).toBe(true);
     });

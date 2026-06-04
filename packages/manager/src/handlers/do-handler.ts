@@ -10,6 +10,7 @@ import { isPrivilegedRole } from "../ws-acl.js";
 import * as projectService from "../project-service.js";
 import * as cloudVmAliases from "../cloud-vm-alias-service.js";
 import * as settingsService from "../settings-service.js";
+import * as orgService from "../org-service.js";
 import { createDoClient } from "../vps/do-api-client.js";
 import { doProvisionAndDeploy, doDestroyDroplet, ensureGenieKeyOnDisk, ensureGenieKeyPair, sshKeyFingerprint } from "../vps/do-provision.js";
 import { attachDoDomain, detachDoDomain, loadNamecheapConfig, assertNamecheapConfig, getDropletDomain, setDropletDomain, removeDropletDomain, getDropletDomainMap } from "../vps/do-domain.js";
@@ -87,12 +88,20 @@ export async function handleDoMessage(
     }
 
     case "do:deploy": {
-      const { projectId: doProjectId, instanceId: doInstanceId, label: doLabel } = msg.payload;
+      const { projectId: doProjectId, instanceId: doInstanceId, label: doLabel,
+        region: doRegionOverride, size: doSizeOverride } = msg.payload;
       const doProject = await projectService.getById(doProjectId);
       if (!doProject) {
         send(ws, { type: "vps:deploy:error", payload: { projectId: doProjectId, message: "Project not found" } });
         return true;
       }
+      // Any user may deploy to a project they can access; privileged roles to any.
+      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, doProjectId))) {
+        send(ws, { type: "vps:deploy:error", payload: { projectId: doProjectId, message: "Not authorized to deploy to this project" } });
+        return true;
+      }
+      const doRegion = doRegionOverride || doProject.vpsRegion || undefined;
+      const doSize = doSizeOverride || doProject.vpsSize || undefined;
       const doToken = await settingsService.resolveDoToken(doProjectId);
       if (!doToken) {
         send(ws, { type: "vps:deploy:error", payload: { projectId: doProjectId, message: "DigitalOcean API token not configured. Add it in Settings." } });
@@ -128,8 +137,8 @@ export async function handleDoMessage(
         {
           token: doToken,
           projectName: doProject.name,
-          region: doProject.vpsRegion || undefined,
-          size: doProject.vpsSize || undefined,
+          region: doRegion,
+          size: doSize,
           signal: abortController.signal,
           gitlabDeployKey: gitlabKey || undefined,
           envVars: doProject.secrets?.reduce((acc, s) => { if (s.key) acc[s.key] = s.value; return acc; }, {} as Record<string, string>),
@@ -198,6 +207,7 @@ export async function handleDoMessage(
           await projectService.addVpsInstance(doProjectId, instance);
         }
         await broadcastProjectList();
+        broadcast({ type: "admin:droplets:list:stale", payload: {} });
         await doDb.update(deployLogs).set({ status: "success", progress: doProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, doDeployLogId));
         if (doAgentMemoryCreated) {
           send(ws, { type: "vps:deploy:progress", payload: { projectId: doProjectId, instanceId: newDoInstanceId, message: "Created AGENT.md — ask Genie to explore your codebase to build memory." } });
@@ -220,8 +230,8 @@ export async function handleDoMessage(
             digitalocean: {
               dropletId: ((err as Error & { dropletId?: number }).dropletId)!,
               ipAddress: ((err as Error & { dropletIp?: string }).dropletIp) || "unknown",
-              region: doProject.vpsRegion || "unknown",
-              size: doProject.vpsSize || "unknown",
+              region: doRegion || "unknown",
+              size: doSize || "unknown",
             },
             deployFailed: true,
             deployError: (err instanceof Error ? err.message : String(err)),
@@ -385,6 +395,11 @@ export async function handleDoMessage(
 
     case "admin:droplets:create": {
       try {
+        // Deploy is open to org owners/admins too (not just tazcloud+). The ACL
+        // lets the message through at "user"; we re-check the real capability here.
+        if (!isPrivilegedRole(role) && (await orgService.manageableOrgIds(userId)).length === 0) {
+          throw new Error("Only admins and org owners can deploy servers");
+        }
         const { name, region, size, image } = msg.payload as {
           name: string; region: string; size: string; image: string;
         };

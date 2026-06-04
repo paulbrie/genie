@@ -11,6 +11,7 @@ import * as projectService from "../project-service.js";
 import * as settingsService from "../settings-service.js";
 import * as cloudVmAliases from "../cloud-vm-alias-service.js";
 import * as cloudVmLocks from "../cloud-vm-lock-service.js";
+import * as orgService from "../org-service.js";
 import { createHetznerClient, getServerPublicIp } from "../vps/hetzner-api-client.js";
 import { hetznerProvisionAndDeploy, hetznerDestroyServer } from "../vps/hetzner-provision.js";
 import { ensureGenieKeyOnDisk, ensureGenieKeyPair, sshKeyFingerprint } from "../vps/do-provision.js";
@@ -57,12 +58,21 @@ export async function handleHetznerMessage(
     }
 
     case "hetzner:deploy": {
-      const { projectId: hzProjectId, instanceId: hzInstanceId, label: hzLabel } = msg.payload;
+      const { projectId: hzProjectId, instanceId: hzInstanceId, label: hzLabel,
+        region: hzRegionOverride, size: hzSizeOverride, image: hzImageOverride } = msg.payload;
       const hzProject = await projectService.getById(hzProjectId);
       if (!hzProject) {
         send(ws, { type: "vps:deploy:error", payload: { projectId: hzProjectId, message: "Project not found" } });
         return true;
       }
+      // Any user may deploy to a project they can access; privileged roles to any.
+      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, hzProjectId))) {
+        send(ws, { type: "vps:deploy:error", payload: { projectId: hzProjectId, message: "Not authorized to deploy to this project" } });
+        return true;
+      }
+      const hzLocation = hzRegionOverride || hzProject.vpsRegion || undefined;
+      const hzServerType = hzSizeOverride || hzProject.vpsSize || undefined;
+      const hzImage = hzImageOverride || hzProject.vpsImage || undefined;
       const hzToken = await settingsService.resolveHetznerToken(hzProjectId);
       if (!hzToken) {
         send(ws, { type: "vps:deploy:error", payload: { projectId: hzProjectId, message: "Hetzner API token not configured. Add it in Settings." } });
@@ -85,7 +95,7 @@ export async function handleHetznerMessage(
       const hzDeployLogId = hzLogRow.id;
       const hzProgressAcc: string[] = [];
 
-      const hzFirstMsg = `Starting Hetzner auto-provision for "${hzProject.name}" (type: ${hzProject.vpsSize || "cpx22"}, location: ${hzProject.vpsRegion || "nbg1"})...`;
+      const hzFirstMsg = `Starting Hetzner auto-provision for "${hzProject.name}" (type: ${hzServerType || "cpx22"}, location: ${hzLocation || "nbg1"})...`;
       hzProgressAcc.push(hzFirstMsg);
       send(ws, { type: "vps:deploy:progress", payload: { projectId: hzProjectId, instanceId: newHzInstanceId, message: hzFirstMsg } });
 
@@ -95,9 +105,9 @@ export async function handleHetznerMessage(
         {
           token: hzToken,
           projectName: hzProject.name,
-          location: hzProject.vpsRegion || undefined,
-          serverType: hzProject.vpsSize || undefined,
-          image: hzProject.vpsImage || undefined,
+          location: hzLocation,
+          serverType: hzServerType,
+          image: hzImage,
           signal: abortController.signal,
           gitlabDeployKey: gitlabKey || undefined,
           envVars: hzProject.secrets?.reduce((acc, s) => { if (s.key) acc[s.key] = s.value; return acc; }, {} as Record<string, string>),
@@ -167,6 +177,7 @@ export async function handleHetznerMessage(
           await projectService.addVpsInstance(hzProjectId, instance);
         }
         await broadcastProjectList();
+        broadcast({ type: "admin:hetzner:list:stale", payload: {} });
         await hzDb.update(deployLogs).set({ status: "success", progress: hzProgressAcc, endedAt: new Date() }).where(eq(deployLogs.id, hzDeployLogId));
         send(ws, { type: "vps:deploy:done", payload: { projectId: hzProjectId, instanceId: newHzInstanceId, services: instance.services, deployLogId: hzDeployLogId } });
       }).catch(async (err: unknown) => {
@@ -189,8 +200,8 @@ export async function handleHetznerMessage(
             hetzner: {
               serverId: failedServerId,
               ipAddress: failedServerIp || "unknown",
-              location: hzProject.vpsRegion || "unknown",
-              serverType: hzProject.vpsSize || "unknown",
+              location: hzLocation || "unknown",
+              serverType: hzServerType || "unknown",
             },
             deployFailed: true,
             deployError: message,
@@ -294,6 +305,10 @@ export async function handleHetznerMessage(
 
     case "admin:hetzner:create": {
       try {
+        // Deploy is open to org owners/admins too (not just tazcloud+); re-check here.
+        if (!isPrivilegedRole(role) && (await orgService.manageableOrgIds(userId)).length === 0) {
+          throw new Error("Only admins and org owners can deploy servers");
+        }
         const { name, region, size, image } = msg.payload as {
           name: string; region: string; size: string; image: string;
         };

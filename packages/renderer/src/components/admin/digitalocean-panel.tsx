@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSubject } from "subjecto/react";
+import { useSubject, useDeepSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, RotateCw, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink, Globe } from "lucide-react";
 import type { AdminDroplet, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
-import { addSshTerminalTab, attachAdminDropletDomain, createAdminDroplet, detachAdminDropletDomain, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, rebootAdminDroplet, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
+import { $orgSettings } from "@/store/subjects/org-settings";
+import { addSshTerminalTab, attachAdminDropletDomain, detachAdminDropletDomain, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, rebootAdminDroplet, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { wsRequest } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -24,27 +25,15 @@ import { cardStatusPill } from "@/components/admin/tazcloud-panel";
 import { vpsStatsToBarStats, isPrivateHostAddress } from "@/components/project/vps-resource-gauges";
 import { CloudVmResourceBlock } from "@/components/cloud/cloud-vm-resource-block";
 import { findLinkedInstance, vpsMetricKey } from "@/lib/cloud-vm-metrics";
+import { DeployVmModal } from "@/components/cloud/deploy-vm-modal";
 import { ManageVmPopup, type ManageVm } from "@/components/tazcloud/manage-vm-popup";
 
 // Confirmation type for the inline delete UI on each row.
 type PendingDeleteId = number | null;
 
-// Common DO option slugs. Static lists keep the form self-contained — the DO
-// account is the source of truth at create-time and will reject anything invalid.
-const REGIONS = ["nyc1", "nyc3", "sfo2", "sfo3", "ams3", "fra1", "lon1", "sgp1", "tor1", "blr1", "syd1"];
-const SIZES = ["s-1vcpu-1gb", "s-1vcpu-2gb", "s-2vcpu-2gb", "s-2vcpu-4gb", "s-4vcpu-8gb"];
-const IMAGES = ["ubuntu-22-04-x64", "ubuntu-24-04-x64", "debian-12-x64", "almalinux-9-x64"];
 // Slugs offered in the per-row resize form. DO rejects cross-family moves
 // (s-* ↔ c-* ↔ m-*) so we stick to the s-* tier here.
 const RESIZE_SIZES = ["s-1vcpu-1gb", "s-1vcpu-2gb", "s-2vcpu-2gb", "s-2vcpu-4gb", "s-4vcpu-8gb", "s-8vcpu-16gb"];
-
-function defaultDropletName(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const rand = Math.random().toString(36).slice(2, 5);
-  return `do-${ts}-${rand}`;
-}
 
 /** Row shape for hibernated instances — flattened from project.vpsInstances[].hibernate. */
 interface HibernatedRow {
@@ -69,11 +58,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
   const [pendingDelete, setPendingDelete] = useState<PendingDeleteId>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [deployOpen, setDeployOpen] = useState(false);
-  const [dropletName, setDropletName] = useState(defaultDropletName());
-  const [dropletRegion, setDropletRegion] = useState("nyc1");
-  const [dropletSize, setDropletSize] = useState("s-1vcpu-1gb");
-  const [dropletImage, setDropletImage] = useState("ubuntu-22-04-x64");
+  const [deployModalOpen, setDeployModalOpen] = useState(false);
   // Per-row resize form state: dropletId → draft. `null` means the form is closed
   // for that row. Disk-grow is opt-in (the default is reversible CPU/RAM only).
   const [resizeDraftFor, setResizeDraftFor] = useState<number | null>(null);
@@ -111,6 +96,12 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
   // users) gets a read-only view of just the droplets they can access. The
   // backend scopes the list/stats; the UI hides the management controls.
   const canManage = isSuperAdmin || auth.user?.role === "admin" || auth.user?.role === "tazcloud";
+  // Bare VMs (no project) are for privileged roles + org owners/admins; everyone
+  // else deploys by attaching to a project they can access. Show Deploy to
+  // anyone who can do either.
+  const [orgMine] = useDeepSubject($orgSettings, "mine");
+  const canBare = canManage || orgMine.length > 0;
+  const canDeploy = canBare || projects.length > 0;
 
   useEffect(() => {
     loadAdminDroplets();
@@ -131,32 +122,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
     }
   }, [manager.running]);
 
-  // Auto-close the deploy form when create succeeds (creating: true → false, no error).
-  const prevCreatingRef = useRef(false);
-  useEffect(() => {
-    if (prevCreatingRef.current && !admin.dropletsCreating && !admin.dropletsCreateError) {
-      setDeployOpen(false);
-    }
-    prevCreatingRef.current = admin.dropletsCreating;
-  }, [admin.dropletsCreating, admin.dropletsCreateError]);
-
-
-  const { droplets, dropletsLoading: loading, dropletsError: error, dropletsCreating: creating, dropletsCreateError: createError } = admin;
-
-  function toggleDeploy() {
-    if (deployOpen) {
-      setDeployOpen(false);
-    } else {
-      setDropletName(defaultDropletName());
-      setDeployOpen(true);
-    }
-  }
-
-  function submitCreate() {
-    const trimmed = dropletName.trim();
-    if (!trimmed) return;
-    createAdminDroplet({ name: trimmed, region: dropletRegion, size: dropletSize, image: dropletImage });
-  }
+  const { droplets, dropletsLoading: loading, dropletsError: error, dropletsCreateError: createError } = admin;
 
   function confirmDelete(id: number) {
     setPendingDelete(id);
@@ -205,10 +171,10 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
           )}
         </div>
         <div className="flex-1" />
-        {canManage && (
-          <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
+        {canDeploy && (
+          <Button size="sm" variant="primary" onClick={() => setDeployModalOpen(true)}>
             <Plus size={14} className="mr-1" />
-            {deployOpen ? "Cancel" : "Deploy Droplet"}
+            Deploy Droplet
           </Button>
         )}
         <Button size="sm" onClick={() => loadAdminDroplets()} disabled={loading}>
@@ -217,46 +183,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
         </Button>
       </div>
 
-      {deployOpen && (
-        <div className="mb-3 px-3 py-3 border border-overlay0/20 rounded-lg bg-mantle/60 flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1 min-w-[200px] flex-1">
-            <label className="text-md text-overlay0">Name</label>
-            <input
-              type="text"
-              value={dropletName}
-              onChange={(e) => setDropletName(e.target.value)}
-              spellCheck={false}
-              disabled={creating}
-              className="bg-background border border-surface0 rounded-md px-2.5 py-1.5 text-md text-text outline-none font-mono focus:border-blue disabled:opacity-50"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-md text-overlay0">Region</label>
-            <Select value={dropletRegion} onChange={(e) => setDropletRegion(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-              {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-md text-overlay0">Size</label>
-            <Select value={dropletSize} onChange={(e) => setDropletSize(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-              {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-md text-overlay0">Image</label>
-            <Select value={dropletImage} onChange={(e) => setDropletImage(e.target.value)} disabled={creating} className="py-1.5 text-md font-sans">
-              {IMAGES.map((img) => <option key={img} value={img}>{img}</option>)}
-            </Select>
-          </div>
-          <Button variant="primary" size="sm" onClick={submitCreate} disabled={creating || !dropletName.trim()}>
-            {creating ? <Loader2 size={14} className="animate-spin mr-1" /> : null}
-            {creating ? "Creating…" : "Create"}
-          </Button>
-          <p className="basis-full text-xs text-overlay0 italic">
-            Creates a bare DigitalOcean droplet via the API — no Genie setup.sh run. The genie SSH key is uploaded and authorized.
-          </p>
-        </div>
-      )}
+      <DeployVmModal open={deployModalOpen} onClose={() => setDeployModalOpen(false)} provider="digitalocean" canBare={canBare} />
 
       {createError && (
         <div className="mb-3">
