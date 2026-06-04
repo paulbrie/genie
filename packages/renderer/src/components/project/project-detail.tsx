@@ -569,11 +569,19 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<RuleForm>(EMPTY_RULE_FORM);
 
+  // The parent (Manage popup) recreates `exec` on every render, and it
+  // re-renders periodically as live stats stream in. Keep it in a ref so
+  // fetchStatus/execAndRefresh have stable identities — otherwise the mount
+  // effect below would re-fire on every stats tick (re-probing the firewall
+  // every few seconds) and race with an in-flight Enable/Disable.
+  const execRef = useRef(exec);
+  execRef.current = exec;
+
   const fetchStatus = useCallback(async () => {
     setRefreshing(true);
     setError(null);
     try {
-      const res = await exec("sudo ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
+      const res = await execRef.current("sudo ufw status numbered 2>/dev/null || echo 'UFW_NOT_INSTALLED'");
       // SSH-layer failure (handshake timeout, key rejected, host unreachable):
       // the exec never reached `ufw`. Surface the error instead of misreporting
       // "Inactive" — otherwise users see a false-negative firewall state with
@@ -605,18 +613,20 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
       setRefreshing(false);
       setInitialLoading(false);
     }
-  }, [exec]);
+  }, []);
 
+  // Probe once when the Firewall tab opens (this component mounts), not on a
+  // timer — re-opening the tab remounts and re-probes.
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
   const execAndRefresh = useCallback(async (cmd: string) => {
     setActionLoading(true);
     setError(null);
-    const res = await exec(cmd);
+    const res = await execRef.current(cmd);
     if (res.error) setError(res.output);
     await fetchStatus();
     setActionLoading(false);
-  }, [exec, fetchStatus]);
+  }, [fetchStatus]);
 
   const enableFirewall = useCallback(() => {
     // Order matters: whitelist SSH (22) and the app port (3000) on **both**
