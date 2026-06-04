@@ -229,7 +229,9 @@ export async function handleTrackerRequest(
       const description = typeof args.description === "string" ? args.description : undefined;
       const status = typeof args.status === "string" ? args.status : undefined;
       const priority = typeof args.priority === "string" ? args.priority : undefined;
-      const created = await trackerService.createIssue("system", { projectId, title: title.trim(), description, status, priority });
+      // null author — the issue is created by the Genie agent, not a user (the
+      // tracker_issues.created_by column is nullable; "system" is not a UUID).
+      const created = await trackerService.createIssue(null, { projectId, title: title.trim(), description, status, priority });
       if (created) opts?.onIssueUpdated?.();
       return jsonRpcResponse(id, {
         content: [{ type: "text", text: created ? `Created issue #${created.identifier}: ${created.title}` : "Failed to create issue." }],

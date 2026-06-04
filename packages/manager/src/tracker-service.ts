@@ -134,7 +134,7 @@ function formatIssue(
     assigneeId: string | null;
     assigneeName: string | null;
     assigneeAvatar: string | null;
-    createdBy: string;
+    createdBy: string | null;
     sortOrder: number;
     createdAt: Date;
     updatedAt: Date;
@@ -237,7 +237,7 @@ export async function getIssue(issueId: string) {
 }
 
 export async function createIssue(
-  userId: string,
+  userId: string | null,
   fields: {
     projectId: string;
     title: string;
@@ -267,7 +267,7 @@ export async function createIssue(
       status: (fields.status as typeof trackerIssues.$inferInsert.status) || "todo",
       priority: (fields.priority as typeof trackerIssues.$inferInsert.priority) || "none",
       assigneeId: fields.assigneeId || null,
-      createdBy: userId,
+      createdBy: userId || null,
       sortOrder,
     })
     .returning();

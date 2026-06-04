@@ -20,7 +20,8 @@ export interface TrackerIssue {
   labels: TrackerLabel[];
   commentCount: number;
   commenters: { name: string; avatar: string | null }[];
-  createdBy: string;
+  /** null for agent/MCP-created issues (no human author). */
+  createdBy: string | null;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;

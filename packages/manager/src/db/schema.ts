@@ -173,7 +173,9 @@ export const trackerIssues = pgTable("tracker_issues", {
   status: text("status", { enum: ["backlog", "todo", "in_progress", "in_review", "done", "cancelled"] }).default("backlog").notNull(),
   priority: text("priority", { enum: ["none", "urgent", "high", "medium", "low"] }).default("none").notNull(),
   assigneeId: uuid("assignee_id").references(() => users.id),
-  createdBy: uuid("created_by").references(() => users.id).notNull(),
+  // Nullable: agent/MCP-created issues have no human author (mirrors
+  // tracker_comments.user_id, which is null for "Genie" comments).
+  createdBy: uuid("created_by").references(() => users.id),
   sortOrder: real("sort_order").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
