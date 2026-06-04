@@ -205,6 +205,38 @@ ufw reload
 
     checkAbort();
 
+    // 6c. Sanitize project/session state before snapshotting. A base image must
+    // ship a CLEAN slate: any /opt/project/.mcp.json (a per-project MCP bearer
+    // token) or live Claude/dtach/tmux session captured in the snapshot would be
+    // inherited by every server cloned from it, so the clones surface the build
+    // VM's project (its tracker tickets, storage, …) instead of their own.
+    onProgress("Sanitizing project + session state before snapshot...");
+    const sanitizeSession = await connectSsh(connConfig);
+    try {
+      await sanitizeSession.exec([
+        // Kill any live agent sessions (root + genie) so none are frozen in.
+        "sudo -H -u genie tmux kill-server 2>/dev/null || true",
+        "tmux kill-server 2>/dev/null || true",
+        "pkill -f claude 2>/dev/null || true",
+        "pkill -x dtach 2>/dev/null || true",
+        // Ship /opt/project empty — projects are cloned in fresh at deploy time.
+        // This drops .mcp.json (the leaked token) and any working files.
+        "find /opt/project -mindepth 1 -delete 2>/dev/null || true",
+        "chown genie:genie /opt/project 2>/dev/null || true",
+        // Drop per-project Claude state (MCP approvals + conversation history)
+        // that pins the build VM's project directory.
+        "rm -rf /root/.claude/projects /home/genie/.claude/projects 2>/dev/null || true",
+      ].join(" && "), (chunk) => {
+        const line = chunk.trimEnd();
+        if (line) onProgress(line);
+      });
+      onProgress("Sanitized");
+    } finally {
+      sanitizeSession.close();
+    }
+
+    checkAbort();
+
     // 7. Shutdown droplet cleanly
     onProgress("Shutting down droplet...");
     await client.dropletAction(dropletId, "shutdown");
