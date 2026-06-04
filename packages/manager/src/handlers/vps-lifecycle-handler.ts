@@ -122,8 +122,11 @@ export async function handleVpsLifecycleMessage(
       // Attach an already-existing cloud VM (DO droplet or TazCloud VM) to a
       // project without re-provisioning. Admin-only because the source lists
       // are admin-scoped.
-      const { projectId, provider, vmId, label } = msg.payload as {
+      const { projectId, provider, vmId, label, detachFrom } = msg.payload as {
         projectId: string; provider: "digitalocean" | "tazcloud" | "hetzner"; vmId: string | number; label?: string;
+        // Set when *moving* a VM to a different project — the existing link is
+        // removed first so the "already attached" guard below doesn't trip.
+        detachFrom?: { projectId: string; instanceId: string };
       };
       try {
         const realCallerId = state.impersonatedBy ?? state.userId ?? null;
@@ -136,6 +139,10 @@ export async function handleVpsLifecycleMessage(
         if (!project) {
           send(ws, { type: "vps:attach-existing:error", payload: { message: "Project not found" } });
           return true;
+        }
+        // Moving to a different project: drop the old link first (idempotent).
+        if (detachFrom?.projectId && detachFrom?.instanceId) {
+          try { await projectService.removeVpsInstance(detachFrom.projectId, detachFrom.instanceId); } catch { /* already gone */ }
         }
 
         const allProjects = await projectService.getAll();

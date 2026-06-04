@@ -3,6 +3,7 @@ import { sshStatsPostbackEnabled, sshStatsProbeEnabled } from "@/lib/ssh-stats-e
 import { tmuxKillSessionCommand, tmuxRenameCommand } from "@/lib/tmux-shell";
 import { wsSend } from "@/lib/ws";
 import {
+  $attachVm,
   $doSnapshotsLoading,
   $railwayTestResult,
   $vpsDeploy,
@@ -299,8 +300,16 @@ export function attachExistingVmToProject(
   provider: "digitalocean" | "tazcloud" | "hetzner",
   vmId: string | number,
   label?: string,
+  /** When set, the VM is *moved*: its existing link is removed before attaching. */
+  detachFrom?: { projectId: string; instanceId: string },
 ): void {
-  wsSend("vps:attach-existing", { projectId, provider, vmId, label });
+  $attachVm.next({ progress: [], status: "running", error: null });
+  wsSend("vps:attach-existing", { projectId, provider, vmId, label, detachFrom });
+}
+
+/** Reset the attach modal's progress/result state (e.g. when it opens). */
+export function resetAttachVm(): void {
+  $attachVm.next({ progress: [], status: "idle", error: null });
 }
 
 export function destroyFailedDroplet(instanceId: string): void {

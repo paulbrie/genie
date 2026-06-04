@@ -1,5 +1,6 @@
 import { batch } from "subjecto";
 import {
+  $attachVm,
   $doSnapshots,
   $doSnapshotsLoading,
   $doTokenValid,
@@ -407,5 +408,17 @@ export const handlers: HandlerMap = {
       ensureInstanceState(logsInstId);
       updateInstanceState(logsInstId, { logs: { serviceName: serviceName || null, logs } });
     }
+  },
+
+  // Attach-existing-VM-to-project progress, surfaced in the attach modal.
+  "vps:attach-existing:progress": (payload) => {
+    const s = $attachVm.getValue();
+    $attachVm.next({ ...s, status: "running", progress: [...s.progress, payload.message] });
+  },
+  "vps:attach-existing:ok": () => {
+    $attachVm.next({ ...$attachVm.getValue(), status: "ok" });
+  },
+  "vps:attach-existing:error": (payload) => {
+    $attachVm.next({ ...$attachVm.getValue(), status: "error", error: payload.message ?? "Attach failed" });
   },
 };

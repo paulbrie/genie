@@ -664,11 +664,11 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                           <span className="text-subtext0">{d.size}</span>
                           <span className="text-overlay0">Project</span>
                           <span className="truncate">
-                            {d.projectName ? (
-                              <span className="text-blue">{d.projectName}</span>
-                            ) : (
-                              <AttachVmToProject provider="digitalocean" vmId={d.id} />
-                            )}
+                            <AttachVmToProject
+                              provider="digitalocean"
+                              vmId={d.id}
+                              current={link ? { projectId: link.projectId, projectName: d.projectName || "project", instanceId: link.instanceId } : null}
+                            />
                           </span>
                           {d.domain && (
                             <>

@@ -28,6 +28,12 @@ export const $projectLogBuffers = new Subject<Record<string, string>>({});
 export const $commandRunOutputs = new Subject<Record<string, { output: string; running: boolean; exitCode: number | null }>>({});
 export const $doTokenValid = new Subject<{ valid: boolean; email?: string } | null>(null);
 export const $railwayTestResult = new Subject<{ ok: boolean; message: string } | null>(null);
+/** In-flight "attach existing VM to a project" run — drives the attach modal's
+ *  progress/result UI. Only one attach runs at a time. */
+export const $attachVm = new Subject<{ progress: string[]; status: "idle" | "running" | "ok" | "error"; error: string | null }>(
+  { progress: [], status: "idle", error: null },
+);
+
 export const $doSnapshots = new Subject<DoSnapshot[]>([]);
 export const $doSnapshotsLoading = new Subject<boolean>(false);
 export const $vpsDeploy = new DeepSubject<VpsDeployState>({ instances: {}, activeDeploys: {}, testResult: null });

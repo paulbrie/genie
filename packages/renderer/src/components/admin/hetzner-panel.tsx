@@ -342,11 +342,11 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
                           <span className="text-subtext0">{s.size}</span>
                           <span className="text-overlay0">Project</span>
                           <span className="truncate">
-                            {s.projectName ? (
-                              <span className="text-blue">{s.projectName}</span>
-                            ) : (
-                              <AttachVmToProject provider="hetzner" vmId={s.id} />
-                            )}
+                            <AttachVmToProject
+                              provider="hetzner"
+                              vmId={s.id}
+                              current={link ? { projectId: link.projectId, projectName: s.projectName || "project", instanceId: link.instanceId } : null}
+                            />
                           </span>
                           <span className="text-overlay0">ID</span>
                           <span className="text-subtext0 font-mono truncate" title={String(s.id)}>{String(s.id)}</span>
