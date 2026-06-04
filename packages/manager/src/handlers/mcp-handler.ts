@@ -3,7 +3,7 @@ import type { WsMessage } from "../types.js";
 import * as projectService from "../project-service.js";
 import { remoteDir } from "../vps/deploy-service.js";
 import { execCached } from "../vps/ssh-session-cache.js";
-import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";
+import { provisionMcpRestConfig, killClaudeSessions } from "../vps/mcp-config-merge.js";
 import { verifyMcpInstall } from "../vps/mcp-verify.js";
 import { type ClientState } from "../ws-server.js";
 
@@ -36,10 +36,15 @@ export async function handleMcpMessage(
           send(ws, { type: "mcp:install:result", payload: { reqId, projectId, instanceId, ok: false, error: "MANAGER_URL unset — VM can't reach the manager" } });
           return true;
         }
+        // Claude loads .mcp.json once at launch and never hot-reloads, so kill
+        // any live sessions now — otherwise they keep serving the OLD config.
+        const killed = await killClaudeSessions(exec);
         // Install isn't enough — verify it actually works end to end (right
-        // token, right project, reachable, tracker responding) and surface any
-        // running sessions still on the old config.
+        // token, right project, reachable, tracker responding).
         const checks = await verifyMcpInstall(exec, project, instanceId);
+        checks.push(killed > 0
+          ? { name: "Sessions", status: "warn", detail: `cleared ${killed} running Claude session${killed === 1 ? "" : "s"} — relaunch Claude to load the new config` }
+          : { name: "Sessions", status: "ok", detail: "no running Claude sessions to clear" });
         const ok = checks.every((c) => c.status !== "fail");
         console.log(`[mcp-rest] Config refreshed + verified for user ${userId} → ${project.name} (ok=${ok})`);
         send(ws, { type: "mcp:install:result", payload: { reqId, projectId, instanceId, ok, checks } });

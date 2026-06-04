@@ -363,7 +363,7 @@ function InstallMcpsButton({ projectId, instanceId }: { projectId: string; insta
         type="button"
         onClick={install}
         disabled={state === "running"}
-        title="Write the genie-* MCP servers into this VM's .mcp.json, then verify the token, reachability, and project scope"
+        title="Write the genie-* MCP servers into this VM's .mcp.json, clear stale Claude sessions, then verify the token, reachability, and project scope"
         className={cn(
           "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-60 disabled:cursor-wait",
           state === "error" ? "border-red/30 text-red hover:bg-red/10"

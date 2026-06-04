@@ -1,8 +1,8 @@
 // Post-install verification for the genie-* MCP REST config on a VM. The
-// "Install Genie MCPs" button writes /opt/project/.mcp.json; these checks
-// confirm it actually works end to end — the right token, scoped to the right
-// project, reachable from the VM, tracker responding — and flag the common
-// gotcha that already-running Claude sessions still hold the old config.
+// "Install Genie MCPs" button writes /opt/project/.mcp.json; these read-only
+// checks confirm it actually works end to end — the right token, scoped to the
+// right project, reachable from the VM, tracker responding. (Clearing stale
+// Claude sessions is a side-effect the handler performs separately.)
 
 import { ensureInstanceToken, resolveStatsToken } from "./stats-token-service.js";
 import { mcpRestBaseUrl, MCP_REST_SERVICES } from "./mcp-config-merge.js";
@@ -81,18 +81,6 @@ export async function verifyMcpInstall(
     checks.push({ name: "Tracker", status: "ok", detail: `${n} ticket${n === 1 ? "" : "s"} in "${project.name}"` });
   } catch {
     checks.push({ name: "Tracker", status: "warn", detail: "could not list tickets" });
-  }
-
-  // 5. Stale sessions — running Claude sessions loaded the OLD config at launch
-  //    and won't pick up this write until restarted. Warn, don't fail.
-  let sessions = 0;
-  try {
-    sessions = parseInt((await exec(`tmux ls 2>/dev/null | grep -c '^claude' || true`)).trim(), 10) || 0;
-  } catch { /* no tmux */ }
-  if (sessions > 0) {
-    checks.push({ name: "Running sessions", status: "warn", detail: `${sessions} Claude session${sessions === 1 ? "" : "s"} on the old config — restart to apply` });
-  } else {
-    checks.push({ name: "Running sessions", status: "ok", detail: "none stale" });
   }
 
   return checks;

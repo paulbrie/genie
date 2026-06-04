@@ -91,6 +91,21 @@ export async function provisionMcpRestConfig(
   return true;
 }
 
+/** Kill the VM's Claude tmux sessions (named `claude-*`) and return how many
+ *  were running. Claude loads `.mcp.json` once at launch and never hot-reloads
+ *  it, so after rewriting the config the live sessions must be killed for the
+ *  new token/scope to take effect on the next launch. */
+export async function killClaudeSessions(exec: (cmd: string) => Promise<string>): Promise<number> {
+  let count = 0;
+  try {
+    count = parseInt((await exec(`tmux ls 2>/dev/null | grep -c '^claude' || true`)).trim(), 10) || 0;
+    if (count > 0) {
+      await exec(`for s in $(tmux ls 2>/dev/null | cut -d: -f1 | grep '^claude'); do tmux kill-session -t "$s" 2>/dev/null; done; true`);
+    }
+  } catch { /* no tmux / unreachable */ }
+  return count;
+}
+
 /** Reset MCP state that a base-image/snapshot baked in from a DIFFERENT project.
  *  A server cloned from a snapshot inherits that snapshot's `.mcp.json` (the
  *  source project's bearer token) AND any Claude tmux sessions that were live
