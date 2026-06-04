@@ -2,6 +2,7 @@ import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { orgMembers, projectMembers, projects, teamMembers, teams, users } from "./db/schema.js";
 import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "./types.js";
+import { deleteInstanceToken } from "./vps/stats-token-service.js";
 import { v4 as uuidv4 } from "uuid";
 
 // --- Helpers ---
@@ -596,6 +597,9 @@ export async function removeVpsInstance(projectId: string, instanceId: string): 
   const project = await getById(projectId);
   if (!project) return null;
   const instances = project.vpsInstances.filter(v => v.id !== instanceId);
+  // Invalidate the instance's MCP/stats bearer token so it can't keep resolving
+  // to this project after the server moves elsewhere (cross-project data leak).
+  await deleteInstanceToken(projectId, instanceId).catch(() => {});
   return patchProject(projectId, { vpsInstances: instances });
 }
 

@@ -56,6 +56,20 @@ export async function ensureStatsToken(projectId: string, instanceId: string): P
   return finalToken;
 }
 
+/** Delete the bearer token(s) for an instance. Call when an instance is
+ *  removed from a project (detach / move / teardown) so its old token can no
+ *  longer resolve — otherwise a server moved to another project keeps a token
+ *  that still scopes MCP calls (tracker tickets, storage, …) to the OLD
+ *  project, leaking its data. Idempotent. */
+export async function deleteInstanceToken(projectId: string, instanceId: string): Promise<void> {
+  const db = getDb();
+  const rows = await db
+    .delete(vpsStatsTokens)
+    .where(and(eq(vpsStatsTokens.projectId, projectId), eq(vpsStatsTokens.instanceId, instanceId)))
+    .returning({ token: vpsStatsTokens.token });
+  for (const r of rows) tokenCache.delete(r.token);
+}
+
 /** Resolve a bearer token to its owning instance, or null if unknown. */
 export async function resolveStatsToken(token: string): Promise<TokenOwner | null> {
   if (!token) return null;

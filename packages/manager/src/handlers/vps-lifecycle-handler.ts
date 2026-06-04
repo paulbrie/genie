@@ -17,6 +17,8 @@ import { hetznerDestroyServer } from "../vps/hetzner-provision.js";
 import { createHetznerClient, getServerPublicIp } from "../vps/hetzner-api-client.js";
 import { createTazClient, sshUserForImage } from "../vps/tazcloud-api-client.js";
 import { ensureBootstrapped } from "../vps/vps-bootstrap.js";
+import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";
+import { execCached } from "../vps/ssh-session-cache.js";
 import { storeServerCredential, deleteServerCredential, ensureServerKeyOnDisk } from "../vps/server-credential-service.js";
 import { isPasteKeyEnabled } from "../vps/credential-crypto.js";
 import { notifySuperadmin } from "../email-service.js";
@@ -284,6 +286,21 @@ export async function handleVpsLifecycleMessage(
         };
 
         await projectService.addVpsInstance(projectId, instance);
+        // Rewrite the VM's .mcp.json with THIS project's bearer token. Without
+        // this, a server moved/attached from another project keeps the old
+        // project's token on disk and every genie-* MCP call (tracker tickets,
+        // storage, …) resolves to the wrong project. Best-effort — the attach
+        // itself already succeeded.
+        try {
+          await provisionMcpRestConfig(
+            (cmd) => execCached(effectiveConnection, cmd),
+            remoteDir(project.name),
+            projectId,
+            instance.id,
+          );
+        } catch (mcpErr) {
+          console.error(`[mcp-rest] post-attach config refresh failed for ${project.name}:`, mcpErr instanceof Error ? mcpErr.message : mcpErr);
+        }
         await broadcastProjectList();
         // Refresh the cloud panels so the "Project" column updates.
         broadcast({ type: "admin:droplets:list:stale", payload: {} });
