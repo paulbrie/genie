@@ -5,6 +5,7 @@ import { getDb } from "../db/index.js";
 import { users, teams, teamMembers } from "../db/schema.js";
 import { getUserById, createToken } from "../auth.js";
 import * as orgService from "../org-service.js";
+import type { Role } from "../ws-acl.js";
 import {
   type ClientState,
   buildAuthPayload,
@@ -108,6 +109,10 @@ export async function handleAdminUsersMessage(
         const newToken = createToken(target.id, realCallerId);
         state.userId = target.id;
         state.user = { id: target.id, name: target.name, email: target.email, avatarUrl: target.avatarUrl };
+        // Without this, ACL checks and isPrivilegedRole() keep using the
+        // superadmin's role — so the impersonated org owner would still see
+        // every droplet/VM in the account.
+        state.role = target.role as Role;
         state.impersonatedBy = realCallerId;
         const authPayload = await buildAuthPayload(target, newToken, { id: caller.id, name: caller.name, email: caller.email });
         send(ws, { type: "auth:success", payload: authPayload });
@@ -134,6 +139,7 @@ export async function handleAdminUsersMessage(
         const newToken = createToken(caller.id);
         state.userId = caller.id;
         state.user = { id: caller.id, name: caller.name, email: caller.email, avatarUrl: caller.avatarUrl };
+        state.role = caller.role as Role;
         state.impersonatedBy = null;
         const authPayload = await buildAuthPayload(caller, newToken, null);
         send(ws, { type: "auth:success", payload: authPayload });
