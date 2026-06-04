@@ -42,14 +42,20 @@ export const ActionMenuPanel = forwardRef<
     if (!autoFlip) return;
     const el = innerRef.current;
     if (!el) return;
-    // Measure the default downward render; flip up if it would spill past the
-    // bottom edge and there's more room above the trigger than below it.
+    // Decide direction ONCE, when the menu opens (this component mounts). The
+    // measurement is intentionally not re-run on re-render: the panel that opens
+    // a card menu re-renders whenever live stats stream into the card, and the
+    // flip is non-idempotent — once it's flipped up, re-measuring the upward
+    // position sees no overflow and would flip it back down, then up, … causing
+    // the menu to flicker / jump below. Measuring the initial downward render
+    // once avoids that oscillation.
     const rect = el.getBoundingClientRect();
     const overflowsBottom = rect.bottom > window.innerHeight - 8;
     const spaceAbove = rect.top; // ≈ trigger bottom in downward mode
     const spaceBelow = window.innerHeight - rect.top;
     setOpenUp(overflowsBottom && spaceAbove > spaceBelow);
-  }, [autoFlip, children]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFlip]);
 
   return (
     <div

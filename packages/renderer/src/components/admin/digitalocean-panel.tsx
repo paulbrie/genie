@@ -366,7 +366,11 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
             const rebootState = admin.dropletReboot[d.id];
             const rebooting = !!rebootState && !rebootState.done && !rebootState.error;
             return (
-              <div className="relative inline-flex items-center">
+              // Stop menu clicks from bubbling to the card's row onClick (which
+              // opens the Manage popup) — the flipped-up menu overlaps the card,
+              // and an item that closes the menu detaches before the row's
+              // closest("button") guard runs, so the guard alone isn't enough.
+              <div className="relative inline-flex items-center" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => setActionMenuOpenFor(actionMenuOpenFor === d.id ? null : d.id)}
                   className={cn(
@@ -380,7 +384,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                 {actionMenuOpenFor === d.id && (
                   <>
                     <ActionMenuBackdrop onClose={() => setActionMenuOpenFor(null)} />
-                    <ActionMenuPanel autoFlip className="absolute right-0 z-20">
+                    <ActionMenuPanel autoFlip className="absolute right-0">
                       {!isRenaming && (
                         <ActionMenuItem
                           icon={Pencil}

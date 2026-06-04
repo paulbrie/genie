@@ -280,7 +280,9 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
             const rebootState = admin.hetzner.reboot[s.id];
             const rebooting = !!rebootState && !rebootState.done && !rebootState.error;
             return (
-              <div className="relative inline-flex items-center">
+              // Stop menu clicks from bubbling to the card's row onClick (which
+              // opens the Manage popup) — the flipped-up menu overlaps the card.
+              <div className="relative inline-flex items-center" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => setActionMenuOpenFor(actionMenuOpenFor === s.id ? null : s.id)}
                   className={cn("p-1 transition-colors", actionMenuOpenFor === s.id ? "text-blue" : "text-overlay0 hover:text-blue")}
@@ -291,7 +293,7 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
                 {actionMenuOpenFor === s.id && (
                   <>
                     <ActionMenuBackdrop onClose={() => setActionMenuOpenFor(null)} />
-                    <ActionMenuPanel autoFlip className="absolute right-0 z-20">
+                    <ActionMenuPanel autoFlip className="absolute right-0">
                       {!isRenaming && (
                         <ActionMenuItem icon={Pencil} onClick={() => { setActionMenuOpenFor(null); startRename(s); }}>Rename</ActionMenuItem>
                       )}
