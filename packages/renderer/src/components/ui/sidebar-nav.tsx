@@ -11,6 +11,7 @@ import { adminBarNavKeysForRole } from "@/components/ui/superadmin-top-bar";
 const baseNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = [
   { key: "projects", label: "Projects", icon: FolderKanban },
   { key: "agents", label: "Agents", icon: Bot },
+  { key: "clouds", label: "Clouds", icon: Cloud },
   { key: "processes", label: "Processes", icon: Activity },
 
   { key: "docker", label: "Docker", icon: Container },
@@ -40,14 +41,15 @@ export function SidebarNav() {
   const isTazcloud = role === "tazcloud";
   const adminBarKeys = adminBarNavKeysForRole(role);
 
-  const standardUserKeys = new Set<NavKey>(["projects", "agents", "tracker", "chat", "history", "settings"]);
+  // Clouds is visible to everyone now (it lives in the left nav, not the admin
+  // topbar). The Clouds panel itself scopes what each role can see/do.
+  const standardUserKeys = new Set<NavKey>(["projects", "agents", "clouds", "tracker", "chat", "history", "settings"]);
   const items = isAdmin
     ? baseNavItems.filter((item) => !adminBarKeys.has(item.key))
     : isTazcloud
       ? [
           ...baseNavItems.filter((item) => standardUserKeys.has(item.key)),
           { key: "recipes" as NavKey, label: "Recipes", icon: ChefHat },
-          { key: "clouds" as NavKey, label: "Clouds", icon: Cloud },
         ]
       : baseNavItems.filter((item) => standardUserKeys.has(item.key));
 

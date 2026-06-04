@@ -181,6 +181,21 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   "admin:hetzner:exec": { send: "user", notes: "handler enforces project ownership for non-admins" },
   "admin:hetzner:exec:result": { receive: "user" },
   "admin:hetzner:exec:progress": { receive: "user" },
+
+  // Cloud VM *visibility* (Clouds panel, now in the left nav for everyone).
+  // Lowered to "user" so org owners and plain users can list/poll the VMs they
+  // have access to — the list/stats handlers filter to the caller's accessible
+  // projects (privileged roles see the whole account), and resolve-ssh-user
+  // re-checks per-VM ownership. All mutating ops (create/delete/rename/lock/
+  // reboot/resize/domain/snapshot) stay tazcloud+ via the namespace default.
+  "admin:droplets:list": { send: "user", receive: "user", notes: "handler scopes droplets to the caller's accessible projects" },
+  "admin:droplets:list:stale": { receive: "user", notes: "cache-invalidation broadcast; clients refetch the scoped list" },
+  "admin:droplets:stats": { send: "user", receive: "user", notes: "handler probes only the caller's accessible droplets" },
+  "admin:droplets:resolve-ssh-user": { send: "user", receive: "user", notes: "handler enforces per-VM ownership for non-admins" },
+  "admin:hetzner:list": { send: "user", receive: "user", notes: "handler scopes servers to the caller's accessible projects" },
+  "admin:hetzner:list:stale": { receive: "user" },
+  "admin:hetzner:stats": { send: "user", receive: "user", notes: "handler probes only the caller's accessible servers" },
+  "admin:hetzner:resolve-ssh-user": { send: "user", receive: "user", notes: "handler enforces per-VM ownership for non-admins" },
   "admin:server:tunnel:ensure": { send: "user", notes: "open one SSH tunnel per server (handler enforces access)" },
   "admin:server:tunnel:ready": { receive: "user" },
   "admin:server:tunnel:error": { receive: "user" },

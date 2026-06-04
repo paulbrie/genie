@@ -15,7 +15,8 @@ describe("navAllowedForRole", () => {
     expect(navAllowedForRole("admin", "user")).toBe(false);
     expect(navAllowedForRole("security", "user")).toBe(false);
     expect(navAllowedForRole("logs", "user")).toBe(false);
-    expect(navAllowedForRole("clouds", "user")).toBe(false);
+    // Clouds is now visible to everyone (the panel scopes what each role sees).
+    expect(navAllowedForRole("clouds", "user")).toBe(true);
   });
 
   it("undefined / null role falls back to standard-user permissions", () => {
@@ -35,14 +36,14 @@ describe("navAllowedForRole", () => {
     expect(navAllowedForRole("security", "tazcloud")).toBe(false);
   });
 
-  it("admin gets every base nav but NOT recipes / clouds (superadmin-only)", () => {
+  it("admin gets every base nav + clouds but NOT recipes (superadmin-only)", () => {
     expect(navAllowedForRole("admin", "admin")).toBe(true);
     expect(navAllowedForRole("security", "admin")).toBe(true);
     expect(navAllowedForRole("logs", "admin")).toBe(true);
     expect(navAllowedForRole("docker", "admin")).toBe(true);
+    expect(navAllowedForRole("clouds", "admin")).toBe(true);
 
     expect(navAllowedForRole("recipes", "admin")).toBe(false);
-    expect(navAllowedForRole("clouds", "admin")).toBe(false);
   });
 
   it("superadmin gets everything, including recipes / clouds", () => {

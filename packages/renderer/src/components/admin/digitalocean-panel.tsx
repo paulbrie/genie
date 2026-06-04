@@ -107,11 +107,14 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
   );
 
   const isSuperAdmin = auth.user?.role === "superadmin";
+  // Privileged roles manage the whole account; everyone else (org owners / plain
+  // users) gets a read-only view of just the droplets they can access. The
+  // backend scopes the list/stats; the UI hides the management controls.
+  const canManage = isSuperAdmin || auth.user?.role === "admin" || auth.user?.role === "tazcloud";
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
     loadAdminDroplets();
-  }, [isSuperAdmin]);
+  }, []);
 
   // Re-fire the one-shot droplet list when the WS reconnects (typically
   // because `tsx watch` restarted the dev manager). Without this the panel
@@ -121,13 +124,12 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
   const [manager] = useSubject($manager);
   const wasManagerRunningRef = useRef<boolean>(manager.running);
   useEffect(() => {
-    if (!isSuperAdmin) return;
     const wasRunning = wasManagerRunningRef.current;
     wasManagerRunningRef.current = manager.running;
     if (!wasRunning && manager.running) {
       loadAdminDroplets();
     }
-  }, [manager.running, isSuperAdmin]);
+  }, [manager.running]);
 
   // Auto-close the deploy form when create succeeds (creating: true → false, no error).
   const prevCreatingRef = useRef(false);
@@ -138,18 +140,6 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
     prevCreatingRef.current = admin.dropletsCreating;
   }, [admin.dropletsCreating, admin.dropletsCreateError]);
 
-  if (!isSuperAdmin) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-overlay0">
-        <div className="text-center">
-          <p className="text-base">DigitalOcean admin is restricted to super admin users.</p>
-          <button onClick={() => switchNav("projects")} className="mt-3 text-blue hover:underline text-md">
-            Back to Projects
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   const { droplets, dropletsLoading: loading, dropletsError: error, dropletsCreating: creating, dropletsCreateError: createError } = admin;
 
@@ -215,10 +205,12 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
           )}
         </div>
         <div className="flex-1" />
-        <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
-          <Plus size={14} className="mr-1" />
-          {deployOpen ? "Cancel" : "Deploy Droplet"}
-        </Button>
+        {canManage && (
+          <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
+            <Plus size={14} className="mr-1" />
+            {deployOpen ? "Cancel" : "Deploy Droplet"}
+          </Button>
+        )}
         <Button size="sm" onClick={() => loadAdminDroplets()} disabled={loading}>
           <RefreshCw size={14} className={cn("mr-1", loading && "animate-spin")} />
           Refresh
@@ -772,7 +764,7 @@ export function DigitalOceanPanel({ monitor }: { monitor: VpsMonitorState }) {
                         <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
                           <div className="flex-1" />
                           {renderSshButton(d, isActive)}
-                          {renderActionsMenu(d, isActive, isRenaming)}
+                          {canManage && renderActionsMenu(d, isActive, isRenaming)}
                         </div>
                       </>
                     )}

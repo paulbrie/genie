@@ -23,26 +23,35 @@ export function CloudsPanel() {
   const router = useRouter();
   const params = useParams();
   const [auth] = useSubject($auth);
-  const tazOnly = auth.user?.role === "tazcloud";
+  const role = auth.user?.role;
+  const tazOnly = role === "tazcloud";
+  // TazCloud isn't part of the org/user visibility model yet, so its tab stays
+  // limited to privileged roles. Org owners / plain users see DO + Hetzner.
+  const canSeeTaz = role === "superadmin" || role === "admin" || role === "tazcloud";
   const segments = (params?.slug as string[] | undefined) ?? [];
   const subFromUrl = segments[1]?.toLowerCase();
   const [active, setActive] = useState<CloudSubTab>(
-    tazOnly || subFromUrl === "taz" ? "taz" : "do",
+    tazOnly || (subFromUrl === "taz" && canSeeTaz) ? "taz" : "do",
   );
   const { monitor, refreshHistory, setHistoryHours } = useCloudsMonitor(true);
 
   // Keep state in sync if the user navigates via browser back/forward.
-  // Redirect tazcloud-role users away from /clouds/do — they don't have access.
+  // Redirect tazcloud-role users away from /clouds/do, and non-privileged users
+  // away from /clouds/taz — neither can access the other tab.
   useEffect(() => {
-    if (tazOnly && subFromUrl === "do") {
+    if (tazOnly && (subFromUrl === "do" || subFromUrl === "hetzner")) {
       router.replace(buildCloudPath("taz"));
+      return;
+    }
+    if (subFromUrl === "taz" && !canSeeTaz) {
+      router.replace(buildCloudPath("do"));
       return;
     }
     if (subFromUrl === "do" || subFromUrl === "taz" || subFromUrl === "hetzner") {
       const target = tazOnly ? "taz" : subFromUrl;
       if (active !== target) setActive(target);
     }
-  }, [subFromUrl, active, tazOnly, router]);
+  }, [subFromUrl, active, tazOnly, canSeeTaz, router]);
 
   function switchTab(tab: CloudSubTab) {
     setActive(tab);
@@ -53,8 +62,8 @@ export function CloudsPanel() {
     ? [{ key: "taz" as CloudSubTab, label: "TazCloud" }]
     : [
         { key: "do" as CloudSubTab, label: "DigitalOcean" },
-        { key: "taz" as CloudSubTab, label: "TazCloud" },
         { key: "hetzner" as CloudSubTab, label: "Hetzner" },
+        ...(canSeeTaz ? [{ key: "taz" as CloudSubTab, label: "TazCloud" }] : []),
       ];
 
   return (

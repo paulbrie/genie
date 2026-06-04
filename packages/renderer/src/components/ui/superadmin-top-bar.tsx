@@ -1,7 +1,7 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { Cloud, ChefHat, ScrollText, Clock, Users, Boxes } from "lucide-react";
+import { ChefHat, ScrollText, Clock, Users, Boxes } from "lucide-react";
 import type { NavKey } from "@/store/types";
 import { $activeNav, $auth, $presenceSessions } from "@/store/subjects";
 import { cn } from "@/lib/utils";
@@ -17,10 +17,10 @@ const ADMIN_BAR_SHARED_ITEMS: BarNavItem[] = [
   { key: "topology", label: "Topology", icon: Boxes },
 ];
 
-/** Extra top-bar items for superadmin only (not in ADMIN_NAVS). */
+/** Extra top-bar items for superadmin only (not in ADMIN_NAVS).
+ *  Clouds moved to the left sidebar (visible to all roles). */
 const SUPERADMIN_BAR_EXTRA_ITEMS: BarNavItem[] = [
   { key: "recipes", label: "Recipes", icon: ChefHat },
-  { key: "clouds", label: "Clouds", icon: Cloud },
 ];
 
 export function adminBarItemsForRole(

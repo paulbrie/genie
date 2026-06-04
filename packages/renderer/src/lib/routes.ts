@@ -11,12 +11,14 @@ export type SettingsTab = "general" | "deploy" | "org";
 // a regular user on the admin shell with empty data, instead of bouncing them.
 type NavRole = "user" | "tazcloud" | "admin" | "superadmin" | undefined | null;
 
-const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings", "agents"]);
+// "clouds" is allowed for everyone now — it lives in the left nav and the panel
+// itself scopes each role's visibility (org owners / users see only their VMs).
+const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings", "agents", "clouds"]);
 const TAZCLOUD_EXTRA_NAVS = new Set<NavKey>(["recipes", "clouds"]);
 const ADMIN_NAVS = new Set<NavKey>([
   "projects", "processes", "docker", "docs", "logs", "chat", "history", "tracker",
   "settings", "admin", "architecture", "topology", "users", "security", "help", "ssh",
-  "agents",
+  "agents", "clouds",
 ]);
 
 export function navAllowedForRole(nav: NavKey, role: NavRole): boolean {

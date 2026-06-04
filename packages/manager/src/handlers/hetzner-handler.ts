@@ -253,20 +253,26 @@ export async function handleHetznerMessage(
       try {
         const client = createHetznerClient(token);
         const servers = await client.listServers("genie");
-        const ids = servers.map((s) => String(s.id));
-        const aliasMap = await cloudVmAliases.getAliasMap("hetzner", ids);
-        const lockedSet = await cloudVmLocks.getLockedSet("hetzner", ids);
-        const projects = await projectService.getAll();
+        // Privileged roles see every server; org owners / plain users see only
+        // servers attached to a project they can access (see admin:droplets:list).
+        const privileged = isPrivilegedRole(role);
+        const scopeProjects = privileged ? await projectService.getAll() : await projectService.getAllForUser(userId);
         const projectMap: Record<number, { projectId: string; projectName: string }> = {};
-        for (const p of projects) {
+        const accessibleIds = new Set<number>();
+        for (const p of scopeProjects) {
           for (const v of p.vpsInstances) {
             if (v.hetzner?.serverId) {
               projectMap[v.hetzner.serverId] = { projectId: p.id, projectName: p.name };
+              accessibleIds.add(v.hetzner.serverId);
             }
           }
         }
+        const visibleServers = privileged ? servers : servers.filter((s) => accessibleIds.has(s.id));
+        const ids = visibleServers.map((s) => String(s.id));
+        const aliasMap = await cloudVmAliases.getAliasMap("hetzner", ids);
+        const lockedSet = await cloudVmLocks.getLockedSet("hetzner", ids);
         // Normalize to the shape the renderer expects — the panel never sees the raw Hetzner API.
-        const decorated = servers.map((s) => ({
+        const decorated = visibleServers.map((s) => ({
           id: s.id,
           name: aliasMap.get(String(s.id)) || s.name,
           status: s.status === "running" ? "active" : s.status,
@@ -435,6 +441,9 @@ export async function handleHetznerMessage(
     case "admin:hetzner:resolve-ssh-user": {
       const { serverId, reqId } = msg.payload as { serverId: number; reqId?: string };
       try {
+        if (!isPrivilegedRole(role) && !(await projectService.userCanAccessVm(userId, { serverId }))) {
+          throw new Error("Not authorized for this server");
+        }
         const token = await settingsService.getGlobalHetznerToken();
         if (!token) throw new Error("Hetzner API token not configured");
         const client = createHetznerClient(token);
@@ -497,7 +506,7 @@ export async function handleHetznerMessage(
         return true;
       }
       try {
-        const projects = await projectService.getAll();
+        const projects = isPrivilegedRole(role) ? await projectService.getAll() : await projectService.getAllForUser(userId);
         const connMap: Record<number, { host: string; port: number; username: string; privateKeyPath: string }> = {};
         for (const p of projects) {
           for (const v of p.vpsInstances) {

@@ -344,9 +344,26 @@ export async function handleDoMessage(
       try {
         const doClient = createDoClient(doToken);
         const droplets = await doClient.listDroplets("genie");
-        const aliasMap = await cloudVmAliases.getAliasMap("digitalocean", droplets.map((d) => String(d.id)));
+        // Privileged roles (tazcloud/admin/superadmin) see every droplet in the
+        // account. Everyone else — org owners and plain users — sees only the
+        // droplets attached to a project they can access (getAllForUser already
+        // resolves org-ownership, team membership and direct project membership).
+        const privileged = isPrivilegedRole(role);
+        const scopeProjects = privileged ? await projectService.getAll() : await projectService.getAllForUser(userId);
+        const projectMap: Record<number, { projectId: string; projectName: string }> = {};
+        const accessibleIds = new Set<number>();
+        for (const p of scopeProjects) {
+          for (const v of p.vpsInstances) {
+            if (v.digitalocean?.dropletId) {
+              projectMap[v.digitalocean.dropletId] = { projectId: p.id, projectName: p.name };
+              accessibleIds.add(v.digitalocean.dropletId);
+            }
+          }
+        }
+        const visibleDroplets = privileged ? droplets : droplets.filter((d) => accessibleIds.has(d.id));
+        const aliasMap = await cloudVmAliases.getAliasMap("digitalocean", visibleDroplets.map((d) => String(d.id)));
         const domainMap = await getDropletDomainMap();
-        const decoratedDroplets = droplets.map((d) => {
+        const decoratedDroplets = visibleDroplets.map((d) => {
           const alias = aliasMap.get(String(d.id));
           const dom = domainMap[String(d.id)];
           const base = alias ? { ...d, name: alias } : { ...d };
@@ -359,15 +376,6 @@ export async function handleDoMessage(
           }
           return base;
         });
-        const projects = await projectService.getAll();
-        const projectMap: Record<number, { projectId: string; projectName: string }> = {};
-        for (const p of projects) {
-          for (const v of p.vpsInstances) {
-            if (v.digitalocean?.dropletId) {
-              projectMap[v.digitalocean.dropletId] = { projectId: p.id, projectName: p.name };
-            }
-          }
-        }
         send(ws, { type: "admin:droplets:list", payload: { droplets: decoratedDroplets, projectMap } });
       } catch (err: unknown) {
         send(ws, { type: "admin:droplets:list", payload: { droplets: [], error: (err instanceof Error ? err.message : String(err)) } });
@@ -410,6 +418,9 @@ export async function handleDoMessage(
     case "admin:droplets:resolve-ssh-user": {
       const { dropletId, reqId } = msg.payload as { dropletId: number; reqId?: string };
       try {
+        if (!isPrivilegedRole(role) && !(await projectService.userCanAccessVm(userId, { dropletId }))) {
+          throw new Error("Not authorized for this droplet");
+        }
         const doToken = await settingsService.getGlobalDoToken();
         if (!doToken) throw new Error("DigitalOcean API token not configured");
         const doClient = createDoClient(doToken);
@@ -544,7 +555,7 @@ export async function handleDoMessage(
         return true;
       }
       try {
-        const projects = await projectService.getAll();
+        const projects = isPrivilegedRole(role) ? await projectService.getAll() : await projectService.getAllForUser(userId);
         const connMap: Record<number, { host: string; port: number; username: string; privateKeyPath: string }> = {};
         for (const p of projects) {
           for (const v of p.vpsInstances) {

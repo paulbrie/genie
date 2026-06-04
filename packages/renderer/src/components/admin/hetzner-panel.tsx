@@ -76,30 +76,30 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
   const [search, setSearch] = useState("");
 
   const isSuperAdmin = auth.user?.role === "superadmin";
+  // Privileged roles manage the whole account; everyone else gets a read-only
+  // view of the servers they can access (backend scopes the list/stats).
+  const canManage = isSuperAdmin || auth.user?.role === "admin" || auth.user?.role === "tazcloud";
   const { servers, loading, error, creating, createError } = admin.hetzner;
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
     loadAdminHetznerServers();
-  }, [isSuperAdmin]);
+  }, []);
 
   // Re-fire the one-shot list when the WS reconnects (dev manager restart).
   const [manager] = useSubject($manager);
   const wasManagerRunningRef = useRef<boolean>(manager.running);
   useEffect(() => {
-    if (!isSuperAdmin) return;
     const wasRunning = wasManagerRunningRef.current;
     wasManagerRunningRef.current = manager.running;
     if (!wasRunning && manager.running) loadAdminHetznerServers();
-  }, [manager.running, isSuperAdmin]);
+  }, [manager.running]);
 
   // Poll stats for active servers.
   useEffect(() => {
-    if (!isSuperAdmin) return;
     loadAdminHetznerStats();
     const t = window.setInterval(() => loadAdminHetznerStats(), HZ_STATS_POLL_MS);
     return () => window.clearInterval(t);
-  }, [isSuperAdmin]);
+  }, []);
 
   // Auto-close the deploy form when create succeeds.
   const prevCreatingRef = useRef(false);
@@ -107,19 +107,6 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
     if (prevCreatingRef.current && !creating && !createError) setDeployOpen(false);
     prevCreatingRef.current = creating;
   }, [creating, createError]);
-
-  if (!isSuperAdmin) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-overlay0">
-        <div className="text-center">
-          <p className="text-base">Hetzner admin is restricted to super admin users.</p>
-          <button onClick={() => switchNav("projects")} className="mt-3 text-blue hover:underline text-md">
-            Back to Projects
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   function toggleDeploy() {
     if (deployOpen) {
@@ -175,10 +162,12 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
           )}
         </div>
         <div className="flex-1" />
-        <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
-          <Plus size={14} className="mr-1" />
-          {deployOpen ? "Cancel" : "Deploy Server"}
-        </Button>
+        {canManage && (
+          <Button size="sm" variant={deployOpen ? "active" : "primary"} onClick={toggleDeploy}>
+            <Plus size={14} className="mr-1" />
+            {deployOpen ? "Cancel" : "Deploy Server"}
+          </Button>
+        )}
         <Button size="sm" onClick={() => loadAdminHetznerServers()} disabled={loading}>
           <RefreshCw size={14} className={cn("mr-1", loading && "animate-spin")} />
           Refresh
@@ -446,7 +435,7 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
                         <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
                           <div className="flex-1" />
                           {renderSshButton(s, isActive)}
-                          {renderActionsMenu(s, isActive, isRenaming)}
+                          {canManage && renderActionsMenu(s, isActive, isRenaming)}
                         </div>
                       </>
                     )}

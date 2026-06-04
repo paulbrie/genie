@@ -80,10 +80,17 @@ describe("ws-acl", () => {
     });
 
     it("admin:droplets sub-namespace is tazcloud-accessible (clouds panel)", () => {
-      expect(canSend("user", "admin:droplets:list")).toBe(false);
+      // Read endpoints are lowered to "user" so org owners / plain users can see
+      // the VMs they have access to (handlers scope by accessible projects).
+      expect(canSend("user", "admin:droplets:list")).toBe(true);
+      expect(canSend("user", "admin:droplets:stats")).toBe(true);
+      expect(canSend("user", "admin:droplets:resolve-ssh-user")).toBe(true);
       expect(canSend("tazcloud", "admin:droplets:list")).toBe(true);
       expect(canSend("admin", "admin:droplets:list")).toBe(true);
-      expect(canReceive("tazcloud", "admin:droplets:list:stale")).toBe(true);
+      expect(canReceive("user", "admin:droplets:list:stale")).toBe(true);
+      // Mutations stay tazcloud+ via the namespace default.
+      expect(canSend("user", "admin:droplets:create")).toBe(false);
+      expect(canSend("user", "admin:droplets:delete")).toBe(false);
     });
 
     it("admin:tazcloud sub-namespace is tazcloud-accessible", () => {
