@@ -10,10 +10,20 @@ import { ensureInstanceToken } from "./stats-token-service.js";
 /** The genie-* MCP services exposed over REST. */
 export const MCP_REST_SERVICES = ["tracker", "security", "notify", "storage"] as const;
 
-/** Manager base URL the VM uses to reach the MCP REST endpoints, or null in
- *  local dev where VMs can't reach the manager (same gate as stats postback). */
-export function mcpRestBaseUrl(): string | null {
-  return process.env.MANAGER_URL?.trim() || null;
+/** Public API host of the manager, reachable from any VM. */
+const DEFAULT_PUBLIC_MANAGER_URL = "https://api.genie.teleporthq.ai";
+
+/** Base URL the VM uses to reach the manager's MCP REST endpoints. Must be
+ *  publicly reachable from the VM — NOT the dev `MANAGER_URL` (localhost). So:
+ *  `VPS_MANAGER_URL` override → `MANAGER_URL` when it's already public →
+ *  otherwise the public API default. The serving manager must be the same one
+ *  that minted the per-instance bearer token (else it 401s). */
+export function mcpRestBaseUrl(): string {
+  const override = process.env.VPS_MANAGER_URL?.trim();
+  if (override) return override;
+  const mgr = process.env.MANAGER_URL?.trim();
+  if (mgr && !/(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/.test(mgr)) return mgr;
+  return DEFAULT_PUBLIC_MANAGER_URL;
 }
 
 /** Build the shell script that merges Genie's MCP REST entries into the
@@ -44,6 +54,23 @@ export function buildMcpConfigMergeScript(
     `    fs.writeFileSync('${remoteProjectDir}/.mcp.json', JSON.stringify(cfg, null, 2));`,
     `  });`,
     `"`,
+    // Re-enable the genie-* servers: Claude Code parks .mcp.json servers it has
+    // seen fail (e.g. the old localhost:9876 entries) in
+    // .claude/settings.local.json → disabledMcpjsonServers, which keeps them off
+    // even after we fix the URLs. Strip the genie-* names from that list.
+    `if [ -f ${remoteProjectDir}/.claude/settings.local.json ]; then`,
+    `  node -e "`,
+    `    const fs = require('fs');`,
+    `    const p = '${remoteProjectDir}/.claude/settings.local.json';`,
+    `    try {`,
+    `      const s = JSON.parse(fs.readFileSync(p, 'utf8'));`,
+    `      if (Array.isArray(s.disabledMcpjsonServers)) {`,
+    `        s.disabledMcpjsonServers = s.disabledMcpjsonServers.filter(n => !String(n).startsWith('genie-'));`,
+    `        fs.writeFileSync(p, JSON.stringify(s, null, 2));`,
+    `      }`,
+    `    } catch (e) {}`,
+    `  "`,
+    `fi`,
   ].join("\n");
 }
 
