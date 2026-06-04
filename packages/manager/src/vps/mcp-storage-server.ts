@@ -221,9 +221,9 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
           content: [{ type: "text", text: JSON.stringify({ key, url: presignedUrl, size: imageData.length }, null, 2) }],
         });
       } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[mcp-storage] operation failed:", err);
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `Screenshot failed: ${errMsg}` }],
+          content: [{ type: "text", text: `Screenshot failed.` }],
           isError: true,
         });
       }
@@ -272,9 +272,9 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
           content: [{ type: "text", text: JSON.stringify({ key, url: presignedUrl, size: fileData.length, contentType }, null, 2) }],
         });
       } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[mcp-storage] operation failed:", err);
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `Upload failed: ${errMsg}` }],
+          content: [{ type: "text", text: `Upload failed.` }],
           isError: true,
         });
       }
@@ -302,9 +302,9 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
           content: [{ type: "text", text: JSON.stringify(items, null, 2) }],
         });
       } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[mcp-storage] operation failed:", err);
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `List failed: ${errMsg}` }],
+          content: [{ type: "text", text: `List failed.` }],
           isError: true,
         });
       }
@@ -328,9 +328,9 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
           content: [{ type: "text", text: JSON.stringify({ key, url: presignedUrl }, null, 2) }],
         });
       } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[mcp-storage] operation failed:", err);
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `Failed to generate URL: ${errMsg}` }],
+          content: [{ type: "text", text: `Failed to generate URL.` }],
           isError: true,
         });
       }
@@ -354,9 +354,9 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
           content: [{ type: "text", text: `Deleted: ${key}` }],
         });
       } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[mcp-storage] operation failed:", err);
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `Delete failed: ${errMsg}` }],
+          content: [{ type: "text", text: `Delete failed.` }],
           isError: true,
         });
       }
@@ -364,7 +364,7 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
 
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return jsonRpcError(id, -32000, message || "Internal error");
+    console.error("[mcp-storage] tool call failed:", err);
+    return jsonRpcError(id, -32000, "Internal error — the request could not be completed.");
   }
 }

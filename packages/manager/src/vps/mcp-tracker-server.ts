@@ -260,7 +260,9 @@ export async function handleTrackerRequest(
 
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return jsonRpcError(id, -32000, message || "Internal error");
+    // Log the real error (SQL, params, stack) server-side only — the API is
+    // exposed to VMs, so never leak internals over the wire.
+    console.error("[mcp-tracker] tool call failed:", err);
+    return jsonRpcError(id, -32000, "Internal error — the request could not be completed.");
   }
 }

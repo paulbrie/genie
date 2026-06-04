@@ -196,7 +196,7 @@ export async function handleNotifyMcpRequest(parsed: JsonRpcRequest, ctx: Notify
 
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return jsonRpcError(id, -32000, message || "Internal error");
+    console.error("[mcp-notify] tool call failed:", err);
+    return jsonRpcError(id, -32000, "Internal error — the request could not be completed.");
   }
 }
