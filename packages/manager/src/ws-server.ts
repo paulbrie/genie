@@ -884,13 +884,13 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
 
   // Modular handlers first — return early if any of them handles the message.
   // Inline cases below stay until they get migrated to their own module.
-  if (await handleDbMessage(ws, msg, send)) return;
+  if (await handleDbMessage(ws, msg, send, state.role)) return;
   if (await handleBackupMessage(ws, msg, send)) return;
   if (await handleGitMessage(ws, msg, send, userId, state.role)) return;
   if (await handleFsMessage(ws, msg, send, userId)) return;
   if (await handleVpsDbMessage(ws, msg, send, userId)) return;
   if (await handleSecurityMessage(ws, msg, send, userId)) return;
-  if (await handleRecipesMessage(ws, msg, send, userId, broadcast)) return;
+  if (await handleRecipesMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleAgentsMessage(ws, msg, send, userId, broadcast)) return;
   if (await handleFileTemplateMessage(ws, msg, send, userId)) return;
   if (await handleProjectFileMessage(ws, msg, send, userId, state.role)) return;

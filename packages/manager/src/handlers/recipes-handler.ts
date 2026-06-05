@@ -6,6 +6,8 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as recipesService from "../recipes-service.js";
+import { type Role } from "../ws-acl.js";
+import { hasRole } from "./handler-auth.js";
 
 
 export async function handleRecipesMessage(
@@ -14,7 +16,16 @@ export async function handleRecipesMessage(
   send: (ws: WebSocket, message: WsMessage) => void,
   userId: string,
   broadcast: (message: WsMessage) => void,
+  role: Role | null,
 ): Promise<boolean> {
+  if (!msg.type.startsWith("recipes:")) return false;
+  // Recipes are global add-ons whose scripts run as root on every VM; authoring
+  // them is superadmin-only. The WS ACL already gates the recipes namespace to
+  // superadmin — this is defense in depth in case that's ever loosened.
+  if (!hasRole(role, "superadmin")) {
+    send(ws, { type: "recipes:error", payload: { message: "Not authorized" } });
+    return true;
+  }
   switch (msg.type) {
     case "recipes:list": {
       try {

@@ -4,6 +4,14 @@ import path from "node:path";
 import type { WsMessage } from "../types.js";
 import * as adminService from "../admin-service.js";
 import * as backupService from "../backup-service.js";
+import { type Role } from "../ws-acl.js";
+import { hasRole } from "./handler-auth.js";
+
+const DB_TYPES = new Set([
+  "admin:tables", "admin:table:columns", "admin:table:rows",
+  "admin:row:get", "admin:row:insert", "admin:row:update", "admin:row:delete",
+  "admin:sql:execute", "admin:drizzle:push",
+]);
 
 
 export function parseTableList(out: string): { name: string; rowCount: number | null }[] {
@@ -71,8 +79,16 @@ export function parseCsvLine(line: string): string[] {
 export async function handleDbMessage(
   ws: WebSocket,
   msg: WsMessage,
-  send: (ws: WebSocket, message: WsMessage) => void
+  send: (ws: WebSocket, message: WsMessage) => void,
+  role: Role | null,
 ): Promise<boolean> {
+  if (!DB_TYPES.has(msg.type)) return false;
+  // Direct DB browsing/mutation/SQL is admin-only. The WS ACL already gates the
+  // admin namespace; this re-checks the tier in the handler as defense in depth.
+  if (!hasRole(role, "admin")) {
+    send(ws, { type: "error", payload: { message: "Not authorized" } });
+    return true;
+  }
   switch (msg.type) {
     case "admin:tables": {
       try {

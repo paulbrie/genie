@@ -13,8 +13,8 @@ import {
 import { listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "../vps/ssh-metrics.js";
 import { listRecentSshEvents } from "../vps/ssh-events.js";
 import { evictAllSessionsForHost, evictSession, listSharedTunnels } from "../vps/ssh-session-cache.js";
-import * as projectService from "../project-service.js";
-import { isPrivilegedRole, type Role } from "../ws-acl.js";
+import { type Role } from "../ws-acl.js";
+import { canAccessProject } from "./handler-auth.js";
 /** Handle every `ssh:*` and `terminal:*` message. Returns true if handled. */
 export async function handleTerminalMessage(
   ws: WebSocket,
@@ -93,9 +93,8 @@ export async function handleTerminalMessage(
         let startParams: StartParams;
         if (projectId && instanceId) {
           // Opening a shell on a project's VPS — gate on project access so a
-          // user can't get an interactive terminal on a project they can't see
-          // (privileged roles bypass).
-          if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+          // user can't get an interactive terminal on a project they can't see.
+          if (!(await canAccessProject(userId, role, projectId))) {
             send(ws, { type: "terminal:error", payload: { terminalId, message: "Not authorized for this project" } });
             return true;
           }

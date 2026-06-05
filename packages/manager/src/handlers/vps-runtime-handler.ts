@@ -3,6 +3,7 @@ import type { WsMessage, VpsConnectionConfig } from "../types.js";
 import { VPS_SSH_USERNAME } from "../types.js";
 import type { Role } from "../ws-acl.js";
 import { isPrivilegedRole } from "../ws-acl.js";
+import { canAccessProject } from "./handler-auth.js";
 import * as projectService from "../project-service.js";
 import { connectSsh, pickWorkingSshUser } from "../vps/ssh-client.js";
 import { vpsStatus, vpsLogs, vpsStats } from "../vps/deploy-service.js";
@@ -244,7 +245,7 @@ export async function handleVpsRuntimeMessage(
       const { projectId, instanceId, recipeId, script } = msg.payload as {
         projectId: string; instanceId: string; recipeId: string; script: string;
       };
-      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+      if (!(await canAccessProject(userId, role, projectId))) {
         send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "Not authorized for this project" } });
         return true;
       }
@@ -274,7 +275,7 @@ export async function handleVpsRuntimeMessage(
       const { projectId, instanceId, recipeId, script } = msg.payload as {
         projectId: string; instanceId: string; recipeId: string; script: string;
       };
-      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+      if (!(await canAccessProject(userId, role, projectId))) {
         send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "Not authorized for this project" } });
         return true;
       }
@@ -305,7 +306,7 @@ export async function handleVpsRuntimeMessage(
       const { projectId, instanceId, recipeId, script } = msg.payload as {
         projectId: string; instanceId: string; recipeId: string; script: string;
       };
-      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+      if (!(await canAccessProject(userId, role, projectId))) {
         send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "Not authorized for this project" } });
         return true;
       }
@@ -376,7 +377,7 @@ export async function handleVpsRuntimeMessage(
 
     case "vps:logs": {
       const { projectId, instanceId, serviceName, tail } = msg.payload;
-      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+      if (!(await canAccessProject(userId, role, projectId))) {
         send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
         return true;
       }
@@ -397,7 +398,7 @@ export async function handleVpsRuntimeMessage(
 
     case "vps:docker:logs": {
       const { projectId, instanceId, reqId } = msg.payload;
-      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+      if (!(await canAccessProject(userId, role, projectId))) {
         send(ws, { type: "vps:docker:logs:result", payload: { ok: false, error: "Not authorized for this project", reqId } });
         return true;
       }
