@@ -234,6 +234,10 @@ export async function migrateOrgs(): Promise<void> {
   await db.execute(sql`ALTER TABLE teams ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE CASCADE`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_teams_org ON teams(org_id)`);
 
+  // Scope genie-security MCP scans to the project their token belongs to.
+  await db.execute(sql`ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE CASCADE`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_security_scans_project ON security_scans(project_id)`);
+
   // 3. Drop NOT NULL on users.google_id so stub invitees may exist -----------
   await db.execute(sql`ALTER TABLE users ALTER COLUMN google_id DROP NOT NULL`);
 

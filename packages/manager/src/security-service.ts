@@ -4,4 +4,4 @@
 
 export type { ScanStatus, Severity, PortResult, WebFinding, SecurityScan, ScanCallbacks } from "./security/types.js";
 export { runSecurityScan } from "./security/core.js";
-export { saveScan, listScans, deleteScan } from "./security/db.js";
+export { saveScan, listScans, listScansByProject, deleteScan } from "./security/db.js";

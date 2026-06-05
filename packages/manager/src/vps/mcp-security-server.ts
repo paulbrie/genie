@@ -45,11 +45,12 @@ const TOOLS = [
 ];
 
 /**
- * Handle one JSON-RPC request for the genie-security MCP service. Security scans
- * are global ("system"-scoped), so no per-instance context is needed. Returns a
- * JSON-RPC response object, or null for a notification.
+ * Handle one JSON-RPC request for the genie-security MCP service. The bearer
+ * token scopes the caller to one project, so scans are stored against and
+ * listed for that `projectId` only — a project's VM can't see another's scans.
+ * Returns a JSON-RPC response object, or null for a notification.
  */
-export async function handleSecurityMcpRequest(parsed: JsonRpcRequest): Promise<object | null> {
+export async function handleSecurityMcpRequest(parsed: JsonRpcRequest, projectId: string): Promise<object | null> {
   if (isNotification(parsed)) return null;
   const { id, method, params } = parsed;
 
@@ -82,8 +83,9 @@ export async function handleSecurityMcpRequest(parsed: JsonRpcRequest): Promise<
         signal: ac.signal,
       });
 
-      // Save scan to DB under "system" user
-      await securityService.saveScan("system", scan);
+      // Stored under the system user but tagged with the caller's project so
+      // list/get only surface this project's scans.
+      await securityService.saveScan("system", scan, projectId);
 
       const summary = {
         id: scan.id,
@@ -109,7 +111,7 @@ export async function handleSecurityMcpRequest(parsed: JsonRpcRequest): Promise<
     }
 
     if (toolName === "security_list_scans") {
-      const scans = await securityService.listScans("system");
+      const scans = await securityService.listScansByProject(projectId);
       const summary = scans.map((s) => ({
         id: s.id,
         target: s.target,
@@ -132,7 +134,7 @@ export async function handleSecurityMcpRequest(parsed: JsonRpcRequest): Promise<
           isError: true,
         });
       }
-      const scans = await securityService.listScans("system", 1000);
+      const scans = await securityService.listScansByProject(projectId, 1000);
       const scan = scans.find((s) => s.id === scanId);
       if (!scan) {
         return jsonRpcResponse(id, {

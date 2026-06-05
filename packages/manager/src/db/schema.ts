@@ -425,6 +425,11 @@ export const globalSettings = pgTable("global_settings", {
 export const securityScans = pgTable("security_scans", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id").references(() => users.id).notNull(),
+  // Set for scans run via the genie-security MCP, which is scoped to one project
+  // by its bearer token. Null for in-app (SecurityPanel) scans, which are scoped
+  // by userId instead. The MCP list/get path filters on this so one project's
+  // VM can't enumerate another project's scans.
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
   target: text("target").notNull(),
   status: text("status", { enum: ["completed", "error", "stopping"] }).notNull(),
   startedAt: timestamp("started_at").notNull(),
@@ -435,6 +440,7 @@ export const securityScans = pgTable("security_scans", {
   error: text("error"),
 }, (t) => [
   index("idx_security_scans_user").on(t.userId),
+  index("idx_security_scans_project").on(t.projectId),
   index("idx_security_scans_started").on(t.startedAt),
 ]);
 

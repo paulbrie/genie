@@ -68,7 +68,7 @@ function dispatch(
 ): Promise<object | null> {
   switch (service) {
     case "security":
-      return handleSecurityMcpRequest(parsed);
+      return handleSecurityMcpRequest(parsed, projectId);
     case "notify":
       return handleNotifyMcpRequest(parsed, { broadcastChatMessage: deps.broadcastChatMessage });
     case "tracker":
