@@ -21,6 +21,8 @@ export interface SshChannelSnapshot {
   rows: number;
   projectId: string | null;
   instanceId: string | null;
+  /** Display name of the user who opened this PTY channel (null if unknown). */
+  openedByUserName: string | null;
   openedAt: number;
   bytesIn: number;
   bytesOut: number;

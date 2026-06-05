@@ -558,6 +558,12 @@ export function getConnectedUserIds(): string[] {
   return [...ids];
 }
 
+/** Display name of the authenticated user behind a socket (impersonation-aware:
+ *  this is the active identity, the same one ACL gates on). Null if unknown. */
+export function getClientUserName(ws: WebSocket): string | null {
+  return clients.get(ws)?.user?.name ?? null;
+}
+
 const PRESENCE_SKIP_TYPES = new Set([
   "ping", "pong", "stats", "presence:nav", "presence:windows", "presence:detail",
 ]);

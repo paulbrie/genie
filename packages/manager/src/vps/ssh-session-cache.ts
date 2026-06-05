@@ -29,6 +29,8 @@ export interface SharedChannelSnapshot {
   rows: number;
   projectId: string | null;
   instanceId: string | null;
+  /** Display name of the user who opened this PTY channel (null if unknown). */
+  openedByUserName: string | null;
   openedAt: number;
   bytesIn: number;
   bytesOut: number;
@@ -54,6 +56,7 @@ interface ChannelEntry {
   rows: number;
   projectId: string | null;
   instanceId: string | null;
+  openedByUserName: string | null;
   openedAt: number;
   handle: ShellHandle | null;
   ptyRegistryId: string | null;
@@ -237,6 +240,7 @@ export type OpenTerminalChannelOpts = {
   rows: number;
   projectId: string | null;
   instanceId: string | null;
+  openedByUserName: string | null;
   onData: (data: Buffer) => void;
   onReady: () => void;
   onError: (message: string) => void;
@@ -257,6 +261,7 @@ export async function openTerminalChannel(
     rows: opts.rows,
     projectId: opts.projectId,
     instanceId: opts.instanceId,
+    openedByUserName: opts.openedByUserName,
     openedAt: Date.now(),
     handle: null,
     ptyRegistryId: null,
@@ -352,6 +357,7 @@ export function listSharedTunnels(): SharedTunnelSnapshot[] {
         rows: ch.rows,
         projectId: ch.projectId,
         instanceId: ch.instanceId,
+        openedByUserName: ch.openedByUserName,
         openedAt: ch.openedAt,
         bytesIn: traffic.bytesIn,
         bytesOut: traffic.bytesOut,

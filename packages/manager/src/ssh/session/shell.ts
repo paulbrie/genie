@@ -31,7 +31,7 @@ export class SshShellSession {
     private readonly options: SshShellOptions,
     private readonly terminalId: string,
     private readonly handlers: SshShellHandlers,
-    private readonly meta: { projectId: string | null; instanceId: string | null },
+    private readonly meta: { projectId: string | null; instanceId: string | null; openedByUserName: string | null },
   ) {}
 
   getTraffic() {
@@ -64,6 +64,7 @@ export class SshShellSession {
       rows,
       projectId: this.meta.projectId,
       instanceId: this.meta.instanceId,
+      openedByUserName: this.meta.openedByUserName,
       onData: (data) => {
         if (this.closed) return;
         this.handlers.onData(data);

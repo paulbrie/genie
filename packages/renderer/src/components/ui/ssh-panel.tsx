@@ -67,6 +67,7 @@ export function SshPanel() {
         t.host.toLowerCase().includes(q)
         || t.username.toLowerCase().includes(q)
         || t.key.toLowerCase().includes(q)
+        || t.channels.some((ch) => ch.openedByUserName?.toLowerCase().includes(q))
       );
     });
   }, [ssh.sharedTunnels, filter]);
@@ -250,6 +251,7 @@ export function SshPanel() {
                     <thead className="text-subtext0 text-left bg-surface0/20">
                       <tr className="border-b border-surface0/50">
                         <th className="py-1.5 px-2 font-normal">Channel</th>
+                        <th className="py-1.5 px-2 font-normal">User</th>
                         <th className="py-1.5 px-2 font-normal">Project</th>
                         <th className="py-1.5 px-2 font-normal">Size</th>
                         <th className="py-1.5 px-2 font-normal">Traffic</th>
@@ -273,6 +275,9 @@ export function SshPanel() {
                             >
                               {ch.status}
                             </span>
+                          </td>
+                          <td className="py-1.5 px-2 text-subtext1 text-xs truncate max-w-[10rem]" title={ch.openedByUserName ?? undefined}>
+                            {ch.openedByUserName ?? "—"}
                           </td>
                           <td className="py-1.5 px-2 text-subtext0 text-xs truncate max-w-[10rem]" title={ch.instanceId ?? undefined}>
                             {ch.projectId ? `${ch.projectId.slice(0, 8)}…` : "—"}

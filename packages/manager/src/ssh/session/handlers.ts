@@ -17,6 +17,7 @@
 import type { WebSocket } from "ws";
 
 import { getVpsConnection } from "../../vps/connection-resolver.js";
+import { getClientUserName } from "../../ws-server.js";
 import { SshShellSession, type SshShellOptions } from "./shell.js";
 import { sessions, sessionMeta, getSshSession } from "./registry.js";
 import { clearOutputBatch, scheduleOutputBatch } from "./output-batch.js";
@@ -165,6 +166,8 @@ export async function startSshSession(
     host = params.host;
   }
 
+  const openedByUserName = getClientUserName(ws);
+
   const session = new SshShellSession(shellOpts, terminalId, {
     onData: (data) => {
       if (!isCurrentSession(terminalId, session)) return;
@@ -232,7 +235,7 @@ export async function startSshSession(
       if (!isCurrentSession(terminalId, session)) return;
       closeSshSession(terminalId, ws);
     },
-  }, { projectId, instanceId });
+  }, { projectId, instanceId, openedByUserName });
 
   sessions.set(terminalId, session);
   session.start(cols, rows);
