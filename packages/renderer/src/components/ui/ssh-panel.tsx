@@ -121,7 +121,7 @@ export function SshPanel() {
 
   return (
     <div className="flex-1 flex flex-col h-full">
-      <div className="px-6 py-3">
+      <div className="px-5 py-3">
         <ViewHeader
           title="SSH tunnels & channels"
           subtitle={
@@ -139,7 +139,7 @@ export function SshPanel() {
         />
       </div>
 
-      <div className="px-6 pb-3 flex items-center gap-3 flex-wrap">
+      <div className="px-5 pb-3 flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-1">
           {([
             ["tunnels", `tunnels (${ssh.sharedTunnels.length} · ${totalChannels} ch)`],
@@ -213,7 +213,7 @@ export function SshPanel() {
         )}
       </div>
 
-      <div className="flex-1 overflow-auto px-6 pb-6">
+      <div className="flex-1 overflow-auto px-5 pb-6">
         {view === "tunnels" ? (
           <div className="flex flex-col gap-3">
             {sharedRows.map((tunnel) => (

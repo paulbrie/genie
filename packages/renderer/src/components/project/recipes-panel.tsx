@@ -117,7 +117,7 @@ export function RecipesPanel() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-4">
+      <div className="px-5">
         <ViewHeader
           title="Recipes"
           subtitle={<span>scripts that install / check / remove software on a VM</span>}

@@ -78,7 +78,7 @@ export function ConnectedUsersPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2.5 h-12 border-b border-surface0 shrink-0 px-4">
+      <div className="flex items-center gap-2.5 h-12 border-b border-surface0 shrink-0 px-5">
         <Users size={14} className="text-mauve" />
         <h2 className="text-lg font-semibold text-text">Connected Users</h2>
         {grouped.length > 0 && (
@@ -93,7 +93,7 @@ export function ConnectedUsersPanel() {
             <p>No connected users</p>
           </div>
         ) : (
-          <div className="flex flex-col gap-4 p-4">
+          <div className="flex flex-col gap-4 px-5 py-4">
             {grouped.map((user) => {
               const actions = getUserActions(user);
               return (

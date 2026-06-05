@@ -217,7 +217,7 @@ function MainPanel({ activeTab, settingsTab, settingsOrgId }: { activeTab?: Proj
   if (activeNav === "topology") {
     return (
       <div className="flex-1 flex flex-col h-full">
-        <div className="px-6 py-4 border-b border-surface0">
+        <div className="px-5 py-4 border-b border-surface0">
           <h1 className="text-xl font-semibold text-text">Topology</h1>
           <p className="text-md text-subtext0 mt-1">
             Live 3D view of Genie, your projects, their servers, and the users

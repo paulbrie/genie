@@ -104,8 +104,10 @@ function TeamRolesDiagram() {
 export function HelpPanel() {
   return (
     <>
-      <ViewHeader title="Help" subtitle="How user roles work" />
-      <div className="overflow-auto flex-1 px-8 py-8 space-y-12 text-md text-text">
+      <div className="px-5">
+        <ViewHeader title="Help" subtitle="How user roles work" />
+      </div>
+      <div className="overflow-auto flex-1 px-5 py-8 space-y-12 text-md text-text">
         <section className="max-w-3xl space-y-3">
           <p className="text-subtext0">
             Genie has <strong className="text-text">two independent role systems</strong>: a global app role

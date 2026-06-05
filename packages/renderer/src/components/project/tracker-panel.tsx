@@ -453,7 +453,7 @@ function TrackerBoardView({ groups, groupBy, onSelectIssue, projectMap }: {
   projectMap: Record<string, string>;
 }) {
   return (
-    <div className="flex gap-3 overflow-x-auto flex-1 p-3 pb-0">
+    <div className="flex gap-3 overflow-x-auto flex-1 px-5 pt-3 pb-0">
       {groups.map((g) => (
         <TrackerColumn
           key={g.key}
@@ -479,7 +479,7 @@ function TrackerListView({ groups, groupBy, onSelectIssue, selectedIssueId, proj
   projectMap: Record<string, string>;
 }) {
   return (
-    <div className="flex-1 overflow-y-auto p-3">
+    <div className="flex-1 overflow-y-auto px-5 py-3">
       {groups.map((g) => (
         <div key={g.key} className="mb-4">
           <div className="flex items-center gap-2 px-2 py-1 mb-1">
@@ -1175,7 +1175,7 @@ function TrackerToolbar({ tracker, projects }: { tracker: TrackerState; projects
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3 shrink-0">
+      <div className="flex items-center gap-2 px-5 shrink-0">
         <ViewHeader
           title="Tracker"
           actions={
@@ -1192,7 +1192,7 @@ function TrackerToolbar({ tracker, projects }: { tracker: TrackerState; projects
           }
         />
       </div>
-      <div className="px-3">
+      <div className="px-5">
         <ViewTabs
           tabs={[
             { key: "board" as const, label: <span className="flex items-center gap-1"><LayoutGrid size={12} />Board</span> },
@@ -1202,7 +1202,7 @@ function TrackerToolbar({ tracker, projects }: { tracker: TrackerState; projects
           onTabChange={setTrackerViewMode}
         />
       </div>
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-surface0 shrink-0">
+      <div className="flex items-center gap-2 px-5 py-2 border-b border-surface0 shrink-0">
         {/* Project selector — only projects the user has rights to are shown ($projects is server-scoped) */}
         <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface0/50">
           <FolderKanban size={12} className="text-overlay0" />

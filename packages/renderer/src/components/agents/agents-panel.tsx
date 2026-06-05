@@ -98,7 +98,7 @@ function fromAgent(a: AgentDef): Draft {
 export function AgentsPanel() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-4">
+      <div className="px-5">
         <ViewHeader title="Agents" subtitle={undefined} />
       </div>
       <div className="flex-1 flex items-center justify-center p-8">
@@ -164,7 +164,7 @@ function AgentsPanelImpl() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-4">
+      <div className="px-5">
         <ViewHeader
           title="Agents"
           subtitle={
@@ -186,7 +186,7 @@ function AgentsPanelImpl() {
         />
       </div>
 
-      <div className="flex-1 overflow-auto p-4 flex gap-4">
+      <div className="flex-1 overflow-auto px-5 py-4 flex gap-4">
         <div className="flex-1 min-w-0">
           {agents.saveError && (
             <div className="mb-3 text-md text-red bg-red/10 border border-red/30 rounded px-3 py-2 font-mono">

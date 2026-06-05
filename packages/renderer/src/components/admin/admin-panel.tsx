@@ -162,7 +162,7 @@ export function AdminPanel() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-4">
+      <div className="px-5">
         <ViewHeader
           title="Admin"
           subtitle={activeTab === "database" && selectedTable ? (

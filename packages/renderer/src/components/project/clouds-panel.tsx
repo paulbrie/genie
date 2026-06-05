@@ -68,7 +68,7 @@ export function CloudsPanel() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-4">
+      <div className="px-5">
         <ViewHeader title="Clouds" />
         <div className="flex items-end justify-between gap-3 flex-wrap">
           <ViewTabs<CloudSubTab>
