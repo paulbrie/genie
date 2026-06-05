@@ -7,7 +7,7 @@ import { Link2, X, Loader2, Check, Pencil } from "lucide-react";
 import { $attachVm, $projects } from "@/store/subjects";
 import { attachExistingVmToProject, resetAttachVm } from "@/store/actions";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
+import { FilterableSelect } from "@/components/ui/filterable-select";
 
 type Provider = "digitalocean" | "tazcloud" | "hetzner";
 
@@ -122,14 +122,17 @@ function AttachVmModal({
           )}
           <div className="flex flex-col gap-1">
             <label className="text-md text-overlay1">{isMove ? "Move to project" : "Project"}</label>
-            <Select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={running || done} className="py-1.5 text-md font-sans">
-              {projects.length === 0 && <option value="" disabled>No projects available</option>}
-              {projects.map((p) => (
-                <option key={p.id} value={p.id} disabled={p.id === current?.projectId}>
-                  {p.name}{p.teamName ? ` (${p.teamName})` : ""}{p.id === current?.projectId ? " — current" : ""}
-                </option>
-              ))}
-            </Select>
+            <FilterableSelect
+              value={projectId}
+              onChange={setProjectId}
+              disabled={running || done}
+              placeholder="Select a project…"
+              emptyText="No projects available"
+              options={projects
+                // Exclude the current project — moving to it is a no-op.
+                .filter((p) => p.id !== current?.projectId)
+                .map((p) => ({ value: p.id, label: `${p.name}${p.teamName ? ` (${p.teamName})` : ""}` }))}
+            />
             <p className="text-xs text-overlay0">
               {isMove
                 ? "Moves the link to the chosen project (the VM keeps running)."

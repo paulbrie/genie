@@ -190,6 +190,71 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   return rows.map((r) => attachTeamName(rowToProjectDef(r), teamMap));
 }
 
+/** Project IDs the user is allowed to see. Thin wrapper over getAllForUser for
+ *  callers (e.g. the tracker) that only need the id set to scope a query.
+ *  superadmin → every project; null user → empty. */
+export async function getAccessibleProjectIds(userId: string | null): Promise<string[]> {
+  const list = await getAllForUser(userId);
+  return list.map((p) => p.id);
+}
+
+/** Minimal user shape for assignee pickers. */
+export interface AssignableUser {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+}
+
+/** Users actually associated with a given project — its team members, org
+ *  owners/admins of the owning org, and explicit project members. Used to scope
+ *  the tracker assignee picker so an issue can only be assigned to someone tied
+ *  to the project. Superadmins are NOT included blanket-wide: they only appear
+ *  if they hold one of these memberships. Sorted by name. */
+export async function listProjectAssignableUsers(projectId: string): Promise<AssignableUser[]> {
+  const db = getDb();
+  const [proj] = await db
+    .select({ teamId: projects.teamId })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  if (!proj) return [];
+
+  const ids = new Set<string>();
+
+  // Explicit project members.
+  const pms = await db
+    .select({ userId: projectMembers.userId })
+    .from(projectMembers)
+    .where(eq(projectMembers.projectId, projectId));
+  for (const r of pms) ids.add(r.userId);
+
+  if (proj.teamId) {
+    // Members of the project's team.
+    const tms = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(eq(teamMembers.teamId, proj.teamId));
+    for (const r of tms) ids.add(r.userId);
+
+    // Org owners/admins of the team's org see every project in it.
+    const [team] = await db.select({ orgId: teams.orgId }).from(teams).where(eq(teams.id, proj.teamId)).limit(1);
+    if (team?.orgId) {
+      const oms = await db
+        .select({ userId: orgMembers.userId })
+        .from(orgMembers)
+        .where(and(eq(orgMembers.orgId, team.orgId), inArray(orgMembers.role, ["owner", "admin"])));
+      for (const r of oms) ids.add(r.userId);
+    }
+  }
+
+  if (ids.size === 0) return [];
+  return db
+    .select({ id: users.id, name: users.name, avatarUrl: users.avatarUrl })
+    .from(users)
+    .where(inArray(users.id, [...ids]))
+    .orderBy(users.name);
+}
+
 /** True iff the user can access a project that has a VPS instance pointing at the
  *  given droplet/VM. Used to authorize per-VM exec for non-admin users: they may
  *  drive the Manage popup (stats, services, recipes) only for servers attached to

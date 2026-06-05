@@ -183,7 +183,11 @@ export const trackerIssues = pgTable("tracker_issues", {
   index("idx_tracker_issues_project").on(t.projectId),
   index("idx_tracker_issues_status").on(t.status),
   index("idx_tracker_issues_assignee").on(t.assigneeId),
-  index("idx_tracker_issues_identifier").on(t.identifier),
+  // Identifiers are per-project (TER-1, TER-2, … reset per project), so the
+  // human-facing number is only unique *within* a project. The composite
+  // unique index enforces that and also serves the (projectId, identifier)
+  // lookups the MCP tracker tools do.
+  uniqueIndex("uniq_tracker_issues_project_identifier").on(t.projectId, t.identifier),
 ]);
 
 export const trackerIssueLabels = pgTable("tracker_issue_labels", {

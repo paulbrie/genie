@@ -9,6 +9,12 @@ export function loadTrackerIssues(): void {
   wsSend("tracker:list", {});
 }
 
+/** Fetch the users assignable on a project (scoped to project access). Result
+ *  arrives via the "tracker:assignees" handler and is cached per project id. */
+export function loadTrackerAssignees(projectId: string): void {
+  wsSend("tracker:assignees:list", { projectId });
+}
+
 export function createTrackerIssue(fields: {
   projectId: string;
   title: string;

@@ -736,12 +736,24 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
   }
 }
 
+// Broadcast tracker:list to every authenticated client, with issues filtered
+// per recipient to the projects they may see (mirrors broadcastProjectList).
+// Labels are global, so fetch them once. Without per-recipient scoping a
+// mutation would leak every project's issues to everyone.
 export async function broadcastTrackerList(): Promise<void> {
-  const [issues, labels] = await Promise.all([
-    trackerService.listIssues(),
-    trackerService.listLabels(),
-  ]);
-  broadcast({ type: "tracker:list", payload: { issues, labels } });
+  const labels = await trackerService.listLabels();
+  const tasks: Promise<unknown>[] = [];
+  for (const [ws, state] of clients) {
+    if (ws.readyState !== ws.OPEN || !state.userId) continue;
+    tasks.push(
+      projectService.getAccessibleProjectIds(state.userId).then((allowedProjectIds) =>
+        trackerService.listIssues(allowedProjectIds).then((issues) => {
+          send(ws, { type: "tracker:list", payload: { issues, labels } });
+        }),
+      ),
+    );
+  }
+  await Promise.all(tasks);
 }
 
 async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {

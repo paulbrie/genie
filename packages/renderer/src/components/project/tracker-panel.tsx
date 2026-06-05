@@ -5,18 +5,19 @@ import { useSubject } from "subjecto/react";
 import {
   Circle, CircleDot, CheckCircle2, XCircle,
   AlertTriangle, ChevronUp, Equal, ChevronDown, Minus,
-  LayoutGrid, List, Plus, X, Filter, Search, Trash2, Tag,
+  LayoutGrid, List, Plus, X, Filter, Trash2, Tag,
   GripVertical, Loader2, Send, MessageSquare, FolderKanban,
 } from "lucide-react";
-import type { ChatUser, ProjectDef, TrackerComment, TrackerFilters, TrackerGroupBy as TGroupBy, TrackerIssue, TrackerLabel, TrackerPriority, TrackerState, TrackerStatus, TrackerViewMode as TViewMode } from "@/store/types";
-import { $conversationChat, $projects, $tracker } from "@/store/subjects";
-import { clearTrackerFilters, createTrackerComment, createTrackerIssue, createTrackerLabel, deleteTrackerComment, deleteTrackerIssue, deleteTrackerLabel, hideTrackerCreateForm, loadTrackerComments, loadTrackerIssues, selectTrackerIssue, setTrackerFilters, setTrackerGroupBy, setTrackerProject, setTrackerViewMode, showTrackerCreateForm, updateTrackerIssue, updateTrackerLabel } from "@/store/actions";
+import type { ProjectDef, TrackerAssignableUser, TrackerComment, TrackerFilters, TrackerGroupBy as TGroupBy, TrackerIssue, TrackerLabel, TrackerPriority, TrackerState, TrackerStatus, TrackerViewMode as TViewMode } from "@/store/types";
+import { $projects, $tracker } from "@/store/subjects";
+import { clearTrackerFilters, createTrackerComment, createTrackerIssue, createTrackerLabel, deleteTrackerComment, deleteTrackerIssue, deleteTrackerLabel, hideTrackerCreateForm, loadTrackerAssignees, loadTrackerComments, loadTrackerIssues, selectTrackerIssue, setTrackerFilters, setTrackerGroupBy, setTrackerProject, setTrackerViewMode, showTrackerCreateForm, updateTrackerIssue, updateTrackerLabel } from "@/store/actions";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/ui/view-header";
 import { ViewTabs } from "@/components/ui/view-tabs";
+import { FilterableSelect } from "@/components/ui/filterable-select";
 
 // --- Status / Priority config ---
 
@@ -41,6 +42,20 @@ const PRIORITY_CONFIG: Record<TrackerPriority, { label: string; icon: typeof Min
 };
 
 const LABEL_COLORS = ["#a6e3a1", "#89b4fa", "#f38ba8", "#fab387", "#f9e2af", "#cba6f7", "#94e2d5", "#f5c2e7", "#74c7ec", "#eba0ac"];
+
+// Human-facing issue reference, derived per project: <PREFIX>-<identifier>
+// (e.g. "Terenuri" #12 → "TER-12"). Identifiers are numbered per project on the
+// server, so the prefix is what disambiguates them across projects. The prefix
+// is the first 3 alphanumerics of the project name, uppercased; "ISS" when the
+// project name is unknown (e.g. not yet loaded).
+function projectPrefix(projectName?: string): string {
+  const cleaned = (projectName ?? "").replace(/[^a-zA-Z0-9]/g, "");
+  return cleaned ? cleaned.slice(0, 3).toUpperCase() : "ISS";
+}
+
+function issueRef(issue: TrackerIssue, projectName?: string): string {
+  return `${projectPrefix(projectName)}-${issue.identifier}`;
+}
 
 function StatusIcon({ status, size = 14 }: { status: TrackerStatus; size?: number }) {
   const cfg = STATUS_CONFIG[status];
@@ -178,11 +193,19 @@ function UserAvatar({ name, avatarUrl, size = 20 }: { name: string | null; avata
 
 // --- Assignee dropdown ---
 
-function AssigneeSelect({ value, onChange }: { value: string | null; onChange: (val: string | null) => void }) {
+// Fetch + cache the users assignable on a project (scoped to project access).
+// Re-requests whenever the project changes; returns [] until the list arrives.
+function useAssignableUsers(projectId: string | null): TrackerAssignableUser[] {
+  const [tracker] = useSubject($tracker);
+  useEffect(() => {
+    if (projectId) loadTrackerAssignees(projectId);
+  }, [projectId]);
+  return (projectId ? tracker.assignableUsers[projectId] : undefined) ?? [];
+}
+
+function AssigneeSelect({ value, onChange, users }: { value: string | null; onChange: (val: string | null) => void; users: TrackerAssignableUser[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const [conversationChat] = useSubject($conversationChat);
-  const users = conversationChat.users;
 
   useEffect(() => {
     if (!open) return;
@@ -319,7 +342,7 @@ function TrackerIssueCard({ issue, onClick, projectName }: { issue: TrackerIssue
       )}
     >
       <div className="flex items-center gap-1.5 mb-1">
-        <span className="text-[10px] text-overlay0 font-mono">GEN-{issue.identifier}</span>
+        <span className="text-[10px] text-overlay0 font-mono">{issueRef(issue, projectName)}</span>
         <PriorityIcon priority={issue.priority} size={12} />
         <div className="flex-1" />
         {isInProgress && (
@@ -485,7 +508,7 @@ function TrackerListView({ groups, groupBy, onSelectIssue, selectedIssueId, proj
               )}
             >
               <span className="flex items-center gap-1">
-                <span className="text-[11px] text-overlay0 font-mono">GEN-{issue.identifier}</span>
+                <span className="text-[11px] text-overlay0 font-mono">{issueRef(issue, projectMap[issue.projectId])}</span>
                 {issue.status === "in_progress" && <Loader2 size={10} className="text-yellow animate-spin" />}
               </span>
               <span className="text-md text-text truncate">{issue.title}</span>
@@ -661,6 +684,7 @@ function TrackerIssueDetail({ issue, labels, projects, onClose }: { issue: Track
   const [title, setTitle] = useState(issue.title);
   const [description, setDescription] = useState(issue.description);
   const descRef = useRef<HTMLTextAreaElement>(null);
+  const detailAssignableUsers = useAssignableUsers(issue.projectId);
 
   useEffect(() => {
     setTitle(issue.title);
@@ -690,7 +714,7 @@ function TrackerIssueDetail({ issue, labels, projects, onClose }: { issue: Track
     <div className="absolute right-0 top-0 bottom-0 w-[400px] bg-crust border-l border-surface0 flex flex-col z-40 shadow-xl">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-surface0">
-        <span className="text-md text-overlay0 font-mono">GEN-{issue.identifier}</span>
+        <span className="text-md text-overlay0 font-mono">{issueRef(issue, projects.find((p) => p.id === issue.projectId)?.name)}</span>
         <button onClick={onClose} className="p-1 bg-transparent border-none cursor-pointer text-overlay0 hover:text-text rounded hover:bg-surface0">
           <X size={14} />
         </button>
@@ -739,6 +763,7 @@ function TrackerIssueDetail({ issue, labels, projects, onClose }: { issue: Track
           <AssigneeSelect
             value={issue.assigneeId}
             onChange={(id) => updateTrackerIssue(issue.id, { assigneeId: id })}
+            users={detailAssignableUsers}
           />
 
           <span className="text-md text-overlay0">Labels</span>
@@ -794,7 +819,10 @@ function TrackerIssueDetail({ issue, labels, projects, onClose }: { issue: Track
 
 // --- Create modal ---
 
-function TrackerCreateModal({ labels, projectId, onClose }: { labels: TrackerLabel[]; projectId: string; onClose: () => void }) {
+function TrackerCreateModal({ labels, projects, initialProjectId, onClose }: { labels: TrackerLabel[]; projects: ProjectDef[]; initialProjectId: string | null; onClose: () => void }) {
+  // Empty until the user picks a project. Pre-filled only when a single project
+  // is already active in the filter — under "All projects" the user must choose.
+  const [projectId, setProjectId] = useState<string>(initialProjectId ?? "");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<TrackerStatus>("todo");
@@ -803,12 +831,18 @@ function TrackerCreateModal({ labels, projectId, onClose }: { labels: TrackerLab
   const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>([]);
   const titleRef = useRef<HTMLInputElement>(null);
 
+  const assignableUsers = useAssignableUsers(projectId || null);
+  // Drop a chosen assignee that the newly-selected project can't see.
+  useEffect(() => {
+    if (assigneeId && !assignableUsers.some((u) => u.id === assigneeId)) setAssigneeId(null);
+  }, [assignableUsers, assigneeId]);
+
   useEffect(() => {
     titleRef.current?.focus();
   }, []);
 
   const handleSubmit = useCallback(() => {
-    if (!title.trim()) return;
+    if (!title.trim() || !projectId) return;
     createTrackerIssue({
       projectId,
       title: title.trim(),
@@ -852,6 +886,15 @@ function TrackerCreateModal({ labels, projectId, onClose }: { labels: TrackerLab
           />
 
           <div className="grid grid-cols-[80px_1fr] gap-y-2 gap-x-2 items-center">
+            <span className="text-md text-overlay0">Project</span>
+            <FilterableSelect
+              value={projectId}
+              options={projects.map((p) => ({ value: p.id, label: p.name }))}
+              onChange={setProjectId}
+              placeholder="Select a project…"
+              emptyText="No projects match"
+            />
+
             <span className="text-md text-overlay0">Status</span>
             <InlineSelect
               value={status}
@@ -879,7 +922,7 @@ function TrackerCreateModal({ labels, projectId, onClose }: { labels: TrackerLab
             />
 
             <span className="text-md text-overlay0">Assignee</span>
-            <AssigneeSelect value={assigneeId} onChange={setAssigneeId} />
+            <AssigneeSelect value={assigneeId} onChange={setAssigneeId} users={assignableUsers} />
 
             <span className="text-md text-overlay0">Labels</span>
             <LabelPicker selectedIds={selectedLabelIds} onChange={setSelectedLabelIds} labels={labels} />
@@ -897,7 +940,7 @@ function TrackerCreateModal({ labels, projectId, onClose }: { labels: TrackerLab
           <span className="text-[10px] text-overlay0">Cmd+Enter to submit</span>
           <div className="flex gap-2">
             <Button variant="default" onClick={onClose}>Cancel</Button>
-            <Button variant="primary" onClick={handleSubmit} disabled={!title.trim()}>Create</Button>
+            <Button variant="primary" onClick={handleSubmit} disabled={!title.trim() || !projectId}>Create</Button>
           </div>
         </div>
       </div>
@@ -1203,13 +1246,13 @@ export function TrackerPanel() {
   // (subscribing to the parent "tracker" object doesn't trigger re-renders
   // because the object reference stays the same when its properties are mutated)
   const [trackerState] = useSubject($tracker);
-  const { issues, labels, loading, viewMode, groupBy, filters, selectedIssueId, selectedProjectId, showCreateForm } = trackerState;
+  const { issues, labels, assignableUsers, loading, viewMode, groupBy, filters, selectedIssueId, selectedProjectId, showCreateForm } = trackerState;
   const [projects] = useSubject($projects);
 
   const tracker: TrackerState = useMemo(() => ({
-    issues, labels, loading, viewMode, groupBy, filters,
+    issues, labels, assignableUsers, loading, viewMode, groupBy, filters,
     selectedIssueId, selectedProjectId, showCreateForm,
-  }), [issues, labels, loading, viewMode, groupBy, filters,
+  }), [issues, labels, assignableUsers, loading, viewMode, groupBy, filters,
     selectedIssueId, selectedProjectId, showCreateForm]);
 
   useEffect(() => {
@@ -1251,9 +1294,6 @@ export function TrackerPanel() {
     for (const p of projects) m[p.id] = p.name;
     return m;
   }, [projects]);
-
-  // Determine which projectId to use for creating: selected filter or first project
-  const createProjectId = selectedProjectId || (projects.length > 0 ? projects[0].id : null);
 
   const handleSelectIssue = useCallback((id: string) => {
     selectTrackerIssue(id);
@@ -1299,8 +1339,8 @@ export function TrackerPanel() {
         </div>
       )}
 
-      {showCreateForm && createProjectId && (
-        <TrackerCreateModal labels={labels} projectId={createProjectId} onClose={hideTrackerCreateForm} />
+      {showCreateForm && projects.length > 0 && (
+        <TrackerCreateModal labels={labels} projects={projects} initialProjectId={selectedProjectId} onClose={hideTrackerCreateForm} />
       )}
     </div>
   );

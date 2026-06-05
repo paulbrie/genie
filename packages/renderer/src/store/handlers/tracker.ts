@@ -8,6 +8,12 @@ export const handlers: HandlerMap = {
     $tracker.nextAssign({ issues: payload.issues, labels: payload.labels, loading: false });
   },
 
+  "tracker:assignees": (payload) => {
+    const { projectId, users } = payload;
+    const tr = $tracker.getValue();
+    $tracker.nextAssign({ assignableUsers: { ...tr.assignableUsers, [projectId]: users } });
+  },
+
   "tracker:issue:created": (_payload) => {
     $tracker.nextAssign({ showCreateForm: false });
   },

@@ -27,6 +27,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "vps_stats_tokens", run: migrateVpsStatsTokens },
   { id: "agents", run: migrateAgents },
   { id: "base_image_history", run: migrateBaseImageHistory },
+  { id: "tracker_per_project_identifier", run: migrateTrackerPerProjectIdentifier },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -351,6 +352,18 @@ export async function migrateVpsMetricSamples(): Promise<void> {
   )`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_lookup ON vps_metric_samples(project_id, instance_id, sampled_at)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_sampled_at ON vps_metric_samples(sampled_at)`);
+}
+
+/** Move tracker issue identifiers from a single global sequence to a per-project
+ *  one: drop the old non-unique index on `identifier` alone and add a composite
+ *  unique index on (project_id, identifier). Existing identifiers were globally
+ *  unique, so they are trivially unique per project — the unique index is safe
+ *  to create without renumbering. New issues are numbered per project going
+ *  forward (see tracker-service.getNextIdentifier). Idempotent. */
+export async function migrateTrackerPerProjectIdentifier(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`DROP INDEX IF EXISTS idx_tracker_issues_identifier`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uniq_tracker_issues_project_identifier ON tracker_issues(project_id, identifier)`);
 }
 
 /** Base image template edit history. Idempotent. */

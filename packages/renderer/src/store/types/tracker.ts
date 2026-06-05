@@ -6,6 +6,8 @@ export type TrackerViewMode = "board" | "list";
 export type TrackerGroupBy = "status" | "priority" | "assignee";
 
 export interface TrackerLabel { id: string; name: string; color: string; }
+/** A user who can be assigned issues in a given project (scoped to project access). */
+export interface TrackerAssignableUser { id: string; name: string; avatarUrl: string | null; }
 export interface TrackerIssue {
   id: string;
   projectId: string;
@@ -48,6 +50,8 @@ export interface TrackerFilters {
 export interface TrackerState {
   issues: TrackerIssue[];
   labels: TrackerLabel[];
+  /** Assignable users per project id, scoped to who can access that project. */
+  assignableUsers: Record<string, TrackerAssignableUser[]>;
   loading: boolean;
   viewMode: TrackerViewMode;
   groupBy: TrackerGroupBy;

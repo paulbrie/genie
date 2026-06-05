@@ -7,7 +7,7 @@ import { $tracker } from "../subjects/tracker";
 
 beforeEach(() => {
   $tracker.next({
-    issues: [], labels: [],
+    issues: [], labels: [], assignableUsers: {},
     loading: false, showCreateForm: false, selectedIssueId: null,
     viewMode: "board", groupBy: "status",
     filters: { status: [], priority: [], assigneeId: [], labelId: [] },

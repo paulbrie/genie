@@ -1,6 +1,22 @@
 import { eq, desc, max, inArray, asc } from "drizzle-orm";
 import { getDb } from "./db/index.js";
-import { trackerIssues, trackerLabels, trackerIssueLabels, trackerIssueComments, users } from "./db/schema.js";
+import { trackerIssues, trackerLabels, trackerIssueLabels, trackerIssueComments, projects, users } from "./db/schema.js";
+
+// Per-project issue-ref prefix, derived from the project name: first 3
+// alphanumerics, uppercased (e.g. "Terenuri" → "TER"); "ISS" when empty.
+// MUST mirror the renderer's projectPrefix() in tracker-panel.tsx — keep in sync.
+function deriveProjectPrefix(name: string | null | undefined): string {
+  const cleaned = (name ?? "").replace(/[^a-zA-Z0-9]/g, "");
+  return cleaned ? cleaned.slice(0, 3).toUpperCase() : "ISS";
+}
+
+/** The human-facing ref prefix for a project (e.g. "TER"), used to render issue
+ *  refs like "TER-12". Returns "ISS" if the project is missing. */
+export async function getProjectRefPrefix(projectId: string): Promise<string> {
+  const db = getDb();
+  const [row] = await db.select({ name: projects.name }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  return deriveProjectPrefix(row?.name);
+}
 
 // --- Labels ---
 
@@ -63,11 +79,14 @@ export async function getIssueProjectId(issueId: string): Promise<string | null>
   return row?.projectId ?? null;
 }
 
-async function getNextIdentifier(): Promise<number> {
+// Per-project sequence: each project numbers its issues independently
+// (TER-1, TER-2, …), so the next identifier is one past *that project's* max.
+async function getNextIdentifier(projectId: string): Promise<number> {
   const db = getDb();
   const [row] = await db
     .select({ maxId: max(trackerIssues.identifier) })
-    .from(trackerIssues);
+    .from(trackerIssues)
+    .where(eq(trackerIssues.projectId, projectId));
   return (row?.maxId ?? 0) + 1;
 }
 
@@ -249,7 +268,7 @@ export async function createIssue(
   },
 ) {
   const db = getDb();
-  const identifier = await getNextIdentifier();
+  const identifier = await getNextIdentifier(fields.projectId);
 
   // Compute sortOrder: put new issues at the top
   const [maxSort] = await db

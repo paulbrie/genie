@@ -11,7 +11,17 @@ import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import * as trackerService from "../tracker-service.js";
+import * as projectService from "../project-service.js";
 
+
+// Enforce (not just in the UI) that an issue is only assigned to someone who
+// can see its project. null/undefined assignee = unassigned, always allowed.
+async function assertAssigneeCanSeeProject(assigneeId: string | null | undefined, projectId: string): Promise<void> {
+  if (!assigneeId) return;
+  if (!(await projectService.userCanSeeProject(assigneeId, projectId))) {
+    throw new Error("Assignee does not have access to this project");
+  }
+}
 
 export async function handleTrackerMessage(
   ws: WebSocket,
@@ -24,8 +34,11 @@ export async function handleTrackerMessage(
   switch (msg.type) {
     case "tracker:list": {
       try {
+        // Scope issues to the projects this user may see (mirrors project:list /
+        // broadcastTrackerList). Labels are global, not project-scoped.
+        const allowedProjectIds = await projectService.getAccessibleProjectIds(userId);
         const [issues, labels] = await Promise.all([
-          trackerService.listIssues(),
+          trackerService.listIssues(allowedProjectIds),
           trackerService.listLabels(),
         ]);
         send(ws, { type: "tracker:list", payload: { issues, labels } });
@@ -35,9 +48,27 @@ export async function handleTrackerMessage(
       return true;
     }
 
+    case "tracker:assignees:list": {
+      try {
+        const { projectId } = msg.payload as { projectId: string };
+        // Only callers who can see the project may enumerate its members.
+        if (!(await projectService.userCanSeeProject(userId, projectId))) {
+          send(ws, { type: "tracker:error", payload: { message: "Not authorized" } });
+          return true;
+        }
+        const assignees = await projectService.listProjectAssignableUsers(projectId);
+        send(ws, { type: "tracker:assignees", payload: { projectId, users: assignees } });
+      } catch (err: unknown) {
+        send(ws, { type: "tracker:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
     case "tracker:issue:create": {
       try {
-        const issue = await trackerService.createIssue(userId, msg.payload as { projectId: string; title: string; description?: string; status?: string; priority?: string; assigneeId?: string | null; labelIds?: string[] });
+        const payload = msg.payload as { projectId: string; title: string; description?: string; status?: string; priority?: string; assigneeId?: string | null; labelIds?: string[] };
+        await assertAssigneeCanSeeProject(payload.assigneeId, payload.projectId);
+        const issue = await trackerService.createIssue(userId, payload);
         send(ws, { type: "tracker:issue:created", payload: issue as Record<string, unknown> });
         await broadcastTrackerList();
       } catch (err: unknown) {
@@ -49,6 +80,11 @@ export async function handleTrackerMessage(
     case "tracker:issue:update": {
       try {
         const { issueId, ...fields } = msg.payload;
+        if (fields.assigneeId) {
+          // Validate against the issue's target project (a move may also be in flight).
+          const projectId = fields.projectId ?? (await trackerService.getIssueProjectId(issueId));
+          if (projectId) await assertAssigneeCanSeeProject(fields.assigneeId, projectId);
+        }
         const issue = await trackerService.updateIssue(userId, issueId, fields);
         if (!issue) {
           send(ws, { type: "tracker:error", payload: { message: "Issue not found" } });

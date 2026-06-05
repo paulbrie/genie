@@ -25,13 +25,13 @@ const TOOLS = [
   {
     name: "tracker_get_issue",
     description:
-      "Get a single tracker issue by its identifier number (e.g. #12). Returns full details including description.",
+      "Get a single tracker issue by its number — the digits of its ref (e.g. for 'TER-12' pass 12). Returns full details including description.",
     inputSchema: {
       type: "object",
       properties: {
         identifier: {
           type: "number",
-          description: "The issue identifier number (e.g. 12 for issue #12)",
+          description: "The issue number — the digits of its ref (e.g. 12 for 'TER-12')",
         },
       },
       required: ["identifier"],
@@ -71,7 +71,7 @@ const TOOLS = [
       properties: {
         identifier: {
           type: "number",
-          description: "The issue identifier number (e.g. 12 for issue #12)",
+          description: "The issue number — the digits of its ref (e.g. 12 for 'TER-12')",
         },
         content: {
           type: "string",
@@ -84,7 +84,7 @@ const TOOLS = [
   {
     name: "tracker_create_issue",
     description:
-      "Create a new tracker issue (ticket) in this project. Use this when the user asks to file a bug, capture a follow-up, or record a TODO they want tracked. The project is fixed — you only choose the content. Defaults: status='todo', priority='none'. Returns the newly assigned identifier (e.g. #42).",
+      "Create a new tracker issue (ticket) in this project. Use this when the user asks to file a bug, capture a follow-up, or record a TODO they want tracked. The project is fixed — you only choose the content. Defaults: status='todo', priority='none'. Returns the newly assigned ref (e.g. 'TER-42').",
     inputSchema: {
       type: "object",
       properties: {
@@ -148,6 +148,10 @@ export async function handleTrackerRequest(
 
     const toolName = params?.name as string;
     const args = (params?.arguments ?? {}) as Record<string, unknown>;
+    // Human-facing ref prefix for this project (e.g. "TER"), so the agent sees
+    // the same 'TER-12' identifiers as the UI. Lookups still use the numeric id.
+    const prefix = await trackerService.getProjectRefPrefix(projectId);
+    const ref = (n: number) => `${prefix}-${n}`;
 
     if (toolName === "tracker_list_issues") {
       const allIssues = await trackerService.listIssues();
@@ -157,6 +161,7 @@ export async function handleTrackerRequest(
       const summary = issues.map((i) => ({
         id: i.id,
         identifier: i.identifier,
+        ref: ref(i.identifier),
         title: i.title,
         status: i.status,
         priority: i.priority,
@@ -174,7 +179,7 @@ export async function handleTrackerRequest(
       const issue = allIssues.find((i) => i.projectId === projectId && i.identifier === identifier);
       if (!issue) {
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
+          content: [{ type: "text", text: `Issue ${ref(identifier)} not found in this project.` }],
           isError: true,
         });
       }
@@ -184,6 +189,7 @@ export async function handleTrackerRequest(
           text: JSON.stringify({
             id: issue.id,
             identifier: issue.identifier,
+            ref: ref(issue.identifier),
             title: issue.title,
             description: issue.description,
             status: issue.status,
@@ -203,7 +209,7 @@ export async function handleTrackerRequest(
       const issue = allIssues.find((i) => i.projectId === projectId && i.identifier === identifier);
       if (!issue) {
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
+          content: [{ type: "text", text: `Issue ${ref(identifier)} not found in this project.` }],
           isError: true,
         });
       }
@@ -213,7 +219,7 @@ export async function handleTrackerRequest(
       const updated = await trackerService.updateIssue("system", issue.id, updateFields);
       if (updated) opts?.onIssueUpdated?.();
       return jsonRpcResponse(id, {
-        content: [{ type: "text", text: updated ? `Issue #${identifier} updated successfully.` : `Failed to update issue #${identifier}.` }],
+        content: [{ type: "text", text: updated ? `Issue ${ref(identifier)} updated successfully.` : `Failed to update issue ${ref(identifier)}.` }],
         isError: !updated,
       });
     }
@@ -234,7 +240,7 @@ export async function handleTrackerRequest(
       const created = await trackerService.createIssue(null, { projectId, title: title.trim(), description, status, priority });
       if (created) opts?.onIssueUpdated?.();
       return jsonRpcResponse(id, {
-        content: [{ type: "text", text: created ? `Created issue #${created.identifier}: ${created.title}` : "Failed to create issue." }],
+        content: [{ type: "text", text: created ? `Created issue ${ref(created.identifier)}: ${created.title}` : "Failed to create issue." }],
         isError: !created,
       });
     }
@@ -246,14 +252,14 @@ export async function handleTrackerRequest(
       const issue = allIssues.find((i) => i.projectId === projectId && i.identifier === identifier);
       if (!issue) {
         return jsonRpcResponse(id, {
-          content: [{ type: "text", text: `Issue #${identifier} not found in this project.` }],
+          content: [{ type: "text", text: `Issue ${ref(identifier)} not found in this project.` }],
           isError: true,
         });
       }
       const comment = await trackerService.createComment({ issueId: issue.id, userId: null, authorName: "Genie", content });
       if (comment) opts?.onIssueUpdated?.();
       return jsonRpcResponse(id, {
-        content: [{ type: "text", text: comment ? `Comment added to issue #${identifier}.` : `Failed to add comment to issue #${identifier}.` }],
+        content: [{ type: "text", text: comment ? `Comment added to issue ${ref(identifier)}.` : `Failed to add comment to issue ${ref(identifier)}.` }],
         isError: !comment,
       });
     }
