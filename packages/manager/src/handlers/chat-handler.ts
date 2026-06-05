@@ -248,6 +248,9 @@ export async function handleChatMessage(
           (id, name, input) => {
             send(ws, { type: "chat:tool:start", payload: { id, name, input } });
           },
+          // Scope every tool call to this caller — the assistant may only reach
+          // projects/servers the user can see (privileged roles bypass).
+          { userId, role: state.role },
         );
       })().catch((err) => {
         activeChatAbortControllers.delete(ws);

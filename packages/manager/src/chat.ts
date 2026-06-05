@@ -3,8 +3,9 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createFireworks } from "@ai-sdk/fireworks";
 import { z } from "zod";
 import { getCachedProcesses, getCachedDockerInfo } from "./monitor.js";
-import { tools } from "./tools/index.js";
+import { createTools, type ToolAuthContext } from "./tools/index.js";
 import { executeSshExec, executeBareTazSshExec } from "./tools/ssh-exec.js";
+import { isPrivilegedRole } from "./ws-acl.js";
 import type { DomAction, DomActionExecutor } from "./types.js";
 
 /** Set by the renderer's pin selector. When present, all assistant ssh_exec
@@ -173,6 +174,10 @@ export async function handleChat(
   maxToolRounds?: number,
   pinnedVm?: PinnedAssistantVm | null,
   onToolStart?: (id: string, name: string, input: Record<string, unknown>) => void,
+  // Caller identity. Drives per-user tool authorization (which projects/servers
+  // the assistant may touch). Defaults to an anonymous context with no
+  // resource access, so a missing auth arg fails closed rather than open.
+  auth: ToolAuthContext = { userId: null, role: null },
 ): Promise<void> {
   try {
     const model = getModel(modelId);
@@ -185,9 +190,9 @@ export async function handleChat(
       ? `${buildSystemContext()}\n\n${context}${pinNote}`
       : `${buildSystemContext()}${pinNote}`;
 
-    // Merge static tools with the dynamic view_page tool
+    // Build the user-scoped toolset, then merge the dynamic view_page tool.
     const allTools: Record<string, Tool> = {
-      ...tools,
+      ...createTools(auth),
       view_page: tool({
         description: "See the exact UI content currently visible to the user. Returns the text content of the page. Use this when you need to understand what the user is looking at on screen.",
         inputSchema: z.object({}),
@@ -221,13 +226,19 @@ export async function handleChat(
         execute: async ({ command, timeoutSeconds }) => {
           const timeout = Math.min(Math.max((timeoutSeconds ?? 120), 5), 600) * 1000;
           if (bare) {
-            // Project-less pin → must be a tazcloud admin pin; route via TAZCLOUD_SSH_PRIVATE_KEY.
+            // Project-less pin → a tazcloud admin pin routed via the shared
+            // TAZCLOUD_SSH_PRIVATE_KEY. There's no project to scope it to, so
+            // only privileged roles may run on a bare-pinned VM.
+            if (!isPrivilegedRole(auth.role)) {
+              return "Error: you don't have access to this server.";
+            }
             if (pinnedVm.provider !== "tazcloud") {
               return `Error: bare ssh_exec pins are only supported for tazcloud VMs (got provider="${pinnedVm.provider}").`;
             }
             return executeBareTazSshExec(pinnedVm.host, pinnedVm.sshUser || "ubuntu", command, timeout);
           }
-          return executeSshExec(pinnedVm.projectId!, pinnedVm.instanceId, command, timeout);
+          // executeSshExec re-checks userCanSeeProject for the pinned project.
+          return executeSshExec(pinnedVm.projectId!, pinnedVm.instanceId, command, timeout, auth);
         },
       });
     }

@@ -490,6 +490,8 @@ export async function getDocById(docId: string) {
       title: docs.title,
       content: docs.content,
       updatedAt: docs.updatedAt,
+      projectId: docs.projectId,
+      ownerId: docs.userId,
     })
     .from(docs)
     .where(eq(docs.id, docId))

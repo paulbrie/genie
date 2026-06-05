@@ -1,6 +1,7 @@
 import * as projectService from "../project-service.js";
 import { connectSsh } from "../vps/ssh-client.js";
 import { ensureTazcloudKeyOnDisk } from "../vps/tazcloud-provision.js";
+import { isPrivilegedRole, type Role } from "../ws-acl.js";
 
 const MAX_OUTPUT_BYTES = 30_000;
 const HEAD_BYTES = 8_000;
@@ -18,7 +19,16 @@ export async function executeSshExec(
   instanceIdentifier: string,
   command: string,
   timeoutMs: number,
+  // Caller identity — running commands on a project's VPS is gated on the user
+  // being able to see that project (privileged roles bypass). The chokepoint
+  // lives here so both the generic ssh_exec tool and the pinned-VM variant in
+  // chat.ts are covered. Optional so non-assistant callers stay compatible.
+  auth?: { userId: string | null; role: Role | null },
 ): Promise<string> {
+  if (auth && !isPrivilegedRole(auth.role)
+    && !(await projectService.userCanSeeProject(auth.userId, projectId))) {
+    return `Error: you don't have access to project "${projectId}".`;
+  }
   const project = await projectService.getById(projectId);
   if (!project) return `Error: Project not found (id: ${projectId})`;
 
