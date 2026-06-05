@@ -2,6 +2,7 @@ import { type WebSocket } from "ws";
 import { v4 as uuidv4 } from "uuid";
 import type { WsMessage, DomActionExecutor } from "../types.js";
 import { handleChat, type ChatModelId } from "../chat.js";
+import type { ToolAuthContext } from "../tools/index.js";
 import * as chatService from "../chat-service.js";
 import * as assistantLogService from "../assistant-log-service.js";
 import * as settingsService from "../settings-service.js";
@@ -36,6 +37,10 @@ async function handleConversationChat(
   conversationId: string,
   claudeId: string,
   memberIds: string[],
+  // Identity of the member who triggered Claude (the message author). The
+  // assistant's tools are scoped to *their* access — Claude in a shared room
+  // can only reach projects/servers the person who summoned it can see.
+  authorAuth: ToolAuthContext,
   abortSignal?: AbortSignal,
 ): Promise<void> {
   try {
@@ -71,6 +76,12 @@ async function handleConversationChat(
       undefined,
       undefined,
       abortSignal,
+      undefined, // domActionExecutor
+      undefined, // modelId
+      undefined, // maxToolRounds
+      undefined, // pinnedVm
+      undefined, // onToolStart
+      authorAuth,
     );
   } catch (err: unknown) {
     activeConversationAbortControllers.delete(conversationId);
@@ -447,7 +458,7 @@ export async function handleChatMessage(
         if (shouldClaudeRespond) {
           const convAbort = new AbortController();
           activeConversationAbortControllers.set(conversationId, convAbort);
-          void handleConversationChat(ws, send, conversationId, claudeId, memberIds, convAbort.signal);
+          void handleConversationChat(ws, send, conversationId, claudeId, memberIds, { userId, role: state.role }, convAbort.signal);
         }
 
         const mentionMatches = content.match(/@(\w+)/g);
