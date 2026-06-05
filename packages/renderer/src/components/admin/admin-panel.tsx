@@ -84,7 +84,7 @@ function CopyButton({ text }: { text: string }) {
 export function AdminPanel() {
   const router = useRouter();
   const admin = useDeepSubjectAll($admin);
-  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, sqlResult, sqlError, sqlLoading, sqlOpen, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush, users: usersState, teams: teamsState } = admin;
+  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, sqlResult, sqlError, sqlLoading, sqlOpen, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush, users: usersState, teams: teamsState, orgs: orgsState } = admin;
 
 
   const [auth] = useSubject($auth);
@@ -124,6 +124,7 @@ export function AdminPanel() {
     }
     if (activeTab === "users") {
       loadAdminUsers();
+      loadAdminOrgs();
     }
     if (activeTab === "teams") {
       loadAdminTeams();
@@ -216,7 +217,7 @@ export function AdminPanel() {
             else if (tab === "backup") { setAdminTab("backup"); loadBackups(); router.push(buildAdminPath("backup")); }
             else if (tab === "droplets") { setAdminTab("droplets"); loadBaseImageConfigs(); router.push(buildAdminPath("droplets", dropletsSubTab)); }
             else if (tab === "ai") { setAdminTab("ai"); loadAiCosts(); router.push(buildAdminPath("ai", aiState.subTab)); }
-            else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); router.push(buildAdminPath("users")); }
+            else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); loadAdminOrgs(); router.push(buildAdminPath("users")); }
             else if (tab === "teams") { setAdminTab("teams"); loadAdminTeams(); loadAdminUsers(); router.push(buildAdminPath("teams")); }
             else if (tab === "orgs") { setAdminTab("orgs"); loadAdminOrgs(); loadAdminUsers(); router.push(buildAdminPath("orgs")); }
             else if (tab === "communication") { setAdminTab("communication"); loadEmailLogs(); loadAdminUsers(); router.push(buildAdminPath("communication")); }
@@ -1113,7 +1114,16 @@ export function AdminPanel() {
                   </tr>
                 </thead>
                 <tbody>
-                  {usersState.list.filter((u: AdminUser) => !u.isAgent).map((u: AdminUser) => (
+                  {usersState.list.filter((u: AdminUser) => !u.isAgent).map((u: AdminUser) => {
+                    const orgAdminships = orgsState.list
+                      .map((org) => {
+                        const m = (orgsState.members[org.id] || []).find((mm) => mm.userId === u.id);
+                        return m && (m.role === "owner" || m.role === "admin")
+                          ? { orgName: org.name, role: m.role }
+                          : null;
+                      })
+                      .filter((x): x is { orgName: string; role: "owner" | "admin" } => x !== null);
+                    return (
                     <tr key={u.id} className="border-b border-surface0/50 hover:bg-surface0/30 cursor-pointer" onClick={() => setEditingUser(u)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, user: u }); }}>
                       <td className="py-2 px-3 flex items-center gap-2">
                         {u.avatarUrl && <img src={u.avatarUrl} alt="" className="w-6 h-6 rounded-full" />}
@@ -1121,15 +1131,25 @@ export function AdminPanel() {
                       </td>
                       <td className="py-2 px-3 text-subtext0">{u.email}</td>
                       <td className="py-2 px-3">
-                        {u.role === "superadmin" ? (
-                          <span className="text-mauve inline-flex items-center gap-1"><Shield size={14} /> Super Admin</span>
-                        ) : u.role === "admin" ? (
-                          <span className="text-blue inline-flex items-center gap-1"><Shield size={14} /> Admin</span>
-                        ) : u.role === "tazcloud" ? (
-                          <span className="text-teal inline-flex items-center gap-1"><Shield size={14} /> TazCloud</span>
-                        ) : (
-                          <span className="text-subtext0">User</span>
-                        )}
+                        <div className="inline-flex items-center gap-2 flex-wrap">
+                          {u.role === "superadmin" ? (
+                            <span className="text-mauve inline-flex items-center gap-1"><Shield size={14} /> Super Admin</span>
+                          ) : u.role === "admin" ? (
+                            <span className="text-blue inline-flex items-center gap-1"><Shield size={14} /> Admin</span>
+                          ) : u.role === "tazcloud" ? (
+                            <span className="text-teal inline-flex items-center gap-1"><Shield size={14} /> TazCloud</span>
+                          ) : (
+                            <span className="text-subtext0">User</span>
+                          )}
+                          {orgAdminships.length > 0 && (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-md bg-mauve/20 text-mauve"
+                              title={orgAdminships.map((o) => `${o.orgName} · ${o.role}`).join("\n")}
+                            >
+                              <Crown size={12} /> Org Admin
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-2 px-3">
                         <div className="flex flex-wrap gap-1">
@@ -1155,7 +1175,8 @@ export function AdminPanel() {
                       </td>
                       <td className="py-2 px-3 text-subtext0">{new Date(u.createdAt).toLocaleDateString()}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             )}
