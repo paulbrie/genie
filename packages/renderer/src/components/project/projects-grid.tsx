@@ -1,8 +1,9 @@
 "use client";
 
-import { useSubject } from "subjecto/react";
+import { useSubject, useDeepSubject } from "subjecto/react";
 import { Users } from "lucide-react";
-import { $projects } from "@/store/subjects";
+import { $auth, $projects } from "@/store/subjects";
+import { $orgSettings } from "@/store/subjects/org-settings";
 import { showAddProjectForm as openAddProjectForm } from "@/store/actions";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/ui/view-header";
@@ -11,23 +12,35 @@ import { cn } from "@/lib/utils";
 
 export function ProjectsGrid() {
   const [projects] = useSubject($projects);
+  const [auth] = useSubject($auth);
+  const [orgMine] = useDeepSubject($orgSettings, "mine");
   const { navigateToProject } = useNavigate();
+
+  // Creating a project is owner-level: system admins/superadmins, or anyone who
+  // owns/admins an org (the project lands in one of their teams). Plain members
+  // can't — server enforces this too (project:add).
+  const isAdmin = auth.user?.role === "admin" || auth.user?.role === "superadmin";
+  const canCreate = isAdmin || orgMine.length > 0;
 
   return (
     <div className="flex-1 flex flex-col px-5 pb-5 overflow-hidden">
       <ViewHeader
         title="Projects"
         actions={
-          <Button size="sm" variant="primary" onClick={() => openAddProjectForm()}>
-            + Add Project
-          </Button>
+          canCreate ? (
+            <Button size="sm" variant="primary" onClick={() => openAddProjectForm()}>
+              + Add Project
+            </Button>
+          ) : undefined
         }
       />
 
       {projects.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-overlay0 text-base">
           No projects configured
-          <Button variant="primary" onClick={() => openAddProjectForm()}>+ Add Project</Button>
+          {canCreate && (
+            <Button variant="primary" onClick={() => openAddProjectForm()}>+ Add Project</Button>
+          )}
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto pt-4 scrollbar-thin">

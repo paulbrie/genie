@@ -34,6 +34,15 @@ export async function handleProjectMessage(
         send(ws, { type: "error", payload: { message: "name is required" } });
         return true;
       }
+      // Creating a project is owner-level: system admins/superadmins, or anyone
+      // who owns/admins at least one org (the project lands in one of their
+      // teams). Plain members can't — the UI hides "+ Add Project" for them too.
+      const adderId = state.userId;
+      const adderIsAdmin = adderId ? await isAdmin(adderId) : false;
+      if (!adderIsAdmin && (!adderId || (await orgService.manageableOrgIds(adderId)).length === 0)) {
+        send(ws, { type: "error", payload: { message: "You don't have permission to create projects" } });
+        return true;
+      }
       // Auto-assign creator's first team if none provided and creator is a normal user —
       // otherwise the project would be invisible to them under the team-visibility rule.
       let resolvedTeamId: string | null = projTeamId ?? null;
