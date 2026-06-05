@@ -789,6 +789,20 @@ export function setProjectMemberRole(projectId: string, userId: string, role: "o
   wsSend("project:members:set-role", { projectId, userId, role });
 }
 
+// --- Project teams (secondary, multi-team access) ---
+
+export function loadProjectTeams(projectId: string): void {
+  wsSend("project:teams:list", { projectId });
+}
+
+export function addProjectTeam(projectId: string, teamId: string): void {
+  wsSend("project:teams:add", { projectId, teamId });
+}
+
+export function removeProjectTeam(projectId: string, teamId: string): void {
+  wsSend("project:teams:remove", { projectId, teamId });
+}
+
 export function loadAuditLogs(opts?: { userId?: string; action?: string }): void {
   const v = $admin.getValue();
   v.audit.loading = true;

@@ -1,6 +1,6 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "./db/index.js";
-import { orgMembers, projectMembers, projects, teamMembers, teams, users } from "./db/schema.js";
+import { orgMembers, projectMembers, projectTeams, projects, teamMembers, teams, users } from "./db/schema.js";
 import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "./types.js";
 import { deleteInstanceToken } from "./vps/stats-token-service.js";
 import { v4 as uuidv4 } from "uuid";
@@ -176,11 +176,24 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   const directProjectIds = directRows.map((r) => r.projectId);
 
   const teamIdsAll = Array.from(new Set([...teamIdsFromOrgs, ...userTeamIds]));
-  if (teamIdsAll.length === 0 && directProjectIds.length === 0) return [];
+
+  // 4. Projects shared with one of those teams via the project_teams join table
+  //    (a project's secondary teams, beyond its primary projects.teamId owner).
+  let sharedProjectIds: string[] = [];
+  if (teamIdsAll.length > 0) {
+    const rows = await db
+      .select({ projectId: projectTeams.projectId })
+      .from(projectTeams)
+      .where(inArray(projectTeams.teamId, teamIdsAll));
+    sharedProjectIds = rows.map((r) => r.projectId);
+  }
+  const projectIdAccess = Array.from(new Set([...directProjectIds, ...sharedProjectIds]));
+
+  if (teamIdsAll.length === 0 && projectIdAccess.length === 0) return [];
 
   const conds = [] as ReturnType<typeof inArray>[];
   if (teamIdsAll.length > 0) conds.push(inArray(projects.teamId, teamIdsAll));
-  if (directProjectIds.length > 0) conds.push(inArray(projects.id, directProjectIds));
+  if (projectIdAccess.length > 0) conds.push(inArray(projects.id, projectIdAccess));
   const rows = await db
     .select()
     .from(projects)
@@ -228,21 +241,32 @@ export async function listProjectAssignableUsers(projectId: string): Promise<Ass
     .where(eq(projectMembers.projectId, projectId));
   for (const r of pms) ids.add(r.userId);
 
-  if (proj.teamId) {
-    // Members of the project's team.
+  // Every team with access: the primary owner plus any shared via project_teams.
+  const teamIdSet = new Set<string>();
+  if (proj.teamId) teamIdSet.add(proj.teamId);
+  const sharedTeams = await db
+    .select({ teamId: projectTeams.teamId })
+    .from(projectTeams)
+    .where(eq(projectTeams.projectId, projectId));
+  for (const r of sharedTeams) teamIdSet.add(r.teamId);
+
+  const teamIdList = [...teamIdSet];
+  if (teamIdList.length > 0) {
+    // Members of any associated team.
     const tms = await db
       .select({ userId: teamMembers.userId })
       .from(teamMembers)
-      .where(eq(teamMembers.teamId, proj.teamId));
+      .where(inArray(teamMembers.teamId, teamIdList));
     for (const r of tms) ids.add(r.userId);
 
-    // Org owners/admins of the team's org see every project in it.
-    const [team] = await db.select({ orgId: teams.orgId }).from(teams).where(eq(teams.id, proj.teamId)).limit(1);
-    if (team?.orgId) {
+    // Org owners/admins of those teams' orgs see every project in them.
+    const teamRows = await db.select({ orgId: teams.orgId }).from(teams).where(inArray(teams.id, teamIdList));
+    const orgIds = [...new Set(teamRows.map((t) => t.orgId).filter((o): o is string => !!o))];
+    if (orgIds.length > 0) {
       const oms = await db
         .select({ userId: orgMembers.userId })
         .from(orgMembers)
-        .where(and(eq(orgMembers.orgId, team.orgId), inArray(orgMembers.role, ["owner", "admin"])));
+        .where(and(inArray(orgMembers.orgId, orgIds), inArray(orgMembers.role, ["owner", "admin"])));
       for (const r of oms) ids.add(r.userId);
     }
   }
@@ -292,6 +316,19 @@ export async function userCanSeeProject(userId: string | null, projectId: string
     .limit(1);
   if (pm) return true;
 
+  const teamIds = await getUserTeamIds(userId);
+
+  // Shared with one of the user's teams via project_teams? (Checked before the
+  // primary-team logic so it also covers projects with a null primary teamId.)
+  if (teamIds.length > 0) {
+    const [shared] = await db
+      .select({ id: projectTeams.id })
+      .from(projectTeams)
+      .where(and(eq(projectTeams.projectId, projectId), inArray(projectTeams.teamId, teamIds)))
+      .limit(1);
+    if (shared) return true;
+  }
+
   if (!row.teamId) return false;
 
   // Org owner/admin of the project's team's org?
@@ -305,8 +342,7 @@ export async function userCanSeeProject(userId: string | null, projectId: string
     if (member?.role === "owner" || member?.role === "admin") return true;
   }
 
-  // Legacy team membership fallback.
-  const teamIds = await getUserTeamIds(userId);
+  // Legacy primary-team membership fallback.
   return teamIds.includes(row.teamId);
 }
 
@@ -425,6 +461,75 @@ export async function setProjectMemberRole(
     .returning();
   if (!updated) return null;
   return decorateProjectMember(updated);
+}
+
+// --- Per-project teams (secondary, multi-team access) ---
+
+export interface ProjectTeamDef {
+  id: string;
+  projectId: string;
+  teamId: string;
+  teamName: string | null;
+  addedBy: string | null;
+  createdAt: Date;
+}
+
+/** Secondary teams granted access to a project (excludes the primary
+ *  projects.teamId owner). Decorated with team name. */
+export async function getProjectTeams(projectId: string): Promise<ProjectTeamDef[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: projectTeams.id,
+      projectId: projectTeams.projectId,
+      teamId: projectTeams.teamId,
+      teamName: teams.name,
+      addedBy: projectTeams.addedBy,
+      createdAt: projectTeams.createdAt,
+    })
+    .from(projectTeams)
+    .innerJoin(teams, eq(projectTeams.teamId, teams.id))
+    .where(eq(projectTeams.projectId, projectId))
+    .orderBy(projectTeams.createdAt);
+  return rows;
+}
+
+/** Grant a team access to a project. No-op (returns existing) if it's already
+ *  the primary owner or already granted. */
+export async function addProjectTeam(
+  projectId: string,
+  teamId: string,
+  addedBy: string | null,
+): Promise<ProjectTeamDef | null> {
+  const db = getDb();
+  // Adding the primary owning team is redundant — skip.
+  const [proj] = await db.select({ teamId: projects.teamId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (proj?.teamId === teamId) return null;
+
+  await db
+    .insert(projectTeams)
+    .values({ projectId, teamId, addedBy })
+    .onConflictDoNothing({ target: [projectTeams.projectId, projectTeams.teamId] });
+
+  const [row] = await getProjectTeams(projectId).then((rows) => rows.filter((r) => r.teamId === teamId));
+  return row ?? null;
+}
+
+export async function removeProjectTeam(projectId: string, teamId: string): Promise<boolean> {
+  const db = getDb();
+  const res = await db
+    .delete(projectTeams)
+    .where(and(eq(projectTeams.projectId, projectId), eq(projectTeams.teamId, teamId)))
+    .returning({ id: projectTeams.id });
+  return res.length > 0;
+}
+
+/** User ids belonging to a team — used to target project:list refreshes when a
+ *  team's project access changes. */
+export async function getTeamMemberIds(teamId: string): Promise<string[]> {
+  const db = getDb();
+  const rows = await db.select({ userId: teamMembers.userId }).from(teamMembers).where(eq(teamMembers.teamId, teamId));
+  return rows.map((r) => r.userId);
 }
 
 async function decorateProjectMember(row: typeof projectMembers.$inferSelect): Promise<ProjectMemberDef> {

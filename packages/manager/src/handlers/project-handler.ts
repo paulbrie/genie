@@ -294,6 +294,62 @@ export async function handleProjectMessage(
       return true;
     }
 
+    case "project:teams:list": {
+      try {
+        const callerId = state.userId;
+        if (!callerId) { send(ws, { type: "error", payload: { message: "Not authenticated" } }); return true; }
+        const { projectId } = msg.payload as { projectId: string };
+        if (!(await projectService.userCanSeeProject(callerId, projectId))) {
+          send(ws, { type: "error", payload: { message: "Not authorized" } });
+          return true;
+        }
+        const projectTeams = await projectService.getProjectTeams(projectId);
+        send(ws, { type: "project:teams:list", payload: { projectId, teams: projectTeams } });
+      } catch (err) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "project:teams:add": {
+      try {
+        const callerId = state.userId;
+        if (!callerId) { send(ws, { type: "error", payload: { message: "Not authenticated" } }); return true; }
+        const { projectId, teamId } = msg.payload as { projectId: string; teamId: string };
+        if (!(await projectService.userCanManageProject(callerId, projectId))) {
+          send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+          return true;
+        }
+        const team = await projectService.addProjectTeam(projectId, teamId, callerId);
+        send(ws, { type: "project:teams:updated", payload: { projectId, team, action: "added" } });
+        // The newly-granted team's members can now see this project.
+        broadcastToUsers(await projectService.getTeamMemberIds(teamId), { type: "project:list:stale", payload: {} });
+      } catch (err) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "project:teams:remove": {
+      try {
+        const callerId = state.userId;
+        if (!callerId) { send(ws, { type: "error", payload: { message: "Not authenticated" } }); return true; }
+        const { projectId, teamId } = msg.payload as { projectId: string; teamId: string };
+        if (!(await projectService.userCanManageProject(callerId, projectId))) {
+          send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+          return true;
+        }
+        // Capture members before removal so we can tell them to refresh.
+        const affected = await projectService.getTeamMemberIds(teamId);
+        await projectService.removeProjectTeam(projectId, teamId);
+        send(ws, { type: "project:teams:updated", payload: { projectId, teamId, action: "removed" } });
+        broadcastToUsers(affected, { type: "project:list:stale", payload: {} });
+      } catch (err) {
+        send(ws, { type: "error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
     case "project:members:set-role": {
       try {
         const callerId = state.userId;

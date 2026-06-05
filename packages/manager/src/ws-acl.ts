@@ -231,6 +231,10 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   "project:members:remove": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
   "project:members:set-role": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
   "project:members:updated": { receive: "user" },
+  "project:teams:list": { send: "user", receive: "user", notes: "handler enforces userCanSeeProject" },
+  "project:teams:add": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
+  "project:teams:remove": { send: "user", receive: "user", notes: "handler enforces userCanManageProject" },
+  "project:teams:updated": { receive: "user" },
 
   // Dedicated error stream in /logs. The combined "manager" log source stays
   // admin (logs namespace default), but these carry a stderr-only copy that can

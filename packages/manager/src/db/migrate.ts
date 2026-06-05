@@ -28,6 +28,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "agents", run: migrateAgents },
   { id: "base_image_history", run: migrateBaseImageHistory },
   { id: "tracker_per_project_identifier", run: migrateTrackerPerProjectIdentifier },
+  { id: "project_teams", run: migrateProjectTeams },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -74,6 +75,7 @@ async function migrationTablesExist(id: string): Promise<boolean> {
     case "team_invites": return tableExists("team_invites");
     case "vps_metric_samples": return tableExists("vps_metric_samples");
     case "vps_stats_tokens": return tableExists("vps_stats_tokens");
+    case "project_teams": return tableExists("project_teams");
     case "agents": return tableExists("agents");
     case "base_image_history": return tableExists("base_image_template_history");
     default: return false;
@@ -352,6 +354,22 @@ export async function migrateVpsMetricSamples(): Promise<void> {
   )`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_lookup ON vps_metric_samples(project_id, instance_id, sampled_at)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_metric_samples_sampled_at ON vps_metric_samples(sampled_at)`);
+}
+
+/** Additional teams granted access to a project (many-to-many), beyond the
+ *  single primary `projects.team_id`. Idempotent; safe to call every boot. */
+export async function migrateProjectTeams(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS project_teams (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    added_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_project_teams_project ON project_teams(project_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_project_teams_team ON project_teams(team_id)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uniq_project_teams_project_team ON project_teams(project_id, team_id)`);
 }
 
 /** Move tracker issue identifiers from a single global sequence to a per-project

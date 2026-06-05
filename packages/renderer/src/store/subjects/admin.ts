@@ -19,6 +19,7 @@ export const $admin = new DeepSubject<AdminState>({
   teams: { list: [], members: [], loading: false },
   orgs: { list: [], members: {}, loading: false, selectedOrgId: null },
   projectMembers: {},
+  projectTeams: {},
   communication: { logs: [], loading: false, sending: false, error: null, lastResult: null },
   audit: { logs: [], loading: false, filterUserId: null, filterAction: null },
   prodlogs: { deployments: [], logs: [], selectedDeploymentId: null, logType: "deploy", loading: false, logsLoading: false },

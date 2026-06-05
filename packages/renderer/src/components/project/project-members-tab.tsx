@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
-import { Crown, Plus, X } from "lucide-react";
+import { Crown, Plus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDeepSubject, useSubject } from "subjecto/react";
 import { $admin, $auth } from "@/store/subjects";
 import {
   addProjectMember,
+  addProjectTeam,
   loadAdminOrgs,
+  loadAdminTeams,
   loadAdminUsers,
   loadProjectMembers,
+  loadProjectTeams,
   removeProjectMember,
+  removeProjectTeam,
   setProjectMemberRole,
 } from "@/store/actions";
 import type { ProjectDef } from "@/store/types";
@@ -18,19 +22,26 @@ export function ProjectMembersTab({ project }: { project: ProjectDef }) {
   // Subscribe to the relevant $admin slices. useDeepSubject only accepts
   // top-level keys.
   const [projectMembersMap] = useDeepSubject($admin, "projectMembers");
+  const [projectTeamsMap] = useDeepSubject($admin, "projectTeams");
   const [orgsSlice] = useDeepSubject($admin, "orgs");
   const [usersSlice] = useDeepSubject($admin, "users");
+  const [teamsSlice] = useDeepSubject($admin, "teams");
   const orgs = orgsSlice.list;
   const allUsers = usersSlice.list;
+  const allTeams = teamsSlice.list;
   const members = projectMembersMap[project.id] || [];
+  const projectTeams = projectTeamsMap[project.id] || [];
   const [adding, setAdding] = useState(false);
+  const [addingTeam, setAddingTeam] = useState(false);
 
   useEffect(() => {
     loadProjectMembers(project.id);
-    // We also need orgs/users so the picker has data. Loading is idempotent —
-    // if they're already populated the server will just respond again.
+    loadProjectTeams(project.id);
+    // We also need orgs/users/teams so the pickers have data. Loading is
+    // idempotent — if they're already populated the server just responds again.
     if (orgs.length === 0) loadAdminOrgs();
     if (allUsers.length === 0) loadAdminUsers();
+    if (allTeams.length === 0) loadAdminTeams();
   }, [project.id]);
 
   const isSuperadmin = auth.user?.role === "superadmin";
@@ -48,6 +59,11 @@ export function ProjectMembersTab({ project }: { project: ProjectDef }) {
   // Users available to add: any non-agent user not yet in the project.
   const memberUserIds = new Set(members.map((m) => m.userId));
   const candidates = allUsers.filter((u) => !u.isAgent && !memberUserIds.has(u.id));
+
+  // Teams available to add: any team that isn't the primary owner and isn't
+  // already a secondary team on this project.
+  const usedTeamIds = new Set([project.teamId, ...projectTeams.map((t) => t.teamId)].filter(Boolean));
+  const candidateTeams = allTeams.filter((t) => !usedTeamIds.has(t.id));
 
   return (
     <div className="py-4 space-y-4">
@@ -146,6 +162,82 @@ export function ProjectMembersTab({ project }: { project: ProjectDef }) {
         Owners can manage other members. Members can access the project but can't add/remove others.
         Org owners and admins automatically see every project in their org, even without a direct
         membership row.
+      </p>
+
+      {/* --- Project Teams (secondary, multi-team access) --- */}
+      <div className="flex items-center justify-between pt-2">
+        <h3 className="text-lg font-medium">Project Teams</h3>
+        {canManage && !addingTeam && candidateTeams.length > 0 && (
+          <Button size="sm" onClick={() => setAddingTeam(true)}>
+            <Plus size={14} className="mr-1" /> Add Team
+          </Button>
+        )}
+      </div>
+
+      {canManage && addingTeam && (
+        <div className="flex items-center gap-2">
+          <select
+            className="bg-surface0 border border-surface1 rounded px-3 py-1.5 text-md text-text flex-1 max-w-md"
+            defaultValue=""
+            onChange={(e) => {
+              if (e.target.value) {
+                addProjectTeam(project.id, e.target.value);
+                setAddingTeam(false);
+              }
+            }}
+            autoFocus
+          >
+            <option value="" disabled>
+              Select team...
+            </option>
+            {candidateTeams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <Button size="sm" variant="ghost" onClick={() => setAddingTeam(false)}>
+            <X size={14} />
+          </Button>
+        </div>
+      )}
+
+      <div className="border border-surface0 rounded-lg overflow-hidden">
+        {/* Primary owning team — always present, not removable here. */}
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-surface0/50 last:border-0">
+          <div className="flex items-center gap-2">
+            <Users size={14} className="text-overlay0" />
+            <span className="font-medium">{project.teamName || "— no primary team —"}</span>
+            <span className="text-xs uppercase text-yellow">owner</span>
+          </div>
+        </div>
+        {projectTeams.map((t) => (
+          <div
+            key={t.id}
+            className="flex items-center justify-between px-4 py-2.5 border-b border-surface0/50 last:border-0"
+          >
+            <div className="flex items-center gap-2">
+              <Users size={14} className="text-overlay0" />
+              <span className="font-medium">{t.teamName || t.teamId}</span>
+              <span className="text-xs uppercase text-overlay0">shared</span>
+            </div>
+            {canManage && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-red hover:text-red"
+                onClick={() => removeProjectTeam(project.id, t.teamId)}
+              >
+                <X size={14} />
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs text-overlay0">
+        The primary team owns the project. Adding a team grants all of its members access too — useful
+        when more than one team needs to collaborate on the same project.
       </p>
     </div>
   );

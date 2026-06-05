@@ -10,6 +10,7 @@ import type {
   AdminTeamMember,
   AdminUser,
   ProjectMemberInfo,
+  ProjectTeamInfo,
 } from "../types/admin";
 import {
   deletePendingAdminExec,
@@ -900,6 +901,25 @@ export const handlers: HandlerMap = {
       return;
     }
     $admin.getValue().projectMembers[payload.projectId] = list;
+  },
+
+  // --- Per-project secondary teams ---
+  "project:teams:list": (payload) => {
+    $admin.getValue().projectTeams[payload.projectId] = payload.teams;
+  },
+
+  "project:teams:updated": (payload) => {
+    const list = $admin.getValue().projectTeams[payload.projectId] || [];
+    if (payload.action === "added") {
+      const t: ProjectTeamInfo | undefined = payload.team;
+      if (!t) return;
+      if (!list.some((x: ProjectTeamInfo) => x.teamId === t.teamId)) list.push(t);
+      $admin.getValue().projectTeams[payload.projectId] = list;
+    } else if (payload.action === "removed") {
+      $admin.getValue().projectTeams[payload.projectId] = list.filter(
+        (x: ProjectTeamInfo) => x.teamId !== payload.teamId,
+      );
+    }
   },
 
   "project:list:stale": () => {

@@ -534,6 +534,29 @@ export const projectMembers = pgTable(
 );
 
 /**
+ * Additional teams granted access to a project, beyond its primary
+ * `projects.teamId` owner. A project's effective team set is
+ * `{ teamId } ∪ project_teams.teamId`; any member of any of those teams can see
+ * it. This is the many-to-many counterpart to the single-team `projects.teamId`
+ * (which stays the canonical owning team).
+ */
+export const projectTeams = pgTable(
+  "project_teams",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+    teamId: uuid("team_id").references(() => teams.id, { onDelete: "cascade" }).notNull(),
+    addedBy: uuid("added_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_project_teams_project").on(table.projectId),
+    index("idx_project_teams_team").on(table.teamId),
+    uniqueIndex("uniq_project_teams_project_team").on(table.projectId, table.teamId),
+  ]
+);
+
+/**
  * Per-org encrypted credentials for cloud providers / external services. One
  * row per (org, kind) — e.g. ("...uuid", "tazcloud-token"). Stored using the
  * same AES-256-GCM envelope as server_credentials so a manager-secret rotation

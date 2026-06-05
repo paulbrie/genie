@@ -291,6 +291,16 @@ export interface ProjectMemberInfo {
   userAvatarUrl?: string | null;
 }
 
+/** A secondary team granted access to a project (beyond its primary owner). */
+export interface ProjectTeamInfo {
+  id: string;
+  projectId: string;
+  teamId: string;
+  teamName: string | null;
+  addedBy: string | null;
+  createdAt: string;
+}
+
 export interface AuditLogEntry {
   id: string;
   userId: string | null;
@@ -415,6 +425,9 @@ export interface AdminState {
   /** Members of individual projects, keyed by projectId. Populated on demand
    *  when the project-detail Members section is opened. */
   projectMembers: Record<string, ProjectMemberInfo[]>;
+  /** Secondary teams granted access to individual projects, keyed by projectId.
+   *  Populated on demand alongside projectMembers. */
+  projectTeams: Record<string, ProjectTeamInfo[]>;
   communication: {
     logs: EmailLogEntry[];
     loading: boolean;
