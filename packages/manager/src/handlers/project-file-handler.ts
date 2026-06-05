@@ -6,13 +6,27 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as projectService from "../project-service.js";
+import { isPrivilegedRole, type Role } from "../ws-acl.js";
 
 
 export async function handleProjectFileMessage(
   ws: WebSocket,
   msg: WsMessage,
   send: (ws: WebSocket, message: WsMessage) => void,
+  userId: string | null,
+  role: Role | null,
 ): Promise<boolean> {
+  if (!msg.type.startsWith("project-file:")) return false;
+  // These cases read/write a project's setupFiles purely from a client-supplied
+  // projectId. Gate on project access (privileged roles bypass) so a user can't
+  // read or overwrite another project's files. Scoped to project-file:* above so
+  // we never intercept a different handler's message.
+  const gateProjectId = msg.payload?.projectId as string | undefined;
+  if (gateProjectId && !isPrivilegedRole(role)
+    && !(await projectService.userCanSeeProject(userId, gateProjectId))) {
+    send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+    return true;
+  }
   switch (msg.type) {
     case "project-file:list": {
       const { projectId } = msg.payload;

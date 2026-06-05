@@ -9,6 +9,8 @@ import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";
+import * as projectService from "../project-service.js";
+import { isPrivilegedRole, type Role } from "../ws-acl.js";
 
 
 const GIT_TYPES = new Set([
@@ -22,12 +24,22 @@ export async function handleGitMessage(
   ws: WebSocket,
   msg: WsMessage,
   send: (ws: WebSocket, message: WsMessage) => void,
+  userId: string | null,
+  role: Role | null,
 ): Promise<boolean> {
   if (!GIT_TYPES.has(msg.type)) return false;
 
   const { projectId, instanceId, folder, reqId } = msg.payload;
   const gitReply = (type: string, extra: Record<string, unknown>) =>
     send(ws, { type, payload: { ...extra, ...(reqId ? { reqId } : {}) } });
+
+  // git:* runs arbitrary git commands on the project's VPS — gate on project
+  // access (privileged roles bypass) so a user can't operate on a project's
+  // repo they have no access to.
+  if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+    gitReply("git:error", { message: "Not authorized for this project" });
+    return true;
+  }
 
   let conn;
   try {

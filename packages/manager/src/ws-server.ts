@@ -886,14 +886,14 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   // Inline cases below stay until they get migrated to their own module.
   if (await handleDbMessage(ws, msg, send)) return;
   if (await handleBackupMessage(ws, msg, send)) return;
-  if (await handleGitMessage(ws, msg, send)) return;
+  if (await handleGitMessage(ws, msg, send, userId, state.role)) return;
   if (await handleFsMessage(ws, msg, send, userId)) return;
   if (await handleVpsDbMessage(ws, msg, send, userId)) return;
   if (await handleSecurityMessage(ws, msg, send, userId)) return;
   if (await handleRecipesMessage(ws, msg, send, userId, broadcast)) return;
   if (await handleAgentsMessage(ws, msg, send, userId, broadcast)) return;
   if (await handleFileTemplateMessage(ws, msg, send, userId)) return;
-  if (await handleProjectFileMessage(ws, msg, send)) return;
+  if (await handleProjectFileMessage(ws, msg, send, userId, state.role)) return;
   if (await handleTrackerMessage(ws, msg, send, userId, broadcast, broadcastTrackerList)) return;
   if (await handleDocsMessage(ws, msg, send, userId, sendToUser)) return;
   if (await handleDoMessage(ws, msg, send, userId, state.role, broadcast)) return;
@@ -903,7 +903,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleOrgMessage(ws, msg, send, userId, state.impersonatedBy)) return;
   if (await handleAdminUsersMessage(ws, msg, send, state)) return;
   if (await handleLocalPtyMessage(ws, msg, send)) return;
-  if (await handleTerminalMessage(ws, msg, send, broadcast)) return;
+  if (await handleTerminalMessage(ws, msg, send, broadcast, userId, state.role)) return;
   if (await handleProjectMessage(ws, msg, send, state)) return;
   if (await handleChatMessage(ws, msg, send, state)) return;
   if (await handleAdminMiscMessage(ws, msg, send, state)) return;

@@ -13,12 +13,16 @@ import {
 import { listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "../vps/ssh-metrics.js";
 import { listRecentSshEvents } from "../vps/ssh-events.js";
 import { evictAllSessionsForHost, evictSession, listSharedTunnels } from "../vps/ssh-session-cache.js";
+import * as projectService from "../project-service.js";
+import { isPrivilegedRole, type Role } from "../ws-acl.js";
 /** Handle every `ssh:*` and `terminal:*` message. Returns true if handled. */
 export async function handleTerminalMessage(
   ws: WebSocket,
   msg: WsMessage,
   send: (ws: WebSocket, message: WsMessage) => void,
   broadcast: (message: WsMessage) => void,
+  userId: string | null,
+  role: Role | null,
 ): Promise<boolean> {
   const sshListPayload = () => ({
     sessions: listSshConnections(),
@@ -88,6 +92,13 @@ export async function handleTerminalMessage(
       try {
         let startParams: StartParams;
         if (projectId && instanceId) {
+          // Opening a shell on a project's VPS — gate on project access so a
+          // user can't get an interactive terminal on a project they can't see
+          // (privileged roles bypass).
+          if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+            send(ws, { type: "terminal:error", payload: { terminalId, message: "Not authorized for this project" } });
+            return true;
+          }
           startParams = { kind: "project", projectId, instanceId };
         } else if (host && username && privateKeyPath) {
           startParams = { kind: "direct", host, port, username, privateKeyPath };

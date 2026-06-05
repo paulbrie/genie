@@ -318,6 +318,15 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
           isError: true,
         });
       }
+      // The token is scoped to one project; keys live under `${projectName}/`.
+      // Reject keys outside that prefix so a project can't mint presigned URLs
+      // for another project's objects.
+      if (!key.startsWith(`${projectName}/`)) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: "Error: key is outside this project's storage." }],
+          isError: true,
+        });
+      }
       try {
         const presignedUrl = await getSignedUrl(s3, new GetObjectCommand({
           Bucket: getBucketName(),
@@ -341,6 +350,14 @@ export async function handleStorageMcpRequest(parsed: JsonRpcRequest, ctx: Stora
       if (!key) {
         return jsonRpcResponse(id, {
           content: [{ type: "text", text: "Error: key is required." }],
+          isError: true,
+        });
+      }
+      // Scoped to this project's prefix — a project must not delete another
+      // project's stored objects.
+      if (!key.startsWith(`${projectName}/`)) {
+        return jsonRpcResponse(id, {
+          content: [{ type: "text", text: "Error: key is outside this project's storage." }],
           isError: true,
         });
       }

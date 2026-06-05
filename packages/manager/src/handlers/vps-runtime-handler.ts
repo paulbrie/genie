@@ -244,6 +244,10 @@ export async function handleVpsRuntimeMessage(
       const { projectId, instanceId, recipeId, script } = msg.payload as {
         projectId: string; instanceId: string; recipeId: string; script: string;
       };
+      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst) {
@@ -270,6 +274,10 @@ export async function handleVpsRuntimeMessage(
       const { projectId, instanceId, recipeId, script } = msg.payload as {
         projectId: string; instanceId: string; recipeId: string; script: string;
       };
+      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst) {
@@ -297,6 +305,10 @@ export async function handleVpsRuntimeMessage(
       const { projectId, instanceId, recipeId, script } = msg.payload as {
         projectId: string; instanceId: string; recipeId: string; script: string;
       };
+      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst) {
@@ -364,6 +376,10 @@ export async function handleVpsRuntimeMessage(
 
     case "vps:logs": {
       const { projectId, instanceId, serviceName, tail } = msg.payload;
+      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst) {
@@ -381,6 +397,10 @@ export async function handleVpsRuntimeMessage(
 
     case "vps:docker:logs": {
       const { projectId, instanceId, reqId } = msg.payload;
+      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:docker:logs:result", payload: { ok: false, error: "Not authorized for this project", reqId } });
+        return true;
+      }
       try {
         const conn = await getVpsConnection(projectId, instanceId);
         const session = await connectSsh(conn);
