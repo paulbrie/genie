@@ -1,6 +1,6 @@
-import { eq, and, desc, lt, inArray } from "drizzle-orm";
+import { eq, and, or, desc, lt, inArray } from "drizzle-orm";
 import { getDb } from "./db/index.js";
-import { users, conversations, conversationMembers, messages } from "./db/schema.js";
+import { users, conversations, conversationMembers, messages, teamMembers } from "./db/schema.js";
 import type { ChatMessage } from "./chat.js";
 
 export async function getOrCreateClaudeDm(userId: string, claudeId: string) {
@@ -375,6 +375,45 @@ export async function getAllUsers() {
       isAgent: users.isAgent,
     })
     .from(users)
+    .orderBy(users.name);
+}
+
+/** Users a given user may see in chat: every member of a team the user belongs
+ *  to, plus all agent users (e.g. Claude, which belongs to no team), plus the
+ *  user themselves. Scopes the chat roster to teammates instead of the whole
+ *  org — mirrors the team-overlap rule used by usersShareTeam() in
+ *  project-service. */
+export async function getVisibleUsers(userId: string) {
+  const db = getDb();
+
+  // Teams the user belongs to → every teammate across those teams.
+  const myTeams = await db
+    .select({ teamId: teamMembers.teamId })
+    .from(teamMembers)
+    .where(eq(teamMembers.userId, userId));
+  const teamIds = myTeams.map((r) => r.teamId);
+
+  let teammateIds: string[] = [];
+  if (teamIds.length > 0) {
+    const rows = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(inArray(teamMembers.teamId, teamIds));
+    teammateIds = rows.map((r) => r.userId);
+  }
+  // Always include self, so a user on no team still sees themselves + agents.
+  const visibleIds = Array.from(new Set([userId, ...teammateIds]));
+
+  return db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      avatarUrl: users.avatarUrl,
+      isAgent: users.isAgent,
+    })
+    .from(users)
+    .where(or(inArray(users.id, visibleIds), eq(users.isAgent, true)))
     .orderBy(users.name);
 }
 

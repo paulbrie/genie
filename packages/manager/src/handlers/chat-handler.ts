@@ -339,9 +339,15 @@ export async function handleChatMessage(
 
     case "chat:users:list": {
       try {
-        const allUsers = await chatService.getAllUsers();
+        if (!userId) {
+          send(ws, { type: "chat:users:list", payload: { users: [] } });
+          return true;
+        }
+        // Scope the roster to teammates (members of the user's teams) plus
+        // agents and self — a user only sees users from the teams they're in.
+        const visibleUsers = await chatService.getVisibleUsers(userId);
         const connectedUserIds = getConnectedUserIds();
-        const usersWithStatus = allUsers.map((u) => ({
+        const usersWithStatus = visibleUsers.map((u) => ({
           ...u,
           online: connectedUserIds.includes(u.id),
         }));
