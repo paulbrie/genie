@@ -12,6 +12,7 @@ import { WindowToolbar } from "@/components/ui/window-toolbar";
 import { FileExplorerPanel } from "@/components/file-explorer";
 import { WsLogDrawer } from "@/components/ui/ws-log-drawer";
 import { GenieAssistant } from "@/components/chat/genie-assistant";
+import { DmPopup } from "@/components/chat/dm-popup";
 import { DeployWindow } from "@/components/project/deploy-window";
 import { BuildLogWindow } from "@/components/project/build-log-window";
 import { TerminalWindows } from "@/components/terminal/terminal-window";
@@ -60,6 +61,7 @@ export default function AppShellLayout({
         <FileExplorerPanel />
         <WsLogDrawer open={wsLogOpen} onClose={toggleWsLog} />
         <GenieAssistant />
+        <DmPopup />
         <DeployWindow />
         <BuildLogWindow />
         <TerminalWindows />

@@ -5,7 +5,8 @@ import { useSubject } from "subjecto/react";
 import { Bot, X, Plus, Search, MessageSquare } from "lucide-react";
 import type { AuthUser, ChatUser, ConversationMember, ConversationSummary } from "@/store/types";
 import { $auth, $conversationChat } from "@/store/subjects";
-import { addMemberToConversation, openDmWith, removeMemberFromConversation } from "@/store/actions";
+import { addMemberToConversation, removeMemberFromConversation } from "@/store/actions";
+import { openDmPopup } from "@/components/chat/dm-popup";
 import { cn } from "@/lib/utils";
 
 export function ChatUsersPanel() {
@@ -212,7 +213,17 @@ function UserRow({ user }: { user: ChatUser }) {
 
   return (
     <>
-      <div className="flex items-center gap-2 px-2 py-1 rounded-md" onContextMenu={handleContextMenu}>
+      <button
+        type="button"
+        onClick={() => { if (!isSelf) openDmPopup(user.id); }}
+        onContextMenu={handleContextMenu}
+        disabled={isSelf}
+        title={isSelf ? "That's you" : `Chat with ${user.name}`}
+        className={cn(
+          "flex items-center gap-2 px-2 py-1 rounded-md bg-transparent border-none w-full text-left",
+          isSelf ? "cursor-default" : "cursor-pointer hover:bg-surface0/50 transition-colors",
+        )}
+      >
         <div className="relative shrink-0">
           <UserAvatar user={user} />
           <span
@@ -234,7 +245,7 @@ function UserRow({ user }: { user: ChatUser }) {
         >
           {user.name}
         </span>
-      </div>
+      </button>
       {ctxMenu && (
         <div
           ref={menuRef}
@@ -242,7 +253,7 @@ function UserRow({ user }: { user: ChatUser }) {
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
         >
           <button
-            onClick={() => { openDmWith(user.id); setCtxMenu(null); }}
+            onClick={() => { openDmPopup(user.id); setCtxMenu(null); }}
             className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-md text-text hover:bg-surface0 transition-colors text-left"
           >
             <MessageSquare size={13} className="text-overlay1" />
