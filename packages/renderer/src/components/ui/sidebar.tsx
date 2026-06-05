@@ -80,7 +80,7 @@ export function Sidebar({
         />
       </div>
 
-      <SystemStats />
+      {isSuperadmin && <SystemStats />}
       <SidebarNav />
       <div className="mt-auto pt-2 border-t border-surface0 flex flex-col gap-0.5">
         {isAdmin && (
