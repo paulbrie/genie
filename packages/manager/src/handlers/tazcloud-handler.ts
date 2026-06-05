@@ -50,6 +50,12 @@ export async function handleTazcloudMessage(
         send(ws, { type: "vps:deploy:error", payload: { projectId: tazProjectId, message: "Project not found" } });
         return true;
       }
+      // Provisioning a VM is an owner-level action — plain project members may
+      // see the project but can't create servers on it.
+      if (!isPrivilegedRole(role) && !(await projectService.userCanManageProject(userId, tazProjectId))) {
+        send(ws, { type: "vps:deploy:error", payload: { projectId: tazProjectId, message: "Not authorized to deploy to this project" } });
+        return true;
+      }
       const tazToken = process.env.TAZCLOUD_API_TOKEN;
       const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
       if (!tazToken || !tazPrivateKey) {

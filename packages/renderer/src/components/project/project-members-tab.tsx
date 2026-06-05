@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import { Crown, Plus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useDeepSubject, useSubject } from "subjecto/react";
-import { $admin, $auth } from "@/store/subjects";
+import { useDeepSubject } from "subjecto/react";
+import { $admin } from "@/store/subjects";
 import {
   addProjectMember,
   addProjectTeam,
-  loadAdminOrgs,
   loadAdminTeams,
   loadAdminUsers,
   loadProjectMembers,
@@ -15,18 +14,16 @@ import {
   removeProjectTeam,
   setProjectMemberRole,
 } from "@/store/actions";
+import { useCanManageProject } from "@/lib/use-project-permissions";
 import type { ProjectDef } from "@/store/types";
 
 export function ProjectMembersTab({ project }: { project: ProjectDef }) {
-  const [auth] = useSubject($auth);
   // Subscribe to the relevant $admin slices. useDeepSubject only accepts
   // top-level keys.
   const [projectMembersMap] = useDeepSubject($admin, "projectMembers");
   const [projectTeamsMap] = useDeepSubject($admin, "projectTeams");
-  const [orgsSlice] = useDeepSubject($admin, "orgs");
   const [usersSlice] = useDeepSubject($admin, "users");
   const [teamsSlice] = useDeepSubject($admin, "teams");
-  const orgs = orgsSlice.list;
   const allUsers = usersSlice.list;
   const allTeams = teamsSlice.list;
   const members = projectMembersMap[project.id] || [];
@@ -37,24 +34,16 @@ export function ProjectMembersTab({ project }: { project: ProjectDef }) {
   useEffect(() => {
     loadProjectMembers(project.id);
     loadProjectTeams(project.id);
-    // We also need orgs/users/teams so the pickers have data. Loading is
+    // The add-member / add-team pickers need the user and team lists. Loading is
     // idempotent — if they're already populated the server just responds again.
-    if (orgs.length === 0) loadAdminOrgs();
     if (allUsers.length === 0) loadAdminUsers();
     if (allTeams.length === 0) loadAdminTeams();
   }, [project.id]);
 
-  const isSuperadmin = auth.user?.role === "superadmin";
-  // Local "may I manage?" heuristic — server still enforces. We grant the UI
-  // affordance to superadmins, current project owners, and any org owner/admin
-  // whose org owns this project's team. The org → team mapping isn't on the
-  // client, so for the UI we approximate "user has any org owner/admin role"
-  // OR "is a project owner here".
-  const meIsProjectOwner = members.some(
-    (m) => m.userId === auth.user?.id && m.role === "owner",
-  );
-  const anyManageableOrg = orgs.some((o) => o.role === "owner" || o.role === "admin");
-  const canManage = isSuperadmin || meIsProjectOwner || anyManageableOrg;
+  // Project-scoped, impersonation-safe manage gate (server still enforces).
+  // A plain project member sees no management affordances. See the hook for why
+  // we don't key off the broad $admin.orgs slice.
+  const canManage = useCanManageProject(project);
 
   // Users available to add: any non-agent user not yet in the project.
   const memberUserIds = new Set(members.map((m) => m.userId));

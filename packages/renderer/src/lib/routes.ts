@@ -1,5 +1,5 @@
 import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey } from "@/store/types";
-export type ProjectTab = "settings" | "members";
+export type ProjectTab = "settings" | "members" | "servers";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs";
 export type SettingsTab = "general" | "deploy" | "org";
 
@@ -11,9 +11,10 @@ export type SettingsTab = "general" | "deploy" | "org";
 // a regular user on the admin shell with empty data, instead of bouncing them.
 type NavRole = "user" | "tazcloud" | "admin" | "superadmin" | undefined | null;
 
-// "clouds" is allowed for everyone now — it lives in the left nav and the panel
-// itself scopes each role's visibility (org owners / users see only their VMs).
-const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings", "agents", "clouds"]);
+// "clouds" is NOT in the standard-user set: plain users can't provision/manage
+// VMs, so the Clouds nav + /clouds route are hidden from them entirely. It stays
+// available to tazcloud (cloud-focused role) and admins/superadmins.
+const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings", "agents"]);
 const TAZCLOUD_EXTRA_NAVS = new Set<NavKey>(["recipes", "clouds"]);
 const ADMIN_NAVS = new Set<NavKey>([
   "projects", "processes", "docker", "docs", "logs", "chat", "history", "tracker",
@@ -73,6 +74,7 @@ const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
 const VALID_PROJECT_TABS = new Set<ProjectTab>([
   "settings",
   "members",
+  "servers",
 ]);
 
 const VALID_ADMIN_TABS = new Set<AdminTab>(["database", "droplets", "ai", "backup", "users", "teams", "orgs", "communication", "audit", "prodlogs"]);

@@ -41,14 +41,16 @@ export function SidebarNav() {
   const isTazcloud = role === "tazcloud";
   const adminBarKeys = adminBarNavKeysForRole(role);
 
-  // Clouds is visible to everyone now (it lives in the left nav, not the admin
-  // topbar). The Clouds panel itself scopes what each role can see/do.
-  const standardUserKeys = new Set<NavKey>(["projects", "agents", "clouds", "tracker", "chat", "history", "settings"]);
+  // Plain users can't provision/manage VMs, so Clouds is hidden from them
+  // entirely (nav + /clouds route — see navAllowedForRole). It stays for the
+  // cloud-focused tazcloud role and for admins. Mirror this in routes.ts.
+  const standardUserKeys = new Set<NavKey>(["projects", "agents", "tracker", "chat", "history", "settings"]);
+  const tazcloudKeys = new Set<NavKey>([...standardUserKeys, "clouds"]);
   const items = isAdmin
     ? baseNavItems.filter((item) => !adminBarKeys.has(item.key))
     : isTazcloud
       ? [
-          ...baseNavItems.filter((item) => standardUserKeys.has(item.key)),
+          ...baseNavItems.filter((item) => tazcloudKeys.has(item.key)),
           { key: "recipes" as NavKey, label: "Recipes", icon: ChefHat },
         ]
       : baseNavItems.filter((item) => standardUserKeys.has(item.key));

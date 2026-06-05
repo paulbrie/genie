@@ -100,6 +100,13 @@ export async function handleProjectMessage(
 
     case "project:remove": {
       const { id } = msg.payload;
+      // Destructive + owner-level: only project owners, org owners/admins of the
+      // owning team's org, and superadmins may delete. (The UI hides the Remove
+      // button for everyone else, but the socket must enforce it too.)
+      if (!(await projectService.userCanManageProject(state.userId, id))) {
+        send(ws, { type: "error", payload: { message: "You don't have permission to remove this project" } });
+        return true;
+      }
       await projectManager.stopAll(id);
       const removed = await projectService.remove(id);
       if (!removed) {

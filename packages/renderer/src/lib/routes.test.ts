@@ -15,8 +15,8 @@ describe("navAllowedForRole", () => {
     expect(navAllowedForRole("admin", "user")).toBe(false);
     expect(navAllowedForRole("security", "user")).toBe(false);
     expect(navAllowedForRole("logs", "user")).toBe(false);
-    // Clouds is now visible to everyone (the panel scopes what each role sees).
-    expect(navAllowedForRole("clouds", "user")).toBe(true);
+    // Plain users can't provision/manage VMs — Clouds is hidden from them.
+    expect(navAllowedForRole("clouds", "user")).toBe(false);
   });
 
   it("undefined / null role falls back to standard-user permissions", () => {

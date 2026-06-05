@@ -6,7 +6,7 @@ import { useDeepSubjectAll } from "@/lib/hooks";
 import type { BaseImageTemplate, ProjectCommand, ProjectDef, RecipeState, VpsDeployState, VpsInstance, VpsInstanceState, VpsProcessInfo, VpsServiceInfo, VpsStats } from "@/store/types";
 import { $admin, $auth, $commandRunOutputs, $projects, $selectedProjectId, $vpsDeploy } from "@/store/subjects";
 import { $orgSettings } from "@/store/subjects/org-settings";
-import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, deployToProvider, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, installGenieMcps, stopProjectCommand, teardownVps, unwatchVpsStats, uninstallVpsRecipe, vpsExec, watchVpsStats, wakeVps } from "@/store/actions";
+import { addSshTerminalTab, checkVpsRecipe, checkVpsStatus, clearVpsInstanceState, deployToDo, disconnectVps, fetchVpsLogs, fetchVpsStats, hibernateVps, killVpsProcess, loadAdminTeams, loadBaseImageConfigs, loadRecipes, openWindow, runProjectCommand, runVpsRecipe, installGenieMcps, stopProjectCommand, teardownVps, unwatchVpsStats, uninstallVpsRecipe, vpsExec, watchVpsStats, wakeVps } from "@/store/actions";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { Button } from "@/components/ui/button";
 import { CopyableIp } from "@/components/ui/copyable-ip";
@@ -22,7 +22,6 @@ import {
   Check,
   X,
   FileText,
-  Server,
   ExternalLink,
   History,
   ChevronDown,
@@ -48,7 +47,6 @@ import {
   Lock,
   Moon,
   Sun,
-  Cloud,
   Container,
   Bug,
   KeyRound,
@@ -74,11 +72,9 @@ import { ProcessCity as IsometricProcessCity } from "@/components/ui/process-cit
 import type { ProcessInfo } from "@/store/types";
 import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
-import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
-import { openManageDropletWindow } from "@/components/admin/digitalocean-panel";
-import { openManageServerWindow } from "@/components/admin/hetzner-panel";
-import { ConnectServerForm } from "@/components/project/connect-server-form";
 import { ProjectMembersTab } from "@/components/project/project-members-tab";
+import { ProjectServersTab } from "@/components/project/project-servers-tab";
+import { useCanManageProject } from "@/lib/use-project-permissions";
 import { VpsRecipes, VpsRunCommands } from "@/components/project/vps-recipes";
 // Re-export the recipe type interfaces so external imports (default-recipes.ts
 // catalog, admin recipes panel) keep working with their `@/components/project-detail`
@@ -92,15 +88,20 @@ export type { RecipeOption, RecipeSecret, VpsRecipeDef } from "@/components/proj
 export { VpsInstanceCard } from "@/components/project/vps-instance-card";
 
 
-const PROJECT_TABS: { key: ProjectTab; label: string }[] = [
-  { key: "members", label: "Members" },
-  { key: "settings", label: "Settings" },
-];
-
 export function ProjectDetail({ activeTab = "members" }: { activeTab?: ProjectTab }) {
-  const { navigateToNav, navigateToProjectTab } = useNavigate();
   const [projects] = useSubject($projects);
   const [selectedProjectId] = useSubject($selectedProjectId);
+  const project = projects.find((p) => p.id === selectedProjectId);
+
+  if (!project) return null;
+
+  // Keyed by project id so the permission hook + form state reset cleanly when
+  // switching between projects.
+  return <ProjectDetailBody key={project.id} project={project} activeTab={activeTab} />;
+}
+
+function ProjectDetailBody({ project, activeTab }: { project: ProjectDef; activeTab: ProjectTab }) {
+  const { navigateToNav, navigateToProjectTab } = useNavigate();
 
   // Subscribe to vpsDeploy state (DeepSubject – listen to all nested changes)
   const vpsDeployState = useDeepSubjectAll<VpsDeployState>($vpsDeploy);
@@ -111,12 +112,17 @@ export function ProjectDetail({ activeTab = "members" }: { activeTab?: ProjectTa
     testResult: vpsTestResult,
   };
 
-  const project = projects.find((p) => p.id === selectedProjectId);
-
-  if (!project) return null;
+  // Members/Settings management is owner-only. Plain project members get a
+  // read-only Members tab and no Settings tab (server enforces too).
+  const canManage = useCanManageProject(project);
+  const tabs = canManage
+    ? PROJECT_TABS
+    : PROJECT_TABS.filter((t) => t.key !== "settings");
+  // If a non-manager deep-links to /settings, fall back to the members view.
+  const effectiveTab: ProjectTab = activeTab === "settings" && !canManage ? "members" : activeTab;
 
   function handleRemove() {
-    wsSend("project:remove", { id: project!.id });
+    wsSend("project:remove", { id: project.id });
     navigateToNav("projects");
   }
 
@@ -126,145 +132,43 @@ export function ProjectDetail({ activeTab = "members" }: { activeTab?: ProjectTa
         title={project.name}
         subtitle={undefined}
         actions={
-          <Button size="sm" variant="danger" onClick={handleRemove}>
-            Remove
-          </Button>
+          canManage ? (
+            <Button size="sm" variant="danger" onClick={handleRemove}>
+              Remove
+            </Button>
+          ) : undefined
         }
       />
 
-      <ServersBar project={project} vpsDeploy={vpsDeploy} />
-
       <ViewTabs
-        tabs={PROJECT_TABS}
-        activeTab={activeTab}
+        tabs={tabs}
+        activeTab={effectiveTab}
         onTabChange={navigateToProjectTab}
       />
 
       {/* Tab content. Files were moved into the Manage popup's Files tab.
           Commands were moved into the Manage popup's Commands tab (so they
           can be run against a specific instance from one place). */}
-      {activeTab === "members" && (
+      {effectiveTab === "servers" && (
+        <ProjectServersTab project={project} vpsDeploy={vpsDeploy} canManage={canManage} />
+      )}
+
+      {effectiveTab === "members" && (
         <ProjectMembersTab project={project} />
       )}
 
-      {activeTab === "settings" && (
+      {effectiveTab === "settings" && canManage && (
         <ProjectSettingsTab project={project} />
       )}
     </div>
   );
 }
 
-/** Replaces the old "Cloud" tab. Renders a slim deploy + per-instance button row
- *  at the top of every project page. Clicking a TazCloud instance button opens
- *  the floating Manage popup (Manage / Files / DB tabs), the same one used by
- *  the TazCloud admin panel. */
-function ServersBar({
-  project,
-  vpsDeploy,
-}: {
-  project: ProjectDef;
-  vpsDeploy: VpsDeployState;
-}) {
-  const [deployLabel, setDeployLabel] = useState("");
-  const [connectOpen, setConnectOpen] = useState(false);
-  return (
-    <div className="flex flex-col gap-2 mb-3 py-3 border-y border-surface0">
-      {connectOpen && <ConnectServerForm projectId={project.id} onClose={() => setConnectOpen(false)} />}
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-md text-overlay0 font-medium">Servers:</span>
-        {project.vpsInstances.length === 0 && (
-          <span className="text-md text-overlay0 italic">none yet</span>
-        )}
-        {project.vpsInstances.map((instance) => {
-          const state = vpsDeploy.instances[instance.id];
-          const isDeploying = state?.deploying;
-          const isFailed = !!instance.deployFailed;
-          const dotColor = isFailed ? "bg-red" : isDeploying ? "bg-yellow" : "bg-green";
-          // Both TazCloud VMs and DigitalOcean droplets open the floating
-          // Manage popup — they go through different open* helpers (and
-          // therefore different window-id prefixes) but render via the same
-          // generic ManageVmPopup machinery.
-          const tazVmId = instance.tazcloud?.vmId;
-          const doDropletId = instance.digitalocean?.dropletId;
-          const hzServerId = instance.hetzner?.serverId;
-          const isSsh = !!instance.ssh;
-          const canManage = !!tazVmId || !!doDropletId || !!hzServerId || isSsh;
-          // Show the server's address in the button so multiple instances are
-          // distinguishable at a glance (and duplicate records pointing at the
-          // same droplet are obvious — they'll show the same IP).
-          const host = instance.digitalocean?.ipAddress || instance.hetzner?.ipAddress || instance.tazcloud?.ipv6 || instance.connection.host;
-          return (
-            <button
-              key={instance.id}
-              onClick={() => {
-                if (tazVmId) {
-                  openManageVmWindow({ id: tazVmId, name: instance.label });
-                } else if (doDropletId) {
-                  openManageDropletWindow({ id: doDropletId, name: instance.label });
-                } else if (hzServerId) {
-                  openManageServerWindow({ id: hzServerId, name: instance.label });
-                } else if (isSsh) {
-                  // Generic servers reuse the Manage popup, keyed by instance id.
-                  openManageVmWindow({ id: instance.id, name: instance.label });
-                }
-              }}
-              disabled={!canManage}
-              className={cn(
-                "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-md transition-colors border",
-                "bg-mantle text-subtext0 border-surface0 hover:bg-surface0 hover:text-text",
-                !canManage && "opacity-50 cursor-not-allowed hover:bg-mantle hover:text-subtext0",
-              )}
-              title={canManage
-                ? "Open Manage popup"
-                : "This instance is not linked to a supported provider"}
-            >
-              <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dotColor)} />
-              {/* Baseline-align the text so the smaller IP/provider tags read on
-                  the same line as the label instead of floating optically high. */}
-              <span className="inline-flex items-baseline gap-1.5">
-                <span>{instance.label}</span>
-                {host && host !== "unknown" && (
-                  <span className="text-overlay0 text-xs font-mono">{host}</span>
-                )}
-                <span className="text-overlay0 text-xs">
-                  {instance.tazcloud ? "Taz" : instance.digitalocean ? "DO" : instance.hetzner ? "HZ" : instance.ssh ? "SSH" : ""}
-                </span>
-              </span>
-            </button>
-          );
-        })}
-        <div className="flex-1" />
-        <input
-          value={deployLabel}
-          onChange={(e) => setDeployLabel(e.target.value)}
-          placeholder="Label"
-          className="bg-mantle text-text text-md rounded px-2 py-1 border border-surface0 focus:border-blue focus:outline-none font-mono w-32"
-        />
-        <Button
-          size="sm"
-          onClick={() => { deployToProvider(project.id, "digitalocean", deployLabel || undefined); setDeployLabel(""); }}
-          title="Deploy a new DigitalOcean droplet for this project"
-        >
-          <Server size={12} className="mr-1 text-blue" /> + DO
-        </Button>
-        <Button
-          size="sm"
-          onClick={() => { deployToProvider(project.id, "tazcloud", deployLabel || undefined); setDeployLabel(""); }}
-          title="Deploy a new TazCloud VM for this project"
-        >
-          <Cloud size={12} className="mr-1 text-blue" /> + Taz
-        </Button>
-        <Button
-          size="sm"
-          onClick={() => setConnectOpen(true)}
-          title="Connect an existing SSH server (any cloud / on-prem) — no provisioning"
-        >
-          <Server size={12} className="mr-1 text-blue" /> + Server
-        </Button>
-      </div>
-    </div>
-  );
-}
+const PROJECT_TABS: { key: ProjectTab; label: string }[] = [
+  { key: "servers", label: "Servers" },
+  { key: "members", label: "Members" },
+  { key: "settings", label: "Settings" },
+];
 
 function ElapsedTime({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(Date.now());

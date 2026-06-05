@@ -69,7 +69,9 @@ export async function handleVpsLifecycleMessage(
       const p = msg.payload as { projectId: string; host: string; port?: number; username: string; label?: string; authMethod: "genie-key" | "stored-key"; privateKey?: string };
       try {
         if (!userId) return true;
-        if (!(await projectService.userCanSeeProject(userId, p.projectId))) {
+        // Connecting a server provisions project infrastructure — owner-level,
+        // not something a plain project member may do.
+        if (!(await projectService.userCanManageProject(userId, p.projectId))) {
           send(ws, { type: "vps:connect:error", payload: { message: "Not authorized for this project" } });
           return true;
         }
@@ -318,6 +320,11 @@ export async function handleVpsLifecycleMessage(
       const project = await projectService.getById(projectId);
       if (!project) {
         send(ws, { type: "vps:deploy:error", payload: { projectId, message: "Project not found" } });
+        return true;
+      }
+      // Provisioning onto a server is owner-level — plain project members can't.
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "vps:deploy:error", payload: { projectId, message: "Not authorized to deploy to this project" } });
         return true;
       }
 

@@ -66,8 +66,10 @@ export async function handleHetznerMessage(
         send(ws, { type: "vps:deploy:error", payload: { projectId: hzProjectId, message: "Project not found" } });
         return true;
       }
-      // Any user may deploy to a project they can access; privileged roles to any.
-      if (!isPrivilegedRole(role) && !(await projectService.userCanSeeProject(userId, hzProjectId))) {
+      // Provisioning a VM is an owner-level action: only project owners, org
+      // owners/admins of the owning team's org, and privileged roles. Plain
+      // project members can see the project but can't create servers on it.
+      if (!isPrivilegedRole(role) && !(await projectService.userCanManageProject(userId, hzProjectId))) {
         send(ws, { type: "vps:deploy:error", payload: { projectId: hzProjectId, message: "Not authorized to deploy to this project" } });
         return true;
       }
