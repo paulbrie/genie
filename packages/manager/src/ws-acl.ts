@@ -121,6 +121,11 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
 
   // Superadmin-only namespace.
   recipes: { send: "superadmin", receive: "superadmin" },
+
+  // Local shell on the manager host (sidebar "Terminal" button). Deliberately
+  // namespaced apart from terminal:* (VM SSH) so the elevated privilege isn't
+  // confused with VM connections; every frame here is superadmin-only.
+  "manager-pty": { send: "superadmin", receive: "superadmin" },
 };
 
 // Per-type overrides. These win over NAMESPACE_DEFAULTS. Use sparingly — the

@@ -31,6 +31,7 @@ export function Sidebar({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const role = auth.user?.role;
   const isAdmin = role === "admin" || role === "superadmin";
+  const isSuperadmin = role === "superadmin";
 
   // "What's new" modal: opens automatically when the authenticated user has
   // unacknowledged changelog entries. We freeze the entries the moment we
@@ -85,7 +86,11 @@ export function Sidebar({
         {isAdmin && (
           <>
             <FileExplorerToggle />
-            <TerminalToggle />
+            {/* Terminal spawns a shell on the manager host itself. The wire
+                gate in ws-acl.ts (manager-pty:* → superadmin) is the source
+                of truth; this UI check is defense in depth so non-super
+                admins don't see a button they can't use. */}
+            {isSuperadmin && <TerminalToggle />}
             <FeedbackToggle onOpen={() => setFeedbackOpen(true)} />
             {onToggleWsLog && (
               <WsLogToggle open={!!wsLogOpen} onToggle={onToggleWsLog} />

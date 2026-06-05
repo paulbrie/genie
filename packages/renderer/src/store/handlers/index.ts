@@ -4,6 +4,7 @@ import { handlers as appsHandlers } from "./apps";
 import { handlers as chatHandlers } from "./chat";
 import { handlers as conversationHandlers } from "./conversation";
 import { handlers as terminalHandlers } from "./terminal";
+import { handlers as managerPtyHandlers } from "./manager-pty";
 import { handlers as projectsHandlers } from "./projects";
 import { handlers as docsHandlers } from "./docs";
 import { handlers as projectFilesHandlers } from "./project-files";
@@ -26,6 +27,7 @@ const handlers: HandlerMap = Object.assign(
   chatHandlers,
   conversationHandlers,
   terminalHandlers,
+  managerPtyHandlers,
   projectsHandlers,
   docsHandlers,
   projectFilesHandlers,

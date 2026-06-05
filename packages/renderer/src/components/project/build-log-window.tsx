@@ -108,7 +108,6 @@ function BuildLogWindowInner({
           <button
             onClick={() => {
               addTerminalTab(
-                undefined,
                 `SSH ${baseImage.failedDropletIp}`,
                 `ssh -o StrictHostKeyChecking=no -i ~/.genie/ssh/genie_ed25519 root@${baseImage.failedDropletIp} -t 'exec bash'`
               );

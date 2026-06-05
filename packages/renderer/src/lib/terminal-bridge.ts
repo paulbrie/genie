@@ -39,11 +39,17 @@ const THEME = {
   brightWhite: "#a6adc8",
 };
 
+/** Which wire namespace this xterm's outbound traffic uses.
+ *  "terminal"   — VM SSH terminals (terminal:data / terminal:resize).
+ *  "manager-pty" — local shell on the manager host (sidebar Terminal button). */
+export type TerminalChannel = "terminal" | "manager-pty";
+
 interface TerminalInstance {
   terminal: Terminal;
   fitAddon: FitAddon;
   resizeObserver: ResizeObserver;
   terminalId: string;
+  channel: TerminalChannel;
 }
 
 const instances = new Map<string, TerminalInstance>();
@@ -63,6 +69,7 @@ function installFitOnResize(
   terminal: Terminal,
   fitAddon: FitAddon,
   terminalId: string,
+  channel: TerminalChannel,
 ): ResizeObserver {
   let pending = false;
   const flush = () => {
@@ -70,7 +77,7 @@ function installFitOnResize(
     try {
       const hadFocus = !!terminal.element?.contains(document.activeElement);
       fitAddon.fit();
-      wsSend("terminal:resize", { terminalId, cols: terminal.cols, rows: terminal.rows });
+      wsSend(`${channel}:resize`, { terminalId, cols: terminal.cols, rows: terminal.rows });
       if (hadFocus) terminal.focus();
     } catch { /* tear-down race */ }
   };
@@ -87,6 +94,7 @@ export function createTerminal(
   container: HTMLElement,
   terminalId: string,
   onFitted?: (size: { cols: number; rows: number }) => void,
+  channel: TerminalChannel = "terminal",
 ): Terminal {
   const terminal = new Terminal({
     theme: THEME,
@@ -141,14 +149,14 @@ export function createTerminal(
     onFitted?.({ cols: terminal.cols, rows: terminal.rows });
   });
 
-  // keystrokes → server
+  // keystrokes → server (channel doubles as the namespace prefix)
   terminal.onData((data) => {
-    wsSend("terminal:data", { terminalId, data });
+    wsSend(`${channel}:data`, { terminalId, data });
   });
 
-  const resizeObserver = installFitOnResize(container, terminal, fitAddon, terminalId);
+  const resizeObserver = installFitOnResize(container, terminal, fitAddon, terminalId, channel);
 
-  instances.set(terminalId, { terminal, fitAddon, resizeObserver, terminalId });
+  instances.set(terminalId, { terminal, fitAddon, resizeObserver, terminalId, channel });
   return terminal;
 }
 
@@ -204,7 +212,7 @@ export function reattachTerminal(terminalId: string, newContainer: HTMLElement):
     newContainer.appendChild(xtermEl);
   }
 
-  inst.resizeObserver = installFitOnResize(newContainer, inst.terminal, inst.fitAddon, terminalId);
+  inst.resizeObserver = installFitOnResize(newContainer, inst.terminal, inst.fitAddon, terminalId, inst.channel);
 
   requestAnimationFrame(() => {
     try { inst.fitAddon.fit(); inst.terminal.focus(); } catch { /* ignore */ }

@@ -63,7 +63,7 @@ export const handlers: HandlerMap = {
       detail: { projectId, instanceId, commandName, command },
     }));
     // Main app: open a terminal tab (the terminal panel will handle spawning SSH)
-    const cmdTabId = addTerminalTab(undefined, commandName || "Command", undefined);
+    const cmdTabId = addTerminalTab(commandName || "Command");
     const t = $terminal.getValue();
     const cmdTab = t.tabs.find((tab) => tab.id === cmdTabId);
     if (cmdTab) {

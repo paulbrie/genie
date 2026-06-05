@@ -210,6 +210,75 @@ describe("ws-acl", () => {
     });
   });
 
+  describe("manager-pty namespace (local shell on the manager host)", () => {
+    // Every frame in this namespace is the sidebar Terminal — a real shell on
+    // the prod box. Must stay locked to superadmin on BOTH send and receive,
+    // and the gate has to survive *any* future sub-namespace expansion.
+    const FRAMES = [
+      // client → server
+      "manager-pty:start",
+      "manager-pty:data",
+      "manager-pty:resize",
+      "manager-pty:close",
+      // server → client
+      "manager-pty:output",
+      "manager-pty:ready",
+      "manager-pty:closed",
+      "manager-pty:error",
+    ];
+
+    it("rejects send from every role below superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canSend("user", t)).toBe(false);
+        expect(canSend("tazcloud", t)).toBe(false);
+        expect(canSend("admin", t)).toBe(false);
+      }
+    });
+
+    it("allows send only for superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canSend("superadmin", t)).toBe(true);
+      }
+    });
+
+    it("rejects receive from every role below superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canReceive("user", t)).toBe(false);
+        expect(canReceive("tazcloud", t)).toBe(false);
+        expect(canReceive("admin", t)).toBe(false);
+      }
+    });
+
+    it("allows receive only for superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canReceive("superadmin", t)).toBe(true);
+      }
+    });
+
+    it("rejects unauthenticated (null role) on every frame", () => {
+      for (const t of FRAMES) {
+        expect(canSend(null, t)).toBe(false);
+        expect(canReceive(null, t)).toBe(false);
+      }
+    });
+
+    it("namespace prefix lookup resolves correctly for hypothetical sub-frames", () => {
+      // A future "manager-pty:status" or "manager-pty:exec" frame must inherit
+      // the superadmin gate by prefix — no silent escalation possible.
+      const future = getEntry("manager-pty:status");
+      expect(future?.send).toBe("superadmin");
+      expect(future?.receive).toBe("superadmin");
+    });
+
+    it("does not bleed permissions into the unrelated terminal:* namespace", () => {
+      // terminal:* is user-level (VM SSH connections). The two must not overlap.
+      expect(canSend("user", "terminal:data")).toBe(true);
+      expect(canSend("user", "terminal:start")).toBe(true);
+      // And manager-pty:* must not be reachable by a user via the terminal default.
+      expect(canSend("user", "manager-pty:start")).toBe(false);
+    });
+  });
+
   describe("orgs + per-project members", () => {
     it("admin:orgs:* requires admin role to send and receive", () => {
       expect(canSend("user", "admin:orgs:list")).toBe(false);

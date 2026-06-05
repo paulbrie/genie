@@ -24,8 +24,17 @@ export function setTerminalBottomPanelHeight(height: number): void {
 
 export const tabCounter = { value: 0 };
 
-export function addTerminalTab(_cwd?: string, _title?: string, _command?: string): string {
-  return "";
+export function addTerminalTab(title?: string, command?: string): string {
+  tabCounter.value++;
+  const id = `tab-${Date.now()}-${tabCounter.value}`;
+  const tab: TerminalTab = {
+    id,
+    title: title ?? `Terminal ${tabCounter.value}`,
+    command,
+  };
+  const t = $terminal.getValue();
+  $terminal.next({ ...t, tabs: [...t.tabs, tab], activeTabId: id });
+  return id;
 }
 
 export function removeTerminalTab(id: string): void {
