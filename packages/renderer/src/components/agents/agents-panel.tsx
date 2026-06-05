@@ -91,7 +91,30 @@ function fromAgent(a: AgentDef): Draft {
   };
 }
 
+// TEMPORARY: Agents is parked behind a "Coming soon" placeholder while the
+// feature is reworked — need to revisit. The full implementation (list, edit
+// drawer, run streaming) is intact below and in `AgentsPanelImpl`; swap the
+// body of `AgentsPanel` back to `<AgentsPanelImpl />` to restore it.
 export function AgentsPanel() {
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="px-4">
+        <ViewHeader title="Agents" subtitle={undefined} />
+      </div>
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="text-center max-w-sm">
+          <Bot size={40} className="mx-auto mb-4 text-overlay0" />
+          <h2 className="text-lg font-medium text-text mb-1">Coming soon…</h2>
+          <p className="text-md text-subtext0">
+            Custom AI agents are being reworked. Check back later.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentsPanelImpl() {
   const agents = useDeepSubjectAll($agents);
   const [projects] = useSubject($projects);
   const [draft, setDraft] = useState<Draft | null>(null);

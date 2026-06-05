@@ -70,6 +70,11 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   git: { send: "user", receive: "user", scope: "self" },
   mcp: { send: "user", receive: "user", scope: "self" },
   docs: { send: "user", receive: "user", scope: "self" },
+  // User-defined agents: every op is scoped to the caller's userId in the
+  // handler (own agents + built-ins). Without this, agents:* is deny-unknown and
+  // the /agents page hangs on "Loading agents…" because the list reply is
+  // rejected before reaching the handler.
+  agents: { send: "user", receive: "user", scope: "self" },
   terminal: { send: "user", receive: "user", scope: "owner" },
   "terminal-share": { send: "user", receive: "user", scope: "owner" },
   // VM connection popup stats/tmux probe responses (vps:stats:refresh → vm:conn:stats).

@@ -14,12 +14,12 @@
 
 import { connectSsh, type SshSession, type StreamingChannel } from "../../vps/ssh-client.js";
 import { getVpsConnection } from "../../vps/connection-resolver.js";
+import { ensureVpsAgent, VPS_AGENT_REMOTE_BASE } from "../../vps/vps-agent-rsync.js";
 import type { SandboxBackend, SandboxHandle, SandboxSpec } from "./index.js";
 
-/** Where ensureVpsAgent puts the bundle on the VPS — mirrored here so we can
- *  mount it into the container. Keep in sync with VPS_AGENT_REMOTE_BASE in
- *  ws-server.ts. */
-const VPS_AGENT_REMOTE_BASE = "/usr/lib/node_modules/@genie/vps-agent";
+// VPS_AGENT_REMOTE_BASE (the bundle's install path on the VPS) is imported from
+// vps-agent-rsync.js — the single source of truth — so the mount path here can't
+// drift from where ensureVpsAgent actually writes the files.
 const DEFAULT_IMAGE = "node:20-slim";
 const WORKSPACE_HOST_PATH = "/opt/project";
 const WORKSPACE_CONTAINER_PATH = "/workspace";
@@ -41,6 +41,15 @@ export const projectDockerBackend: SandboxBackend = {
     // so a long-running container can't tie up the cached session that other
     // handlers (recipes, stats, terminals) share.
     const conn = await getVpsConnection(projectId, instanceId);
+
+    // Make sure the agent bundle actually exists at VPS_AGENT_REMOTE_BASE before
+    // we bind-mount it — otherwise `node /opt/agent/dist/index.js` dies with
+    // MODULE_NOT_FOUND inside the container. This used to assume the long-running
+    // SSH-agent path (startVpsAgent) had already synced it, which isn't true on a
+    // VM that's only ever run sandboxed agents. ensureVpsAgent is idempotent: a
+    // warm VM is one cached hash probe.
+    await ensureVpsAgent(conn);
+
     const sshSession: SshSession = await connectSsh(conn, { timeoutMs: 30_000 });
 
     // `--name` lets us kill the container by predictable id without parsing

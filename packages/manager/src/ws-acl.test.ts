@@ -305,6 +305,18 @@ describe("ws-acl", () => {
       expect(canReceive("user", "project:members:list")).toBe(true);
       expect(canReceive("user", "project:members:updated")).toBe(true);
     });
+
+    it("agents:* is reachable by plain users (handler scopes by userId)", () => {
+      // Regression: the /agents page hung on "Loading agents…" when agents:*
+      // was missing from the ACL — the list request was deny-unknown and the
+      // reply never came back.
+      expect(canSend("user", "agents:list")).toBe(true);
+      expect(canSend("user", "agents:upsert")).toBe(true);
+      expect(canSend("user", "agents:run")).toBe(true);
+      expect(canReceive("user", "agents:list")).toBe(true);
+      expect(canReceive("user", "agents:run:event")).toBe(true);
+      expect(canReceive("user", "agents:run:complete")).toBe(true);
+    });
   });
 
   describe("filterRecipients-like usage", () => {
