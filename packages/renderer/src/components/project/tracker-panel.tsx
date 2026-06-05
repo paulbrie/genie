@@ -1207,18 +1207,18 @@ function TrackerToolbar({ tracker, projects }: { tracker: TrackerState; projects
         <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface0/50">
           <FolderKanban size={12} className="text-overlay0" />
           <span className="text-md text-overlay0">Project:</span>
-          <InlineSelect
-            value={tracker.selectedProjectId || "__all__"}
-            options={["__all__", ...projects.map((p) => p.id)]}
-            onChange={(v) => setTrackerProject(v === "__all__" ? null : v)}
-            renderOption={(v) => {
-              if (v === "__all__") {
-                return <span className="text-text font-medium">All projects ({projects.length})</span>;
-              }
-              const p = projects.find((pr) => pr.id === v);
-              return <span className="text-text font-medium">{p?.name || "Unknown"}</span>;
-            }}
-          />
+          <div className="min-w-[12rem]">
+            <FilterableSelect
+              value={tracker.selectedProjectId || "__all__"}
+              options={[
+                { value: "__all__", label: `All projects (${projects.length})` },
+                ...projects.map((p) => ({ value: p.id, label: p.name || "Unknown" })),
+              ]}
+              onChange={(v) => setTrackerProject(v === "__all__" ? null : v)}
+              placeholder="Select a project…"
+              emptyText="No projects match"
+            />
+          </div>
         </div>
 
         {/* Group by */}
