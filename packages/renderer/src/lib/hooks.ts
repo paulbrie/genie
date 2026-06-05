@@ -17,9 +17,12 @@ export function useDeepSubjectAll<T extends object>(subject: DeepSubject<T>): T 
 /** True if this floating window currently has focus — i.e. it is the open
  *  window with the highest zIndex across the shared window-manager space.
  *  Used to drive the focused-popup border/glow treatment. */
-export function useIsWindowFocused(windowState: FloatingWindowState): boolean {
+export function useIsWindowFocused(windowState: FloatingWindowState | null | undefined): boolean {
   const [windowManager] = useSubject($windowManager);
-  if (windowState.status !== "open") return false;
+  // windowState is undefined/null until the window is registered in the manager
+  // (e.g. a DM popup mounts before its entry exists). Indexing windows[id] isn't
+  // type-checked as possibly-undefined here, so guard at runtime.
+  if (!windowState || windowState.status !== "open") return false;
   let maxZ = 0;
   for (const w of Object.values(windowManager.windows)) {
     if (w.status === "open" && w.zIndex > maxZ) maxZ = w.zIndex;
