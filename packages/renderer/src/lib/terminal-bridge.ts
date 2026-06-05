@@ -103,6 +103,9 @@ export function createTerminal(
     lineHeight: 1.4,
     cursorBlink: true,
     allowProposedApi: true,
+    // Keep more history so a long Claude conversation stays scrollable to the
+    // top (default is 1000 lines — too short for a full session).
+    scrollback: 10000,
   });
 
   const fitAddon = new FitAddon();
@@ -119,11 +122,15 @@ export function createTerminal(
   // In the alternate screen buffer (Claude TUI, vim, etc.) xterm's default
   // alt-scroll behavior translates mouse-wheel ticks into Up/Down arrow key
   // sequences. Claude Code interprets those as prompt-history navigation, so
-  // scrolling over the popup cycles previously-sent prompts instead of doing
-  // nothing. Swallow wheel events while the alt buffer is active; in the
-  // normal buffer fall through so xterm scrollback still works.
+  // a wheel tick over the popup would cycle previously-sent prompts.
+  // When the TUI has mouse tracking on (tmux with `set -g mouse on`, or
+  // Claude's own mouse mode) we let xterm forward the wheel as a real mouse
+  // event — tmux enters copy mode and scrolls its pane history, which is the
+  // only way to actually see Claude's discussion. We only swallow the wheel
+  // when mouse mode is off, since that's the case where alt-scroll would
+  // emit arrow keys.
   terminal.attachCustomWheelEventHandler((event) => {
-    if (terminal.buffer.active.type === "alternate") {
+    if (terminal.buffer.active.type === "alternate" && terminal.modes.mouseTrackingMode === "none") {
       event.preventDefault();
       return false;
     }

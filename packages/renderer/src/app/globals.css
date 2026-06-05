@@ -119,6 +119,21 @@ body {
   background: transparent;
 }
 
+/* Terminal viewport: keep the scrollbar visible at all times (wider gutter,
+   solid thumb) so the whole conversation is obviously scrollable, not just on
+   hover. xterm sets overflow-y: scroll on the viewport, so the gutter is always
+   present — we only need a permanently-visible, easy-to-grab thumb. */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--color-surface2);
+  border-radius: 5px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--color-overlay0);
+}
+
 /* Scrollbar: overlay, transparent gutter, show only on scroll */
 @utility scrollbar-thin {
   overflow: overlay;
