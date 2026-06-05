@@ -88,7 +88,7 @@ export type { RecipeOption, RecipeSecret, VpsRecipeDef } from "@/components/proj
 export { VpsInstanceCard } from "@/components/project/vps-instance-card";
 
 
-export function ProjectDetail({ activeTab = "members" }: { activeTab?: ProjectTab }) {
+export function ProjectDetail({ activeTab = "servers" }: { activeTab?: ProjectTab }) {
   const [projects] = useSubject($projects);
   const [selectedProjectId] = useSubject($selectedProjectId);
   const project = projects.find((p) => p.id === selectedProjectId);
@@ -118,8 +118,8 @@ function ProjectDetailBody({ project, activeTab }: { project: ProjectDef; active
   const tabs = canManage
     ? PROJECT_TABS
     : PROJECT_TABS.filter((t) => t.key !== "settings");
-  // If a non-manager deep-links to /settings, fall back to the members view.
-  const effectiveTab: ProjectTab = activeTab === "settings" && !canManage ? "members" : activeTab;
+  // If a non-manager deep-links to /settings, fall back to the servers view.
+  const effectiveTab: ProjectTab = activeTab === "settings" && !canManage ? "servers" : activeTab;
 
   function handleRemove() {
     wsSend("project:remove", { id: project.id });

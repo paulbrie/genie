@@ -80,7 +80,7 @@ function useRouteSync(): { activeTab?: ProjectTab; settingsTab: SettingsTab; set
         const project = findBySlug(projects, parsed.entitySlug);
         if (project) {
           selectProject(project.id);
-          setActiveTab(parsed.tab ?? "members");
+          setActiveTab(parsed.tab ?? "servers");
           syncedRef.current = urlKey;
         } else if (projects.length > 0) {
           router.replace(buildNavPath("projects"));

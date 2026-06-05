@@ -108,7 +108,7 @@ export function buildSettingsPath(tab: SettingsTab, orgId?: string): string {
 }
 
 export function buildProjectPath(slug: string, tab?: ProjectTab): string {
-  const t = tab || "members";
+  const t = tab || "servers";
   return `/projects/${slug}/${t}`;
 }
 
@@ -191,12 +191,12 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
     return { nav };
   }
 
-  // Projects entity + optional tab (default to "members")
+  // Projects entity + optional tab (default to "servers")
   if (nav === "projects") {
     const tab =
       slugSegments.length >= 3 && VALID_PROJECT_TABS.has(slugSegments[2] as ProjectTab)
         ? (slugSegments[2] as ProjectTab)
-        : "members";
+        : "servers";
     return { nav, entitySlug, tab };
   }
 

@@ -39,14 +39,16 @@ export function HistoryPanel() {
   const isSuperAdmin = auth.user?.role === "superadmin";
 
   return (
-    <div className="flex flex-col h-full">
-      <ViewHeader
-        title="History"
-        subtitle={isSuperAdmin ? "All users" : "Your activity"}
-      />
-      <div className="flex items-center gap-1 px-4 border-b border-surface0 shrink-0">
-        <TabButton active={tab === "chats"} onClick={() => setTab("chats")} icon={<MessageSquare size={13} />} label="Assistant" />
-        <TabButton active={tab === "terminals"} onClick={() => setTab("terminals")} icon={<Terminal size={13} />} label="Terminals" />
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="px-5">
+        <ViewHeader
+          title="History"
+          subtitle={isSuperAdmin ? "All users" : "Your activity"}
+        />
+        <div className="flex items-center gap-1 border-b border-surface0 shrink-0">
+          <TabButton active={tab === "chats"} onClick={() => setTab("chats")} icon={<MessageSquare size={13} />} label="Assistant" />
+          <TabButton active={tab === "terminals"} onClick={() => setTab("terminals")} icon={<Terminal size={13} />} label="Terminals" />
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto">
         {tab === "chats" ? <ChatsTab isSuperAdmin={isSuperAdmin} /> : <TerminalsTab isSuperAdmin={isSuperAdmin} />}
