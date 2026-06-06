@@ -75,6 +75,10 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // the /agents page hangs on "Loading agents…" because the list reply is
   // rejected before reaching the handler.
   agents: { send: "user", receive: "user", scope: "self" },
+  // Client-emitted UI analytics events (analytics:track). The handler allowlists
+  // event names and stamps userId/ip server-side; admin:analytics:summary rides
+  // the admin namespace + an in-handler superadmin gate.
+  analytics: { send: "user", receive: "user", scope: "self" },
   terminal: { send: "user", receive: "user", scope: "owner" },
   "terminal-share": { send: "user", receive: "user", scope: "owner" },
   // VM connection popup stats/tmux probe responses (vps:stats:refresh → vm:conn:stats).

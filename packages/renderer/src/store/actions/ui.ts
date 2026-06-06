@@ -1,4 +1,5 @@
 import { wsSend } from "@/lib/ws";
+import { track } from "@/lib/analytics";
 import {
   $activeNav,
   $filterPortsOnly,
@@ -14,6 +15,8 @@ import type { NavKey, UiState } from "../types/common";
 export const UI_STATE_KEY = "genie-ui-state";
 
 export function switchNav(nav: NavKey): void {
+  // Skip no-op re-selects so we don't double-count the current tab.
+  if ($activeNav.getValue() !== nav) track("nav.view", { nav });
   $activeNav.next(nav);
   if (nav !== "apps") $showAddForm.next(false);
   if (nav !== "projects") $showAddProjectForm.next(false);

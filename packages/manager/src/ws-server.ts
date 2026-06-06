@@ -99,6 +99,8 @@ import { handleProjectMessage } from "./handlers/project-handler.js";
 import { handleChatMessage } from "./handlers/chat-handler.js";
 
 import { handleAdminMiscMessage } from "./handlers/admin-misc-handler.js";
+import { handleAnalyticsMessage } from "./handlers/analytics-handler.js";
+import * as analyticsService from "./analytics-service.js";
 
 import { handleLocalFsMessage } from "./handlers/local-fs-handler.js";
 
@@ -190,6 +192,13 @@ if (SESSION_RETENTION_DAYS > 0) {
   // Stagger first run so it doesn't race with boot work.
   setTimeout(() => void runSessionJanitor(), 30_000);
   setInterval(() => void runSessionJanitor(), SESSION_PRUNE_INTERVAL_MIN * 60_000);
+}
+
+// Bound analytics_events growth. Default 180d; set GENIE_ANALYTICS_RETENTION_DAYS=0 to keep forever.
+const ANALYTICS_RETENTION_DAYS = Number(process.env.GENIE_ANALYTICS_RETENTION_DAYS ?? 180);
+if (ANALYTICS_RETENTION_DAYS > 0) {
+  setTimeout(() => void analyticsService.pruneOldEvents(ANALYTICS_RETENTION_DAYS), 45_000);
+  setInterval(() => void analyticsService.pruneOldEvents(ANALYTICS_RETENTION_DAYS), 24 * 60 * 60_000);
 }
 
 // Resume mapping (sessionKey → Claude Code session id) is persisted in the
@@ -718,6 +727,13 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
           }
           const authPayload = await buildAuthPayload(user, token, impersonatedBy);
           send(ws, { type: "auth:success", payload: authPayload });
+          void analyticsService.recordEvent({
+            userId: user.id,
+            userName: user.name,
+            event: "auth.login",
+            props: { role: user.role, impersonated: !!decoded.impersonatedBy },
+            ip: state?.ip ?? null,
+          });
           sendInitialData(ws, user.id);
           broadcastPresence();
           return true;
@@ -907,6 +923,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleProjectMessage(ws, msg, send, state)) return;
   if (await handleChatMessage(ws, msg, send, state)) return;
   if (await handleAdminMiscMessage(ws, msg, send, state)) return;
+  if (await handleAnalyticsMessage(ws, msg, send, state)) return;
   if (await handleLocalFsMessage(ws, msg, send)) return;
   if (await handleMiscMessage(ws, msg, send, broadcast, state)) return;
   if (await handleVpsRuntimeMessage(ws, msg, send, userId, state.role)) return;

@@ -963,6 +963,15 @@ export const handlers: HandlerMap = {
     });
   },
 
+  "admin:analytics:summary": (payload) => {
+    batch(() => {
+      const a = $admin.getValue().analytics;
+      a.summary = payload.summary;
+      if (typeof payload.days === "number") a.days = payload.days;
+      a.loading = false;
+    });
+  },
+
   "admin:prodlogs:deployments": (payload) => {
     batch(() => {
       const p = $admin.getValue().prodlogs;

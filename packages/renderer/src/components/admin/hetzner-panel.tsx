@@ -5,6 +5,7 @@ import { useSubject, useDeepSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Pencil, Check, X, Plus, Lock, Unlock, RotateCw, Shield, MoreVertical, Search, Trash2, Terminal, Unlink } from "lucide-react";
 import type { AdminHetznerServer, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { track } from "@/lib/analytics";
 import { $orgSettings } from "@/store/subjects/org-settings";
 import {
   addSshTerminalTab, disconnectVps, fetchVpsStats, focusWindow,
@@ -390,6 +391,7 @@ export function openManageServerWindow(s: { id: number; name: string }) {
   registerWindow(wid, `Manage ${s.name}`, "settings");
   openWindow(wid);
   focusWindow(wid);
+  track("manager.open", { provider: "hetzner" });
 }
 
 function ManageServerWindowInstance({ windowId }: { windowId: string }) {

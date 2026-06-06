@@ -41,6 +41,7 @@ import type { AdminServerTunnelPayload } from "@/store/actions/admin";
 import { Button } from "@/components/ui/button";
 import { imageDefaultUser } from "./helpers";
 import { VmHostConnectionsPanel, useVmHostSshRegistry } from "./vm-host-connections-panel";
+import { track } from "@/lib/analytics";
 import { resolveManageVmLinked, TmuxSessionBadges } from "./tmux-session-badges";
 import { TmuxSessionContextMenu } from "./tmux-session-context-menu";
 import { TmuxRenameDialog } from "./tmux-rename-dialog";
@@ -61,6 +62,7 @@ export function openManageVmWindow(vm: { id: string; name: string }) {
   registerWindow(wid, `Manage ${vm.name}`, "settings");
   openWindow(wid);
   focusWindow(wid);
+  track("manager.open", { provider: "tazcloud" });
 }
 
 export type ManageVmProvider = "tazcloud" | "do" | "ssh" | "hetzner";

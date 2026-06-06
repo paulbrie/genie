@@ -96,7 +96,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics"): void {
   $admin.getValue().activeTab = tab;
 }
 
@@ -801,6 +801,13 @@ export function addProjectTeam(projectId: string, teamId: string): void {
 
 export function removeProjectTeam(projectId: string, teamId: string): void {
   wsSend("project:teams:remove", { projectId, teamId });
+}
+
+export function loadAnalyticsSummary(days?: number): void {
+  const v = $admin.getValue();
+  v.analytics.loading = true;
+  if (days !== undefined) v.analytics.days = days;
+  wsSend("admin:analytics:summary", { days: v.analytics.days });
 }
 
 export function loadAuditLogs(opts?: { userId?: string; action?: string }): void {

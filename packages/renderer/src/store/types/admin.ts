@@ -311,6 +311,17 @@ export interface AuditLogEntry {
   createdAt: string;
 }
 
+/** Product-analytics dashboard summary (mirrors AnalyticsSummary in the
+ *  manager's analytics-service.ts). */
+export interface AnalyticsSummary {
+  since: string;
+  activeUsers: number;
+  eventCounts: { event: string; count: number }[];
+  daily: { day: string; users: number; events: number }[];
+  funnel: { loggedIn: number; openedTerminal: number; sentCommand: number };
+  topUsers: { userId: string; name: string; count: number }[];
+}
+
 export interface EmailLogEntry {
   id: string;
   recipientUserId: string | null;
@@ -339,7 +350,7 @@ export interface RailwayLogEntry {
 }
 
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];
@@ -443,6 +454,11 @@ export interface AdminState {
     loading: boolean;
     filterUserId: string | null;
     filterAction: string | null;
+  };
+  analytics: {
+    summary: AnalyticsSummary | null;
+    days: number;
+    loading: boolean;
   };
   prodlogs: {
     deployments: RailwayDeployment[];

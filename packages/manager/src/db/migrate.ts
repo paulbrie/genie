@@ -238,6 +238,20 @@ export async function migrateOrgs(): Promise<void> {
   await db.execute(sql`ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE CASCADE`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_security_scans_project ON security_scans(project_id)`);
 
+  // Product-analytics events (superadmin dashboard).
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS analytics_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID,
+    user_name TEXT,
+    event TEXT NOT NULL,
+    props JSONB,
+    ip TEXT,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_user ON analytics_events(user_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_event ON analytics_events(event)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at)`);
+
   // 3. Drop NOT NULL on users.google_id so stub invitees may exist -----------
   await db.execute(sql`ALTER TABLE users ALTER COLUMN google_id DROP NOT NULL`);
 

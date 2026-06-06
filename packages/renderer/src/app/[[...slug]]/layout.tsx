@@ -6,6 +6,7 @@ import { UserCheck } from "lucide-react";
 import { $auth } from "@/store/subjects";
 import { loadUiState, stopImpersonating } from "@/store/actions";
 import { connectWs, setManagerRunning } from "@/lib/ws";
+import { track } from "@/lib/analytics";
 import { Sidebar } from "@/components/ui/sidebar";
 import { SuperadminTopBar } from "@/components/ui/superadmin-top-bar";
 import { WindowToolbar } from "@/components/ui/window-toolbar";
@@ -32,6 +33,16 @@ export default function AppShellLayout({
     setManagerRunning(true);
     connectWs();
   }, []);
+
+  // Tab focus analytics: visibilitychange fires when the user switches to/from
+  // the Genie tab. Only while authenticated (the server drops events without a
+  // userId anyway).
+  useEffect(() => {
+    if (auth.status !== "authenticated") return;
+    const onVis = () => track(document.hidden ? "app.blur" : "app.focus");
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [auth.status]);
 
   if (auth.status === "loading") {
     return (

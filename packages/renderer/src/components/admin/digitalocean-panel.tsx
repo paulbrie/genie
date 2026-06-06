@@ -5,6 +5,7 @@ import { useSubject, useDeepSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Settings as SettingsIcon, Pencil, Check, X, Moon, Sun, Plus, Lock, Unlock, RotateCw, Shield, Maximize2, Unlink, MoreVertical, Search, Trash2, Terminal, ExternalLink, Globe } from "lucide-react";
 import type { AdminDroplet, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
+import { track } from "@/lib/analytics";
 import { $orgSettings } from "@/store/subjects/org-settings";
 import { addSshTerminalTab, attachAdminDropletDomain, detachAdminDropletDomain, disconnectVps, fetchVpsStats, focusWindow, loadAdminDropletStats, loadAdminDroplets, lockAdminDroplet, openWindow, rebootAdminDroplet, registerWindow, renameAdminDroplet, resizeAdminDroplet, startSecurityScan, switchNav, unlockAdminDroplet, wakeVps } from "@/store/actions";
 import { wsRequest } from "@/lib/ws";
@@ -800,6 +801,7 @@ export function openManageDropletWindow(d: { id: number; name: string }) {
   registerWindow(wid, `Manage ${d.name}`, "settings");
   openWindow(wid);
   focusWindow(wid);
+  track("manager.open", { provider: "do" });
 }
 
 function ManageDropletWindowInstance({ windowId }: { windowId: string }) {

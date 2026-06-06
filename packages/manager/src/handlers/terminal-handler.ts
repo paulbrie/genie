@@ -15,6 +15,7 @@ import { listRecentSshEvents } from "../vps/ssh-events.js";
 import { evictAllSessionsForHost, evictSession, listSharedTunnels } from "../vps/ssh-session-cache.js";
 import { type Role } from "../ws-acl.js";
 import { canAccessProject } from "./handler-auth.js";
+import * as analyticsService from "../analytics-service.js";
 /** Handle every `ssh:*` and `terminal:*` message. Returns true if handled. */
 export async function handleTerminalMessage(
   ws: WebSocket,
@@ -108,6 +109,16 @@ export async function handleTerminalMessage(
         const intent = tmuxIntent === "attach" || tmuxIntent === "new" ? tmuxIntent : null;
         await startSshSession(ws, startParams, terminalId,
           cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null, initialCommand ?? null);
+        // Analytics: a Claude launch is tmuxIntent "new" + an initial command;
+        // anything else is a plain SSH shell. (userName/ip filled from the
+        // user's auth.login rows — metadata only here.)
+        void analyticsService.recordEvent({
+          userId,
+          userName: null,
+          event: "terminal.open",
+          props: { kind: intent === "new" ? "claude" : "ssh", connection: startParams.kind, projectId: projectId ?? null },
+          ip: null,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to start SSH session";
         send(ws, { type: "terminal:error", payload: { terminalId, message } });
@@ -135,7 +146,13 @@ export async function handleTerminalMessage(
         command?: string;
         silent?: boolean;
       };
-      if (terminalId && command) handleTerminalInject(ws, terminalId, command, { silent: !!silent });
+      if (terminalId && command) {
+        handleTerminalInject(ws, terminalId, command, { silent: !!silent });
+        // Metadata only — never the command text.
+        void analyticsService.recordEvent({
+          userId, userName: null, event: "terminal.command_sent", props: { silent: !!silent }, ip: null,
+        });
+      }
       return true;
     }
 

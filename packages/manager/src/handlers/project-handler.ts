@@ -4,6 +4,7 @@ import type { WsMessage } from "../types.js";
 import * as projectService from "../project-service.js";
 import * as projectManager from "../project-manager.js";
 import * as orgService from "../org-service.js";
+import * as analyticsService from "../analytics-service.js";
 import { isAdmin } from "../auth.js";
 import { getDb } from "../db/index.js";
 import { teams, teamMembers } from "../db/schema.js";
@@ -55,6 +56,9 @@ export async function handleProjectMessage(
         resolvedTeamId = firstTeam?.teamId ?? null;
       }
       await projectService.add({ name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken, gitlabDeployKey: projDeployKey, dbUrl: projDbUrl, teamId: resolvedTeamId, createdByUserId: creatorId });
+      void analyticsService.recordEvent({
+        userId: state.userId, userName: state.user?.name ?? null, event: "project.created", props: {}, ip: state.ip,
+      });
       await broadcastProjectList();
       return true;
     }

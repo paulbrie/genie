@@ -347,6 +347,25 @@ export const auditLog = pgTable("audit_log", {
   index("idx_audit_log_created").on(t.createdAt),
 ]);
 
+// Product-analytics events (DAU, feature usage, funnels). Distinct from
+// audit_log: audit is transport-level (every WS message + full payload, for
+// forensics); this is a small set of semantic, named events with metadata-only
+// props (NEVER command text / file contents / secrets). Superadmin dashboard
+// reads aggregates from here.
+export const analyticsEvents = pgTable("analytics_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id"),
+  userName: text("user_name"),
+  event: text("event").notNull(),       // e.g. "auth.login", "terminal.open"
+  props: jsonb("props"),                // small metadata bag, no sensitive data
+  ip: text("ip"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [
+  index("idx_analytics_events_user").on(t.userId),
+  index("idx_analytics_events_event").on(t.event),
+  index("idx_analytics_events_created").on(t.createdAt),
+]);
+
 /** Platform communication emails sent from the super-admin Communication panel.
  *  One row per recipient per send (a broadcast to N users writes N rows) so the
  *  log table can show per-recipient delivery results. */
