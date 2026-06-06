@@ -11,7 +11,7 @@ import {
   addSshTerminalTab, disconnectVps, fetchVpsStats, focusWindow,
   loadAdminHetznerServers, loadAdminHetznerStats, lockAdminHetznerServer, openWindow,
   rebootAdminHetznerServer, registerWindow, renameAdminHetznerServer, startSecurityScan,
-  switchNav, unlockAdminHetznerServer,
+  switchNav, unlockAdminHetznerServer, watchVpsStats, unwatchVpsStats,
 } from "@/store/actions";
 import { wsRequest, wsSend } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -74,12 +74,36 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
     if (!wasRunning && manager.running) loadAdminHetznerServers();
   }, [manager.running]);
 
-  // Poll stats for active servers.
+  // Poll stats for active servers — the SSH-probe fallback for bare/unlinked
+  // servers and a safety net while the live stream warms up.
   useEffect(() => {
     loadAdminHetznerStats();
     const t = window.setInterval(() => loadAdminHetznerStats(), HZ_STATS_POLL_MS);
     return () => window.clearInterval(t);
   }, []);
+
+  // Subscribe to the live daemon stats stream for every project-linked server.
+  // The backend supplies instanceId on each server, so this works even for
+  // servers in projects the viewer isn't a member of (where findLinkedInstance
+  // over the client's $projects would come up empty and freeze on a stale SSH
+  // sample). Stable sorted key so we don't re-subscribe on every $admin emit.
+  const streamWatchKey = useMemo(
+    () =>
+      servers
+        .filter((s) => s.status === "active" && s.projectId && s.instanceId)
+        .map((s) => `${s.projectId}:${s.instanceId}`)
+        .sort()
+        .join("|"),
+    [servers],
+  );
+  useEffect(() => {
+    if (!streamWatchKey) return;
+    const pairs = streamWatchKey.split("|").map((p) => p.split(":") as [string, string]);
+    for (const [projectId, instanceId] of pairs) watchVpsStats(projectId, instanceId);
+    return () => {
+      for (const [projectId, instanceId] of pairs) unwatchVpsStats(projectId, instanceId);
+    };
+  }, [streamWatchKey]);
 
   function startRename(s: AdminHetznerServer) {
     setRenamingId(s.id);
@@ -281,11 +305,18 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
                 const isPending = pendingDelete === s.id;
                 const isRenaming = renamingId === s.id;
                 const adminStats = isActive ? admin.hetzner.stats[s.id] : null;
-                const link = findLinkedInstance(projects, { serverId: s.id });
+                // Prefer the backend-provided instance link so the live stream
+                // resolves even for servers outside the viewer's $projects; fall
+                // back to matching against the viewer's own projects.
+                const link = (s.projectId && s.instanceId)
+                  ? { projectId: s.projectId, instanceId: s.instanceId }
+                  : findLinkedInstance(projects, { serverId: s.id });
                 const streamStats = link ? vpsDeploy.instances[link.instanceId]?.stats ?? null : null;
                 const streamError = link ? vpsDeploy.instances[link.instanceId]?.statsError ?? null : null;
                 const stats = streamStats ?? adminStats;
-                const statsError = streamStats ? null : streamError;
+                // Only surface the stream error when neither source has data — a
+                // denied/late watch shouldn't mask a working SSH-probe sample.
+                const statsError = stats ? null : streamError;
                 const statsLoading = isActive && !stats && !statsError && !link;
                 const historyKey = link ? vpsMetricKey(link.projectId, link.instanceId) : null;
                 const rowOnClick = (e: React.MouseEvent) => {
