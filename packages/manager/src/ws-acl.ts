@@ -117,7 +117,10 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   db: { send: "admin", receive: "admin" },
   security: { send: "admin", receive: "admin" },
   docker: { send: "admin", receive: "admin" },
-  logs: { send: "admin", receive: "admin" },
+  // The manager's own process logs (stdout + stderr) can carry cross-tenant
+  // detail, so the whole logs surface is superadmin-only. (logs:errors:* below
+  // is also superadmin via override.)
+  logs: { send: "superadmin", receive: "superadmin" },
   monitor: { send: "admin", receive: "admin" },
   stats: { send: "admin", receive: "admin" },
   system: { send: "admin", receive: "admin" },

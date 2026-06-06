@@ -12,15 +12,17 @@ type BarNavItem = { key: NavKey; label: string; icon: typeof ChefHat };
 /** Moved out of the left sidebar for admin + superadmin. */
 const ADMIN_BAR_SHARED_ITEMS: BarNavItem[] = [
   { key: "users", label: "Connected Users", icon: Users },
-  { key: "logs", label: "Logs", icon: ScrollText },
   { key: "history", label: "History", icon: Clock },
   { key: "topology", label: "Topology", icon: Boxes },
 ];
 
 /** Extra top-bar items for superadmin only (not in ADMIN_NAVS).
- *  Clouds moved to the left sidebar (visible to all roles). */
+ *  Clouds moved to the left sidebar (visible to all roles). Logs lives here too:
+ *  the manager process logs can carry cross-tenant detail, so they're
+ *  superadmin-only (mirrors the logs:* ACL gate). */
 const SUPERADMIN_BAR_EXTRA_ITEMS: BarNavItem[] = [
   { key: "recipes", label: "Recipes", icon: ChefHat },
+  { key: "logs", label: "Logs", icon: ScrollText },
 ];
 
 export function adminBarItemsForRole(

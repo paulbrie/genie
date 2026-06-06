@@ -17,9 +17,11 @@ type NavRole = "user" | "tazcloud" | "admin" | "superadmin" | undefined | null;
 const STANDARD_USER_NAVS = new Set<NavKey>(["projects", "tracker", "chat", "history", "settings", "agents"]);
 const TAZCLOUD_EXTRA_NAVS = new Set<NavKey>(["recipes", "clouds"]);
 const ADMIN_NAVS = new Set<NavKey>([
-  "projects", "processes", "docker", "docs", "logs", "chat", "history", "tracker",
+  "projects", "processes", "docker", "docs", "chat", "history", "tracker",
   "settings", "admin", "architecture", "topology", "users", "security", "help", "ssh",
   "agents", "clouds",
+  // "logs" is superadmin-only (manager process logs may carry cross-tenant
+  // detail); superadmins bypass this list entirely.
 ]);
 
 export function navAllowedForRole(nav: NavKey, role: NavRole): boolean {

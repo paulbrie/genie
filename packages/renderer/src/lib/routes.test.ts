@@ -36,19 +36,21 @@ describe("navAllowedForRole", () => {
     expect(navAllowedForRole("security", "tazcloud")).toBe(false);
   });
 
-  it("admin gets every base nav + clouds but NOT recipes (superadmin-only)", () => {
+  it("admin gets every base nav + clouds but NOT recipes / logs (superadmin-only)", () => {
     expect(navAllowedForRole("admin", "admin")).toBe(true);
     expect(navAllowedForRole("security", "admin")).toBe(true);
-    expect(navAllowedForRole("logs", "admin")).toBe(true);
     expect(navAllowedForRole("docker", "admin")).toBe(true);
     expect(navAllowedForRole("clouds", "admin")).toBe(true);
 
     expect(navAllowedForRole("recipes", "admin")).toBe(false);
+    // Manager process logs may carry cross-tenant detail — superadmin-only.
+    expect(navAllowedForRole("logs", "admin")).toBe(false);
   });
 
-  it("superadmin gets everything, including recipes / clouds", () => {
+  it("superadmin gets everything, including recipes / clouds / logs", () => {
     expect(navAllowedForRole("admin", "superadmin")).toBe(true);
     expect(navAllowedForRole("recipes", "superadmin")).toBe(true);
+    expect(navAllowedForRole("logs", "superadmin")).toBe(true);
     expect(navAllowedForRole("clouds", "superadmin")).toBe(true);
     expect(navAllowedForRole("security", "superadmin")).toBe(true);
   });
