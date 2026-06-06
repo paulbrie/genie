@@ -7,6 +7,7 @@ import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as agentRegistry from "../agents/registry.js";
 import { runAgent } from "../agents/runner.js";
+import * as analyticsService from "../analytics-service.js";
 
 
 export async function handleAgentsMessage(
@@ -82,6 +83,7 @@ export async function handleAgentsMessage(
         requestId?: string;
       };
       const reqId = requestId ?? agentId;
+      void analyticsService.recordEvent({ userId, userName: null, event: "agent.run", props: {}, ip: null });
       try {
         const result = await runAgent(
           {

@@ -7,6 +7,7 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as docsService from "../docs-service.js";
+import * as analyticsService from "../analytics-service.js";
 
 
 /** The full docs:list payload for a user: their own docs/folders plus docs and
@@ -65,6 +66,7 @@ export async function handleDocsMessage(
       try {
         const { title, content, folderId, projectId } = msg.payload;
         const doc = await docsService.createDoc(userId, title, content, folderId, projectId);
+        void analyticsService.recordEvent({ userId, userName: null, event: "doc.created", props: {}, ip: null });
         send(ws, { type: "docs:created", payload: doc });
         await sendDocsList();
       } catch (err: unknown) {

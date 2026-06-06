@@ -8,6 +8,7 @@ import { VPS_SSH_USERNAME } from "../types.js";
 import type { Role } from "../ws-acl.js";
 import { isPrivilegedRole } from "../ws-acl.js";
 import * as projectService from "../project-service.js";
+import * as analyticsService from "../analytics-service.js";
 import * as settingsService from "../settings-service.js";
 import * as cloudVmAliases from "../cloud-vm-alias-service.js";
 import * as cloudVmLocks from "../cloud-vm-lock-service.js";
@@ -73,6 +74,7 @@ export async function handleHetznerMessage(
         send(ws, { type: "vps:deploy:error", payload: { projectId: hzProjectId, message: "Not authorized to deploy to this project" } });
         return true;
       }
+      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", props: { provider: "hetzner" }, ip: null });
       const hzLocation = hzRegionOverride || hzProject.vpsRegion || undefined;
       const hzServerType = hzSizeOverride || hzProject.vpsSize || undefined;
       const hzImage = hzImageOverride || hzProject.vpsImage || undefined;

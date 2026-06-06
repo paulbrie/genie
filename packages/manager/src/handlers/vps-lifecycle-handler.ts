@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { WsMessage, VpsConnectionConfig } from "../types.js";
 import { VPS_SSH_USERNAME } from "../types.js";
 import * as projectService from "../project-service.js";
+import * as analyticsService from "../analytics-service.js";
 import * as settingsService from "../settings-service.js";
 import { connectSsh, isBlockedSshHost, pickWorkingSshUser } from "../vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsTeardown, remoteDir } from "../vps/deploy-service.js";
@@ -75,6 +76,7 @@ export async function handleVpsLifecycleMessage(
           send(ws, { type: "vps:connect:error", payload: { message: "Not authorized for this project" } });
           return true;
         }
+        void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", props: { provider: "ssh" }, ip: null });
         const host = (p.host || "").trim();
         if (isBlockedSshHost(host)) {
           send(ws, { type: "vps:connect:error", payload: { message: "That host is not allowed (loopback / link-local / metadata addresses are blocked)." } });

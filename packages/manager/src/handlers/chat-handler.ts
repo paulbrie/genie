@@ -7,6 +7,7 @@ import * as chatService from "../chat-service.js";
 import * as assistantLogService from "../assistant-log-service.js";
 import * as settingsService from "../settings-service.js";
 import * as projectService from "../project-service.js";
+import * as analyticsService from "../analytics-service.js";
 import { saveResumeSessionId, getResumeState } from "../assistant-session-state-service.js";
 import { getClaudeUserId } from "../db/seed.js";
 import { getDb } from "../db/index.js";
@@ -188,6 +189,10 @@ export async function handleChatMessage(
         const resolvedModelId = (modelId || dbDefaultModel || "claude-sonnet") as ChatModelId;
         const resolvedMaxToolRounds = dbMaxToolRounds ?? 10;
         send(ws, { type: "chat:meta", payload: { maxToolRounds: resolvedMaxToolRounds } });
+        void analyticsService.recordEvent({
+          userId: state.userId, userName: state.user?.name ?? null, event: "assistant.message",
+          props: { model: resolvedModelId, source: source === "chrome-extension" ? "extension" : "web" }, ip: state.ip,
+        });
 
         let domActionExecutor: DomActionExecutor | undefined;
         const extensionWs = source === "chrome-extension"
@@ -439,6 +444,7 @@ export async function handleChatMessage(
         if (!userId) return true;
         const { conversationId, content, replyToId, metadata: msgMetadata } = msg.payload;
         const message = await chatService.saveMessage(conversationId, userId, content, msgMetadata, replyToId);
+        void analyticsService.recordEvent({ userId, userName: state.user?.name ?? null, event: "chat.message", props: {}, ip: state.ip });
         const members = await chatService.getConversationMembers(conversationId);
         const memberIds = members.map((m) => m.userId);
 

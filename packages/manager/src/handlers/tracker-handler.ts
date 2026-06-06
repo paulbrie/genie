@@ -12,6 +12,7 @@ import { getDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import * as trackerService from "../tracker-service.js";
 import * as projectService from "../project-service.js";
+import * as analyticsService from "../analytics-service.js";
 
 
 // Enforce (not just in the UI) that an issue is only assigned to someone who
@@ -69,6 +70,7 @@ export async function handleTrackerMessage(
         const payload = msg.payload as { projectId: string; title: string; description?: string; status?: string; priority?: string; assigneeId?: string | null; labelIds?: string[] };
         await assertAssigneeCanSeeProject(payload.assigneeId, payload.projectId);
         const issue = await trackerService.createIssue(userId, payload);
+        void analyticsService.recordEvent({ userId, userName: null, event: "tracker.issue_created", props: {}, ip: null });
         send(ws, { type: "tracker:issue:created", payload: issue as Record<string, unknown> });
         await broadcastTrackerList();
       } catch (err: unknown) {

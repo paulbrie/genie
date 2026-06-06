@@ -6,6 +6,7 @@ import { VPS_SSH_USERNAME } from "../types.js";
 import type { Role } from "../ws-acl.js";
 import { isPrivilegedRole } from "../ws-acl.js";
 import * as projectService from "../project-service.js";
+import * as analyticsService from "../analytics-service.js";
 import * as cloudVmAliases from "../cloud-vm-alias-service.js";
 import * as settingsService from "../settings-service.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk, applyTazcloudFirewallPreset, cleanupTazcloudVmReferences } from "../vps/tazcloud-provision.js";
@@ -56,6 +57,7 @@ export async function handleTazcloudMessage(
         send(ws, { type: "vps:deploy:error", payload: { projectId: tazProjectId, message: "Not authorized to deploy to this project" } });
         return true;
       }
+      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", props: { provider: "tazcloud" }, ip: null });
       const tazToken = process.env.TAZCLOUD_API_TOKEN;
       const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
       if (!tazToken || !tazPrivateKey) {

@@ -5,6 +5,7 @@ import type { Role } from "../ws-acl.js";
 import { isPrivilegedRole } from "../ws-acl.js";
 import { canAccessProject } from "./handler-auth.js";
 import * as projectService from "../project-service.js";
+import * as analyticsService from "../analytics-service.js";
 import { connectSsh, pickWorkingSshUser } from "../vps/ssh-client.js";
 import { vpsStatus, vpsLogs, vpsStats } from "../vps/deploy-service.js";
 import { watchVpsStats, unwatchVpsStats, getCachedVpsStats } from "../vps/stats-stream.js";
@@ -316,6 +317,7 @@ export async function handleVpsRuntimeMessage(
         send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "No VPS deployment" } });
         return true;
       }
+      void analyticsService.recordEvent({ userId, userName: null, event: "recipe.run", props: { recipeId }, ip: null });
       try {
         await execCached(
           vpsInst.connection,

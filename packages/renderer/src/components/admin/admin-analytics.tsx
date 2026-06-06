@@ -23,6 +23,14 @@ const EVENT_LABELS: Record<string, string> = {
   "terminal.open": "Terminal opened",
   "terminal.command_sent": "Terminal command sent",
   "project.created": "Project created",
+  "project.removed": "Project removed",
+  "vps.deploy": "Server deploy / connect",
+  "recipe.run": "Recipe installed",
+  "assistant.message": "Genie assistant message",
+  "chat.message": "Team chat message",
+  "tracker.issue_created": "Tracker issue created",
+  "agent.run": "Agent run",
+  "doc.created": "Doc created",
 };
 const labelFor = (e: string) => EVENT_LABELS[e] ?? e;
 

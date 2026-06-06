@@ -126,6 +126,7 @@ export async function handleProjectMessage(
         send(ws, { type: "error", payload: { message: `Project ${id} not found` } });
         return true;
       }
+      void analyticsService.recordEvent({ userId: state.userId, userName: state.user?.name ?? null, event: "project.removed", props: {}, ip: state.ip });
       await broadcastProjectList();
       return true;
     }
