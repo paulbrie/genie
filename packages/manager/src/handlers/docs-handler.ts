@@ -66,7 +66,7 @@ export async function handleDocsMessage(
       try {
         const { title, content, folderId, projectId } = msg.payload;
         const doc = await docsService.createDoc(userId, title, content, folderId, projectId);
-        void analyticsService.recordEvent({ userId, userName: null, event: "doc.created", props: {}, ip: null });
+        void analyticsService.recordEvent({ userId, userName: null, event: "doc.created", projectId: projectId ?? null, props: {}, ip: null });
         send(ws, { type: "docs:created", payload: doc });
         await sendDocsList();
       } catch (err: unknown) {

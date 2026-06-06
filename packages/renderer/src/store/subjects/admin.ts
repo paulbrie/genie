@@ -22,7 +22,7 @@ export const $admin = new DeepSubject<AdminState>({
   projectTeams: {},
   communication: { logs: [], loading: false, sending: false, error: null, lastResult: null },
   audit: { logs: [], loading: false, filterUserId: null, filterAction: null },
-  analytics: { summary: null, days: 30, loading: false },
+  analytics: { summary: null, days: 30, loading: false, filterUserId: null, filterProjectId: null },
   prodlogs: { deployments: [], logs: [], selectedDeploymentId: null, logType: "deploy", loading: false, logsLoading: false },
   ai: { subTab: "costs", costs: [], loading: false, error: null, settings: { defaultModel: "claude-sonnet", maxToolRounds: 10 }, settingsLoading: false },
 });

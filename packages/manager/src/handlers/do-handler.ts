@@ -104,7 +104,7 @@ export async function handleDoMessage(
         send(ws, { type: "vps:deploy:error", payload: { projectId: doProjectId, message: "Not authorized to deploy to this project" } });
         return true;
       }
-      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", props: { provider: "do" }, ip: null });
+      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", projectId: doProjectId, props: { provider: "do" }, ip: null });
       const doRegion = doRegionOverride || doProject.vpsRegion || undefined;
       const doSize = doSizeOverride || doProject.vpsSize || undefined;
       const doToken = await settingsService.resolveDoToken(doProjectId);

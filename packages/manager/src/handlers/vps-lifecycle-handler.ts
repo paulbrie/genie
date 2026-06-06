@@ -76,7 +76,7 @@ export async function handleVpsLifecycleMessage(
           send(ws, { type: "vps:connect:error", payload: { message: "Not authorized for this project" } });
           return true;
         }
-        void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", props: { provider: "ssh" }, ip: null });
+        void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", projectId: p.projectId, props: { provider: "ssh" }, ip: null });
         const host = (p.host || "").trim();
         if (isBlockedSshHost(host)) {
           send(ws, { type: "vps:connect:error", payload: { message: "That host is not allowed (loopback / link-local / metadata addresses are blocked)." } });

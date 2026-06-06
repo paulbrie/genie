@@ -339,7 +339,7 @@ export const handlers: HandlerMap = {
       // The manager already normalizes each server; just attach the project link.
       const servers: AdminHetznerServer[] = (payload.servers || []).map((s: any) => {
         const pm = projectMap[s.id];
-        return { ...s, projectId: pm?.projectId || null, projectName: pm?.projectName || null } as AdminHetznerServer;
+        return { ...s, projectId: pm?.projectId || null, projectName: pm?.projectName || null, instanceId: pm?.instanceId || null } as AdminHetznerServer;
       });
       batch(() => { v.hetzner.servers = servers; v.hetzner.error = null; v.hetzner.loading = false; });
     }
@@ -968,6 +968,8 @@ export const handlers: HandlerMap = {
       const a = $admin.getValue().analytics;
       a.summary = payload.summary;
       if (typeof payload.days === "number") a.days = payload.days;
+      a.filterUserId = payload.userId ?? null;
+      a.filterProjectId = payload.projectId ?? null;
       a.loading = false;
     });
   },

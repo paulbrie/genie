@@ -116,7 +116,8 @@ export async function handleTerminalMessage(
           userId,
           userName: null,
           event: "terminal.open",
-          props: { kind: intent === "new" ? "claude" : "ssh", connection: startParams.kind, projectId: projectId ?? null },
+          projectId: projectId ?? null,
+          props: { kind: intent === "new" ? "claude" : "ssh", connection: startParams.kind },
           ip: null,
         });
       } catch (err) {

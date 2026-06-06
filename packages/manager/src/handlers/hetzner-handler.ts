@@ -74,7 +74,7 @@ export async function handleHetznerMessage(
         send(ws, { type: "vps:deploy:error", payload: { projectId: hzProjectId, message: "Not authorized to deploy to this project" } });
         return true;
       }
-      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", props: { provider: "hetzner" }, ip: null });
+      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", projectId: hzProjectId, props: { provider: "hetzner" }, ip: null });
       const hzLocation = hzRegionOverride || hzProject.vpsRegion || undefined;
       const hzServerType = hzSizeOverride || hzProject.vpsSize || undefined;
       const hzImage = hzImageOverride || hzProject.vpsImage || undefined;
@@ -277,12 +277,15 @@ export async function handleHetznerMessage(
         // servers attached to a project they can access (see admin:droplets:list).
         const privileged = isPrivilegedRole(role);
         const scopeProjects = privileged ? await projectService.getAll() : await projectService.getAllForUser(userId);
-        const projectMap: Record<number, { projectId: string; projectName: string }> = {};
+        // instanceId lets the panel subscribe to the live daemon stream directly,
+        // without depending on the client's $projects (which, for a server in a
+        // project the viewer isn't a member of, wouldn't carry the instance).
+        const projectMap: Record<number, { projectId: string; projectName: string; instanceId: string }> = {};
         const accessibleIds = new Set<number>();
         for (const p of scopeProjects) {
           for (const v of p.vpsInstances) {
             if (v.hetzner?.serverId) {
-              projectMap[v.hetzner.serverId] = { projectId: p.id, projectName: p.name };
+              projectMap[v.hetzner.serverId] = { projectId: p.id, projectName: p.name, instanceId: v.id };
               accessibleIds.add(v.hetzner.serverId);
             }
           }

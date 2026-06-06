@@ -57,7 +57,7 @@ export async function handleTazcloudMessage(
         send(ws, { type: "vps:deploy:error", payload: { projectId: tazProjectId, message: "Not authorized to deploy to this project" } });
         return true;
       }
-      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", props: { provider: "tazcloud" }, ip: null });
+      void analyticsService.recordEvent({ userId, userName: null, event: "vps.deploy", projectId: tazProjectId, props: { provider: "tazcloud" }, ip: null });
       const tazToken = process.env.TAZCLOUD_API_TOKEN;
       const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
       if (!tazToken || !tazPrivateKey) {

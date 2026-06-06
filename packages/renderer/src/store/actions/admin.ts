@@ -803,11 +803,17 @@ export function removeProjectTeam(projectId: string, teamId: string): void {
   wsSend("project:teams:remove", { projectId, teamId });
 }
 
-export function loadAnalyticsSummary(days?: number): void {
+export function loadAnalyticsSummary(patch?: { days?: number; userId?: string | null; projectId?: string | null }): void {
   const v = $admin.getValue();
   v.analytics.loading = true;
-  if (days !== undefined) v.analytics.days = days;
-  wsSend("admin:analytics:summary", { days: v.analytics.days });
+  if (patch?.days !== undefined) v.analytics.days = patch.days;
+  if (patch?.userId !== undefined) v.analytics.filterUserId = patch.userId;
+  if (patch?.projectId !== undefined) v.analytics.filterProjectId = patch.projectId;
+  wsSend("admin:analytics:summary", {
+    days: v.analytics.days,
+    userId: v.analytics.filterUserId,
+    projectId: v.analytics.filterProjectId,
+  });
 }
 
 export function loadAuditLogs(opts?: { userId?: string; action?: string }): void {

@@ -357,12 +357,17 @@ export const analyticsEvents = pgTable("analytics_events", {
   userId: uuid("user_id"),
   userName: text("user_name"),
   event: text("event").notNull(),       // e.g. "auth.login", "terminal.open"
+  // Project the event relates to, when applicable (terminal/deploy/recipe/doc/
+  // tracker/project events). Null for account-level events (login, tab focus).
+  // Plain text (not FK) so analytics survive project deletion.
+  projectId: text("project_id"),
   props: jsonb("props"),                // small metadata bag, no sensitive data
   ip: text("ip"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (t) => [
   index("idx_analytics_events_user").on(t.userId),
   index("idx_analytics_events_event").on(t.event),
+  index("idx_analytics_events_project").on(t.projectId),
   index("idx_analytics_events_created").on(t.createdAt),
 ]);
 

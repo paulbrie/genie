@@ -31,6 +31,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "project_teams", run: migrateProjectTeams },
   { id: "security_scan_project", run: migrateSecurityScanProject },
   { id: "analytics_events", run: migrateAnalyticsEvents },
+  { id: "analytics_events_project", run: migrateAnalyticsEventsProject },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -405,6 +406,7 @@ export async function migrateAnalyticsEvents(): Promise<void> {
     user_id UUID,
     user_name TEXT,
     event TEXT NOT NULL,
+    project_id TEXT,
     props JSONB,
     ip TEXT,
     created_at TIMESTAMP DEFAULT NOW() NOT NULL
@@ -412,6 +414,15 @@ export async function migrateAnalyticsEvents(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_user ON analytics_events(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_event ON analytics_events(event)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at)`);
+}
+
+/** Add analytics_events.project_id so the dashboard can filter by project. Its
+ *  own ledger step because the base table may have been created without it.
+ *  Idempotent. */
+export async function migrateAnalyticsEventsProject(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`ALTER TABLE analytics_events ADD COLUMN IF NOT EXISTS project_id TEXT`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_project ON analytics_events(project_id)`);
 }
 
 /** Base image template edit history. Idempotent. */

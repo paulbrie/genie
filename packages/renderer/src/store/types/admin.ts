@@ -49,6 +49,10 @@ export interface AdminHetznerServer {
   createdAt: string | null;
   projectId: string | null;
   projectName: string | null;
+  /** Linked VPS instance id, when the server is attached to a project. Lets the
+   *  panel watch the live daemon stats stream directly (keyed by instanceId)
+   *  instead of resolving it from the viewer's $projects. */
+  instanceId: string | null;
   /** Deletion lock — when true, only a superadmin can delete (typed-name confirm). */
   locked: boolean;
 }
@@ -459,6 +463,8 @@ export interface AdminState {
     summary: AnalyticsSummary | null;
     days: number;
     loading: boolean;
+    filterUserId: string | null;
+    filterProjectId: string | null;
   };
   prodlogs: {
     deployments: RailwayDeployment[];

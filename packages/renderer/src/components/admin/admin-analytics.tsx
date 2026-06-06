@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
-import { useDeepSubject } from "subjecto/react";
+import { useEffect, useMemo } from "react";
+import { useDeepSubject, useSubject } from "subjecto/react";
 import { RefreshCw, Users, LogIn, TerminalSquare, SendHorizonal, AppWindow } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
-import { $admin } from "@/store/subjects";
-import { loadAnalyticsSummary } from "@/store/actions";
+import { $admin, $projects } from "@/store/subjects";
+import { loadAnalyticsSummary, loadAdminUsers } from "@/store/actions";
 import { Button } from "@/components/ui/button";
+import { FilterableSelect } from "@/components/ui/filterable-select";
 import { cn } from "@/lib/utils";
 
 const RANGES = [7, 30, 90] as const;
@@ -36,24 +37,42 @@ const labelFor = (e: string) => EVENT_LABELS[e] ?? e;
 
 export function AdminAnalytics() {
   const [analytics] = useDeepSubject($admin, "analytics");
-  const { summary, days, loading } = analytics;
+  const [usersSlice] = useDeepSubject($admin, "users");
+  const [projects] = useSubject($projects);
+  const { summary, days, loading, filterUserId, filterProjectId } = analytics;
 
   useEffect(() => {
     loadAnalyticsSummary();
+    if (usersSlice.list.length === 0) loadAdminUsers();
   }, []);
+
+  const userOptions = useMemo(
+    () => [
+      { value: "", label: "All users" },
+      ...usersSlice.list
+        .filter((u) => !u.isAgent)
+        .map((u) => ({ value: u.id, label: u.name || u.email || u.id })),
+    ],
+    [usersSlice.list],
+  );
+  const projectOptions = useMemo(
+    () => [{ value: "", label: "All projects" }, ...projects.map((p) => ({ value: p.id, label: p.name }))],
+    [projects],
+  );
 
   const countOf = (event: string) => summary?.eventCounts.find((e) => e.event === event)?.count ?? 0;
   const hasData = !!summary && summary.eventCounts.length > 0;
+  const isFiltered = !!filterUserId || !!filterProjectId;
 
   return (
     <div className="py-4 flex flex-col gap-4">
-      {/* Range + refresh */}
-      <div className="flex items-center gap-2">
+      {/* Range + filters + refresh */}
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-md text-overlay0">Last</span>
         {RANGES.map((d) => (
           <button
             key={d}
-            onClick={() => loadAnalyticsSummary(d)}
+            onClick={() => loadAnalyticsSummary({ days: d })}
             className={cn(
               "px-2.5 py-1 rounded text-md transition-colors",
               d === days ? "bg-blue/20 text-blue" : "bg-surface0 text-subtext0 hover:text-text",
@@ -62,6 +81,28 @@ export function AdminAnalytics() {
             {d}d
           </button>
         ))}
+        <div className="w-px h-5 bg-surface0 mx-1" />
+        <div className="w-48">
+          <FilterableSelect
+            value={filterUserId ?? ""}
+            options={userOptions}
+            onChange={(v) => loadAnalyticsSummary({ userId: v || null })}
+            placeholder="All users"
+          />
+        </div>
+        <div className="w-48">
+          <FilterableSelect
+            value={filterProjectId ?? ""}
+            options={projectOptions}
+            onChange={(v) => loadAnalyticsSummary({ projectId: v || null })}
+            placeholder="All projects"
+          />
+        </div>
+        {isFiltered && (
+          <Button size="sm" variant="ghost" onClick={() => loadAnalyticsSummary({ userId: null, projectId: null })}>
+            Clear
+          </Button>
+        )}
         <div className="flex-1" />
         <Button size="sm" onClick={() => loadAnalyticsSummary()} disabled={loading}>
           <RefreshCw size={14} className={cn("mr-1", loading && "animate-spin")} /> Refresh
@@ -70,7 +111,11 @@ export function AdminAnalytics() {
 
       {!hasData ? (
         <div className="text-center text-overlay0 text-md py-16 border border-dashed border-surface0 rounded">
-          {loading ? "Loading…" : "No analytics yet — events appear here as users use the app."}
+          {loading
+            ? "Loading…"
+            : isFiltered
+              ? "No events match this filter in the selected range."
+              : "No analytics yet — events appear here as users use the app."}
         </div>
       ) : (
         <>

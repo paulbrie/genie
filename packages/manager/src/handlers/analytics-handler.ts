@@ -64,12 +64,16 @@ export async function handleAnalyticsMessage(
         send(ws, { type: "admin:error", payload: { message: "Superadmin access required" } });
         return true;
       }
-      const rawDays = Number((msg.payload as { days?: number } | undefined)?.days);
+      const p = (msg.payload ?? {}) as { days?: number; userId?: string | null; projectId?: string | null };
+      const rawDays = Number(p.days);
       const days = Number.isFinite(rawDays) ? Math.min(365, Math.max(1, Math.floor(rawDays))) : 30;
       const from = new Date(Date.now() - days * 86_400_000);
       try {
-        const summary = await analyticsService.getAnalyticsSummary(from);
-        send(ws, { type: "admin:analytics:summary", payload: { summary, days } });
+        const summary = await analyticsService.getAnalyticsSummary(from, {
+          userId: p.userId || null,
+          projectId: p.projectId || null,
+        });
+        send(ws, { type: "admin:analytics:summary", payload: { summary, days, userId: p.userId || null, projectId: p.projectId || null } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: err instanceof Error ? err.message : String(err) } });
       }

@@ -317,7 +317,7 @@ export async function handleVpsRuntimeMessage(
         send(ws, { type: "vps:recipe:error", payload: { projectId, instanceId, recipeId, message: "No VPS deployment" } });
         return true;
       }
-      void analyticsService.recordEvent({ userId, userName: null, event: "recipe.run", props: { recipeId }, ip: null });
+      void analyticsService.recordEvent({ userId, userName: null, event: "recipe.run", projectId, props: { recipeId }, ip: null });
       try {
         await execCached(
           vpsInst.connection,

@@ -5,7 +5,7 @@
 // is for "what features get used / who's active", not forensics (that's
 // audit_log).
 
-import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, sql, type SQL } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { analyticsEvents } from "./db/schema.js";
 
@@ -15,8 +15,16 @@ export interface AnalyticsEventInput {
   userId: string | null;
   userName: string | null;
   event: string;
+  /** Project the event relates to, when applicable. Enables the dashboard's
+   *  per-project filter. Null for account-level events. */
+  projectId?: string | null;
   props?: Record<string, unknown> | null;
   ip?: string | null;
+}
+
+export interface AnalyticsFilters {
+  userId?: string | null;
+  projectId?: string | null;
 }
 
 /** Insert one event. Fire-and-forget: never throws into the caller (analytics
@@ -36,6 +44,7 @@ export async function recordEvent(e: AnalyticsEventInput): Promise<void> {
       userId: e.userId,
       userName: e.userName,
       event: e.event,
+      projectId: e.projectId ?? null,
       props: props as Record<string, unknown> | null,
       ip: e.ip ?? null,
     });
@@ -59,28 +68,38 @@ export interface AnalyticsSummary {
   topUsers: { userId: string; name: string; count: number }[];
 }
 
-async function distinctUsersForEvent(from: Date, event: string): Promise<number> {
+/** Shared WHERE: time range + optional user / project filters. */
+function scopeWhere(from: Date, f: AnalyticsFilters, ...extra: (SQL | undefined)[]) {
+  const c: SQL[] = [gte(analyticsEvents.createdAt, from)];
+  if (f.userId) c.push(eq(analyticsEvents.userId, f.userId));
+  if (f.projectId) c.push(eq(analyticsEvents.projectId, f.projectId));
+  for (const e of extra) if (e) c.push(e);
+  return and(...c);
+}
+
+async function distinctUsersForEvent(from: Date, f: AnalyticsFilters, event: string): Promise<number> {
   const db = getDb();
   const [r] = await db
     .select({ n: sql<number>`count(distinct ${analyticsEvents.userId})::int` })
     .from(analyticsEvents)
-    .where(and(gte(analyticsEvents.createdAt, from), eq(analyticsEvents.event, event)));
+    .where(scopeWhere(from, f, eq(analyticsEvents.event, event)));
   return r?.n ?? 0;
 }
 
-/** Compute the dashboard summary over [from, now]. */
-export async function getAnalyticsSummary(from: Date): Promise<AnalyticsSummary> {
+/** Compute the dashboard summary over [from, now], optionally scoped to one user
+ *  and/or project. */
+export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters = {}): Promise<AnalyticsSummary> {
   const db = getDb();
 
   const [active] = await db
     .select({ n: sql<number>`count(distinct ${analyticsEvents.userId})::int` })
     .from(analyticsEvents)
-    .where(gte(analyticsEvents.createdAt, from));
+    .where(scopeWhere(from, filters));
 
   const eventCounts = await db
     .select({ event: analyticsEvents.event, count: sql<number>`count(*)::int` })
     .from(analyticsEvents)
-    .where(gte(analyticsEvents.createdAt, from))
+    .where(scopeWhere(from, filters))
     .groupBy(analyticsEvents.event)
     .orderBy(desc(sql`count(*)`));
 
@@ -92,7 +111,7 @@ export async function getAnalyticsSummary(from: Date): Promise<AnalyticsSummary>
       events: sql<number>`count(*)::int`,
     })
     .from(analyticsEvents)
-    .where(gte(analyticsEvents.createdAt, from))
+    .where(scopeWhere(from, filters))
     .groupBy(daySql)
     .orderBy(daySql);
 
@@ -103,15 +122,15 @@ export async function getAnalyticsSummary(from: Date): Promise<AnalyticsSummary>
       count: sql<number>`count(*)::int`,
     })
     .from(analyticsEvents)
-    .where(and(gte(analyticsEvents.createdAt, from), isNotNull(analyticsEvents.userId)))
+    .where(scopeWhere(from, filters, isNotNull(analyticsEvents.userId)))
     .groupBy(analyticsEvents.userId)
     .orderBy(desc(sql`count(*)`))
     .limit(10);
 
   const [loggedIn, openedTerminal, sentCommand] = await Promise.all([
-    distinctUsersForEvent(from, "auth.login"),
-    distinctUsersForEvent(from, "terminal.open"),
-    distinctUsersForEvent(from, "terminal.command_sent"),
+    distinctUsersForEvent(from, filters, "auth.login"),
+    distinctUsersForEvent(from, filters, "terminal.open"),
+    distinctUsersForEvent(from, filters, "terminal.command_sent"),
   ]);
 
   return {
