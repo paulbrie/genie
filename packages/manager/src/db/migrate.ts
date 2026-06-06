@@ -29,6 +29,8 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "base_image_history", run: migrateBaseImageHistory },
   { id: "tracker_per_project_identifier", run: migrateTrackerPerProjectIdentifier },
   { id: "project_teams", run: migrateProjectTeams },
+  { id: "security_scan_project", run: migrateSecurityScanProject },
+  { id: "analytics_events", run: migrateAnalyticsEvents },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -78,6 +80,9 @@ async function migrationTablesExist(id: string): Promise<boolean> {
     case "project_teams": return tableExists("project_teams");
     case "agents": return tableExists("agents");
     case "base_image_history": return tableExists("base_image_template_history");
+    case "analytics_events": return tableExists("analytics_events");
+    // security_scan_project only adds a column (idempotent ALTER) — let the
+    // catch-up path run it rather than guessing from a table name.
     default: return false;
   }
 }
@@ -234,24 +239,6 @@ export async function migrateOrgs(): Promise<void> {
   await db.execute(sql`ALTER TABLE teams ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE CASCADE`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_teams_org ON teams(org_id)`);
 
-  // Scope genie-security MCP scans to the project their token belongs to.
-  await db.execute(sql`ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE CASCADE`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_security_scans_project ON security_scans(project_id)`);
-
-  // Product-analytics events (superadmin dashboard).
-  await db.execute(sql`CREATE TABLE IF NOT EXISTS analytics_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID,
-    user_name TEXT,
-    event TEXT NOT NULL,
-    props JSONB,
-    ip TEXT,
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL
-  )`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_user ON analytics_events(user_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_event ON analytics_events(event)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at)`);
-
   // 3. Drop NOT NULL on users.google_id so stub invitees may exist -----------
   await db.execute(sql`ALTER TABLE users ALTER COLUMN google_id DROP NOT NULL`);
 
@@ -400,6 +387,31 @@ export async function migrateTrackerPerProjectIdentifier(): Promise<void> {
   const db = getDb();
   await db.execute(sql`DROP INDEX IF EXISTS idx_tracker_issues_identifier`);
   await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uniq_tracker_issues_project_identifier ON tracker_issues(project_id, identifier)`);
+}
+
+/** Scope genie-security MCP scans to the project their token belongs to —
+ *  adds security_scans.project_id. Idempotent. */
+export async function migrateSecurityScanProject(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE CASCADE`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_security_scans_project ON security_scans(project_id)`);
+}
+
+/** Product-analytics events backing the superadmin dashboard. Idempotent. */
+export async function migrateAnalyticsEvents(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS analytics_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID,
+    user_name TEXT,
+    event TEXT NOT NULL,
+    props JSONB,
+    ip TEXT,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_user ON analytics_events(user_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_event ON analytics_events(event)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at)`);
 }
 
 /** Base image template edit history. Idempotent. */
