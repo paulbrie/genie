@@ -13,13 +13,22 @@ const TMUX_BIN_PREAMBLE =
   '[ -z "$T" ] && [ -e /snap/bin/tmux ] && T=/snap/bin/tmux; ' +
   '[ -z "$T" ] && [ -e /usr/bin/tmux ] && T=/usr/bin/tmux';
 
+// Mouse on so the popup's wheel forwards as a mouse event → tmux enters copy
+// mode and scrolls the pane history (the only way to see Claude's prior output
+// while it's in tmux's alt buffer). 50k-line history-limit keeps long Claude
+// sessions fully scrollable. Quiet (-gq) + 2>/dev/null so a stale server / old
+// tmux build doesn't surface a noisy line into the user's PTY.
+const TMUX_SERVER_OPTIONS =
+  '"$T" set-option -gq mouse on 2>/dev/null || true; ' +
+  '"$T" set-option -gq history-limit 50000 2>/dev/null || true';
+
 function withTmux(action: string): string {
   return `${TMUX_BIN_PREAMBLE}; if [ -n "$T" ]; then ${action}; else echo "tmux: command not found" >&2; exit 127; fi`;
 }
 
 export function tmuxAttachShellCommand(sessionName: string): string {
   const target = shellSingleQuote(sessionName);
-  return withTmux(`("$T" attach -t ${target} 2>/dev/null || "$T" switch-client -t ${target})`);
+  return withTmux(`${TMUX_SERVER_OPTIONS}; ("$T" attach -t ${target} 2>/dev/null || "$T" switch-client -t ${target})`);
 }
 
 /** Suppress PTY echo while a one-shot shell line runs (tmux attach on reconnect). */
@@ -33,7 +42,10 @@ export function createTmuxSessionName(): string {
 
 export function tmuxNewSessionShellCommand(sessionName: string): string {
   const quoted = shellSingleQuote(sessionName);
-  return withTmux(`exec "$T" new-session -s ${quoted}`);
+  // start-server up front so set-option -g hits a real server (set-option fails
+  // if no server is running, and new-session would otherwise spawn one without
+  // the options).
+  return withTmux(`"$T" start-server 2>/dev/null || true; ${TMUX_SERVER_OPTIONS}; exec "$T" new-session -s ${quoted}`);
 }
 
 /** Attach-or-create a tmux session that runs `command` as its process (e.g.
@@ -43,7 +55,7 @@ export function tmuxNewSessionShellCommand(sessionName: string): string {
 export function tmuxNewSessionWithCommandShellCommand(sessionName: string, command: string): string {
   const quotedName = shellSingleQuote(sessionName);
   const quotedCmd = shellSingleQuote(command);
-  return withTmux(`exec "$T" new-session -A -s ${quotedName} ${quotedCmd}`);
+  return withTmux(`"$T" start-server 2>/dev/null || true; ${TMUX_SERVER_OPTIONS}; exec "$T" new-session -A -s ${quotedName} ${quotedCmd}`);
 }
 
 export function tmuxRenameCommand(sessionName: string, newName: string): string {

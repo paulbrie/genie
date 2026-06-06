@@ -123,12 +123,13 @@ export function createTerminal(
   // alt-scroll behavior translates mouse-wheel ticks into Up/Down arrow key
   // sequences. Claude Code interprets those as prompt-history navigation, so
   // a wheel tick over the popup would cycle previously-sent prompts.
-  // When the TUI has mouse tracking on (tmux with `set -g mouse on`, or
-  // Claude's own mouse mode) we let xterm forward the wheel as a real mouse
-  // event — tmux enters copy mode and scrolls its pane history, which is the
-  // only way to actually see Claude's discussion. We only swallow the wheel
-  // when mouse mode is off, since that's the case where alt-scroll would
-  // emit arrow keys.
+  // When the TUI has mouse tracking on (tmux with `set -g mouse on`, which
+  // Genie pushes via ssh/tmux/commands.ts + handlers.ts, or Claude's own
+  // mouse mode) we let xterm forward the wheel as a real mouse event — tmux
+  // enters copy mode and scrolls its pane history, which is the only way to
+  // see Claude's prior output while it lives in tmux's alt buffer. We only
+  // swallow the wheel when mouse mode is off, since that's the case where
+  // alt-scroll would emit arrow keys.
   terminal.attachCustomWheelEventHandler((event) => {
     if (terminal.buffer.active.type === "alternate" && terminal.modes.mouseTrackingMode === "none") {
       event.preventDefault();

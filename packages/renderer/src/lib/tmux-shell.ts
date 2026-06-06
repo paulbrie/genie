@@ -10,6 +10,12 @@ const TMUX_BIN_PREAMBLE =
   '[ -z "$T" ] && [ -e /snap/bin/tmux ] && T=/snap/bin/tmux; ' +
   '[ -z "$T" ] && [ -e /usr/bin/tmux ] && T=/usr/bin/tmux';
 
+// Mirrors the server-side constant in ssh/tmux/commands.ts: mouse on so wheel
+// events scroll Claude's history (tmux copy mode), and a generous scrollback.
+const TMUX_SERVER_OPTIONS =
+  '"$T" set-option -gq mouse on 2>/dev/null || true; ' +
+  '"$T" set-option -gq history-limit 50000 2>/dev/null || true';
+
 function withTmux(action: string): string {
   return `${TMUX_BIN_PREAMBLE}; if [ -n "$T" ]; then ${action}; else echo "tmux: command not found" >&2; exit 127; fi`;
 }
@@ -17,7 +23,7 @@ function withTmux(action: string): string {
 /** Attach or switch to a session — works from a login shell or from inside tmux. */
 export function tmuxAttachShellCommand(sessionName: string): string {
   const target = shellSingleQuote(sessionName);
-  return withTmux(`("$T" attach -t ${target} 2>/dev/null || "$T" switch-client -t ${target})`);
+  return withTmux(`${TMUX_SERVER_OPTIONS}; ("$T" attach -t ${target} 2>/dev/null || "$T" switch-client -t ${target})`);
 }
 
 /** Wrap a shell one-liner so keystrokes are not echoed into the live PTY (xterm). */

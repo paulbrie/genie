@@ -178,6 +178,17 @@ export async function startSshSession(
       sessionMeta.set(terminalId, { projectId, instanceId, host, ws });
       emitTraffic(terminalId, ws);
       console.log(`[ssh] ready terminal=${terminalId} ${shellOpts.username}@${host}`);
+      // Push mouse + scrollback into the running tmux server via a side-channel
+      // exec (NOT the PTY). Affects already-running sessions immediately — tmux
+      // sends the mouse-tracking DECSET to attached clients when the option
+      // flips, so the popup's wheel handler starts forwarding scroll without
+      // needing the user to relaunch Claude. Fire-and-forget; ignored if no
+      // tmux server is up yet (the next new-session command provisions both).
+      void execCached(
+        shellOpts,
+        'T=$(command -v tmux 2>/dev/null || true); [ -z "$T" ] && [ -e /snap/bin/tmux ] && T=/snap/bin/tmux; ' +
+          '[ -n "$T" ] && { "$T" set-option -gq mouse on 2>/dev/null; "$T" set-option -gq history-limit 50000 2>/dev/null; }; true',
+      ).catch(() => { /* tmux not installed / server down — handled by tmux command builders */ });
       send(ws, {
         type: "terminal:ready",
         payload: {
