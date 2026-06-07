@@ -12,7 +12,7 @@ import { useSubject } from "subjecto/react";
 import {
   Activity, Brain, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, KeyRound, Link2, Loader2,
   Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw, ScrollText,
-  Settings as SettingsIcon, Shield, Sparkles, Terminal, TriangleAlert, Trash2, X,
+  Settings as SettingsIcon, Shield, Sparkles, Terminal, TriangleAlert, Trash2, Type, X,
 } from "lucide-react";
 import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $vpsStatsSync, $windowManager } from "@/store/subjects";
 import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
@@ -53,6 +53,28 @@ const MANAGE_VM_WINDOW_PREFIX = "manage-vm-";
 export const MANAGE_VM_DEFAULT_W = 900;
 export const MANAGE_VM_DEFAULT_H = 600;
 export const MANAGE_VM_CASCADE_OFFSET = 30;
+
+/** User-selectable text size for the Manage popup. Persisted to localStorage so
+ *  the last choice sticks across sessions. Applied as a `zoom` factor on the
+ *  popup content so it scales every label uniformly (the body mixes Tailwind
+ *  text-* classes with inline pixel font sizes, which a single font-size can't
+ *  reach). "small" is the original, unscaled look. */
+const MANAGE_VM_FONT_SIZES = ["small", "medium", "large"] as const;
+type ManageVmFontSize = (typeof MANAGE_VM_FONT_SIZES)[number];
+const MANAGE_VM_FONT_SCALE: Record<ManageVmFontSize, number> = {
+  small: 1,
+  medium: 1.15,
+  large: 1.3,
+};
+const MANAGE_VM_FONT_SIZE_KEY = "manage-vm-font-size";
+
+function loadManageVmFontSize(): ManageVmFontSize {
+  if (typeof window === "undefined") return "small";
+  const stored = window.localStorage.getItem(MANAGE_VM_FONT_SIZE_KEY);
+  return MANAGE_VM_FONT_SIZES.includes(stored as ManageVmFontSize)
+    ? (stored as ManageVmFontSize)
+    : "small";
+}
 
 /** Open the Manage popup for a TazCloud VM. Exported so project pages can
  *  trigger the same popup with data derived from a project's VpsInstance —
@@ -537,6 +559,17 @@ export function ManageVmPopup({ vm, windowId, windowState }: {
   windowState: FloatingWindowState;
 }) {
   const [maximized, setMaximized] = useState(false);
+  const [fontSize, setFontSize] = useState<ManageVmFontSize>(loadManageVmFontSize);
+  const [fontMenuOpen, setFontMenuOpen] = useState(false);
+  const changeFontSize = useCallback((size: ManageVmFontSize) => {
+    setFontSize(size);
+    setFontMenuOpen(false);
+    try {
+      window.localStorage.setItem(MANAGE_VM_FONT_SIZE_KEY, size);
+    } catch {
+      /* private mode / disabled storage — keep the in-memory choice */
+    }
+  }, []);
   const [windowManager] = useSubject($windowManager);
   const allWindows = windowManager.windows;
   const storedPos = windowState.position;
@@ -601,6 +634,33 @@ export function ManageVmPopup({ vm, windowId, windowState }: {
         <span className="text-overlay0 text-md font-mono truncate">{vm.name}</span>
         <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-medium bg-surface0 text-subtext0">{providerLabel(vm.provider)}</span>
         <div className="flex-1" />
+        <div className="relative shrink-0" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            onClick={() => setFontMenuOpen((v) => !v)}
+            className="flex items-center gap-0.5 px-1 py-1 rounded text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer"
+            title="Font size"
+          >
+            <Type size={14} />
+            <ChevronDown size={11} />
+          </button>
+          {fontMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setFontMenuOpen(false)} />
+              <div className="absolute right-0 top-full mt-1 z-20 bg-mantle border border-overlay0/30 rounded-md shadow-lg py-1 min-w-[140px]">
+                {MANAGE_VM_FONT_SIZES.map((size) => (
+                  <button
+                    key={size}
+                    onClick={() => changeFontSize(size)}
+                    className="w-full text-left px-3 py-1 text-md hover:bg-surface0 flex items-center justify-between gap-2 capitalize"
+                  >
+                    <span>{size}</span>
+                    {size === fontSize && <Check size={12} className="text-blue shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         <button onClick={() => minimizeWindow(windowId)} className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1" title="Minimize">
           <Minus size={14} />
         </button>
@@ -611,7 +671,10 @@ export function ManageVmPopup({ vm, windowId, windowState }: {
           <X size={14} />
         </button>
       </div>
-      <div className="overflow-y-auto px-4 py-3 flex-1">
+      <div
+        className="overflow-y-auto px-4 py-3 flex-1"
+        style={{ zoom: MANAGE_VM_FONT_SCALE[fontSize] } as React.CSSProperties}
+      >
         <ManageVmInline vm={vm} />
       </div>
       {!maximized && (
