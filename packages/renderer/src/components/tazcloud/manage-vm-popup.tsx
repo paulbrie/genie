@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { batch } from "subjecto";
 import { useSubject } from "subjecto/react";
 import {
-  Activity, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, KeyRound, Link2, Loader2,
+  Activity, Brain, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, KeyRound, Link2, Loader2,
   Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw, ScrollText,
   Settings as SettingsIcon, Shield, Sparkles, Terminal, TriangleAlert, Trash2, X,
 } from "lucide-react";
@@ -32,6 +32,7 @@ import { VpsResourceBar, VpsResourceGauges, vpsStatsToBarStats } from "@/compone
 import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { DbExplorer } from "@/components/admin/db-explorer";
 import { VmClaudeLogsTab } from "./vm-claude-logs-tab";
+import { VmClaudeMemoryTab } from "./vm-claude-memory-tab";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -811,7 +812,7 @@ function AddSshKeyForm({ exec, connectUser, host }: { exec: VmExecFn; connectUse
   );
 }
 
-type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "claude-logs" | "files" | "db" | "commands";
+type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "claude-logs" | "claude-memory" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -1015,6 +1016,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     { key: "processes", label: "Processes", icon: Cpu, enabled: true },
     { key: "sessions", label: "Sessions", icon: Activity, enabled: true },
     { key: "claude-logs", label: "Claude Logs", icon: ScrollText, enabled: true },
+    { key: "claude-memory", label: "Claude Memory", icon: Brain, enabled: true },
     { key: "commands", label: "Commands", icon: PlayCircle, enabled: hasProject, reason: "Attach this VM to a project to manage commands" },
     { key: "files", label: "Files", icon: FolderTree, enabled: hasProject, reason: "Attach this VM to a project to browse files" },
     { key: "db", label: "DB", icon: DatabaseIcon, enabled: hasProject, reason: "Attach this VM to a project to browse the database" },
@@ -1173,6 +1175,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
           {tab === "claude-logs" && (
             <VmClaudeLogsTab exec={exec} />
+          )}
+          {tab === "claude-memory" && (
+            <VmClaudeMemoryTab exec={exec} />
           )}
         </>
       )}
