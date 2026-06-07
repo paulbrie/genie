@@ -19,7 +19,8 @@ import {
 import type { VmConnectionState } from "@/store/types/vps";
 import { TmuxSessionBadges } from "@/components/tazcloud/tmux-session-badges";
 import { tmuxAttachShellCommand } from "@/lib/tmux-shell";
-import { createTerminal, hasTerminal, reattachTerminal } from "@/lib/terminal-bridge";
+import { createTerminal, hasTerminal, reattachTerminal, setTerminalFontSize } from "@/lib/terminal-bridge";
+import { useWindowFontSize, WINDOW_FONT_PX } from "@/components/ui/window-font-size";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
@@ -94,6 +95,9 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
   const isLive = conn?.status === "connected";
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const [pasteNotice, setPasteNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [fontSize] = useWindowFontSize();
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
 
   // Create or reattach the xterm into our terminal pane DIV whenever this
   // popup is rendered. createTerminal is idempotent against a missing
@@ -104,13 +108,18 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
     if (hasTerminal(tid)) {
       reattachTerminal(tid, terminalRef.current);
     } else {
-      createTerminal(terminalRef.current, tid);
+      createTerminal(terminalRef.current, tid, undefined, "terminal", WINDOW_FONT_PX[fontSizeRef.current]);
     }
     return () => {
       // Don't dispose on every effect cleanup — only on popup close. The
       // popup-close button calls closeVmConnection which disposes the term.
     };
   }, [conn?.terminalId]);
+
+  // Live-apply font-size changes (no-op when the size already matches).
+  useEffect(() => {
+    if (conn?.terminalId) setTerminalFontSize(conn.terminalId, WINDOW_FONT_PX[fontSize]);
+  }, [fontSize, conn?.terminalId]);
 
   // Clipboard-image paste → ship to VM → manager types the path into the PTY
   // so Claude Code (or any process at the prompt) reads it. Bound to the

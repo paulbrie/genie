@@ -16,6 +16,7 @@ import {
   updateWindowPosition,
 } from "@/store/actions";
 import { useDraggable } from "@/hooks/use-draggable";
+import { WindowFontSizeButton, useWindowFontSize, WINDOW_FONT_SCALE } from "@/components/ui/window-font-size";
 import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { ConversationMessages } from "@/components/chat/conversation-messages";
@@ -83,6 +84,7 @@ export function DmPopup() {
 
   const { elRef, onPointerDown } = useDraggable(position, handleDragEnd);
   const isFocused = useIsWindowFocused(windowState ?? null);
+  const [fontSize] = useWindowFontSize();
 
   if (!isOpen) return null;
 
@@ -112,6 +114,7 @@ export function DmPopup() {
         <MessageSquare size={14} className="text-mauve shrink-0" />
         <span className="text-text font-medium text-md truncate">{titleName}</span>
         <div className="flex-1" />
+        <WindowFontSizeButton className="flex items-center gap-0.5 px-1 py-1 rounded text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer" />
         <button
           onClick={() => minimizeWindow(WINDOW_ID)}
           className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1"
@@ -128,7 +131,10 @@ export function DmPopup() {
         </button>
       </div>
 
-      <div className="flex-1 flex flex-col min-h-0">
+      <div
+        className="flex-1 flex flex-col min-h-0"
+        style={{ zoom: WINDOW_FONT_SCALE[fontSize] } as React.CSSProperties}
+      >
         {cc.activeConversationId ? (
           <ConversationMessages />
         ) : (

@@ -15,7 +15,9 @@ import {
   writeToTerminal,
   focusTerminal as focusXterm,
   refitTerminal,
+  setTerminalFontSize,
 } from "@/lib/terminal-bridge";
+import { WindowFontSizeButton, useWindowFontSize, WINDOW_FONT_PX } from "@/components/ui/window-font-size";
 import { buildTerminalSshSpawnPayload } from "@/lib/terminal-spawn";
 import { wsSend } from "@/lib/ws";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
@@ -38,6 +40,9 @@ function SingleTerminalWindow({
   const [maximized, setMaximized] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
+  const [fontSize] = useWindowFontSize();
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
 
   const [windowManager] = useSubject($windowManager);
   const allWindows = windowManager.windows;
@@ -142,9 +147,15 @@ function SingleTerminalWindow({
     } else {
       createTerminal(containerRef.current, tab.id, ({ cols, rows }) => {
         spawnWhenReady(cols, rows);
-      }, isLocalPty ? "manager-pty" : "terminal");
+      }, isLocalPty ? "manager-pty" : "terminal", WINDOW_FONT_PX[fontSizeRef.current]);
     }
   }, [tab, spawnWhenReady, isLocalPty]);
+
+  // Live-apply font-size changes (and reconcile a reattached terminal that was
+  // created under a different choice). No-op when the size already matches.
+  useEffect(() => {
+    setTerminalFontSize(tab.id, WINDOW_FONT_PX[fontSize]);
+  }, [fontSize, tab.id]);
 
   // Focus xterm when output arrives so keystrokes reach Claude without an extra click.
   useEffect(() => {
@@ -236,6 +247,7 @@ function SingleTerminalWindow({
               <span className="text-md font-medium">Reconnect</span>
             </button>
           )}
+          <WindowFontSizeButton />
           <button
             onClick={() => minimizeWindow(windowId)}
             className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"

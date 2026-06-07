@@ -34,4 +34,17 @@ export const $fileExplorer = new Subject<FileExplorerState>({
 export const $logs = new Subject<LogsState>({ activeSource: "manager", sources: ["manager"], buffers: {} });
 export const $settings = new Subject<AppSettings>({ defaultEditor: "", digitaloceanApiToken: "", hetznerApiToken: "", gitlabDeployKey: "", railwayToken: "", railwayProjectId: "", namecheapApiUser: "", namecheapApiKey: "", namecheapUserName: "", namecheapDomain: "" });
 export const $windowManager = new Subject<WindowManagerState>({ windows: {}, nextZIndex: 10000 });
+
+/** Global text-size preference for every floating window's title-bar selector.
+ *  Hydrated from localStorage at load (falling back to the legacy Manage-only
+ *  key) so the last choice sticks; updates flow back via setWindowFontSize. */
+function loadWindowFontSize(): "small" | "medium" | "large" {
+  if (typeof window === "undefined") return "small";
+  try {
+    const v = window.localStorage.getItem("genie-window-font-size")
+      ?? window.localStorage.getItem("manage-vm-font-size");
+    return v === "medium" || v === "large" ? v : "small";
+  } catch { return "small"; }
+}
+export const $windowFontSize = new Subject<"small" | "medium" | "large">(loadWindowFontSize());
 export const $presenceSessions = new Subject<PresenceSession[]>([]);

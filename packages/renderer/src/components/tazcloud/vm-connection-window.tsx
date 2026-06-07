@@ -25,6 +25,7 @@ import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { VmConnectionPopup } from "./vm-connection-popup";
+import { WindowFontSizeButton } from "@/components/ui/window-font-size";
 
 const VM_CONN_WINDOW_PREFIX = "vm-conn-";
 const W = 760;
@@ -129,6 +130,7 @@ function VmConnectionWindowInstance({ windowId }: { windowId: string }) {
           {conn.username}@{conn.host}
         </span>
         <div className="flex-1" />
+        <WindowFontSizeButton className="flex items-center gap-0.5 px-1 py-1 rounded text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer" />
         <button
           onClick={() => minimizeWindow(windowId)}
           className="text-overlay1 hover:text-text transition-colors bg-transparent border-none cursor-pointer p-1"

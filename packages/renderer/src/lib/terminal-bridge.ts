@@ -95,11 +95,12 @@ export function createTerminal(
   terminalId: string,
   onFitted?: (size: { cols: number; rows: number }) => void,
   channel: TerminalChannel = "terminal",
+  fontSize = 13,
 ): Terminal {
   const terminal = new Terminal({
     theme: THEME,
     fontFamily: '"SF Mono", "Fira Code", monospace',
-    fontSize: 13,
+    fontSize,
     lineHeight: 1.4,
     cursorBlink: true,
     allowProposedApi: true,
@@ -189,6 +190,20 @@ export function refitTerminal(terminalId: string): void {
   const inst = instances.get(terminalId);
   if (!inst) return;
   try { inst.fitAddon.fit(); } catch { /* ignore */ }
+}
+
+/** Change an existing terminal's font size, then refit so the PTY's cols/rows
+ *  track the new cell grid (xterm can't use the DOM `zoom` trick the other
+ *  windows use — that desyncs the FitAddon). */
+export function setTerminalFontSize(terminalId: string, fontSize: number): void {
+  const inst = instances.get(terminalId);
+  if (!inst) return;
+  if (inst.terminal.options.fontSize === fontSize) return;
+  inst.terminal.options.fontSize = fontSize;
+  try {
+    inst.fitAddon.fit();
+    wsSend(`${inst.channel}:resize`, { terminalId, cols: inst.terminal.cols, rows: inst.terminal.rows });
+  } catch { /* tear-down race */ }
 }
 
 export function getTerminalSize(terminalId: string): { cols: number; rows: number } | null {

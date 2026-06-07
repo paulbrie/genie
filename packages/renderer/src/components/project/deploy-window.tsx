@@ -10,6 +10,7 @@ import { $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
 import { clearVpsDeployState, closeWindow, destroyFailedDroplet, focusWindow, keepFailedDroplet, minimizeWindow, openWindow, registerWindow, setWindowBusy, updateWindowPosition } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ErrorMessage } from "@/components/ui/error-message";
+import { WindowFontSizeButton, useWindowFontSize, WINDOW_FONT_SCALE } from "@/components/ui/window-font-size";
 
 const WINDOW_PREFIX = "deploy-";
 const DEFAULT_W = 400;
@@ -130,6 +131,7 @@ function FloatingDeployWindow({
 
   const { elRef, onPointerDown } = useDraggable(initial, handleDragEnd);
   const { onResizePointerDown } = useResizable(elRef, { w: DEFAULT_W, h: DEFAULT_H });
+  const [fontSize] = useWindowFontSize();
 
   // Filter lines by search
   const filteredLines = useMemo(() => {
@@ -191,6 +193,7 @@ function FloatingDeployWindow({
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
           {isDeploying && deploy.startedAt && <span className="mr-1.5"><ElapsedTime startedAt={deploy.startedAt} /></span>}
+          <WindowFontSizeButton />
           <button
             onClick={() => setShowSearch((v) => !v)}
             className={`p-1 rounded transition-colors ${showSearch ? "text-blue bg-surface0" : "text-overlay0 hover:text-text hover:bg-surface0"}`}
@@ -266,6 +269,7 @@ function FloatingDeployWindow({
         ref={logContainerRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-3 py-2 font-mono text-md select-text scrollbar-thin min-h-0"
+        style={{ zoom: WINDOW_FONT_SCALE[fontSize] } as React.CSSProperties}
       >
         {filteredLines.map(({ line, idx }) => (
           <div key={idx} className={`leading-relaxed ${isErrorLine(line) ? "text-red" : "text-overlay1"}`}>

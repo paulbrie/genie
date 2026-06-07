@@ -19,6 +19,7 @@ import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
 import { UsageLine } from "@/components/ui/usage-line";
 import { AutoTextarea } from "@/components/ui/auto-textarea";
+import { WindowFontSizeButton, useWindowFontSize, WINDOW_FONT_SCALE } from "@/components/ui/window-font-size";
 import { ChatErrorBubble } from "@/components/chat/chat-error-bubble";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 
@@ -451,6 +452,7 @@ function FloatingChatWindow({
 
   const { elRef, onPointerDown } = useDraggable(initial, handleDragEnd);
   const { onResizePointerDown } = useResizable(elRef, storedSize, undefined, handleResizeEnd);
+  const [fontSize] = useWindowFontSize();
 
   // Apply position + size to the DOM directly so subsequent re-renders (every
   // stream token, every focus change) DON'T touch left/top/width/height via
@@ -527,6 +529,7 @@ function FloatingChatWindow({
           Genie Assistant
         </div>
         <div className="flex items-center gap-0.5">
+          <WindowFontSizeButton />
           <button
             onClick={() => newChat()}
             className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors"
@@ -640,6 +643,7 @@ function FloatingChatWindow({
         role="log"
         aria-live="polite"
         aria-label="Assistant messages"
+        style={{ zoom: WINDOW_FONT_SCALE[fontSize] } as React.CSSProperties}
       >
         {chatMessages.length === 0 && !chatStreaming && !chatLoading && (
           <div className="flex-1 flex items-center justify-center py-8">
