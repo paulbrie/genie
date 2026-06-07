@@ -686,6 +686,16 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
             }
             const authPayload = await buildAuthPayload(user, token);
             send(ws, { type: "auth:success", payload: authPayload });
+            // A genuine sign-in. The auth:token path is silent token re-auth on
+            // every WS (re)connect, so recording the login there over-counts
+            // reconnects as logins — keep auth.login on the real OAuth flow only.
+            void analyticsService.recordEvent({
+              userId: user.id,
+              userName: user.name,
+              event: "auth.login",
+              props: { role: user.role, impersonated: false },
+              ip: state?.ip ?? null,
+            });
             await sendInitialData(ws, user.id);
             broadcastPresence();
           },
@@ -727,13 +737,6 @@ async function handleAuthMessage(ws: WebSocket, msg: WsMessage): Promise<boolean
           }
           const authPayload = await buildAuthPayload(user, token, impersonatedBy);
           send(ws, { type: "auth:success", payload: authPayload });
-          void analyticsService.recordEvent({
-            userId: user.id,
-            userName: user.name,
-            event: "auth.login",
-            props: { role: user.role, impersonated: !!decoded.impersonatedBy },
-            ip: state?.ip ?? null,
-          });
           sendInitialData(ws, user.id);
           broadcastPresence();
           return true;
