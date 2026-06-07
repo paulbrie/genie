@@ -5,8 +5,31 @@ import { useSubject } from "subjecto/react";
 import { Users, Monitor, Chrome, MapPin, Globe, Wifi, AppWindow } from "lucide-react";
 import type { PresenceSession } from "@/store/types";
 import { $presenceSessions } from "@/store/subjects";
-import { requestPresenceDetail } from "@/store/actions";
+import { $windowManager } from "@/store/subjects/common";
+import { focusWindow, openWindow, registerWindow, requestPresenceDetail, restoreWindow } from "@/store/actions";
 import { iconMap } from "@/components/ui/window-toolbar";
+
+/** Window-id prefixes the admin can open locally by clicking the badge.
+ *  Each one is rendered by a `*Windows` component that filters $windowManager
+ *  by prefix, so once we register the same id in the admin's session the
+ *  corresponding popup mounts and looks up its server from store state. */
+const OPENABLE_PREFIXES = ["manage-hzserver-", "manage-droplet-", "manage-vm-"];
+
+function isOpenable(id: string): boolean {
+  return OPENABLE_PREFIXES.some((p) => id.startsWith(p));
+}
+
+function openLocally(id: string, title: string, icon: string): void {
+  const wm = $windowManager.getValue();
+  if (wm.windows[id]) {
+    restoreWindow(id);
+    focusWindow(id);
+    return;
+  }
+  registerWindow(id, title, icon);
+  openWindow(id);
+  focusWindow(id);
+}
 function parseBrowser(ua: string | null): string {
   if (!ua) return "Unknown";
   if (ua.includes("Edg/")) return "Edge";
@@ -153,13 +176,27 @@ export function ConnectedUsersPanel() {
                             <div className="flex flex-wrap items-center gap-1.5 pl-5">
                               {s.openWindows.map((w, wi) => {
                                 const Icon = iconMap[w.icon] || AppWindow;
+                                const baseClass =
+                                  "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] " +
+                                  (w.minimized ? "bg-surface0 text-overlay0" : "bg-mauve/15 text-mauve");
+                                if (w.id && isOpenable(w.id)) {
+                                  return (
+                                    <button
+                                      key={wi}
+                                      type="button"
+                                      onClick={() => openLocally(w.id, w.title, w.icon)}
+                                      className={baseClass + " cursor-pointer hover:bg-mauve/30 transition-colors"}
+                                      title={`Open ${w.title} in your session`}
+                                    >
+                                      <Icon size={10} className="shrink-0" />
+                                      {w.title}
+                                    </button>
+                                  );
+                                }
                                 return (
                                   <span
                                     key={wi}
-                                    className={
-                                      "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] " +
-                                      (w.minimized ? "bg-surface0 text-overlay0" : "bg-mauve/15 text-mauve")
-                                    }
+                                    className={baseClass}
                                     title={w.minimized ? "minimized" : "open"}
                                   >
                                     <Icon size={10} className="shrink-0" />

@@ -170,8 +170,10 @@ export interface PresenceSession {
   recentActions: { type: string; ts: number }[];
   /** Floating windows ("popups") this session currently has open/minimized.
    *  Reported by the renderer's $windowManager via presence:windows; shown to
-   *  admins in the Connected Users panel. */
-  openWindows: { title: string; icon: string; minimized: boolean }[];
+   *  admins in the Connected Users panel. `id` is the window id (e.g.
+   *  "manage-hzserver-12345") so an admin can click the badge to open the
+   *  matching popup in their own session. */
+  openWindows: { id: string; title: string; icon: string; minimized: boolean }[];
   ip: string | null;
   userAgent: string | null;
 }

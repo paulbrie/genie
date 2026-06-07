@@ -216,6 +216,9 @@ interface ClientAction {
 /** A floating window ("popup") the client currently has open or minimized.
  *  Sourced from the renderer's $windowManager via presence:windows. */
 interface PresenceWindow {
+  /** Window id (e.g. "manage-hzserver-12345"). Used by the Connected Users
+   *  panel to open the matching popup in the admin's own session. */
+  id: string;
   title: string;
   icon: string;
   minimized: boolean;
@@ -847,6 +850,8 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
       .filter((w: unknown): w is Record<string, unknown> => !!w && typeof w === "object")
       .slice(0, 50)
       .map((w: Record<string, unknown>) => ({
+        // Cap id at 128 chars — window ids are short prefixed slugs.
+        id: typeof w.id === "string" ? w.id.slice(0, 128) : "",
         title: typeof w.title === "string" ? w.title.slice(0, 120) : "Untitled",
         // Cap icon at 64 chars — it's a lucide icon-name key (e.g. "terminal"),
         // never a payload. Without this an authenticated client could ship

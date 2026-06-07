@@ -12,10 +12,10 @@ function wmSetWindow(wm: WindowManagerState, win: FloatingWindowState): WindowMa
  *  actually shows. Focus, drag, busy and zIndex changes don't affect this
  *  projection, so a deep-equal guard on it is enough to keep the socket
  *  quiet during interactions without each mutator opting in/out by name. */
-function projectWindows(): { title: string; icon: string; minimized: boolean }[] {
+function projectWindows(): { id: string; title: string; icon: string; minimized: boolean }[] {
   return Object.values($windowManager.getValue().windows)
     .filter((w) => w.status !== "closed")
-    .map((w) => ({ title: w.title, icon: w.icon, minimized: w.status === "minimized" }));
+    .map((w) => ({ id: w.id, title: w.title, icon: w.icon, minimized: w.status === "minimized" }));
 }
 
 let lastProjection = JSON.stringify(projectWindows());
