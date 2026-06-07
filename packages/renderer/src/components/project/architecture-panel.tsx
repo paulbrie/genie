@@ -197,7 +197,7 @@ const initialNodes: Node[] = [
       color: "#f5c2e7",
       children: [
         { icon: "🟣", label: "Anthropic", color: "#cba6f7", description: "Claude Sonnet 4 (default)" },
-        { icon: "🟠", label: "Fireworks", color: "#fab387", description: "DeepSeek V3 · Kimi K2.5" },
+        { icon: "🟠", label: "Fireworks", color: "#fab387", description: "DeepSeek V3/V4 Pro · Kimi K2.6 · Qwen3.6 Plus" },
       ],
     },
   },

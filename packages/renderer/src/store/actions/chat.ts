@@ -4,14 +4,16 @@ import type { ChatMessage, ChatSendMeta, PinnedAssistantVm } from "../types/chat
 
 // --- Chat actions ---
 
-export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "kimi-k2";
+export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "qwen-3.6-plus";
 
 export const CHAT_MODELS: Record<ChatModelId, string> = {
   "claude-code": "Claude Code",
   "claude-opus": "Claude Opus",
   "claude-sonnet": "Claude Sonnet",
   "deepseek-v3": "DeepSeek V3",
-  "kimi-k2": "Kimi K2.5",
+  "deepseek-v4-pro": "DeepSeek V4 Pro",
+  "kimi-k2.6": "Kimi K2.6",
+  "qwen-3.6-plus": "Qwen3.6 Plus",
 };
 
 function wireMessages(messages: ChatMessage[]) {

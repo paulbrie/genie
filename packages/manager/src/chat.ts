@@ -24,15 +24,16 @@ export interface PinnedAssistantVm {
   sshUser?: string;
 }
 
-export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "kimi-k2" | "kimi-k2.6";
+export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "qwen-3.6-plus";
 
 export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthropic" | "fireworks" | "claude-code"; modelId: string }> = {
   "claude-code": { label: "Claude Code", provider: "claude-code", modelId: "claude-code" },
   "claude-opus": { label: "Claude Opus", provider: "anthropic", modelId: "claude-opus-4-20250514" },
   "claude-sonnet": { label: "Claude Sonnet", provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
   "deepseek-v3": { label: "DeepSeek V3", provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v3p2" },
-  "kimi-k2": { label: "Kimi K2.5", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p5" },
+  "deepseek-v4-pro": { label: "DeepSeek V4 Pro", provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v4-pro" },
   "kimi-k2.6": { label: "Kimi K2.6", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p6" },
+  "qwen-3.6-plus": { label: "Qwen3.6 Plus", provider: "fireworks", modelId: "accounts/fireworks/models/qwen3p6-plus" },
 };
 
 // Price per million tokens (USD)
@@ -41,8 +42,9 @@ export const MODEL_PRICING: Record<ChatModelId, { input: number; output: number 
   "claude-opus": { input: 15, output: 75 },
   "claude-sonnet": { input: 3, output: 15 },
   "deepseek-v3": { input: 0.3, output: 0.9 },
-  "kimi-k2": { input: 0.6, output: 2.4 },
-  "kimi-k2.6": { input: 0.6, output: 2.4 },  // mirror K2.5 pricing until Fireworks confirms
+  "deepseek-v4-pro": { input: 1.74, output: 3.48 },
+  "kimi-k2.6": { input: 0.95, output: 4.0 },
+  "qwen-3.6-plus": { input: 0.5, output: 3.0 },
 };
 
 export interface ChatUsage {
