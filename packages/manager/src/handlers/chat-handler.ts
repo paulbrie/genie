@@ -362,9 +362,12 @@ export async function handleChatMessage(
           send(ws, { type: "chat:users:list", payload: { users: [] } });
           return true;
         }
-        // Scope the roster to teammates (members of the user's teams) plus
-        // agents and self — a user only sees users from the teams they're in.
-        const visibleUsers = await chatService.getVisibleUsers(userId);
+        // Superadmins see every user (incl. agents); everyone else gets the
+        // team-scoped roster (teammates + agents + self). Mirrors the spirit
+        // of the rest of the admin surface — superadmin bypasses team gates.
+        const visibleUsers = state.role === "superadmin"
+          ? await chatService.getAllUsers()
+          : await chatService.getVisibleUsers(userId);
         const connectedUserIds = getConnectedUserIds();
         const usersWithStatus = visibleUsers.map((u) => ({
           ...u,
