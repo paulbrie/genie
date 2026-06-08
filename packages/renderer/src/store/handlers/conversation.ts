@@ -23,12 +23,22 @@ export const handlers: HandlerMap = {
 
   "chat:conversation:created": (payload) => {
     const { conversation } = payload;
-    // Auto-open the new conversation
+    // Auto-open the new conversation. Mirror selectConversation()'s reset so
+    // the lazy-load state (hasMoreMessages/loadingOlder) starts clean, then
+    // ask the server for the most recent 20 messages — same window as the
+    // sidebar's click path. Without this fetch, opening a DM via the popup
+    // (which goes through chat:conversation:create) would show an empty
+    // history even if the conversation already has one.
     $conversationChat.nextAssign({
       activeConversationId: conversation.id,
       messages: [],
-      loading: false,
+      loading: true,
+      streamingContent: "",
+      toolUses: [],
+      hasMoreMessages: false,
+      loadingOlder: false,
     });
+    wsSend("chat:conversation:open", { conversationId: conversation.id, limit: 20 });
   },
 
   "chat:messages:list": (payload) => {
@@ -44,10 +54,12 @@ export const handlers: HandlerMap = {
           ...(members ? { members } : {}),
         });
       } else {
-        // Initial load
+        // Initial load. Honour the server's `hasMore` when present so the
+        // page-size stays in one place; fall back to the local heuristic only
+        // for older replies that don't carry the flag.
         $conversationChat.nextAssign({
           messages: msgs,
-          hasMoreMessages: msgs.length >= 20,
+          hasMoreMessages: hasMore ?? msgs.length >= 20,
           loading: false,
           ...(members ? { members } : {}),
         });

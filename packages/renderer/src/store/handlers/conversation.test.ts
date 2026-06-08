@@ -64,12 +64,16 @@ describe("chat:conversations:list / created", () => {
     expect($conversationChat.getValue().conversations).toEqual(conversations);
   });
 
-  it("chat:conversation:created auto-opens the new conversation", () => {
+  it("chat:conversation:created auto-opens the new conversation and requests the initial page", () => {
     handlers["chat:conversation:created"]({ conversation: { id: "c-new", name: "Standup" } });
     const v = $conversationChat.getValue();
     expect(v.activeConversationId).toBe("c-new");
     expect(v.messages).toEqual([]);
-    expect(v.loading).toBe(false);
+    // loading=true until the messages:list reply lands.
+    expect(v.loading).toBe(true);
+    expect(v.hasMoreMessages).toBe(false);
+    expect(v.loadingOlder).toBe(false);
+    expect(wsSend).toHaveBeenCalledWith("chat:conversation:open", { conversationId: "c-new", limit: 20 });
   });
 });
 
