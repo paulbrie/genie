@@ -2,6 +2,7 @@ import { wsSend } from "@/lib/ws";
 import { $activeNav } from "../subjects/common";
 import {
   $commandRunOutputs,
+  $projectsPaged,
   $selectedProjectId,
   $showAddProjectForm,
 } from "../subjects/vps";
@@ -43,4 +44,33 @@ export function runProjectCommand(projectId: string, commandId: string, instance
 
 export function stopProjectCommand(projectId: string, commandId: string): void {
   wsSend("project:command:stop", { projectId, commandId });
+}
+
+// --- Paginated projects (Projects grid) ---
+
+/** Send the current `$projectsPaged` window to the server for a fresh slice.
+ *  Callers that change page/search/pageSize mutate the subject first and then
+ *  invoke this, so the server gets a consistent snapshot. */
+export function loadProjectsPaged(): void {
+  const v = $projectsPaged.getValue();
+  $projectsPaged.next({ ...v, loading: true });
+  wsSend("project:list:paged", { page: v.page, pageSize: v.pageSize, search: v.search });
+}
+
+export function setProjectsSearch(search: string): void {
+  const v = $projectsPaged.getValue();
+  $projectsPaged.next({ ...v, search, page: 1 });
+  loadProjectsPaged();
+}
+
+export function setProjectsPage(page: number): void {
+  const v = $projectsPaged.getValue();
+  $projectsPaged.next({ ...v, page: Math.max(1, page) });
+  loadProjectsPaged();
+}
+
+export function setProjectsPageSize(pageSize: number): void {
+  const v = $projectsPaged.getValue();
+  $projectsPaged.next({ ...v, pageSize, page: 1 });
+  loadProjectsPaged();
 }

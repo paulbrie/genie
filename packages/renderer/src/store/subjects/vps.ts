@@ -22,6 +22,19 @@ export const $persistedTerminals = new Subject<PersistedTerminalsState>({
 });
 
 export const $projects = new Subject<ProjectDef[]>([]);
+
+/** Server-paginated, name-sorted, search-filtered slice of `$projects` for the
+ *  Projects grid. `loaded` flips true after the first paged reply so the
+ *  broadcast `project:list` handler knows whether to trigger a refetch. */
+export const $projectsPaged = new Subject<{
+  list: ProjectDef[];
+  total: number;
+  page: number;
+  pageSize: number;
+  search: string;
+  loading: boolean;
+  loaded: boolean;
+}>({ list: [], total: 0, page: 1, pageSize: 24, search: "", loading: false, loaded: false });
 export const $selectedProjectId = new Subject<string | null>(null);
 export const $showAddProjectForm = new Subject<boolean>(false);
 export const $projectLogBuffers = new Subject<Record<string, string>>({});

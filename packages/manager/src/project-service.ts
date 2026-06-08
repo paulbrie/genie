@@ -203,6 +203,33 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   return rows.map((r) => attachTeamName(rowToProjectDef(r), teamMap));
 }
 
+/** Paginated, name-ordered, optionally-search-filtered slice of the user's
+ *  visible projects. Filtering and ordering happen in memory over the visible
+ *  set — the per-user visibility resolution is the expensive part and is
+ *  shared with `getAllForUser`. Search matches the project name
+ *  case-insensitively. */
+export async function getPagedForUser(
+  userId: string | null,
+  opts: { page: number; pageSize: number; search: string },
+): Promise<{ projects: ProjectDef[]; total: number; page: number; pageSize: number; search: string }> {
+  const page = Math.max(1, Math.floor(opts.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Math.floor(opts.pageSize) || 24));
+  const search = opts.search.trim().toLowerCase();
+  const all = await getAllForUser(userId);
+  const filtered = search
+    ? all.filter((p) => p.name.toLowerCase().includes(search))
+    : all;
+  filtered.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  const start = (page - 1) * pageSize;
+  return {
+    projects: filtered.slice(start, start + pageSize),
+    total: filtered.length,
+    page,
+    pageSize,
+    search: opts.search,
+  };
+}
+
 /** Project IDs the user is allowed to see. Thin wrapper over getAllForUser for
  *  callers (e.g. the tracker) that only need the id set to scope a query.
  *  superadmin → every project; null user → empty. */

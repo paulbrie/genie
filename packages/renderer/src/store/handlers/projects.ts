@@ -4,10 +4,12 @@ import {
   $commandRunOutputs,
   $projectLogBuffers,
   $projects,
+  $projectsPaged,
   $selectedProjectId,
 } from "../subjects/vps";
 import type { ProjectDef } from "../types/vps";
 import { addTerminalTab } from "../actions/terminal";
+import { loadProjectsPaged } from "../actions/projects";
 import type { HandlerMap } from "./types";
 
 const MAX_LOG_BUFFER = 50000;
@@ -20,6 +22,24 @@ export const handlers: HandlerMap = {
     if (selProjId && !newProjects.find((p) => p.id === selProjId)) {
       $selectedProjectId.next(null);
     }
+    // Server broadcasts project:list whenever a project changes (rename, VPS
+    // change, delete, ...). If the grid has a paginated view active, refetch
+    // its current page so the grid reflects the change too.
+    if ($projectsPaged.getValue().loaded) {
+      loadProjectsPaged();
+    }
+  },
+
+  "project:list:paged": (payload) => {
+    $projectsPaged.next({
+      list: payload.projects,
+      total: payload.total,
+      page: payload.page,
+      pageSize: payload.pageSize,
+      search: payload.search,
+      loading: false,
+      loaded: true,
+    });
   },
 
   "project:log": (payload) => {

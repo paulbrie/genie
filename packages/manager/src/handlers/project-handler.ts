@@ -158,6 +158,17 @@ export async function handleProjectMessage(
       return true;
     }
 
+    case "project:list:paged": {
+      const { page, pageSize, search } = (msg.payload || {}) as { page?: number; pageSize?: number; search?: string };
+      const result = await projectService.getPagedForUser(state.userId, {
+        page: Number(page) || 1,
+        pageSize: Number(pageSize) || 24,
+        search: typeof search === "string" ? search : "",
+      });
+      send(ws, { type: "project:list:paged", payload: result });
+      return true;
+    }
+
     case "project:start": {
       const { projectId, commandId } = msg.payload;
       const started = await projectManager.startCommand(projectId, commandId);
