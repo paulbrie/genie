@@ -687,6 +687,35 @@ export function loadAdminUsers(): void {
   wsSend("admin:users:list", {});
 }
 
+/** Server-paginated user fetch for the admin Users tab. Pulls current page,
+ *  pageSize and search from $admin.users.paged so callers don't need to thread
+ *  them through. Setters below mutate that state and re-call this. */
+export function loadAdminUsersPaged(): void {
+  const u = $admin.getValue().users.paged;
+  u.loading = true;
+  wsSend("admin:users:list:paged", { page: u.page, pageSize: u.pageSize, search: u.search });
+}
+
+export function setAdminUsersSearch(search: string): void {
+  const u = $admin.getValue().users.paged;
+  u.search = search;
+  u.page = 1;
+  loadAdminUsersPaged();
+}
+
+export function setAdminUsersPage(page: number): void {
+  const u = $admin.getValue().users.paged;
+  u.page = Math.max(1, page);
+  loadAdminUsersPaged();
+}
+
+export function setAdminUsersPageSize(pageSize: number): void {
+  const u = $admin.getValue().users.paged;
+  u.pageSize = pageSize;
+  u.page = 1;
+  loadAdminUsersPaged();
+}
+
 export function validateUser(userId: string, validated: boolean): void {
   wsSend("admin:users:validate", { userId, validated });
 }

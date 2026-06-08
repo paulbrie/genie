@@ -15,7 +15,7 @@ export const $admin = new DeepSubject<AdminState>({
   sshKey: { exists: false, publicKey: null, fingerprint: null, createdAt: null, history: [], loading: false, regenerating: false },
   drizzlePush: { running: false, output: "", open: false },
   backups: { files: [], loading: false, creating: false },
-  users: { list: [], loading: false },
+  users: { list: [], loading: false, paged: { list: [], total: 0, page: 1, pageSize: 25, search: "", loading: false } },
   teams: { list: [], members: [], loading: false },
   orgs: { list: [], members: {}, loading: false, selectedOrgId: null },
   projectMembers: {},

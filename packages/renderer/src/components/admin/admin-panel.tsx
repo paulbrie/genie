@@ -14,7 +14,7 @@ import {
 import type { AdminBaseImageState, AdminColumnInfo, AdminState, AdminTeam, AdminTeamMember, AdminUser, AiSettings, AiSubTab, AiUsageRow, AuditLogEntry, BaseImageConfig, BaseImageTemplate, DropletsSubTab, RailwayDeployment, RailwayLogEntry, TemplateHistoryEntry } from "@/store/types";
 import { $admin, $auth, $doSnapshots, $doSnapshotsLoading } from "@/store/subjects";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser, loadEmailLogs, loadAnalyticsSummary } from "@/store/actions";
+import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAdminUsersPaged, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAdminUsersPage, setAdminUsersPageSize, setAdminUsersSearch, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser, loadEmailLogs, loadAnalyticsSummary } from "@/store/actions";
 import { OrgsPanel } from "@/components/admin/admin-orgs-panel";
 import { InviteUserDialog } from "@/components/admin/admin-invite-user-dialog";
 import { AiCostsPanel } from "./admin-ai";
@@ -124,7 +124,11 @@ export function AdminPanel() {
       loadAiCosts();
     }
     if (activeTab === "users") {
-      loadAdminUsers();
+      // Users tab: paginated rows + teams (for the Teams column badges) + orgs
+      // (for the Org Admin badge). The paged list is independent from
+      // `users.list`, which other tabs use as a full user pool.
+      loadAdminUsersPaged();
+      loadAdminTeams();
       loadAdminOrgs();
     }
     if (activeTab === "teams") {
@@ -219,7 +223,7 @@ export function AdminPanel() {
             else if (tab === "backup") { setAdminTab("backup"); loadBackups(); router.push(buildAdminPath("backup")); }
             else if (tab === "droplets") { setAdminTab("droplets"); loadBaseImageConfigs(); router.push(buildAdminPath("droplets", dropletsSubTab)); }
             else if (tab === "ai") { setAdminTab("ai"); loadAiCosts(); router.push(buildAdminPath("ai", aiState.subTab)); }
-            else if (tab === "users") { setAdminTab("users"); loadAdminUsers(); loadAdminOrgs(); router.push(buildAdminPath("users")); }
+            else if (tab === "users") { setAdminTab("users"); loadAdminUsersPaged(); loadAdminTeams(); loadAdminOrgs(); router.push(buildAdminPath("users")); }
             else if (tab === "teams") { setAdminTab("teams"); loadAdminTeams(); loadAdminUsers(); router.push(buildAdminPath("teams")); }
             else if (tab === "orgs") { setAdminTab("orgs"); loadAdminOrgs(); loadAdminUsers(); router.push(buildAdminPath("orgs")); }
             else if (tab === "communication") { setAdminTab("communication"); loadEmailLogs(); loadAdminUsers(); router.push(buildAdminPath("communication")); }
@@ -1095,15 +1099,27 @@ export function AdminPanel() {
         /* ===== USERS TAB ===== */
         <div className="flex-1 overflow-auto p-4">
           <div className="space-y-2">
-            <div className="flex items-center justify-end">
+            <div className="flex items-center gap-2">
+              <input
+                className="bg-surface0 border border-surface1 rounded px-3 py-1.5 text-md text-text flex-1 max-w-sm"
+                placeholder="Search by name or email…"
+                value={usersState.paged.search}
+                onChange={(e) => setAdminUsersSearch(e.target.value)}
+              />
+              <div className="text-subtext0 text-md">
+                {usersState.paged.loading
+                  ? "Loading…"
+                  : `${usersState.paged.total.toLocaleString()} ${usersState.paged.total === 1 ? "user" : "users"}`}
+              </div>
+              <div className="flex-1" />
               <Button size="sm" onClick={() => setInviteOpen(true)}>
                 <Plus size={14} className="mr-1" /> Invite User
               </Button>
             </div>
-            {usersState.loading ? (
+            {usersState.paged.loading && usersState.paged.list.length === 0 ? (
               <p className="text-subtext0">Loading users...</p>
-            ) : usersState.list.length === 0 ? (
-              <p className="text-subtext0">No users yet.</p>
+            ) : usersState.paged.list.length === 0 ? (
+              <p className="text-subtext0">{usersState.paged.search ? "No users match your search." : "No users yet."}</p>
             ) : (
               <table className="w-full text-md" onClick={() => setContextMenu(null)}>
                 <thead>
@@ -1117,7 +1133,7 @@ export function AdminPanel() {
                   </tr>
                 </thead>
                 <tbody>
-                  {usersState.list.filter((u: AdminUser) => !u.isAgent).map((u: AdminUser) => {
+                  {usersState.paged.list.filter((u: AdminUser) => !u.isAgent).map((u: AdminUser) => {
                     const orgAdminships = orgsState.list
                       .map((org) => {
                         const m = (orgsState.members[org.id] || []).find((mm) => mm.userId === u.id);
@@ -1183,6 +1199,38 @@ export function AdminPanel() {
                 </tbody>
               </table>
             )}
+            {usersState.paged.list.length > 0 && (() => {
+              const { page: curPage, pageSize: curPageSize, total } = usersState.paged;
+              const usersTotalPages = Math.max(1, Math.ceil(total / curPageSize));
+              const from = total === 0 ? 0 : (curPage - 1) * curPageSize + 1;
+              const to = Math.min(total, curPage * curPageSize);
+              return (
+                <div className="flex items-center justify-between pt-2 text-subtext0 text-md">
+                  <div>{from}–{to} of {total.toLocaleString()}</div>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-1.5">
+                      Per page
+                      <select
+                        className="bg-surface0 border border-surface1 rounded px-2 py-1 text-md text-text"
+                        value={curPageSize}
+                        onChange={(e) => setAdminUsersPageSize(Number(e.target.value))}
+                      >
+                        {[25, 50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <Button size="sm" variant="ghost" disabled={curPage <= 1} onClick={() => setAdminUsersPage(curPage - 1)}>
+                        Prev
+                      </Button>
+                      <span className="px-2 text-text font-mono">{curPage} / {usersTotalPages}</span>
+                      <Button size="sm" variant="ghost" disabled={curPage >= usersTotalPages} onClick={() => setAdminUsersPage(curPage + 1)}>
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
             {contextMenu && (
               <>
                 <div className="fixed inset-0 z-50" onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />

@@ -767,15 +767,32 @@ export const handlers: HandlerMap = {
     });
   },
 
+  "admin:users:list:paged": (payload) => {
+    batch(() => {
+      const u = $admin.getValue().users.paged;
+      u.list = payload.users;
+      u.total = payload.total;
+      u.page = payload.page;
+      u.pageSize = payload.pageSize;
+      u.search = payload.search;
+      u.loading = false;
+    });
+  },
+
   "admin:users:updated": (payload) => {
-    const list = $admin.getValue().users.list;
-    const idx = list.findIndex((u: AdminUser) => u.id === payload.user.id);
-    if (idx >= 0) list[idx] = payload.user;
+    const u = $admin.getValue().users;
+    const idx = u.list.findIndex((x: AdminUser) => x.id === payload.user.id);
+    if (idx >= 0) u.list[idx] = payload.user;
+    const pidx = u.paged.list.findIndex((x: AdminUser) => x.id === payload.user.id);
+    if (pidx >= 0) u.paged.list[pidx] = payload.user;
   },
 
   "admin:users:deleted": (payload) => {
     const u = $admin.getValue().users;
     u.list = u.list.filter((x: AdminUser) => x.id !== payload.userId);
+    const removed = u.paged.list.some((x: AdminUser) => x.id === payload.userId);
+    u.paged.list = u.paged.list.filter((x: AdminUser) => x.id !== payload.userId);
+    if (removed) u.paged.total = Math.max(0, u.paged.total - 1);
   },
 
   "admin:teams:list": (payload) => {

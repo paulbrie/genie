@@ -423,8 +423,20 @@ export interface AdminState {
     creating: boolean;
   };
   users: {
+    /** Full user list (no pagination). Loaded by Teams/Orgs/Communication
+     *  tabs that need to populate "Add member" dropdowns. */
     list: AdminUser[];
     loading: boolean;
+    /** Server-paginated view for the admin Users tab. Search matches against
+     *  name + email (case-insensitive); page resets to 1 on new searches. */
+    paged: {
+      list: AdminUser[];
+      total: number;
+      page: number;
+      pageSize: number;
+      search: string;
+      loading: boolean;
+    };
   };
   teams: {
     list: AdminTeam[];

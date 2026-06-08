@@ -1,5 +1,5 @@
 import { type WebSocket } from "ws";
-import { eq } from "drizzle-orm";
+import { eq, ilike, or, sql } from "drizzle-orm";
 import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { users, teams, teamMembers } from "../db/schema.js";
@@ -33,6 +33,41 @@ export async function handleAdminUsersMessage(
         const db = getDb();
         const allUsers = await db.select().from(users).orderBy(users.createdAt);
         send(ws, { type: "admin:users:list", payload: { users: allUsers } });
+      } catch (err) {
+        send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "admin:users:list:paged": {
+      try {
+        const db = getDb();
+        const { page: rawPage, pageSize: rawPageSize, search: rawSearch } = (msg.payload || {}) as {
+          page?: number;
+          pageSize?: number;
+          search?: string;
+        };
+        const page = Math.max(1, Math.floor(Number(rawPage) || 1));
+        const pageSize = Math.min(200, Math.max(1, Math.floor(Number(rawPageSize) || 25)));
+        const search = (typeof rawSearch === "string" ? rawSearch : "").trim();
+        // ilike pattern — drizzle's `ilike` already does case-insensitive match
+        // on Postgres; we escape `%` / `_` so a search like "a%b" doesn't widen.
+        const escaped = search.replace(/[\\%_]/g, (c) => "\\" + c);
+        const where = search
+          ? or(ilike(users.name, `%${escaped}%`), ilike(users.email, `%${escaped}%`))
+          : undefined;
+        const rows = await db
+          .select()
+          .from(users)
+          .where(where)
+          .orderBy(users.createdAt)
+          .limit(pageSize)
+          .offset((page - 1) * pageSize);
+        const [{ count }] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(users)
+          .where(where);
+        send(ws, { type: "admin:users:list:paged", payload: { users: rows, total: count, page, pageSize, search } });
       } catch (err) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }

@@ -6,7 +6,7 @@ import { $admin } from "../subjects/admin";
 
 beforeEach(() => {
   const v = $admin.getValue();
-  v.users = { list: [], loading: false };
+  v.users = { list: [], loading: false, paged: { list: [], total: 0, page: 1, pageSize: 25, search: "", loading: false } };
   v.teams = { list: [], members: [], loading: false };
   v.audit = { logs: [], loading: false, filterUserId: null, filterAction: null };
 });
