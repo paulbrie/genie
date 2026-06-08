@@ -5,9 +5,29 @@
 // is for "what features get used / who's active", not forensics (that's
 // audit_log).
 
-import { and, desc, eq, gte, isNotNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
 import { getDb } from "./db/index.js";
-import { analyticsEvents } from "./db/schema.js";
+import { analyticsEvents, users } from "./db/schema.js";
+
+/** Look up display names for a set of user ids in one query and return a
+ *  map id → name. Used to repaint analytics rows whose stored `userName`
+ *  is null (most terminal events don't capture it at emit time). */
+async function resolveUserNames(userIds: (string | null)[]): Promise<Map<string, string>> {
+  const ids = Array.from(new Set(userIds.filter((id): id is string => !!id)));
+  if (ids.length === 0) return new Map();
+  const db = getDb();
+  const rows = await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ids));
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
+
+/** Pick the best label for an analytics row: current users.name → stored
+ *  event userName → 'unknown'. Live users.name wins so the dashboard
+ *  reflects renames immediately and isn't stuck on whatever was emitted at
+ *  event time. */
+function pickName(userId: string | null, stored: string | null, map: Map<string, string>): string {
+  if (userId && map.has(userId)) return map.get(userId)!;
+  return stored || "unknown";
+}
 
 const MAX_PROPS_BYTES = 4_000;
 
@@ -125,10 +145,10 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
     .groupBy(daySql)
     .orderBy(daySql);
 
-  const topUsers = await db
+  const topUsersRaw = await db
     .select({
       userId: analyticsEvents.userId,
-      name: sql<string>`coalesce(max(${analyticsEvents.userName}), 'unknown')`,
+      storedName: sql<string | null>`max(${analyticsEvents.userName})`,
       count: sql<number>`count(*)::int`,
     })
     .from(analyticsEvents)
@@ -148,7 +168,7 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
   const commandsRaw = await db
     .select({
       userId: analyticsEvents.userId,
-      name: sql<string>`coalesce(max(${analyticsEvents.userName}), 'unknown')`,
+      storedName: sql<string | null>`max(${analyticsEvents.userName})`,
       claude: sql<number>`(count(*) filter (where ${analyticsEvents.props}->>'kind' = 'claude'))::int`,
       terminal: sql<number>`(count(*) filter (where coalesce(${analyticsEvents.props}->>'kind', 'shell') <> 'claude'))::int`,
     })
@@ -161,11 +181,22 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
     .groupBy(analyticsEvents.userId)
     .orderBy(desc(sql`count(*)`))
     .limit(12);
-  const commandsByUser = commandsRaw.map((u) => ({
-    userId: u.userId ?? "", name: u.name, claude: u.claude, terminal: u.terminal,
-  }));
 
   const tabAccess = await getTabAccess(from, filters);
+
+  // Repaint userIds with live names — every aggregation above stored
+  // userName as null for terminal/inject events, so the dashboard would
+  // otherwise show every bar as "unknown".
+  const nameMap = await resolveUserNames([
+    ...topUsersRaw.map((u) => u.userId),
+    ...commandsRaw.map((u) => u.userId),
+  ]);
+  const commandsByUser = commandsRaw.map((u) => ({
+    userId: u.userId ?? "",
+    name: pickName(u.userId, u.storedName, nameMap),
+    claude: u.claude,
+    terminal: u.terminal,
+  }));
 
   return {
     since: from.toISOString(),
@@ -173,7 +204,11 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
     eventCounts,
     daily,
     funnel: { loggedIn, openedTerminal, sentCommand },
-    topUsers: topUsers.map((u) => ({ userId: u.userId ?? "", name: u.name, count: u.count })),
+    topUsers: topUsersRaw.map((u) => ({
+      userId: u.userId ?? "",
+      name: pickName(u.userId, u.storedName, nameMap),
+      count: u.count,
+    })),
     commandsByUser,
     tabAccess,
   };
@@ -193,7 +228,7 @@ async function getTabAccess(
   const navRows = await db
     .select({
       userId: analyticsEvents.userId,
-      name: sql<string>`coalesce(max(${analyticsEvents.userName}), 'unknown')`,
+      storedName: sql<string | null>`max(${analyticsEvents.userName})`,
       tab: navKey,
       count: sql<number>`count(*)::int`,
     })
@@ -210,7 +245,7 @@ async function getTabAccess(
   const tabRows = await db
     .select({
       userId: analyticsEvents.userId,
-      name: sql<string>`coalesce(max(${analyticsEvents.userName}), 'unknown')`,
+      storedName: sql<string | null>`max(${analyticsEvents.userName})`,
       scope: scopeKey,
       tab: tabKey,
       count: sql<number>`count(*)::int`,
@@ -223,14 +258,19 @@ async function getTabAccess(
     ))
     .groupBy(analyticsEvents.userId, scopeKey, tabKey);
 
+  const nameMap = await resolveUserNames([
+    ...navRows.map((r) => r.userId),
+    ...tabRows.map((r) => r.userId),
+  ]);
+
   // Flatten both sources into (user, tabKey, count) cells with a unified key.
   type Cell = { userId: string; name: string; key: string; count: number };
   const cells: Cell[] = [];
   for (const r of navRows) {
-    if (r.userId && r.tab) cells.push({ userId: r.userId, name: r.name, key: r.tab, count: r.count });
+    if (r.userId && r.tab) cells.push({ userId: r.userId, name: pickName(r.userId, r.storedName, nameMap), key: r.tab, count: r.count });
   }
   for (const r of tabRows) {
-    if (r.userId && r.tab) cells.push({ userId: r.userId, name: r.name, key: `${r.scope ?? "tab"}:${r.tab}`, count: r.count });
+    if (r.userId && r.tab) cells.push({ userId: r.userId, name: pickName(r.userId, r.storedName, nameMap), key: `${r.scope ?? "tab"}:${r.tab}`, count: r.count });
   }
 
   // Most-used tabs become the columns (capped).
