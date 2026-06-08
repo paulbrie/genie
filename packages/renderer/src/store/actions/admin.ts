@@ -1,5 +1,6 @@
 import { batch } from "subjecto";
 import { sshStatsProbeEnabled } from "@/lib/ssh-stats-enabled";
+import { track } from "@/lib/analytics";
 import { wsRequest, wsSend, onWsClose } from "@/lib/ws";
 import { $admin } from "../subjects/admin";
 import type {
@@ -97,7 +98,9 @@ export function toggleAdminSqlPanel(): void {
 }
 
 export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics"): void {
-  $admin.getValue().activeTab = tab;
+  const v = $admin.getValue();
+  if (v.activeTab !== tab) track("tab.view", { scope: "admin", tab });
+  v.activeTab = tab;
 }
 
 export function runDrizzlePush(): void {

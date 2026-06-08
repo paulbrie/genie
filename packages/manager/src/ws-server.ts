@@ -926,7 +926,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleBaseimageMessage(ws, msg, send, broadcast)) return;
   if (await handleOrgMessage(ws, msg, send, userId, state.impersonatedBy)) return;
   if (await handleAdminUsersMessage(ws, msg, send, state)) return;
-  if (await handleLocalPtyMessage(ws, msg, send)) return;
+  if (await handleLocalPtyMessage(ws, msg, send, userId)) return;
   if (await handleTerminalMessage(ws, msg, send, broadcast, userId, state.role)) return;
   if (await handleProjectMessage(ws, msg, send, state)) return;
   if (await handleChatMessage(ws, msg, send, state)) return;

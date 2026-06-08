@@ -79,12 +79,13 @@ export async function handleTerminalMessage(
 
     case "terminal:start": {
       const { terminalId, projectId, instanceId, host, port, username, privateKeyPath,
-        cols, rows, tmuxIntent, tmuxSessionName, initialCommand } = msg.payload as {
+        cols, rows, tmuxIntent, tmuxSessionName, initialCommand, kind: payloadKind } = msg.payload as {
         terminalId?: string;
         projectId?: string; instanceId?: string;
         host?: string; port?: number; username?: string; privateKeyPath?: string;
         cols?: number; rows?: number;
         tmuxIntent?: TmuxShellIntent; tmuxSessionName?: string; initialCommand?: string;
+        kind?: "claude" | "shell";
       };
       if (!terminalId) {
         send(ws, { type: "terminal:error", payload: { terminalId: null, message: "terminalId is required" } });
@@ -107,17 +108,22 @@ export async function handleTerminalMessage(
           return true;
         }
         const intent = tmuxIntent === "attach" || tmuxIntent === "new" ? tmuxIntent : null;
+        // The client tells us whether this is a Claude session (authoritative,
+        // even on reattach); fall back to inferring it from a "new" tmux launch.
+        const sessionKind: "claude" | "shell" =
+          payloadKind === "claude" ? "claude"
+          : payloadKind === "shell" ? "shell"
+          : intent === "new" ? "claude" : "shell";
         await startSshSession(ws, startParams, terminalId,
-          cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null, initialCommand ?? null);
-        // Analytics: a Claude launch is tmuxIntent "new" + an initial command;
-        // anything else is a plain SSH shell. (userName/ip filled from the
-        // user's auth.login rows — metadata only here.)
+          cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null, initialCommand ?? null, sessionKind);
+        // Analytics: metadata only. (userName/ip filled from the user's
+        // auth.login rows.)
         void analyticsService.recordEvent({
           userId,
           userName: null,
           event: "terminal.open",
           projectId: projectId ?? null,
-          props: { kind: intent === "new" ? "claude" : "ssh", connection: startParams.kind },
+          props: { kind: sessionKind, connection: startParams.kind },
           ip: null,
         });
       } catch (err) {
@@ -130,7 +136,7 @@ export async function handleTerminalMessage(
     case "terminal:data": {
       const { terminalId, data } = msg.payload as { terminalId?: string; data?: string };
       if (terminalId && typeof data === "string") {
-        handleTerminalData(ws, terminalId, data);
+        handleTerminalData(ws, terminalId, data, userId);
       }
       return true;
     }
@@ -148,11 +154,9 @@ export async function handleTerminalMessage(
         silent?: boolean;
       };
       if (terminalId && command) {
-        handleTerminalInject(ws, terminalId, command, { silent: !!silent });
-        // Metadata only — never the command text.
-        void analyticsService.recordEvent({
-          userId, userName: null, event: "terminal.command_sent", props: { silent: !!silent }, ip: null,
-        });
+        // Records the terminal.command_sent analytics event itself (it has the
+        // session metadata to tag kind).
+        handleTerminalInject(ws, terminalId, command, userId, { silent: !!silent });
       }
       return true;
     }

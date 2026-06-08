@@ -10,7 +10,16 @@ import type { SshShellSession } from "./shell.js";
 export const sessions = new Map<string, SshShellSession>();
 export const sessionMeta = new Map<
   string,
-  { projectId: string | null; instanceId: string | null; host: string; ws: WebSocket }
+  {
+    projectId: string | null;
+    instanceId: string | null;
+    host: string;
+    ws: WebSocket;
+    /** Terminal flavour, for analytics: "claude" for a Claude Code session,
+     *  "shell" for a plain SSH shell. Authoritative value comes from the
+     *  client's terminal:start payload (so reattaches stay correctly tagged). */
+    kind: "claude" | "shell";
+  }
 >();
 
 export function getSshSession(terminalId: string) {

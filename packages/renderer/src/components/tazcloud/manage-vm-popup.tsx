@@ -880,6 +880,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   const user = resolvedUser ?? imageDefault;
 
   const [tab, setTab] = useState<ManageTab>("manage");
+  const selectTab = useCallback((next: ManageTab) => {
+    setTab((cur) => {
+      if (cur !== next) track("tab.view", { scope: "manage", tab: next });
+      return next;
+    });
+  }, []);
   const [projects] = useSubject($projects);
   // Find the project + VPS instance this VM is attached to, if any. The Files
   // and DB panels delegate to server-side `vps:fs:*` / `vps:db:*` handlers that
@@ -1037,7 +1043,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
           return (
             <button
               key={t.key}
-              onClick={() => t.enabled && setTab(t.key)}
+              onClick={() => t.enabled && selectTab(t.key)}
               disabled={!t.enabled}
               title={t.enabled ? undefined : t.reason}
               className={cn(

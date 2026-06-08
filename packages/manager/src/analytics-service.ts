@@ -66,6 +66,16 @@ export interface AnalyticsSummary {
   funnel: { loggedIn: number; openedTerminal: number; sentCommand: number };
   /** Most active users in range. */
   topUsers: { userId: string; name: string; count: number }[];
+  /** Commands sent per user, split by terminal flavour (excludes silent
+   *  programmatic injects). Top users by total, for the stacked bar chart. */
+  commandsByUser: { userId: string; name: string; claude: number; terminal: number }[];
+  /** Which tabs each user opened — a users×tabs matrix for the heatmap. Tab
+   *  keys are bare nav keys (`projects`) plus namespaced `admin:*` / `manage:*`
+   *  keys; columns are the most-used tabs, rows the most-active users. */
+  tabAccess: {
+    columns: string[];
+    rows: { userId: string; name: string; counts: Record<string, number> }[];
+  };
 }
 
 /** Shared WHERE: time range + optional user / project filters. */
@@ -133,6 +143,30 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
     distinctUsersForEvent(from, filters, "terminal.command_sent"),
   ]);
 
+  // Commands sent per user, split Claude vs normal terminal. Silent injects
+  // (tmux-attach automation) are excluded so the numbers reflect real usage.
+  const commandsRaw = await db
+    .select({
+      userId: analyticsEvents.userId,
+      name: sql<string>`coalesce(max(${analyticsEvents.userName}), 'unknown')`,
+      claude: sql<number>`(count(*) filter (where ${analyticsEvents.props}->>'kind' = 'claude'))::int`,
+      terminal: sql<number>`(count(*) filter (where coalesce(${analyticsEvents.props}->>'kind', 'shell') <> 'claude'))::int`,
+    })
+    .from(analyticsEvents)
+    .where(scopeWhere(from, filters,
+      eq(analyticsEvents.event, "terminal.command_sent"),
+      isNotNull(analyticsEvents.userId),
+      sql`coalesce(${analyticsEvents.props}->>'silent', '') <> 'true'`,
+    ))
+    .groupBy(analyticsEvents.userId)
+    .orderBy(desc(sql`count(*)`))
+    .limit(12);
+  const commandsByUser = commandsRaw.map((u) => ({
+    userId: u.userId ?? "", name: u.name, claude: u.claude, terminal: u.terminal,
+  }));
+
+  const tabAccess = await getTabAccess(from, filters);
+
   return {
     since: from.toISOString(),
     activeUsers: active?.n ?? 0,
@@ -140,7 +174,89 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
     daily,
     funnel: { loggedIn, openedTerminal, sentCommand },
     topUsers: topUsers.map((u) => ({ userId: u.userId ?? "", name: u.name, count: u.count })),
+    commandsByUser,
+    tabAccess,
   };
+}
+
+/** Per-user tab-access matrix, merging main-nav `nav.view` events with the
+ *  namespaced `tab.view` events emitted for Admin and Manage-popup sub-tabs. */
+async function getTabAccess(
+  from: Date,
+  filters: AnalyticsFilters,
+): Promise<AnalyticsSummary["tabAccess"]> {
+  const db = getDb();
+  const MAX_COLUMNS = 16;
+  const MAX_ROWS = 15;
+
+  const navKey = sql<string>`${analyticsEvents.props}->>'nav'`;
+  const navRows = await db
+    .select({
+      userId: analyticsEvents.userId,
+      name: sql<string>`coalesce(max(${analyticsEvents.userName}), 'unknown')`,
+      tab: navKey,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(analyticsEvents)
+    .where(scopeWhere(from, filters,
+      eq(analyticsEvents.event, "nav.view"),
+      isNotNull(analyticsEvents.userId),
+      sql`${analyticsEvents.props}->>'nav' is not null`,
+    ))
+    .groupBy(analyticsEvents.userId, navKey);
+
+  const scopeKey = sql<string>`${analyticsEvents.props}->>'scope'`;
+  const tabKey = sql<string>`${analyticsEvents.props}->>'tab'`;
+  const tabRows = await db
+    .select({
+      userId: analyticsEvents.userId,
+      name: sql<string>`coalesce(max(${analyticsEvents.userName}), 'unknown')`,
+      scope: scopeKey,
+      tab: tabKey,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(analyticsEvents)
+    .where(scopeWhere(from, filters,
+      eq(analyticsEvents.event, "tab.view"),
+      isNotNull(analyticsEvents.userId),
+      sql`${analyticsEvents.props}->>'tab' is not null`,
+    ))
+    .groupBy(analyticsEvents.userId, scopeKey, tabKey);
+
+  // Flatten both sources into (user, tabKey, count) cells with a unified key.
+  type Cell = { userId: string; name: string; key: string; count: number };
+  const cells: Cell[] = [];
+  for (const r of navRows) {
+    if (r.userId && r.tab) cells.push({ userId: r.userId, name: r.name, key: r.tab, count: r.count });
+  }
+  for (const r of tabRows) {
+    if (r.userId && r.tab) cells.push({ userId: r.userId, name: r.name, key: `${r.scope ?? "tab"}:${r.tab}`, count: r.count });
+  }
+
+  // Most-used tabs become the columns (capped).
+  const colTotals = new Map<string, number>();
+  for (const c of cells) colTotals.set(c.key, (colTotals.get(c.key) ?? 0) + c.count);
+  const columns = [...colTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_COLUMNS)
+    .map(([k]) => k);
+  const colSet = new Set(columns);
+
+  // Most-active users (over the kept columns) become the rows (capped).
+  const userMap = new Map<string, { userId: string; name: string; total: number; counts: Record<string, number> }>();
+  for (const c of cells) {
+    if (!colSet.has(c.key)) continue;
+    let u = userMap.get(c.userId);
+    if (!u) { u = { userId: c.userId, name: c.name, total: 0, counts: {} }; userMap.set(c.userId, u); }
+    u.counts[c.key] = (u.counts[c.key] ?? 0) + c.count;
+    u.total += c.count;
+  }
+  const rows = [...userMap.values()]
+    .sort((a, b) => b.total - a.total)
+    .slice(0, MAX_ROWS)
+    .map(({ userId, name, counts }) => ({ userId, name, counts }));
+
+  return { columns, rows };
 }
 
 /** Delete events older than `days`. Called on boot to bound table growth. */

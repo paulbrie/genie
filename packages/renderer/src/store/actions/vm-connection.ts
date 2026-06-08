@@ -130,6 +130,7 @@ export function openProjectVmConnection(args: OpenProjectVmArgs): string {
     instanceId: args.instanceId,
     cols: 80,
     rows: 24,
+    kind: args.initialCommand ? "claude" : "shell",
     ...(args.initialCommand ? { initialCommand: args.initialCommand } : {}),
     ...(args.tmuxIntent ? { tmuxIntent: args.tmuxIntent } : {}),
     ...(args.tmuxSessionName ? { tmuxSessionName: args.tmuxSessionName } : {}),
@@ -179,6 +180,7 @@ export function openDirectVmConnection(args: OpenDirectVmArgs): string {
     privateKeyPath: args.privateKeyPath,
     cols: 80,
     rows: 24,
+    kind: "shell",
   });
   return key;
 }
@@ -256,6 +258,7 @@ export function reconnectVmConnection(key: string): void {
     terminalId: c.terminalId,
     cols: size.cols,
     rows: size.rows,
+    kind: c.initialCommand ? "claude" : "shell",
     ...(tmuxIntent ? { tmuxIntent } : {}),
     ...(c.tmuxSessionName ? { tmuxSessionName: c.tmuxSessionName } : {}),
     ...(tmuxIntent === "new" && c.initialCommand ? { initialCommand: c.initialCommand } : {}),

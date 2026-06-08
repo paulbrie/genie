@@ -21,6 +21,8 @@ import * as pty from "node-pty";
 import type { WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import { clearOutputBatch, scheduleOutputBatch } from "../ssh/session/output-batch.js";
+import { countCommandsInChunk, clearCommandTracking } from "../ssh/session/command-tracker.js";
+import * as analyticsService from "../analytics-service.js";
 
 type LocalSession = {
   pty: pty.IPty;
@@ -42,6 +44,7 @@ function disposeLocalPty(terminalId: string, notifyWs?: WebSocket, exitCode?: nu
   const s = sessions.get(terminalId);
   if (!s) return;
   clearOutputBatch(terminalId, sendOutput);
+  clearCommandTracking(terminalId);
   try { s.pty.kill(); } catch { /* already dead */ }
   sessions.delete(terminalId);
   if (notifyWs) {
@@ -64,6 +67,7 @@ export async function handleLocalPtyMessage(
   ws: WebSocket,
   msg: WsMessage,
   send: (ws: WebSocket, m: WsMessage) => void,
+  userId: string | null,
 ): Promise<boolean> {
   switch (msg.type) {
     case "manager-pty:start": {
@@ -114,7 +118,24 @@ export async function handleLocalPtyMessage(
       if (!terminalId) return true;
       const s = sessions.get(terminalId);
       if (!s) return true;
-      if (typeof data === "string" && data.length) s.pty.write(data);
+      if (typeof data === "string" && data.length) {
+        s.pty.write(data);
+        // Count submitted commands for analytics — metadata only. The manager
+        // shell is always a plain local shell, never Claude.
+        if (userId) {
+          const n = countCommandsInChunk(terminalId, data);
+          for (let i = 0; i < n; i++) {
+            void analyticsService.recordEvent({
+              userId,
+              userName: null,
+              event: "terminal.command_sent",
+              projectId: null,
+              props: { kind: "shell", source: "keystroke" },
+              ip: null,
+            });
+          }
+        }
+      }
       return true;
     }
 

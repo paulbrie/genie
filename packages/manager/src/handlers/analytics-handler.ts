@@ -20,6 +20,7 @@ const CLIENT_EVENTS = new Set([
   "app.visibility",
   "nav.view",
   "manager.open",
+  "tab.view",
 ]);
 
 /** Keep only primitive prop values, cap the number of keys. Defense against a

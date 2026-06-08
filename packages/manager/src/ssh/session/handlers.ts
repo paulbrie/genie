@@ -21,6 +21,8 @@ import { getClientUserName } from "../../ws-server.js";
 import { SshShellSession, type SshShellOptions } from "./shell.js";
 import { sessions, sessionMeta, getSshSession } from "./registry.js";
 import { clearOutputBatch, scheduleOutputBatch } from "./output-batch.js";
+import { countCommandsInChunk, clearCommandTracking } from "./command-tracker.js";
+import * as analyticsService from "../../analytics-service.js";
 import { scheduleShellCommand, SHELL_COMMAND_DELAY_MS, type ShellCommandCancel } from "./shell-line.js";
 import {
   createTmuxSessionName,
@@ -112,6 +114,7 @@ export function closeSshSession(terminalId: string, notifyWs?: WebSocket) {
   sessions.get(terminalId)?.dispose();
   sessions.delete(terminalId);
   sessionMeta.delete(terminalId);
+  clearCommandTracking(terminalId);
 
   if (notifyWs) {
     send(notifyWs, { type: "terminal:closed", payload: { terminalId } });
@@ -137,6 +140,7 @@ export async function startSshSession(
   tmuxIntent: TmuxShellIntent | null = null,
   tmuxSessionName: string | null = null,
   initialCommand: string | null = null,
+  kind: "claude" | "shell" = "shell",
 ): Promise<void> {
   closeSshSession(terminalId);
 
@@ -175,7 +179,7 @@ export async function startSshSession(
     },
     onReady: () => {
       if (!isCurrentSession(terminalId, session)) return;
-      sessionMeta.set(terminalId, { projectId, instanceId, host, ws });
+      sessionMeta.set(terminalId, { projectId, instanceId, host, ws, kind });
       emitTraffic(terminalId, ws);
       console.log(`[ssh] ready terminal=${terminalId} ${shellOpts.username}@${host}`);
       // Push mouse + scrollback into the running tmux server via a side-channel
@@ -252,9 +256,27 @@ export async function startSshSession(
   session.start(cols, rows);
 }
 
-export function handleTerminalData(ws: WebSocket, terminalId: string, data: string) {
+export function handleTerminalData(ws: WebSocket, terminalId: string, data: string, userId: string | null) {
   getSshSession(terminalId)?.write(data);
   scheduleTrafficEmit(terminalId, ws);
+  // Count submitted commands (Enter on a non-empty line) for analytics. The
+  // command text itself is never recorded — only metadata.
+  if (userId) {
+    const n = countCommandsInChunk(terminalId, data);
+    if (n > 0) {
+      const meta = sessionMeta.get(terminalId);
+      for (let i = 0; i < n; i++) {
+        void analyticsService.recordEvent({
+          userId,
+          userName: null,
+          event: "terminal.command_sent",
+          projectId: meta?.projectId ?? null,
+          props: { kind: meta?.kind ?? "shell", source: "keystroke" },
+          ip: null,
+        });
+      }
+    }
+  }
 }
 
 export function handleTerminalResize(terminalId: string, cols: number, rows: number) {
@@ -265,12 +287,26 @@ export function handleTerminalInject(
   ws: WebSocket,
   terminalId: string,
   command: string,
+  userId: string | null,
   opts?: { silent?: boolean },
 ) {
   const session = getSshSession(terminalId);
   if (!session) return;
   scheduleSessionCommand(terminalId, session, command, 0, opts);
   scheduleTrafficEmit(terminalId, ws);
+  // Programmatically injected command (e.g. the Commands tab). Metadata only —
+  // never the command text. Same event/schema as typed commands.
+  if (userId) {
+    const meta = sessionMeta.get(terminalId);
+    void analyticsService.recordEvent({
+      userId,
+      userName: null,
+      event: "terminal.command_sent",
+      projectId: meta?.projectId ?? null,
+      props: { kind: meta?.kind ?? "shell", source: "inject", silent: !!opts?.silent },
+      ip: null,
+    });
+  }
 }
 
 const SAFE_EXT = /^[a-z0-9]{1,8}$/i;

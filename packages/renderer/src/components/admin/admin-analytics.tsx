@@ -3,8 +3,9 @@
 import { useEffect, useMemo } from "react";
 import { useDeepSubject, useSubject } from "subjecto/react";
 import { RefreshCw, Users, LogIn, TerminalSquare, SendHorizonal, AppWindow } from "lucide-react";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, Legend, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { $admin, $projects } from "@/store/subjects";
+import type { AnalyticsSummary } from "@/store/types/admin";
 import { loadAnalyticsSummary, loadAdminUsers } from "@/store/actions";
 import { Button } from "@/components/ui/button";
 import { FilterableSelect } from "@/components/ui/filterable-select";
@@ -13,6 +14,7 @@ import { cn } from "@/lib/utils";
 const RANGES = [7, 30, 90] as const;
 
 const BLUE = "#89b4fa";
+const MAUVE = "#cba6f7";
 
 /** Friendly labels for the event keys we emit; unknown keys fall back to raw. */
 const EVENT_LABELS: Record<string, string> = {
@@ -32,8 +34,34 @@ const EVENT_LABELS: Record<string, string> = {
   "tracker.issue_created": "Tracker issue created",
   "agent.run": "Agent run",
   "doc.created": "Doc created",
+  "tab.view": "Tab views",
 };
 const labelFor = (e: string) => EVENT_LABELS[e] ?? e;
+
+/** Friendly labels for tab-access keys: bare nav keys, plus namespaced
+ *  `admin:*` / `manage:*` sub-tab keys. */
+const NAV_LABELS: Record<string, string> = {
+  projects: "Projects", agents: "Agents", clouds: "Clouds", processes: "Processes",
+  docker: "Docker", docs: "Docs", logs: "Logs", chat: "Team chat", history: "History",
+  tracker: "Tracker", settings: "Settings", admin: "Admin", architecture: "Architecture",
+  topology: "Topology", users: "Connected Users", security: "Security", help: "Help",
+  recipes: "Recipes", apps: "Apps", terminal: "Terminal", ssh: "SSH", tazcloud: "TazCloud",
+};
+const ADMIN_TAB_LABELS: Record<string, string> = {
+  database: "Database", backup: "Backup", droplets: "DO Build", ai: "AI", users: "Users",
+  teams: "Teams", orgs: "Orgs", communication: "Communication", analytics: "Analytics",
+  audit: "Audit", prodlogs: "Prod Logs",
+};
+const MANAGE_TAB_LABELS: Record<string, string> = {
+  manage: "Manage", ssh: "SSH", firewall: "Firewall", ports: "Ports", processes: "Processes",
+  sessions: "Sessions", "claude-logs": "Claude Logs", "claude-memory": "Claude Memory",
+  files: "Files", db: "DB", commands: "Commands",
+};
+function tabLabel(key: string): string {
+  if (key.startsWith("admin:")) { const k = key.slice(6); return `Admin · ${ADMIN_TAB_LABELS[k] ?? k}`; }
+  if (key.startsWith("manage:")) { const k = key.slice(7); return `Manage · ${MANAGE_TAB_LABELS[k] ?? k}`; }
+  return NAV_LABELS[key] ?? key;
+}
 
 export function AdminAnalytics() {
   const [analytics] = useDeepSubject($admin, "analytics");
@@ -65,7 +93,7 @@ export function AdminAnalytics() {
   const isFiltered = !!filterUserId || !!filterProjectId;
 
   return (
-    <div className="py-4 flex flex-col gap-4">
+    <div className="flex flex-col gap-4">
       {/* Range + filters + refresh */}
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-md text-overlay0">Last</span>
@@ -186,8 +214,80 @@ export function AdminAnalytics() {
               </div>
             </Card>
           </div>
+
+          {/* Commands sent by user (Claude vs normal terminal) */}
+          {summary!.commandsByUser.length > 0 && (
+            <Card title="Commands sent by user">
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={summary!.commandsByUser} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#313244" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: "#7f849c", fontSize: 11 }} interval={0} angle={-30} textAnchor="end" height={64} />
+                    <YAxis allowDecimals={false} tick={{ fill: "#7f849c", fontSize: 11 }} width={32} />
+                    <Tooltip
+                      contentStyle={{ background: "#181825", border: "1px solid #313244", borderRadius: 8, fontSize: 12 }}
+                      labelStyle={{ color: "#cdd6f4" }}
+                      cursor={{ fill: "#313244", opacity: 0.3 }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="claude" name="Claude" stackId="c" fill={MAUVE} />
+                    <Bar dataKey="terminal" name="Terminal" stackId="c" fill={BLUE} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          )}
+
+          {/* Tabs accessed by user */}
+          {summary!.tabAccess.rows.length > 0 && (
+            <Card title="Tabs accessed by user">
+              <TabHeatmap tabAccess={summary!.tabAccess} />
+            </Card>
+          )}
         </>
       )}
+    </div>
+  );
+}
+
+/** users×tabs grid: cell background opacity scales with the view count. */
+function TabHeatmap({ tabAccess }: { tabAccess: AnalyticsSummary["tabAccess"] }) {
+  const { columns, rows } = tabAccess;
+  const max = Math.max(1, ...rows.flatMap((r) => columns.map((c) => r.counts[c] ?? 0)));
+  return (
+    <div className="overflow-x-auto">
+      <table className="border-collapse text-md">
+        <thead>
+          <tr>
+            <th className="sticky left-0 bg-mantle z-10 text-left font-medium text-overlay0 px-2 py-1.5">User</th>
+            {columns.map((c) => (
+              <th key={c} className="px-2 py-1.5 text-overlay0 font-medium whitespace-nowrap">
+                <span className="block max-w-[120px] truncate" title={tabLabel(c)}>{tabLabel(c)}</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={r.userId || i} className="border-t border-surface0/40">
+              <td className="sticky left-0 bg-mantle z-10 px-2 py-1.5 text-text max-w-[160px] truncate" title={r.name}>{r.name}</td>
+              {columns.map((c) => {
+                const n = r.counts[c] ?? 0;
+                const opacity = n > 0 ? 0.12 + 0.6 * (n / max) : 0;
+                return (
+                  <td
+                    key={c}
+                    className="px-2 py-1.5 text-center tabular-nums"
+                    style={{ background: n > 0 ? `rgba(137, 180, 250, ${opacity.toFixed(3)})` : undefined, color: n > 0 ? "#cdd6f4" : "#45475a" }}
+                  >
+                    {n > 0 ? n.toLocaleString() : "·"}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

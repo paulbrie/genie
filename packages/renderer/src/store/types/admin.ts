@@ -324,6 +324,11 @@ export interface AnalyticsSummary {
   daily: { day: string; users: number; events: number }[];
   funnel: { loggedIn: number; openedTerminal: number; sentCommand: number };
   topUsers: { userId: string; name: string; count: number }[];
+  commandsByUser: { userId: string; name: string; claude: number; terminal: number }[];
+  tabAccess: {
+    columns: string[];
+    rows: { userId: string; name: string; counts: Record<string, number> }[];
+  };
 }
 
 export interface EmailLogEntry {

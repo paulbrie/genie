@@ -1271,7 +1271,9 @@ export function AdminPanel() {
         <CommunicationPanel communication={admin.communication} users={usersState} />
       ) : activeTab === "analytics" ? (
         /* ===== ANALYTICS TAB (superadmin) ===== */
-        <AdminAnalytics />
+        <div className="flex-1 overflow-auto px-5 py-4">
+          <AdminAnalytics />
+        </div>
       ) : activeTab === "audit" ? (
         /* ===== AUDIT TAB ===== */
         <AuditPanel audit={admin.audit} />
