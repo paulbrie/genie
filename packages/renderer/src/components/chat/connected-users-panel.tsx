@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Users, Monitor, Chrome, MapPin, Globe, Wifi, AppWindow } from "lucide-react";
+import { Users, Monitor, Chrome, MapPin, Globe, Wifi, AppWindow, History, X, Search } from "lucide-react";
 import type { PresenceSession } from "@/store/types";
 import { $presenceSessions } from "@/store/subjects";
 import { $windowManager } from "@/store/subjects/common";
@@ -71,8 +71,13 @@ interface GroupedUser {
   sessions: PresenceSession[];
 }
 
+const PAGE_SIZE = 10;
+
 export function ConnectedUsersPanel() {
   const [sessions] = useSubject($presenceSessions);
+  const [actionsUserId, setActionsUserId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     requestPresenceDetail();
@@ -86,8 +91,28 @@ export function ConnectedUsersPanel() {
       }
       map.get(s.id)!.sessions.push(s);
     }
-    return [...map.values()];
+    return [...map.values()].sort((a, b) =>
+      (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" })
+    );
   }, [sessions]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return grouped;
+    return grouped.filter(
+      (u) => u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+    );
+  }, [grouped, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const curPage = Math.min(page, totalPages);
+  const pageUsers = filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
+
+  // Reset to first page whenever the filter changes the result set under us.
+  useEffect(() => {
+    if (page !== 1) setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   // Merge all actions from all sessions per user, sorted by ts desc
   function getUserActions(user: GroupedUser): { type: string; ts: number }[] {
@@ -99,6 +124,9 @@ export function ConnectedUsersPanel() {
     return all.slice(0, 25);
   }
 
+  const actionsUser = actionsUserId ? grouped.find((u) => u.id === actionsUserId) ?? null : null;
+  const actionsUserActions = actionsUser ? getUserActions(actionsUser) : [];
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2.5 h-12 border-b border-surface0 shrink-0 px-5">
@@ -109,15 +137,40 @@ export function ConnectedUsersPanel() {
         )}
       </div>
 
+      {grouped.length > 0 && (
+        <div className="px-5 py-2.5 border-b border-surface0 shrink-0">
+          <div className="flex items-center gap-2 bg-surface0 rounded-md px-2.5 py-1.5">
+            <Search size={13} className="text-overlay0 shrink-0" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter by name or email…"
+              className="bg-transparent text-md text-text placeholder:text-overlay0 outline-none flex-1 min-w-0"
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch("")} className="text-overlay0 hover:text-text shrink-0">
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto">
         {grouped.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-overlay0 gap-2 text-md">
             <Users size={24} />
             <p>No connected users</p>
           </div>
+        ) : filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-overlay0 gap-2 text-md">
+            <Search size={24} />
+            <p>No users match "{search}"</p>
+          </div>
         ) : (
           <div className="flex flex-col gap-4 px-5 py-4">
-            {grouped.map((user) => {
+            {pageUsers.map((user) => {
               const actions = getUserActions(user);
               return (
                 <div key={user.id} className="bg-mantle border border-surface0 rounded-lg overflow-hidden">
@@ -211,35 +264,104 @@ export function ConnectedUsersPanel() {
                     })}
                   </div>
 
-                  {/* Recent actions */}
-                  <div className="max-h-[250px] overflow-y-auto">
-                    {actions.length === 0 ? (
-                      <div className="px-4 py-3 text-overlay0 text-[11px]">No recent actions</div>
-                    ) : (
-                      <table className="w-full text-[11px]">
-                        <thead>
-                          <tr className="bg-base sticky top-0">
-                            <th className="text-left px-4 py-1.5 text-overlay0 font-medium">Action</th>
-                            <th className="text-right px-4 py-1.5 text-overlay0 font-medium">When</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {actions.map((a, i) => (
-                            <tr key={i} className="border-t border-surface0/50 hover:bg-surface0/20">
-                              <td className="px-4 py-1 text-text font-mono">{a.type}</td>
-                              <td className="px-4 py-1 text-overlay0 text-right whitespace-nowrap">{timeAgo(a.ts)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
+                  {/* Recent actions trigger */}
+                  <button
+                    type="button"
+                    onClick={() => setActionsUserId(user.id)}
+                    disabled={actions.length === 0}
+                    className="w-full flex items-center justify-between px-4 py-2.5 text-[11px] text-overlay1 hover:bg-surface0/30 disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <History size={12} className="shrink-0" />
+                      Recent actions
+                    </span>
+                    <span className="text-overlay0">
+                      {actions.length === 0 ? "none" : actions.length}
+                    </span>
+                  </button>
                 </div>
               );
             })}
+
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between text-[11px] text-overlay0 pt-1">
+                <span>
+                  {(curPage - 1) * PAGE_SIZE + 1}–{Math.min(curPage * PAGE_SIZE, filtered.length)} of {filtered.length}
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setPage(curPage - 1)}
+                    disabled={curPage <= 1}
+                    className="px-2 py-1 rounded hover:bg-surface0 disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    Prev
+                  </button>
+                  <span className="px-1 text-overlay1 font-mono">{curPage} / {totalPages}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPage(curPage + 1)}
+                    disabled={curPage >= totalPages}
+                    className="px-2 py-1 rounded hover:bg-surface0 disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* Recent actions modal */}
+      {actionsUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setActionsUserId(null)}
+        >
+          <div
+            className="bg-mantle border border-surface0 rounded-lg shadow-xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-surface0 shrink-0">
+              <History size={14} className="text-mauve shrink-0" />
+              <div className="flex flex-col flex-1 min-w-0">
+                <span className="text-text text-md font-medium truncate">Recent actions</span>
+                <span className="text-overlay0 text-[11px] truncate">{actionsUser.name}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActionsUserId(null)}
+                className="text-overlay0 hover:text-text transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {actionsUserActions.length === 0 ? (
+                <div className="px-4 py-3 text-overlay0 text-[11px]">No recent actions</div>
+              ) : (
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="bg-base sticky top-0">
+                      <th className="text-left px-4 py-1.5 text-overlay0 font-medium">Action</th>
+                      <th className="text-right px-4 py-1.5 text-overlay0 font-medium">When</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {actionsUserActions.map((a, i) => (
+                      <tr key={i} className="border-t border-surface0/50 hover:bg-surface0/20">
+                        <td className="px-4 py-1 text-text font-mono">{a.type}</td>
+                        <td className="px-4 py-1 text-overlay0 text-right whitespace-nowrap">{timeAgo(a.ts)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
