@@ -78,9 +78,17 @@ export function ConnectedUsersPanel() {
   const [actionsUserId, setActionsUserId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  // Tick once a minute so the "last X ago" labels stay fresh between presence
+  // broadcasts (which only re-render the panel when something changes upstream).
+  const [, setTick] = useState(0);
 
   useEffect(() => {
     requestPresenceDetail();
+  }, []);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => window.clearInterval(id);
   }, []);
 
   const grouped = useMemo(() => {
@@ -274,6 +282,9 @@ export function ConnectedUsersPanel() {
                     <span className="flex items-center gap-1.5">
                       <History size={12} className="shrink-0" />
                       Recent actions
+                      {actions[0] && (
+                        <span className="text-overlay0">· last {timeAgo(actions[0].ts)}</span>
+                      )}
                     </span>
                     <span className="text-overlay0">
                       {actions.length === 0 ? "none" : actions.length}
