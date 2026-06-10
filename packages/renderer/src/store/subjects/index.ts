@@ -6,5 +6,6 @@ export * from "./vps";
 export * from "./tracker";
 export * from "./admin";
 export * from "./recipes";
+export * from "./claude-plugins";
 export * from "./ssh";
 export * from "./agents";

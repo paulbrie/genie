@@ -5,6 +5,8 @@ import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-se
 import { startSshEventFlusher, stopSshEventFlusher } from "./vps/ssh-events.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
+import { seedDefaultClaudePlugins } from "./claude-plugins-service.js";
+import { DEFAULT_CLAUDE_PLUGINS } from "./default-claude-plugins.js";
 import { createServer, shutdown } from "./ws-server.js";
 import { startSlackBot, stopSlackBot } from "./slack-bot.js";
 import { startWireproxyIfConfigured, stopWireproxy } from "./wireproxy-launcher.js";
@@ -65,6 +67,12 @@ try {
   console.log(`[recipes] Seeded ${DEFAULT_RECIPES.length} built-in recipes (inserted=${inserted}, updated=${updated}).`);
 } catch (err) {
   console.error("[recipes] Seed failed:", err);
+}
+try {
+  const { inserted, updated } = await seedDefaultClaudePlugins(DEFAULT_CLAUDE_PLUGINS);
+  console.log(`[claude-plugins] Seeded ${DEFAULT_CLAUDE_PLUGINS.length} built-in plugins (inserted=${inserted}, updated=${updated}).`);
+} catch (err) {
+  console.error("[claude-plugins] Seed failed:", err);
 }
 const wss = await createServer();
 

@@ -12,6 +12,7 @@ export * from "./admin";
 export * from "./settings";
 export * from "./vps";
 export * from "./recipes";
+export * from "./claude-plugins";
 export * from "./project-files";
 export * from "./file-template";
 export * from "./file-explorer";

@@ -14,6 +14,7 @@ import { handlers as adminHandlers } from "./admin";
 import { handlers as securityHandlers } from "./security";
 import { handlers as presenceHandlers } from "./presence";
 import { handlers as recipesHandlers } from "./recipes";
+import { handlers as claudePluginsHandlers } from "./claude-plugins";
 import { handlers as orgSettingsHandlers } from "./org-settings";
 import { handlers as sshHandlers } from "./ssh";
 import { handlers as agentsHandlers } from "./agents";
@@ -38,6 +39,7 @@ const handlers: HandlerMap = Object.assign(
   securityHandlers,
   presenceHandlers,
   recipesHandlers,
+  claudePluginsHandlers,
   orgSettingsHandlers,
   sshHandlers,
   agentsHandlers,

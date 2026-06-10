@@ -393,6 +393,65 @@ export const handlers: HandlerMap = {
     }
   },
 
+  "vps:claude-plugin:check:result": (payload) => {
+    const { instanceId, pluginId, installed } = payload;
+    if (instanceId && pluginId) {
+      ensureInstanceState(instanceId);
+      const inst = $vpsDeploy.getValue().instances[instanceId];
+      if (inst.claudePlugins[pluginId]) {
+        inst.claudePlugins[pluginId].checking = false;
+        inst.claudePlugins[pluginId].installed = installed;
+      }
+    }
+  },
+
+  "vps:claude-plugin:progress": (payload) => {
+    const { instanceId, pluginId, message } = payload;
+    if (instanceId && pluginId) {
+      ensureInstanceState(instanceId);
+      const inst = $vpsDeploy.getValue().instances[instanceId];
+      if (inst.claudePlugins[pluginId]) {
+        inst.claudePlugins[pluginId].progress = [...inst.claudePlugins[pluginId].progress, message];
+      }
+    }
+  },
+
+  "vps:claude-plugin:done": (payload) => {
+    const { instanceId, pluginId } = payload;
+    if (instanceId && pluginId) {
+      ensureInstanceState(instanceId);
+      const inst = $vpsDeploy.getValue().instances[instanceId];
+      if (inst.claudePlugins[pluginId]) {
+        inst.claudePlugins[pluginId].running = false;
+        inst.claudePlugins[pluginId].installed = true;
+      }
+    }
+  },
+
+  "vps:claude-plugin:uninstall:done": (payload) => {
+    const { instanceId, pluginId } = payload;
+    if (instanceId && pluginId) {
+      ensureInstanceState(instanceId);
+      const inst = $vpsDeploy.getValue().instances[instanceId];
+      if (inst.claudePlugins[pluginId]) {
+        inst.claudePlugins[pluginId].running = false;
+        inst.claudePlugins[pluginId].installed = false;
+      }
+    }
+  },
+
+  "vps:claude-plugin:error": (payload) => {
+    const { instanceId, pluginId, message } = payload;
+    if (instanceId && pluginId) {
+      ensureInstanceState(instanceId);
+      const inst = $vpsDeploy.getValue().instances[instanceId];
+      if (inst.claudePlugins[pluginId]) {
+        inst.claudePlugins[pluginId].running = false;
+        inst.claudePlugins[pluginId].error = message;
+      }
+    }
+  },
+
   "vps:exec:result": (payload) => {
     const { execId, output, error } = payload;
     const cb = execCallbacks.get(execId);

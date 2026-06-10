@@ -135,6 +135,9 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
 
   // Superadmin-only namespace.
   recipes: { send: "superadmin", receive: "superadmin" },
+  // Same model as recipes: catalog mutations are superadmin-only (install
+  // scripts run as root on every VM); reads are widened below.
+  "claude-plugins": { send: "superadmin", receive: "superadmin" },
 
   // Local shell on the manager host (sidebar "Terminal" button). Deliberately
   // namespaced apart from terminal:* (VM SSH) so the elevated privilege isn't
@@ -183,6 +186,12 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   // privilege-escalation / supply-chain risk.
   "recipes:list": { send: "user", receive: "user", notes: "read-only catalog access for the Add-ons panel" },
   "recipes:list:stale": { receive: "user", notes: "cache-invalidation broadcast; clients refetch recipes:list" },
+
+  // Same justification as recipes:list above — the Claude Plugins tab in the
+  // per-VM Manager popup needs to populate for any user who can manage the VM.
+  // Mutations stay superadmin via the namespace default.
+  "claude-plugins:list": { send: "user", receive: "user", notes: "read-only catalog access for the Manager popup's Claude Plugins tab" },
+  "claude-plugins:list:stale": { receive: "user", notes: "cache-invalidation broadcast; clients refetch claude-plugins:list" },
 
   // Per-VM exec inside the otherwise tazcloud+ admin:droplets / admin:tazcloud
   // namespaces. Lowered to "user" so a normal user can drive the Manage popup

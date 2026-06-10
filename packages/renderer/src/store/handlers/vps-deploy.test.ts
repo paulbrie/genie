@@ -25,6 +25,7 @@ function makeActiveDeploy(instOverrides = {}, deployOverrides = {}) {
         startedAt: Date.now() - 1000, endedAt: null,
         stats: null, statsError: null,
         recipes: {},
+        claudePlugins: {},
         ...instOverrides,
       },
     },

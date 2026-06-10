@@ -23,6 +23,7 @@ function makeInstanceWithRecipe(overrides = {}) {
             ...overrides,
           },
         },
+        claudePlugins: {},
       },
     },
     activeDeploys: {}, testResult: null,

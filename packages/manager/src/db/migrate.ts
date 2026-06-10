@@ -32,6 +32,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "security_scan_project", run: migrateSecurityScanProject },
   { id: "analytics_events", run: migrateAnalyticsEvents },
   { id: "analytics_events_project", run: migrateAnalyticsEventsProject },
+  { id: "claude_plugins", run: migrateClaudePlugins },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -82,6 +83,7 @@ async function migrationTablesExist(id: string): Promise<boolean> {
     case "agents": return tableExists("agents");
     case "base_image_history": return tableExists("base_image_template_history");
     case "analytics_events": return tableExists("analytics_events");
+    case "claude_plugins": return tableExists("claude_plugins");
     // security_scan_project only adds a column (idempotent ALTER) — let the
     // catch-up path run it rather than guessing from a table name.
     default: return false;
@@ -423,6 +425,31 @@ export async function migrateAnalyticsEventsProject(): Promise<void> {
   const db = getDb();
   await db.execute(sql`ALTER TABLE analytics_events ADD COLUMN IF NOT EXISTS project_id TEXT`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_analytics_events_project ON analytics_events(project_id)`);
+}
+
+/** Official Claude Code plugins catalog. Same shape as `recipes` but kept in a
+ *  dedicated table so its slug namespace doesn't collide with recipes.
+ *  Idempotent; safe to call on every boot. */
+export async function migrateClaudePlugins(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS claude_plugins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    description TEXT DEFAULT '' NOT NULL,
+    icon TEXT DEFAULT 'Puzzle' NOT NULL,
+    homepage_url TEXT DEFAULT '' NOT NULL,
+    check_script TEXT NOT NULL,
+    install_script TEXT NOT NULL,
+    uninstall_script TEXT DEFAULT '' NOT NULL,
+    commands JSONB DEFAULT '[]'::jsonb NOT NULL,
+    options JSONB DEFAULT '[]'::jsonb NOT NULL,
+    secrets JSONB DEFAULT '[]'::jsonb NOT NULL,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_claude_plugins_slug ON claude_plugins(slug)`);
 }
 
 /** Base image template edit history. Idempotent. */

@@ -156,6 +156,35 @@ export const recipes = pgTable("recipes", {
   index("idx_recipes_slug").on(table.slug),
 ]);
 
+/** Official Claude Code plugins surfaced in the per-VM Manager popup's
+ *  "Claude Plugins" tab. Same lifecycle as `recipes`: built-ins seeded from
+ *  `default-claude-plugins.ts` on boot; superadmins extend/edit the catalog at
+ *  runtime. Install/uninstall scripts run as root on the target VM exactly like
+ *  recipe scripts. Kept in a separate table so plugin catalog edits do not
+ *  collide with the recipe catalog's slug namespace. */
+export const claudePlugins = pgTable("claude_plugins", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  slug: text("slug").notNull().unique(),       // url-safe stable id (e.g. "chrome-devtools-mcp")
+  label: text("label").notNull(),              // display name
+  description: text("description").default("").notNull(),
+  icon: text("icon").default("Puzzle").notNull(),  // lucide icon name
+  /** Marketplace / docs URL surfaced as a "View docs" link in the panel. */
+  homepageUrl: text("homepage_url").default("").notNull(),
+  checkScript: text("check_script").notNull(),
+  installScript: text("install_script").notNull(),
+  uninstallScript: text("uninstall_script").default("").notNull(),
+  commands: jsonb("commands").default([]).notNull(),
+  options: jsonb("options").default([]).notNull(),
+  /** Per-apply prompted values (e.g. plugin API keys). Same semantics as
+   *  recipes.secrets — schema in DB, values only in modal state. */
+  secrets: jsonb("secrets").default([]).notNull(),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_claude_plugins_slug").on(table.slug),
+]);
+
 export const trackerLabels = pgTable("tracker_labels", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: text("name").notNull(),

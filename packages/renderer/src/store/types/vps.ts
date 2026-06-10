@@ -1,4 +1,5 @@
 import type { ProcessStatus } from "./common";
+import type { ClaudePluginState } from "./claude-plugins";
 
 // --- VPS / project / terminal types ---
 
@@ -140,6 +141,7 @@ export interface VpsInstanceState {
   stats: VpsStats | null;
   statsError: string | null;
   recipes: Record<string, RecipeState>;
+  claudePlugins: Record<string, ClaudePluginState>;
   /** Live tmux sessions on the VM, from the on-demand SSH probe
    *  (`vps:stats:refresh` → `vm:conn:stats`). Drives the Manage popup's tmux
    *  badge row. Undefined until the first probe completes. */

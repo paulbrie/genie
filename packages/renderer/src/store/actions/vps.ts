@@ -19,6 +19,7 @@ export const DEFAULT_INSTANCE_STATE: VpsInstanceState = {
   progress: [], error: null, logs: null,
   startedAt: null, endedAt: null, stats: null, statsError: null,
   recipes: {},
+  claudePlugins: {},
   // Seeded so the DeepSubject tracks this key from creation — a field added
   // only by a later mutation isn't reactive (subscribers never re-render).
   tmuxSessions: [],

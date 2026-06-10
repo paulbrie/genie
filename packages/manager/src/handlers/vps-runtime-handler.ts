@@ -377,6 +377,99 @@ export async function handleVpsRuntimeMessage(
       return true;
     }
 
+    case "vps:claude-plugin:check": {
+      const { projectId, instanceId, pluginId, script } = msg.payload as {
+        projectId: string; instanceId: string; pluginId: string; script: string;
+      };
+      if (!(await canAccessProject(userId, role, projectId))) {
+        send(ws, { type: "vps:claude-plugin:error", payload: { projectId, instanceId, pluginId, message: "Not authorized for this project" } });
+        return true;
+      }
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:claude-plugin:check:result", payload: { projectId, instanceId, pluginId, installed: false } });
+        return true;
+      }
+      try {
+        const output = await execCached(
+          vpsInst.connection,
+          `cat << 'GENIE_PLUGIN_EOF' | bash 2>&1\n${script}\nGENIE_PLUGIN_EOF`,
+          undefined,
+          { timeoutMs: 15_000 },
+        );
+        const lastLine = output.trim().split("\n").pop()?.trim();
+        const installed = lastLine === "INSTALLED";
+        send(ws, { type: "vps:claude-plugin:check:result", payload: { projectId, instanceId, pluginId, installed } });
+      } catch {
+        send(ws, { type: "vps:claude-plugin:check:result", payload: { projectId, instanceId, pluginId, installed: false } });
+      }
+      return true;
+    }
+
+    case "vps:claude-plugin:uninstall": {
+      const { projectId, instanceId, pluginId, script } = msg.payload as {
+        projectId: string; instanceId: string; pluginId: string; script: string;
+      };
+      if (!(await canAccessProject(userId, role, projectId))) {
+        send(ws, { type: "vps:claude-plugin:error", payload: { projectId, instanceId, pluginId, message: "Not authorized for this project" } });
+        return true;
+      }
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:claude-plugin:error", payload: { projectId, instanceId, pluginId, message: "No VPS deployment" } });
+        return true;
+      }
+      try {
+        await execCached(
+          vpsInst.connection,
+          `cat << 'GENIE_PLUGIN_EOF' | bash 2>&1\n${script}\nGENIE_PLUGIN_EOF`,
+          (chunk) => {
+            const line = chunk.trimEnd();
+            if (line) send(ws, { type: "vps:claude-plugin:progress", payload: { projectId, instanceId, pluginId, message: line } });
+          },
+          { timeoutMs: 300_000, idleTimeoutMs: 60_000 },
+        );
+        send(ws, { type: "vps:claude-plugin:uninstall:done", payload: { projectId, instanceId, pluginId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:claude-plugin:error", payload: { projectId, instanceId, pluginId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "vps:claude-plugin:run": {
+      const { projectId, instanceId, pluginId, script } = msg.payload as {
+        projectId: string; instanceId: string; pluginId: string; script: string;
+      };
+      if (!(await canAccessProject(userId, role, projectId))) {
+        send(ws, { type: "vps:claude-plugin:error", payload: { projectId, instanceId, pluginId, message: "Not authorized for this project" } });
+        return true;
+      }
+      const project = await projectService.getById(projectId);
+      const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
+      if (!vpsInst) {
+        send(ws, { type: "vps:claude-plugin:error", payload: { projectId, instanceId, pluginId, message: "No VPS deployment" } });
+        return true;
+      }
+      void analyticsService.recordEvent({ userId, userName: null, event: "claude-plugin.run", projectId, props: { pluginId }, ip: null });
+      try {
+        await execCached(
+          vpsInst.connection,
+          `cat << 'GENIE_PLUGIN_EOF' | bash 2>&1\n${script}\nGENIE_PLUGIN_EOF`,
+          (chunk) => {
+            const line = chunk.trimEnd();
+            if (line) send(ws, { type: "vps:claude-plugin:progress", payload: { projectId, instanceId, pluginId, message: line } });
+          },
+          { timeoutMs: 600_000, idleTimeoutMs: 120_000 },
+        );
+        send(ws, { type: "vps:claude-plugin:done", payload: { projectId, instanceId, pluginId } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:claude-plugin:error", payload: { projectId, instanceId, pluginId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
     case "vps:logs": {
       const { projectId, instanceId, serviceName, tail } = msg.payload;
       if (!(await canAccessProject(userId, role, projectId))) {
