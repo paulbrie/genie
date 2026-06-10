@@ -5,31 +5,35 @@ import {
   ChevronLeft,
   ChevronRight,
   Zap,
-  Code2,
-  Rocket,
-  Activity,
-  MessageSquare,
-  Bot,
-  Terminal,
-  Shield,
-  Eye,
-  Globe,
-  Layers,
-  Lock,
-  Cpu,
-  GitBranch,
+  Sparkles,
   ArrowRight,
   Check,
-  Sparkles,
-  TrendingUp,
-  Users,
-  Grid3x3,
-  Keyboard,
   X,
+  Keyboard,
+  Grid3x3,
+  MessageSquare,
+  Code2,
+  Cloud,
+  Bot,
+  Layers,
+  ListTodo,
+  AlertTriangle,
+  FileText,
+  Activity,
+  Briefcase,
+  PenTool,
+  Crown,
+  Wrench,
+  Globe,
+  Users,
+  Plus,
+  Minus,
+  Terminal,
+  GitBranch,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────
-   Palette — Catppuccin Mocha, with extra named utilities
+   Palette — Catppuccin Mocha
    ───────────────────────────────────────────────────────────── */
 const C = {
   base: "#1e1e2e",
@@ -57,9 +61,8 @@ const C = {
 } as const;
 
 /* ─────────────────────────────────────────────────────────────
-   Reusable primitives
+   Primitives
    ───────────────────────────────────────────────────────────── */
-
 function GradientText({
   children,
   from,
@@ -118,11 +121,11 @@ function SlideHeader({
       <Eyebrow color={eyebrowColor}>{eyebrow}</Eyebrow>
       <h2
         style={{
-          fontSize: 48,
+          fontSize: 52,
           fontWeight: 700,
           color: C.text,
-          lineHeight: 1.1,
-          letterSpacing: -1,
+          lineHeight: 1.05,
+          letterSpacing: -1.5,
           marginBottom: subtitle ? 18 : 0,
         }}
       >
@@ -134,7 +137,7 @@ function SlideHeader({
             fontSize: 19,
             color: C.subtext0,
             lineHeight: 1.55,
-            maxWidth: 760,
+            maxWidth: 820,
           }}
         >
           {subtitle}
@@ -162,20 +165,15 @@ function DotGrid({ opacity = 0.12 }: { opacity?: number }) {
   );
 }
 
-/* Animated counter that runs when the slide is active */
 function AnimatedNumber({
   value,
   active,
   duration = 1200,
-  prefix = "",
-  suffix = "",
   format,
 }: {
   value: number;
   active: boolean;
   duration?: number;
-  prefix?: string;
-  suffix?: string;
   format?: (n: number) => string;
 }) {
   const [n, setN] = useState(0);
@@ -199,13 +197,7 @@ function AnimatedNumber({
     return () => cancelAnimationFrame(raf);
   }, [active, value, duration]);
 
-  return (
-    <>
-      {prefix}
-      {format ? format(n) : Math.round(n).toLocaleString()}
-      {suffix}
-    </>
-  );
+  return <>{format ? format(n) : Math.round(n).toString()}</>;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -225,13 +217,12 @@ function SlideTitle({ active }: { active: boolean }) {
         overflow: "hidden",
       }}
     >
-      {/* Ambient radial glow */}
       <div
         aria-hidden
         style={{
           position: "absolute",
-          width: 900,
-          height: 900,
+          width: 1000,
+          height: 1000,
           borderRadius: "50%",
           background: `radial-gradient(circle, ${C.mauve}22 0%, ${C.blue}11 40%, transparent 70%)`,
           filter: "blur(40px)",
@@ -247,7 +238,7 @@ function SlideTitle({ active }: { active: boolean }) {
           position: "relative",
           display: "flex",
           alignItems: "center",
-          gap: 14,
+          gap: 12,
           marginBottom: 32,
           padding: "8px 16px",
           borderRadius: 100,
@@ -268,7 +259,7 @@ function SlideTitle({ active }: { active: boolean }) {
           }}
         />
         <span style={{ fontSize: 12, fontWeight: 600, color: C.subtext0, letterSpacing: 0.5 }}>
-          INVESTOR BRIEF · SEED ROUND · 2026
+          THE ALL-IN-ONE WORKSPACE WHERE SOFTWARE GETS BUILT
         </span>
       </div>
 
@@ -315,20 +306,21 @@ function SlideTitle({ active }: { active: boolean }) {
       <p
         style={{
           position: "relative",
-          fontSize: 28,
+          fontSize: 30,
           color: C.text,
-          maxWidth: 760,
-          lineHeight: 1.35,
+          maxWidth: 880,
+          lineHeight: 1.3,
           fontWeight: 400,
-          marginTop: 8,
+          marginTop: 12,
           opacity: active ? 1 : 0,
           animation: active ? "fadeUp 0.7s ease-out 0.3s both" : undefined,
         }}
       >
-        The agent platform for{" "}
-        <span style={{ color: C.mauve, fontWeight: 600 }}>building</span>,{" "}
-        <span style={{ color: C.blue, fontWeight: 600 }}>shipping</span>, and{" "}
-        <span style={{ color: C.teal, fontWeight: 600 }}>operating</span> software.
+        One platform for{" "}
+        <span style={{ color: C.mauve, fontWeight: 600 }}>everyone</span> who builds software.
+        <br />
+        Replaces chat, tracker, IDE, and cloud — and lets{" "}
+        <span style={{ color: C.blue, fontWeight: 600 }}>AI do the work</span>.
       </p>
 
       <div
@@ -337,213 +329,26 @@ function SlideTitle({ active }: { active: boolean }) {
           marginTop: 48,
           display: "flex",
           alignItems: "center",
-          gap: 16,
-          fontSize: 14,
-          color: C.overlay1,
+          gap: 12,
           opacity: active ? 1 : 0,
           animation: active ? "fadeUp 0.7s ease-out 0.5s both" : undefined,
         }}
       >
-        <span>Paul Brie · Founder & CEO</span>
-        <span style={{ width: 4, height: 4, borderRadius: 2, background: C.overlay0 }} />
-        <span>Previously TeleportHQ</span>
-        <span style={{ width: 4, height: 4, borderRadius: 2, background: C.overlay0 }} />
-        <span>paul.brie@teleporthq.io</span>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Slide 02 — Inflection point / Why now
-   ───────────────────────────────────────────────────────────── */
-function SlideInflection({ active }: { active: boolean }) {
-  const milestones = [
-    { year: "1985", label: "The IDE", desc: "Borland, Visual Studio", color: C.overlay1 },
-    { year: "2008", label: "Cloud", desc: "AWS, Heroku, Vercel", color: C.overlay1 },
-    { year: "2022", label: "Copilots", desc: "GitHub Copilot, ChatGPT", color: C.sapphire },
-    { year: "2025", label: "Agents", desc: "Claude · MCP · SWE-bench", color: C.mauve },
-  ];
-  return (
-    <div
-      style={{
-        position: "relative",
-        height: "100%",
-        padding: "0 80px",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-      }}
-    >
-      <DotGrid opacity={0.08} />
-      <Eyebrow color={C.mauve}>Why now</Eyebrow>
-      <h2
-        style={{
-          fontSize: 64,
-          fontWeight: 700,
-          color: C.text,
-          lineHeight: 1.05,
-          letterSpacing: -2,
-          marginBottom: 24,
-          maxWidth: 1000,
-        }}
-      >
-        In 2025, AI moved from{" "}
-        <span style={{ color: C.overlay1, fontStyle: "italic", fontWeight: 500 }}>autocomplete</span>{" "}
-        <br />
-        to{" "}
-        <GradientText from={C.mauve} to={C.blue}>
-          autonomous
-        </GradientText>
-        .
-      </h2>
-      <p style={{ fontSize: 18, color: C.subtext0, maxWidth: 800, lineHeight: 1.55, marginBottom: 56 }}>
-        Three forces converged this year: frontier models cleared 70%+ on SWE-bench, MCP
-        standardized agent tooling, and the first $1B+ AI dev companies emerged. We are at
-        the start of a 20-year platform shift.
-      </p>
-
-      {/* Timeline */}
-      <div style={{ position: "relative", marginTop: 8 }}>
-        <div
-          style={{
-            position: "absolute",
-            top: 12,
-            left: 12,
-            right: 12,
-            height: 2,
-            background: `linear-gradient(90deg, ${C.surface1} 0%, ${C.surface1} 60%, ${C.mauve} 100%)`,
-          }}
-        />
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24 }}>
-          {milestones.map((m, i) => (
-            <div
-              key={m.year}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "flex-start",
-                opacity: active ? 1 : 0,
-                animation: active ? `fadeUp 0.5s ease-out ${0.15 + i * 0.12}s both` : undefined,
-              }}
-            >
-              <div
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: "50%",
-                  background: i === 3 ? `linear-gradient(135deg, ${C.mauve}, ${C.blue})` : C.surface1,
-                  border: `4px solid ${C.base}`,
-                  marginBottom: 18,
-                  boxShadow: i === 3 ? `0 0 24px ${C.mauve}80` : undefined,
-                }}
-              />
-              <div style={{ fontSize: 13, fontWeight: 600, color: m.color, letterSpacing: 0.5 }}>{m.year}</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.text, marginTop: 4 }}>{m.label}</div>
-              <div style={{ fontSize: 13, color: C.overlay1, marginTop: 4 }}>{m.desc}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Slide 03 — The Problem
-   ───────────────────────────────────────────────────────────── */
-function SlideProblem({ active }: { active: boolean }) {
-  const tools = [
-    { name: "Cursor · Copilot", role: "Write code", limit: "Trapped in the IDE", color: C.sapphire },
-    { name: "Devin · Cognition", role: "Run autonomously", limit: "Opaque, no human in the loop", color: C.mauve },
-    { name: "Vercel · Railway", role: "Deploy code", limit: "Agent-blind, no live feedback", color: C.peach },
-    { name: "Datadog · Sentry", role: "Observe code", limit: "See problems, can't fix them", color: C.red },
-  ];
-  return (
-    <div
-      style={{
-        height: "100%",
-        padding: "0 80px",
-        display: "grid",
-        gridTemplateColumns: "1fr 1.05fr",
-        gap: 56,
-        alignItems: "center",
-      }}
-    >
-      <div>
-        <Eyebrow color={C.red}>The problem</Eyebrow>
-        <h2 style={{ fontSize: 56, fontWeight: 700, color: C.text, lineHeight: 1.05, letterSpacing: -2, marginBottom: 28 }}>
-          AI can write code. <br />
-          <GradientText from={C.red} to={C.peach}>
-            Shipping software is everything else.
-          </GradientText>
-        </h2>
-        <p style={{ fontSize: 18, color: C.subtext0, lineHeight: 1.6, marginBottom: 28 }}>
-          The agent stack is fragmented. Each tool sees one slice. None can take a feature from{" "}
-          <em style={{ color: C.text }}>idea</em> to{" "}
-          <em style={{ color: C.text }}>production</em> without a human stitching together
-          7+ systems by hand.
-        </p>
-        <div
-          style={{
-            padding: "18px 22px",
-            borderRadius: 14,
-            background: `linear-gradient(135deg, ${C.red}11, ${C.peach}08)`,
-            border: `1px solid ${C.red}33`,
-          }}
-        >
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.red, marginBottom: 6, letterSpacing: 1 }}>
-            THE COST
-          </div>
-          <div style={{ fontSize: 16, color: C.text, lineHeight: 1.5 }}>
-            Engineers still spend{" "}
-            <span style={{ color: C.peach, fontWeight: 700 }}>~60%</span> of their day on
-            non-coding work: deploys, debugging, comms, hand-offs.
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {tools.map((t, i) => (
-          <div
-            key={t.name}
+        {["Chat", "Tracker", "Code", "Cloud", "AI Agent"].map((w, i) => (
+          <span
+            key={w}
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 18,
-              padding: "20px 22px",
-              borderRadius: 14,
-              background: C.surface0,
-              border: `1px solid ${C.surface1}`,
-              opacity: active ? 1 : 0,
-              animation: active ? `fadeUp 0.4s ease-out ${0.1 + i * 0.08}s both` : undefined,
+              padding: "8px 18px",
+              borderRadius: 99,
+              fontSize: 13,
+              fontWeight: 600,
+              background: [C.mauve, C.blue, C.teal, C.peach, C.pink][i] + "18",
+              color: [C.mauve, C.blue, C.teal, C.peach, C.pink][i],
+              border: `1px solid ${[C.mauve, C.blue, C.teal, C.peach, C.pink][i]}40`,
             }}
           >
-            <div
-              style={{
-                width: 56,
-                height: 56,
-                borderRadius: 14,
-                background: `${t.color}18`,
-                color: t.color,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                fontSize: 18,
-                fontWeight: 700,
-                fontFamily: "'SF Mono', monospace",
-              }}
-            >
-              {String(i + 1).padStart(2, "0")}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 600, color: t.color, marginBottom: 2 }}>{t.name}</div>
-              <div style={{ fontSize: 14, color: C.text }}>{t.role}</div>
-              <div style={{ fontSize: 13, color: C.overlay1, marginTop: 2 }}>{t.limit}</div>
-            </div>
-            <X size={20} color={C.red} strokeWidth={2.5} style={{ flexShrink: 0, opacity: 0.6 }} />
-          </div>
+            {w}
+          </span>
         ))}
       </div>
     </div>
@@ -551,15 +356,186 @@ function SlideProblem({ active }: { active: boolean }) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Slide 04 — The Solution
+   Slide 02 — The fragmented stack (Problem)
+   ───────────────────────────────────────────────────────────── */
+function ToolChip({
+  name,
+  role,
+  color,
+  icon,
+  active,
+  delay,
+  rotate = 0,
+}: {
+  name: string;
+  role: string;
+  color: string;
+  icon: React.ReactNode;
+  active: boolean;
+  delay: number;
+  rotate?: number;
+}) {
+  return (
+    <div
+      style={{
+        padding: "14px 18px",
+        borderRadius: 14,
+        background: C.surface0,
+        border: `1px solid ${C.surface1}`,
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        transform: `rotate(${rotate}deg)`,
+        opacity: active ? 1 : 0,
+        animation: active ? `fadeUp 0.5s ease-out ${delay}s both` : undefined,
+        boxShadow: `0 8px 24px ${C.crust}80`,
+      }}
+    >
+      <div
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 10,
+          background: `${color}22`,
+          color,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        {icon}
+      </div>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{name}</div>
+        <div style={{ fontSize: 11, color: C.overlay1, marginTop: 1 }}>{role}</div>
+      </div>
+    </div>
+  );
+}
+
+function SlideProblem({ active }: { active: boolean }) {
+  const tools = [
+    { name: "Slack", role: "Team chat", icon: <MessageSquare size={18} />, color: C.peach, rot: -2 },
+    { name: "Linear", role: "Tracker", icon: <ListTodo size={18} />, color: C.lavender, rot: 1.5 },
+    { name: "GitHub", role: "Code & reviews", icon: <GitBranch size={18} />, color: C.subtext0, rot: -1 },
+    { name: "Cursor", role: "IDE + AI", icon: <Code2 size={18} />, color: C.text, rot: 2 },
+    { name: "Vercel", role: "Cloud deploys", icon: <Cloud size={18} />, color: C.sky, rot: -1.5 },
+    { name: "Sentry", role: "Monitoring", icon: <AlertTriangle size={18} />, color: C.mauve, rot: 1 },
+    { name: "Notion", role: "Docs & wiki", icon: <FileText size={18} />, color: C.subtext0, rot: -2 },
+  ];
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        padding: "0 80px",
+        display: "grid",
+        gridTemplateColumns: "1fr 1.1fr",
+        gap: 56,
+        alignItems: "center",
+      }}
+    >
+      <div>
+        <Eyebrow color={C.red}>The status quo</Eyebrow>
+        <h2 style={{ fontSize: 60, fontWeight: 700, color: C.text, lineHeight: 1.05, letterSpacing: -2, marginBottom: 24 }}>
+          Shipping software takes a{" "}
+          <GradientText from={C.red} to={C.peach}>
+            tower of disconnected tools
+          </GradientText>
+          .
+        </h2>
+        <p style={{ fontSize: 18, color: C.subtext0, lineHeight: 1.6, marginBottom: 28 }}>
+          Every team licenses, integrates, and trains people on a different patchwork. None
+          of the tools share state. None of them let an AI agent see the whole picture.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {[
+            { label: "Context shatters between tools", color: C.red },
+            { label: "AI agents only see one slice", color: C.peach },
+            { label: "Non-technical teammates locked out", color: C.yellow },
+          ].map((row, i) => (
+            <div
+              key={row.label}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "14px 16px",
+                borderRadius: 12,
+                background: `${row.color}0c`,
+                borderLeft: `3px solid ${row.color}`,
+                opacity: active ? 1 : 0,
+                animation: active ? `fadeUp 0.4s ease-out ${0.5 + i * 0.08}s both` : undefined,
+              }}
+            >
+              <X size={14} color={row.color} strokeWidth={3} />
+              <span style={{ fontSize: 15, color: C.text }}>{row.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ position: "relative", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignContent: "center" }}>
+        <DotGrid opacity={0.08} />
+        {tools.map((t, i) => (
+          <ToolChip
+            key={t.name}
+            name={t.name}
+            role={t.role}
+            color={t.color}
+            icon={t.icon}
+            active={active}
+            delay={0.1 + i * 0.06}
+            rotate={t.rot}
+          />
+        ))}
+        {/* "And more..." */}
+        <div
+          style={{
+            padding: "14px 18px",
+            borderRadius: 14,
+            background: "transparent",
+            border: `1.5px dashed ${C.surface2}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: C.overlay1,
+            fontSize: 13,
+            fontStyle: "italic",
+            opacity: active ? 1 : 0,
+            animation: active ? `fadeUp 0.5s ease-out ${0.1 + tools.length * 0.06}s both` : undefined,
+          }}
+        >
+          + more tickets to license…
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Slide 03 — One platform replaces them all
    ───────────────────────────────────────────────────────────── */
 function SlideSolution({ active }: { active: boolean }) {
-  const pillars = [
-    { icon: <Code2 size={24} />, label: "Code", desc: "Agents read, write, refactor — with full repo context.", color: C.mauve },
-    { icon: <Rocket size={24} />, label: "Ship", desc: "One click provisions a VPS. Docker, SSH, firewall — done.", color: C.blue },
-    { icon: <Activity size={24} />, label: "Operate", desc: "Live metrics, logs, security scans, in-browser terminals.", color: C.teal },
-    { icon: <MessageSquare size={24} />, label: "Collab", desc: "Team chat, real-time review, Slack-native handoffs.", color: C.peach },
+  const replaced = [
+    { name: "Slack", icon: <MessageSquare size={14} />, color: C.peach },
+    { name: "Linear", icon: <ListTodo size={14} />, color: C.lavender },
+    { name: "GitHub", icon: <GitBranch size={14} />, color: C.subtext0 },
+    { name: "Cursor", icon: <Code2 size={14} />, color: C.text },
+    { name: "Vercel", icon: <Cloud size={14} />, color: C.sky },
+    { name: "Sentry", icon: <AlertTriangle size={14} />, color: C.mauve },
+    { name: "Notion", icon: <FileText size={14} />, color: C.subtext0 },
   ];
+
+  const pillars = [
+    { icon: <MessageSquare size={20} />, label: "Chat", color: C.peach },
+    { icon: <ListTodo size={20} />, label: "Tracker", color: C.lavender },
+    { icon: <Code2 size={20} />, label: "Code", color: C.teal },
+    { icon: <Cloud size={20} />, label: "Cloud", color: C.blue },
+    { icon: <Bot size={20} />, label: "AI Agent", color: C.mauve },
+  ];
+
   return (
     <div
       style={{
@@ -573,935 +549,130 @@ function SlideSolution({ active }: { active: boolean }) {
     >
       <DotGrid opacity={0.07} />
       <Eyebrow color={C.green}>The solution</Eyebrow>
-      <h2 style={{ fontSize: 56, fontWeight: 700, color: C.text, lineHeight: 1.05, letterSpacing: -2, marginBottom: 24, maxWidth: 1000 }}>
-        Genie unifies the agent and the{" "}
+      <h2 style={{ fontSize: 60, fontWeight: 700, color: C.text, lineHeight: 1.05, letterSpacing: -2, marginBottom: 24, maxWidth: 1050 }}>
+        One workspace.{" "}
         <GradientText from={C.green} to={C.teal}>
-          infrastructure it works on
+          Everyone in the same room
         </GradientText>
         .
       </h2>
-      <p style={{ fontSize: 19, color: C.subtext0, maxWidth: 820, lineHeight: 1.55, marginBottom: 56 }}>
-        One control plane for the entire loop: write code, deploy to a real VPS, observe live
-        behavior, and let the agent close issues end-to-end — with humans always in review.
+      <p style={{ fontSize: 19, color: C.subtext0, maxWidth: 800, lineHeight: 1.55, marginBottom: 48 }}>
+        Genie collapses the tool stack into a single place where the team talks, tracks work,
+        writes code, runs production — and where an AI agent has full context to actually help.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 18 }}>
-        {pillars.map((p, i) => (
-          <div
-            key={p.label}
-            style={{
-              padding: "28px 24px",
-              borderRadius: 18,
-              background: `linear-gradient(160deg, ${p.color}10, ${C.surface0}cc)`,
-              border: `1px solid ${p.color}33`,
-              position: "relative",
-              overflow: "hidden",
-              opacity: active ? 1 : 0,
-              animation: active ? `fadeUp 0.5s ease-out ${0.15 + i * 0.1}s both` : undefined,
-            }}
-          >
+      {/* Replaced row → → → Genie center → → → Pillars row */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto 1fr",
+          gap: 40,
+          alignItems: "center",
+          marginTop: 8,
+        }}
+      >
+        {/* Replaced tools */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "flex-end" }}>
+          {replaced.map((r, i) => (
             <div
-              aria-hidden
+              key={r.name}
               style={{
-                position: "absolute",
-                top: -40,
-                right: -40,
-                width: 120,
-                height: 120,
-                borderRadius: "50%",
-                background: `radial-gradient(circle, ${p.color}30 0%, transparent 60%)`,
-              }}
-            />
-            <div
-              style={{
-                width: 52,
-                height: 52,
-                borderRadius: 14,
-                background: `${p.color}22`,
-                color: p.color,
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "center",
-                marginBottom: 18,
-              }}
-            >
-              {p.icon}
-            </div>
-            <h3 style={{ fontSize: 24, fontWeight: 700, color: C.text, marginBottom: 6 }}>{p.label}</h3>
-            <p style={{ fontSize: 14, color: C.subtext0, lineHeight: 1.5 }}>{p.desc}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Slide 05 — Product surface
-   ───────────────────────────────────────────────────────────── */
-function SlideProduct({ active }: { active: boolean }) {
-  const features = [
-    { icon: <Bot size={18} />, title: "AI Chat", desc: "Claude with full VPS access — runs commands, edits files, takes screenshots.", color: C.mauve },
-    { icon: <Layers size={18} />, title: "Projects", desc: "Multi-project workspace, live VPS stats, environment & secret management.", color: C.blue },
-    { icon: <Terminal size={18} />, title: "Terminals", desc: "Shared in-browser SSH with command library and PTY persistence.", color: C.green },
-    { icon: <Rocket size={18} />, title: "Deploy", desc: "One-click DigitalOcean provisioning. Docker, firewall, hot-reload baked in.", color: C.peach },
-    { icon: <Activity size={18} />, title: "Live Stats", desc: "CPU, memory, disk, docker containers, process trees — streamed at 5s.", color: C.teal },
-    { icon: <Shield size={18} />, title: "Security", desc: "Port scans, web vuln checks, severity-ranked findings, fix workflows.", color: C.red },
-    { icon: <Eye size={18} />, title: "Browser Agent", desc: "Chrome extension lets Claude see and act in the user's tabs.", color: C.yellow },
-    { icon: <Cpu size={18} />, title: "MCP Servers", desc: "genie-tracker, genie-security, genie-browser — agents that connect.", color: C.pink },
-    { icon: <MessageSquare size={18} />, title: "Team Chat", desc: "DMs and rooms, @-mentions for the agent, reactions, presence.", color: C.lavender },
-  ];
-  return (
-    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-      <SlideHeader
-        eyebrow="Product"
-        eyebrowColor={C.peach}
-        title={
-          <>
-            One pane of glass for{" "}
-            <GradientText from={C.peach} to={C.yellow}>
-              AI-native development
-            </GradientText>
-          </>
-        }
-        subtitle="A single workspace replaces seven SaaS subscriptions — and gives the agent the breadth it needs to actually close work."
-      />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-        {features.map((f, i) => (
-          <div
-            key={f.title}
-            style={{
-              padding: "18px 18px",
-              borderRadius: 12,
-              background: C.surface0,
-              border: `1px solid ${C.surface1}`,
-              transition: "transform 0.2s",
-              opacity: active ? 1 : 0,
-              animation: active ? `fadeUp 0.35s ease-out ${0.1 + i * 0.04}s both` : undefined,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-              <div
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 9,
-                  background: `${f.color}1c`,
-                  color: f.color,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
-                {f.icon}
-              </div>
-              <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{f.title}</span>
-            </div>
-            <p style={{ fontSize: 13, color: C.subtext0, lineHeight: 1.5 }}>{f.desc}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Slide 06 — Architecture
-   ───────────────────────────────────────────────────────────── */
-function ArchNode({
-  x,
-  y,
-  w,
-  h,
-  label,
-  sub,
-  color,
-  active,
-  delay,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label: string;
-  sub: string;
-  color: string;
-  active: boolean;
-  delay: number;
-}) {
-  return (
-    <foreignObject
-      x={x}
-      y={y}
-      width={w}
-      height={h}
-      style={{
-        opacity: active ? 1 : 0,
-        animation: active ? `fadeUp 0.5s ease-out ${delay}s both` : undefined,
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          height: "100%",
-          borderRadius: 14,
-          background: C.surface0,
-          border: `1.5px solid ${color}55`,
-          padding: "14px 16px",
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "center",
-          boxShadow: `0 8px 24px ${C.crust}80`,
-        }}
-      >
-        <div style={{ fontSize: 14, fontWeight: 700, color, marginBottom: 4 }}>{label}</div>
-        <div style={{ fontSize: 12, color: C.subtext0, lineHeight: 1.4 }}>{sub}</div>
-      </div>
-    </foreignObject>
-  );
-}
-
-function SlideArchitecture({ active }: { active: boolean }) {
-  return (
-    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-      <SlideHeader
-        eyebrow="Architecture"
-        eyebrowColor={C.sapphire}
-        title={
-          <>
-            Why our agents are{" "}
-            <GradientText from={C.sapphire} to={C.lavender}>
-              10× more capable
-            </GradientText>
-          </>
-        }
-        subtitle="The agent runs on the same machine as the code. One SSH session, 40 tool rounds. Credentials never leave the manager."
-      />
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 40, alignItems: "center" }}>
-        <svg viewBox="0 0 720 360" style={{ width: "100%", height: "auto" }}>
-          <defs>
-            <linearGradient id="flow1" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor={C.blue} stopOpacity="0" />
-              <stop offset="50%" stopColor={C.blue} stopOpacity="0.9" />
-              <stop offset="100%" stopColor={C.blue} stopOpacity="0" />
-            </linearGradient>
-            <linearGradient id="flow2" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor={C.mauve} stopOpacity="0" />
-              <stop offset="50%" stopColor={C.mauve} stopOpacity="0.9" />
-              <stop offset="100%" stopColor={C.mauve} stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          {/* Connection lines */}
-          <line x1="170" y1="80" x2="280" y2="80" stroke={C.surface2} strokeWidth="1.5" strokeDasharray="4 4" />
-          <line x1="170" y1="280" x2="280" y2="280" stroke={C.surface2} strokeWidth="1.5" strokeDasharray="4 4" />
-          <line x1="430" y1="180" x2="540" y2="180" stroke={C.surface2} strokeWidth="1.5" strokeDasharray="4 4" />
-          <line x1="280" y1="120" x2="280" y2="240" stroke={C.surface2} strokeWidth="1.5" strokeDasharray="4 4" />
-
-          {/* Animated pulses along edges (purely decorative) */}
-          {active && (
-            <>
-              <rect x="180" y="78" width="100" height="4" fill="url(#flow1)">
-                <animate attributeName="x" from="170" to="200" dur="2.2s" repeatCount="indefinite" />
-              </rect>
-              <rect x="180" y="278" width="100" height="4" fill="url(#flow2)">
-                <animate attributeName="x" from="170" to="200" dur="2.6s" repeatCount="indefinite" />
-              </rect>
-              <rect x="440" y="178" width="100" height="4" fill="url(#flow1)">
-                <animate attributeName="x" from="430" to="460" dur="2.0s" repeatCount="indefinite" />
-              </rect>
-            </>
-          )}
-
-          <ArchNode x={20} y={45} w={150} h={70} label="Web UI" sub="Dashboard · chat" color={C.blue} active={active} delay={0.1} />
-          <ArchNode x={20} y={245} w={150} h={70} label="Chrome Ext" sub="Browser agent" color={C.mauve} active={active} delay={0.2} />
-          <ArchNode x={280} y={145} w={150} h={70} label="Manager" sub="WS · MCP · DB" color={C.green} active={active} delay={0.3} />
-          <ArchNode x={540} y={145} w={160} h={70} label="VPS Agent" sub="Claude on the box" color={C.peach} active={active} delay={0.4} />
-
-          {/* SSH tunnel callout */}
-          <foreignObject x="430" y="240" width="180" height="50">
-            <div
-              style={{
-                fontSize: 10,
-                color: C.green,
-                fontWeight: 600,
-                textAlign: "center",
-                padding: "6px 10px",
-                background: `${C.green}10`,
-                border: `1px solid ${C.green}40`,
-                borderRadius: 8,
-              }}
-            >
-              <Lock size={12} style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} />
-              SSH tunneled — keys never on VPS
-            </div>
-          </foreignObject>
-        </svg>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          {[
-            { stat: "40", unit: "tool rounds", desc: "per agent turn (vs. 10 over SSH).", color: C.mauve },
-            { stat: "1", unit: "SSH session", desc: "Persistent stdio, no handshake overhead.", color: C.blue },
-            { stat: "0", unit: "secrets on VPS", desc: "All credentials stay on the manager.", color: C.green },
-          ].map((s, i) => (
-            <div
-              key={s.unit}
-              style={{
-                padding: "16px 20px",
-                borderRadius: 14,
-                background: C.surface0,
+                gap: 8,
+                padding: "8px 14px",
+                borderRadius: 99,
+                background: C.mantle,
                 border: `1px solid ${C.surface1}`,
-                display: "flex",
-                alignItems: "baseline",
-                gap: 14,
-                opacity: active ? 1 : 0,
-                animation: active ? `fadeUp 0.5s ease-out ${0.5 + i * 0.1}s both` : undefined,
+                fontSize: 13,
+                color: C.subtext0,
+                textDecoration: "line-through",
+                textDecorationColor: C.red + "aa",
+                textDecorationThickness: 1.5,
+                opacity: active ? 0.7 : 0,
+                animation: active ? `fadeUp 0.4s ease-out ${0.15 + i * 0.05}s both` : undefined,
               }}
             >
-              <div style={{ fontSize: 40, fontWeight: 800, color: s.color, lineHeight: 1 }}>{s.stat}</div>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 2 }}>{s.unit}</div>
-                <div style={{ fontSize: 12, color: C.subtext0 }}>{s.desc}</div>
-              </div>
+              <span style={{ color: r.color, opacity: 0.7 }}>{r.icon}</span>
+              {r.name}
             </div>
           ))}
         </div>
-      </div>
-    </div>
-  );
-}
 
-/* ─────────────────────────────────────────────────────────────
-   Slide 07 — Competitive landscape (2x2)
-   ───────────────────────────────────────────────────────────── */
-function SlideCompetition({ active }: { active: boolean }) {
-  // Layout: quadrants. We label them carefully.
-  const players = [
-    { name: "VS Code", x: 0.2, y: 0.18, color: C.overlay1 },
-    { name: "JetBrains", x: 0.32, y: 0.32, color: C.overlay1 },
-    { name: "Cursor", x: 0.28, y: 0.62, color: C.sapphire },
-    { name: "Copilot", x: 0.18, y: 0.72, color: C.sapphire },
-    { name: "Windsurf", x: 0.36, y: 0.78, color: C.sapphire },
-    { name: "Vercel", x: 0.72, y: 0.22, color: C.peach },
-    { name: "Railway", x: 0.62, y: 0.32, color: C.peach },
-    { name: "Render", x: 0.82, y: 0.16, color: C.peach },
-    { name: "Devin", x: 0.6, y: 0.7, color: C.maroon },
-    { name: "Replit", x: 0.55, y: 0.55, color: C.maroon },
-  ];
-
-  return (
-    <div style={{ height: "100%", padding: "0 80px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 56, alignItems: "center" }}>
-      <div>
-        <Eyebrow color={C.lavender}>Why we win</Eyebrow>
-        <h2 style={{ fontSize: 52, fontWeight: 700, color: C.text, lineHeight: 1.05, letterSpacing: -2, marginBottom: 24 }}>
-          We own the{" "}
-          <GradientText from={C.lavender} to={C.mauve}>
-            empty quadrant
-          </GradientText>
-          .
-        </h2>
-        <p style={{ fontSize: 17, color: C.subtext0, lineHeight: 1.6, marginBottom: 24 }}>
-          IDE-focused tools never touch production. Production tools don't run agents.
-          Devin runs autonomously but you can't see what it does. Genie is the only
-          platform where an AI agent <em style={{ color: C.text }}>and</em> a human can
-          drive a live production system together.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {[
-            "Full transparency: every tool call visible in real time",
-            "Human-in-the-loop review at every checkpoint",
-            "Real infra, not sandboxes — the agent ships to production",
-          ].map((line) => (
-            <div key={line} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div
-                style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: 11,
-                  background: `${C.green}22`,
-                  color: C.green,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
-                <Check size={13} strokeWidth={3} />
-              </div>
-              <span style={{ fontSize: 14, color: C.text }}>{line}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* 2x2 matrix */}
-      <div
-        style={{
-          position: "relative",
-          width: "100%",
-          aspectRatio: "1 / 1",
-          background: C.surface0 + "55",
-          border: `1px solid ${C.surface1}`,
-          borderRadius: 18,
-          overflow: "hidden",
-        }}
-      >
-        {/* Quadrant dividers */}
-        <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" }}>
-          <div style={{ borderRight: `1px dashed ${C.surface2}`, borderBottom: `1px dashed ${C.surface2}` }} />
-          <div style={{ borderBottom: `1px dashed ${C.surface2}` }} />
-          <div style={{ borderRight: `1px dashed ${C.surface2}` }} />
-          <div />
-        </div>
-
-        {/* Axis labels */}
-        <div style={{ position: "absolute", top: -28, left: "50%", transform: "translateX(-50%)", fontSize: 12, color: C.overlay1, fontWeight: 600, letterSpacing: 1 }}>
-          ← IDE-BOUND          PRODUCTION-BOUND →
-        </div>
+        {/* Center: Genie target */}
         <div
           style={{
-            position: "absolute",
-            top: "50%",
-            left: -22,
-            transform: "rotate(-90deg) translateX(0)",
-            transformOrigin: "0 0",
-            fontSize: 12,
-            color: C.overlay1,
-            fontWeight: 600,
-            letterSpacing: 1,
-            whiteSpace: "nowrap",
-          }}
-        >
-          ← HUMAN-DRIVEN          AI-DRIVEN →
-        </div>
-
-        {/* Existing players */}
-        {players.map((p) => (
-          <div
-            key={p.name}
-            style={{
-              position: "absolute",
-              left: `${p.x * 100}%`,
-              top: `${p.y * 100}%`,
-              transform: "translate(-50%, -50%)",
-              padding: "5px 11px",
-              borderRadius: 999,
-              background: C.mantle,
-              border: `1px solid ${p.color}55`,
-              fontSize: 11,
-              fontWeight: 600,
-              color: p.color,
-              whiteSpace: "nowrap",
-              opacity: active ? 0.9 : 0,
-              transition: "opacity 0.3s ease-out",
-              transitionDelay: "0.2s",
-            }}
-          >
-            {p.name}
-          </div>
-        ))}
-
-        {/* Genie target — bottom right, glowing */}
-        <div
-          style={{
-            position: "absolute",
-            left: "75%",
-            top: "78%",
-            transform: "translate(-50%, -50%)",
+            position: "relative",
+            width: 140,
+            height: 140,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
             opacity: active ? 1 : 0,
-            animation: active ? "fadeUp 0.6s ease-out 0.7s both" : undefined,
+            animation: active ? "fadeUp 0.6s ease-out 0.4s both" : undefined,
           }}
         >
           <div
+            aria-hidden
             style={{
               position: "absolute",
-              inset: -60,
+              inset: -30,
               borderRadius: "50%",
-              background: `radial-gradient(circle, ${C.mauve}40 0%, transparent 70%)`,
+              background: `radial-gradient(circle, ${C.mauve}45 0%, transparent 70%)`,
               filter: "blur(10px)",
             }}
           />
           <div
             style={{
               position: "relative",
-              padding: "10px 18px",
-              borderRadius: 999,
+              width: 120,
+              height: 120,
+              borderRadius: 32,
               background: `linear-gradient(135deg, ${C.mauve}, ${C.blue})`,
-              fontSize: 16,
-              fontWeight: 700,
-              color: C.crust,
-              boxShadow: `0 10px 30px ${C.mauve}50`,
               display: "flex",
               alignItems: "center",
-              gap: 6,
+              justifyContent: "center",
+              boxShadow: `0 20px 50px ${C.mauve}55, inset 0 0 0 1px ${C.mauve}80`,
             }}
           >
-            <Zap size={14} fill={C.crust} stroke="none" />
-            Genie
+            <Zap size={56} fill={C.crust} stroke={C.crust} strokeWidth={2.5} />
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
 
-/* ─────────────────────────────────────────────────────────────
-   Slide 08 — Market
-   ───────────────────────────────────────────────────────────── */
-function SlideMarket({ active }: { active: boolean }) {
-  const bars = [
-    { label: "SOM · AI dev tools", value: 12, color: C.mauve },
-    { label: "SAM · Developer tools", value: 38, color: C.blue },
-    { label: "TAM · Cloud + DevOps + dev tools", value: 108, color: C.teal },
-  ];
-  const max = 120;
-
-  return (
-    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-      <SlideHeader
-        eyebrow="Market"
-        eyebrowColor={C.teal}
-        title={
-          <>
-            A category-defining opportunity at{" "}
-            <GradientText from={C.teal} to={C.green}>
-              the inflection
-            </GradientText>
-          </>
-        }
-        subtitle="Developer tools is now a top-5 enterprise software category. The AI-native slice is doubling YoY — and the platform layer hasn't been won yet."
-      />
-
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 56, alignItems: "center" }}>
-        {/* Bar chart */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          {bars.map((b, i) => (
-            <div key={b.label}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{b.label}</span>
-                <span style={{ fontSize: 14, fontWeight: 700, color: b.color }}>
-                  $<AnimatedNumber value={b.value} active={active} duration={1400} />B
-                </span>
-              </div>
-              <div
-                style={{
-                  height: 14,
-                  width: "100%",
-                  background: C.surface0,
-                  borderRadius: 7,
-                  overflow: "hidden",
-                  position: "relative",
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    width: active ? `${(b.value / max) * 100}%` : "0%",
-                    background: `linear-gradient(90deg, ${b.color}aa, ${b.color})`,
-                    borderRadius: 7,
-                    transition: `width 1.2s cubic-bezier(0.22, 0.61, 0.36, 1) ${0.15 + i * 0.12}s`,
-                    boxShadow: `0 0 16px ${b.color}50`,
-                  }}
-                />
-              </div>
-            </div>
-          ))}
-          <p style={{ fontSize: 11, color: C.overlay0, marginTop: 8 }}>
-            Sources: Gartner, IDC, public filings, 2024–25 estimates.
-          </p>
-        </div>
-
-        {/* Tailwinds */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {[
-            { stat: "189%", label: "AI dev tools YoY growth", color: C.mauve },
-            { stat: "$9B", label: "Cursor valuation (24 months in)", color: C.blue },
-            { stat: "92%", label: "of orgs piloting agents by 2026", color: C.teal },
-          ].map((m, i) => (
+        {/* Pillars */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {pillars.map((p, i) => (
             <div
-              key={m.label}
+              key={p.label}
               style={{
-                padding: "18px 22px",
-                borderRadius: 14,
-                background: C.surface0,
-                border: `1px solid ${C.surface1}`,
-                opacity: active ? 1 : 0,
-                animation: active ? `fadeUp 0.4s ease-out ${0.6 + i * 0.1}s both` : undefined,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                <TrendingUp size={14} color={m.color} />
-                <span style={{ fontSize: 28, fontWeight: 800, color: m.color, letterSpacing: -0.5 }}>{m.stat}</span>
-              </div>
-              <div style={{ fontSize: 13, color: C.subtext0 }}>{m.label}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Slide 09 — Business model
-   ───────────────────────────────────────────────────────────── */
-function SlideBusinessModel({ active }: { active: boolean }) {
-  const tiers = [
-    {
-      tier: "Open Source",
-      price: "Free",
-      sub: "Self-hosted, single dev",
-      color: C.overlay1,
-      features: ["Unlimited local projects", "Bring your own VPS", "Bring your own API keys"],
-      cta: "MIT license",
-    },
-    {
-      tier: "Team",
-      price: "$49",
-      unit: "/seat/mo",
-      sub: "Managed, multi-user",
-      color: C.mauve,
-      featured: true,
-      features: ["Hosted manager + dashboard", "Shared team workspace", "Audit log + role-based access", "Email support"],
-      cta: "Pilots open",
-    },
-    {
-      tier: "Enterprise",
-      price: "Custom",
-      sub: "On-prem, SSO, SOC2",
-      color: C.blue,
-      features: ["VPC / on-prem deploy", "SAML SSO, SCIM", "Dedicated success + SLA", "Custom MCP servers"],
-      cta: "Contact sales",
-    },
-  ];
-  return (
-    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-      <SlideHeader
-        eyebrow="Business model"
-        eyebrowColor={C.yellow}
-        title={
-          <>
-            Open-source funnel into{" "}
-            <GradientText from={C.yellow} to={C.peach}>
-              high-margin SaaS
-            </GradientText>
-          </>
-        }
-        subtitle="Seat-based SaaS with a free self-hosted OSS edition driving the top of the funnel. Two compounding margin lines on top: managed compute and a future MCP marketplace."
-      />
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18 }}>
-        {tiers.map((t, i) => (
-          <div
-            key={t.tier}
-            style={{
-              padding: "26px 24px",
-              borderRadius: 16,
-              background: t.featured ? `linear-gradient(170deg, ${C.mauve}18, ${C.surface0})` : C.surface0,
-              border: t.featured ? `1.5px solid ${C.mauve}80` : `1px solid ${C.surface1}`,
-              position: "relative",
-              transform: t.featured ? "translateY(-10px)" : "none",
-              boxShadow: t.featured ? `0 16px 48px ${C.mauve}30` : "none",
-              opacity: active ? 1 : 0,
-              animation: active ? `fadeUp 0.5s ease-out ${0.15 + i * 0.1}s both` : undefined,
-            }}
-          >
-            {t.featured && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: -12,
-                  left: 24,
-                  padding: "4px 12px",
-                  borderRadius: 99,
-                  background: `linear-gradient(135deg, ${C.mauve}, ${C.blue})`,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: C.crust,
-                  letterSpacing: 0.5,
-                }}
-              >
-                FLAGSHIP
-              </div>
-            )}
-            <div style={{ fontSize: 13, fontWeight: 600, color: t.color, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>
-              {t.tier}
-            </div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 4 }}>
-              <span style={{ fontSize: 38, fontWeight: 800, color: C.text, letterSpacing: -1 }}>{t.price}</span>
-              {t.unit && <span style={{ fontSize: 14, color: C.overlay1 }}>{t.unit}</span>}
-            </div>
-            <div style={{ fontSize: 13, color: C.subtext0, marginBottom: 20 }}>{t.sub}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-              {t.features.map((f) => (
-                <div key={f} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <Check size={14} color={t.color} strokeWidth={3} />
-                  <span style={{ fontSize: 13, color: C.text }}>{f}</span>
-                </div>
-              ))}
-            </div>
-            <div
-              style={{
-                padding: "10px 14px",
-                borderRadius: 10,
-                background: `${t.color}15`,
-                border: `1px solid ${t.color}33`,
-                fontSize: 12,
-                fontWeight: 600,
-                color: t.color,
-                textAlign: "center",
-              }}
-            >
-              {t.cta}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Margin lines */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 24 }}>
-        {[
-          { icon: <Rocket size={16} />, label: "Managed compute", desc: "VPS + agent minutes margin (~25%)", color: C.green },
-          { icon: <Grid3x3 size={16} />, label: "MCP marketplace", desc: "Plugins & templates rev-share (planned 2027)", color: C.pink },
-        ].map((m) => (
-          <div
-            key={m.label}
-            style={{
-              padding: "14px 18px",
-              borderRadius: 12,
-              background: `${m.color}0c`,
-              border: `1px solid ${m.color}30`,
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-            }}
-          >
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 10,
-                background: `${m.color}22`,
-                color: m.color,
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "center",
+                gap: 12,
+                padding: "10px 16px",
+                borderRadius: 12,
+                background: `${p.color}14`,
+                border: `1px solid ${p.color}40`,
+                opacity: active ? 1 : 0,
+                animation: active ? `fadeUp 0.4s ease-out ${0.6 + i * 0.08}s both` : undefined,
               }}
             >
-              {m.icon}
-            </div>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{m.label}</div>
-              <div style={{ fontSize: 12, color: C.subtext0 }}>{m.desc}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Slide 10 — Traction
-   ───────────────────────────────────────────────────────────── */
-function SlideTraction({ active }: { active: boolean }) {
-  return (
-    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-      <SlideHeader
-        eyebrow="Traction"
-        eyebrowColor={C.green}
-        title={
-          <>
-            Live product. Real workloads.{" "}
-            <GradientText from={C.green} to={C.teal}>
-              Compounding usage.
-            </GradientText>
-          </>
-        }
-        subtitle="The product has been running internal and design-partner workloads for six months. Below is the snapshot we share with prospective customers."
-      />
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 32 }}>
-        {[
-          { v: 14, suffix: "", label: "Design partners", color: C.mauve },
-          { v: 1850, suffix: "", label: "Projects deployed", color: C.blue },
-          { v: 9300, suffix: "+", label: "Agent hours / mo", color: C.green },
-          { v: 4.7, suffix: "/5", label: "User NPS", color: C.peach, format: (n: number) => n.toFixed(1) },
-        ].map((m, i) => (
-          <div
-            key={m.label}
-            style={{
-              padding: "26px 22px",
-              borderRadius: 16,
-              background: `linear-gradient(155deg, ${m.color}10, ${C.surface0})`,
-              border: `1px solid ${m.color}33`,
-              opacity: active ? 1 : 0,
-              animation: active ? `fadeUp 0.5s ease-out ${0.1 + i * 0.08}s both` : undefined,
-            }}
-          >
-            <div style={{ fontSize: 44, fontWeight: 800, color: m.color, letterSpacing: -1, lineHeight: 1 }}>
-              <AnimatedNumber value={m.v} active={active} duration={1400} suffix={m.suffix} format={m.format} />
-            </div>
-            <div style={{ fontSize: 13, color: C.subtext0, marginTop: 8 }}>{m.label}</div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <div
-          style={{
-            padding: "22px 24px",
-            borderRadius: 16,
-            background: C.surface0,
-            border: `1px solid ${C.surface1}`,
-          }}
-        >
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.lavender, letterSpacing: 1, marginBottom: 12 }}>
-            DESIGN PARTNERS
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["TeleportHQ", "Medical · early access", "FinTech · undisclosed", "Agency · seed", "AI lab · stealth"].map((p) => (
               <div
-                key={p}
                 style={{
-                  padding: "6px 12px",
-                  borderRadius: 99,
-                  background: C.mantle,
-                  border: `1px solid ${C.surface1}`,
-                  fontSize: 12,
-                  color: C.text,
-                  fontWeight: 500,
+                  width: 32,
+                  height: 32,
+                  borderRadius: 9,
+                  background: `${p.color}25`,
+                  color: p.color,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
               >
-                {p}
+                {p.icon}
               </div>
-            ))}
-          </div>
-        </div>
-        <div
-          style={{
-            padding: "22px 24px",
-            borderRadius: 16,
-            background: C.surface0,
-            border: `1px solid ${C.surface1}`,
-          }}
-        >
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.peach, letterSpacing: 1, marginBottom: 12 }}>
-            VALIDATION
-          </div>
-          <div style={{ fontSize: 14, color: C.text, lineHeight: 1.6, fontStyle: "italic" }}>
-            "Genie cut our deploy + debug cycle from 40 minutes to 4. The agent reads our
-            tracker, ships the fix, opens a review — we just approve."
-          </div>
-          <div style={{ fontSize: 12, color: C.overlay1, marginTop: 10 }}>— Head of Engineering, design partner</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Slide 11 — Roadmap
-   ───────────────────────────────────────────────────────────── */
-function SlideRoadmap({ active }: { active: boolean }) {
-  const milestones = [
-    { q: "Q2 2026", title: "Public beta", desc: "Freemium launch. PLG funnel from OSS to Team.", color: C.green, status: "now" },
-    { q: "Q3 2026", title: "Enterprise tier", desc: "SAML SSO, RBAC, audit logs, first 5 paid customers.", color: C.blue },
-    { q: "Q4 2026", title: "Marketplace + SOC 2", desc: "MCP plugin store. SOC 2 Type I.", color: C.mauve },
-    { q: "Q1 2027", title: "Multi-cloud", desc: "AWS, GCP, Azure. Bring-your-own-cloud deploys.", color: C.peach },
-    { q: "Q2 2027", title: "On-prem GA", desc: "SOC 2 Type II. Enterprise on-prem GA. Series A ready.", color: C.pink },
-  ];
-  return (
-    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-      <SlideHeader
-        eyebrow="Roadmap"
-        eyebrowColor={C.peach}
-        title={
-          <>
-            From beta to{" "}
-            <GradientText from={C.peach} to={C.pink}>
-              Series A
-            </GradientText>{" "}
-            in 12 months
-          </>
-        }
-        subtitle="Five public milestones, each tied to a revenue or distribution unlock."
-      />
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14, position: "relative" }}>
-        {/* Connecting line */}
-        <div
-          style={{
-            position: "absolute",
-            top: 32,
-            left: 32,
-            right: 32,
-            height: 2,
-            background: `linear-gradient(90deg, ${C.green}, ${C.blue}, ${C.mauve}, ${C.peach}, ${C.pink})`,
-            opacity: 0.4,
-          }}
-        />
-        {milestones.map((m, i) => (
-          <div
-            key={m.q}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "stretch",
-              opacity: active ? 1 : 0,
-              animation: active ? `fadeUp 0.4s ease-out ${0.15 + i * 0.1}s both` : undefined,
-            }}
-          >
-            <div
-              style={{
-                width: 22,
-                height: 22,
-                borderRadius: "50%",
-                background: m.status === "now" ? m.color : C.mantle,
-                border: `2px solid ${m.color}`,
-                marginLeft: 21,
-                marginBottom: 18,
-                marginTop: 22,
-                position: "relative",
-                boxShadow: m.status === "now" ? `0 0 16px ${m.color}80` : undefined,
-              }}
-            >
-              {m.status === "now" && (
-                <div
-                  style={{
-                    position: "absolute",
-                    inset: -8,
-                    borderRadius: "50%",
-                    border: `2px solid ${m.color}`,
-                    opacity: 0.5,
-                    animation: "pulse 2s ease-in-out infinite",
-                  }}
-                />
-              )}
+              <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>{p.label}</span>
             </div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: m.color, letterSpacing: 1, marginBottom: 6 }}>{m.q}</div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: C.text, lineHeight: 1.2, marginBottom: 6 }}>{m.title}</div>
-            <div style={{ fontSize: 12, color: C.subtext0, lineHeight: 1.5 }}>{m.desc}</div>
-          </div>
-        ))}
-      </div>
-
-      <div
-        style={{
-          marginTop: 40,
-          padding: "18px 22px",
-          borderRadius: 12,
-          background: `linear-gradient(135deg, ${C.mauve}10, ${C.blue}06)`,
-          border: `1px solid ${C.mauve}33`,
-          display: "flex",
-          alignItems: "center",
-          gap: 14,
-        }}
-      >
-        <Sparkles size={18} color={C.mauve} />
-        <div style={{ fontSize: 14, color: C.text }}>
-          Target by EOY 2026:{" "}
-          <span style={{ color: C.mauve, fontWeight: 700 }}>$1.2M ARR</span> · 30 paying teams · 1,200 self-hosted installs.
+          ))}
         </div>
       </div>
     </div>
@@ -1509,257 +680,371 @@ function SlideRoadmap({ active }: { active: boolean }) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Slide 12 — Team
+   Slide 04 — Inside the platform (product surface)
    ───────────────────────────────────────────────────────────── */
-function TeamCard({ name, role, bio, color, active, delay }: { name: string; role: string; bio: string; color: string; active: boolean; delay: number }) {
-  const initials = name.split(" ").map((n) => n[0]).join("").slice(0, 2);
+function PanelMock({
+  icon,
+  title,
+  color,
+  rows,
+  active,
+  delay,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  color: string;
+  rows: { text: string; muted?: boolean; tag?: string; tagColor?: string }[];
+  active: boolean;
+  delay: number;
+}) {
   return (
     <div
       style={{
-        padding: "26px 24px",
-        borderRadius: 16,
+        padding: "18px 18px",
+        borderRadius: 14,
         background: C.surface0,
         border: `1px solid ${C.surface1}`,
         display: "flex",
         flexDirection: "column",
-        gap: 14,
         opacity: active ? 1 : 0,
         animation: active ? `fadeUp 0.45s ease-out ${delay}s both` : undefined,
       }}
     >
-      <div
-        style={{
-          width: 56,
-          height: 56,
-          borderRadius: 14,
-          background: `linear-gradient(135deg, ${color}, ${color}88)`,
-          color: C.crust,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 22,
-          fontWeight: 700,
-        }}
-      >
-        {initials}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            background: `${color}22`,
+            color,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          {icon}
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{title}</div>
       </div>
-      <div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>{name}</div>
-        <div style={{ fontSize: 13, color, fontWeight: 600, marginTop: 2 }}>{role}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rows.map((r, i) => (
+          <div
+            key={i}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 8,
+              background: C.mantle,
+              fontSize: 12,
+              color: r.muted ? C.overlay1 : C.text,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+            }}
+          >
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.text}</span>
+            {r.tag && (
+              <span
+                style={{
+                  padding: "2px 8px",
+                  borderRadius: 99,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  background: `${r.tagColor || color}22`,
+                  color: r.tagColor || color,
+                  flexShrink: 0,
+                }}
+              >
+                {r.tag}
+              </span>
+            )}
+          </div>
+        ))}
       </div>
-      <div style={{ fontSize: 13, color: C.subtext0, lineHeight: 1.55 }}>{bio}</div>
     </div>
   );
 }
 
-function SlideTeam({ active }: { active: boolean }) {
+function SlideProduct({ active }: { active: boolean }) {
   return (
     <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
       <SlideHeader
-        eyebrow="Team"
-        eyebrowColor={C.pink}
+        eyebrow="Inside the platform"
+        eyebrowColor={C.lavender}
         title={
           <>
-            Operators who have{" "}
-            <GradientText from={C.pink} to={C.mauve}>
-              already built this market
+            Every surface a software team needs —{" "}
+            <GradientText from={C.lavender} to={C.mauve}>
+              in one shell
             </GradientText>
           </>
         }
-        subtitle="A founding team with prior dev-tools exits, deep agent / LLM systems experience, and direct relationships across the design-partner pipeline."
+        subtitle="Chat, tracker, code, cloud, monitoring — and the AI agent that ties them together. Identity, billing, and audit log are unified."
       />
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18 }}>
-        <TeamCard
-          name="Paul Brie"
-          role="Founder & CEO"
-          color={C.mauve}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+        <PanelMock
+          icon={<MessageSquare size={14} />}
+          title="Team chat"
+          color={C.peach}
           active={active}
           delay={0.15}
-          bio="Co-founded TeleportHQ — visual code generation platform used by thousands of teams. 15+ years building developer tools. Leads product & vision."
+          rows={[
+            { text: "@genie ship the auth fix", tag: "you", tagColor: C.peach },
+            { text: "Opened PR #482", muted: true, tag: "agent", tagColor: C.mauve },
+            { text: "Reviewed and merged", muted: true },
+          ]}
         />
-        <TeamCard
-          name="Co-founder · CTO"
-          role="Engineering"
-          color={C.blue}
+        <PanelMock
+          icon={<ListTodo size={14} />}
+          title="Tracker"
+          color={C.lavender}
           active={active}
           delay={0.25}
-          bio="To be announced. Distributed systems lead from a top AI infrastructure company. Owns the agent runtime, MCP, and platform engineering."
+          rows={[
+            { text: "Fix login redirect loop", tag: "in review", tagColor: C.yellow },
+            { text: "Add SSO for enterprise", tag: "doing", tagColor: C.blue },
+            { text: "Pricing page polish", tag: "done", tagColor: C.green },
+          ]}
         />
-        <TeamCard
-          name="Founding Engineer"
-          role="Agent platform"
+        <PanelMock
+          icon={<Code2 size={14} />}
+          title="Code & terminal"
           color={C.teal}
           active={active}
           delay={0.35}
-          bio="Open seat. We have offers out. Looking for an applied-LLM engineer who has shipped agent infrastructure in production."
+          rows={[
+            { text: "src/auth/session.ts" },
+            { text: "$ npm test", muted: true },
+            { text: "All tests pass", tag: "ok", tagColor: C.green },
+          ]}
+        />
+        <PanelMock
+          icon={<Cloud size={14} />}
+          title="Cloud & live VPS"
+          color={C.blue}
+          active={active}
+          delay={0.45}
+          rows={[
+            { text: "production · healthy", tag: "live", tagColor: C.green },
+            { text: "cpu 14%  mem 41%", muted: true },
+            { text: "logs · last 5m", muted: true },
+          ]}
         />
       </div>
 
+      {/* AI agent thread underneath spanning the row */}
       <div
         style={{
-          marginTop: 28,
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
+          marginTop: 18,
+          padding: "18px 22px",
+          borderRadius: 14,
+          background: `linear-gradient(135deg, ${C.mauve}12, ${C.blue}08)`,
+          border: `1px solid ${C.mauve}40`,
+          display: "flex",
+          alignItems: "center",
           gap: 16,
+          opacity: active ? 1 : 0,
+          animation: active ? "fadeUp 0.5s ease-out 0.6s both" : undefined,
         }}
       >
         <div
           style={{
-            padding: "16px 20px",
-            borderRadius: 12,
-            background: C.surface0,
-            border: `1px solid ${C.surface1}`,
+            width: 38,
+            height: 38,
+            borderRadius: 11,
+            background: `linear-gradient(135deg, ${C.mauve}, ${C.blue})`,
+            color: C.crust,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
           }}
         >
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.yellow, letterSpacing: 1, marginBottom: 8 }}>
-            ADVISORS
+          <Bot size={20} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.mauve, marginBottom: 3, letterSpacing: 0.5 }}>
+            AI AGENT · running across every surface
           </div>
-          <div style={{ fontSize: 13, color: C.subtext0, lineHeight: 1.6 }}>
-            Active advisors from <span style={{ color: C.text }}>Anthropic</span>,{" "}
-            <span style={{ color: C.text }}>Vercel</span>, and a leading EU venture studio —
-            named on request.
+          <div style={{ fontSize: 14, color: C.text, lineHeight: 1.5 }}>
+            Reads the ticket. Writes the code. Runs the tests. Opens the PR. Deploys to staging.
+            Pings the team in chat when it's ready for review.
           </div>
         </div>
-        <div
-          style={{
-            padding: "16px 20px",
-            borderRadius: 12,
-            background: C.surface0,
-            border: `1px solid ${C.surface1}`,
-          }}
-        >
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 1, marginBottom: 8 }}>
-            HIRING WITH THE ROUND
-          </div>
-          <div style={{ fontSize: 13, color: C.subtext0, lineHeight: 1.6 }}>
-            6 engineering, 1 design, 1 GTM — all roles scoped and pipelined. First 3 hires
-            already in final rounds.
-          </div>
-        </div>
+        <Sparkles size={16} color={C.mauve} />
       </div>
     </div>
   );
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Slide 13 — The Ask
+   Slide 05 — 10× for developers
    ───────────────────────────────────────────────────────────── */
-function SlideAsk({ active }: { active: boolean }) {
-  const allocation = [
-    { label: "Engineering — 6 hires", pct: 65, color: C.mauve },
-    { label: "GTM & growth", pct: 20, color: C.blue },
-    { label: "Security, SOC 2, infra", pct: 15, color: C.teal },
-  ];
+function BigTenX({ active, color }: { active: boolean; color: string }) {
   return (
     <div
       style={{
         position: "relative",
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "center",
+        lineHeight: 0.85,
+      }}
+    >
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: -40,
+          borderRadius: "50%",
+          background: `radial-gradient(circle, ${color}30 0%, transparent 65%)`,
+          filter: "blur(20px)",
+        }}
+      />
+      <span
+        style={{
+          position: "relative",
+          fontSize: 260,
+          fontWeight: 800,
+          letterSpacing: -10,
+          color: C.text,
+          background: `linear-gradient(135deg, ${color}, ${C.text})`,
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+        }}
+      >
+        <AnimatedNumber value={10} active={active} duration={1100} />
+      </span>
+      <span
+        style={{
+          position: "relative",
+          fontSize: 180,
+          fontWeight: 700,
+          color,
+          marginLeft: 4,
+          letterSpacing: -4,
+        }}
+      >
+        ×
+      </span>
+    </div>
+  );
+}
+
+function SlideDevs({ active }: { active: boolean }) {
+  const wins = [
+    {
+      icon: <Bot size={18} />,
+      title: "Agent has full context",
+      desc: "Tracker, repo, chat history, live infra — all in one prompt. No more pasting between tabs.",
+      color: C.mauve,
+    },
+    {
+      icon: <Terminal size={18} />,
+      title: "Ship from anywhere",
+      desc: "\"Deploy\" / \"scan\" / \"show logs\" from the same chat that holds your tickets and PRs.",
+      color: C.teal,
+    },
+    {
+      icon: <Layers size={18} />,
+      title: "One identity, one audit",
+      desc: "No bouncing between seven dashboards. SSO, permissions, and history live in one place.",
+      color: C.blue,
+    },
+    {
+      icon: <Sparkles size={18} />,
+      title: "The boring work is gone",
+      desc: "Tracker hygiene, status updates, deploy babysitting — all handled by the agent.",
+      color: C.green,
+    },
+  ];
+
+  return (
+    <div
+      style={{
         height: "100%",
         padding: "0 80px",
         display: "grid",
-        gridTemplateColumns: "1fr 1.1fr",
+        gridTemplateColumns: "1fr 1.05fr",
         gap: 56,
         alignItems: "center",
       }}
     >
-      <DotGrid opacity={0.1} />
       <div>
-        <Eyebrow color={C.mauve}>The ask</Eyebrow>
-        <h2 style={{ fontSize: 96, fontWeight: 800, color: C.text, lineHeight: 0.95, letterSpacing: -4, marginBottom: 16 }}>
-          <GradientText from={C.mauve} to={C.blue}>$4M
-          </GradientText>
+        <Eyebrow color={C.mauve}>For developers</Eyebrow>
+        <h2 style={{ fontSize: 52, fontWeight: 700, color: C.text, lineHeight: 1.05, letterSpacing: -2, marginBottom: 28 }}>
+          Ship{" "}
+          <GradientText from={C.mauve} to={C.blue}>
+            10×
+          </GradientText>{" "}
+          faster, without the tool tax.
         </h2>
-        <p style={{ fontSize: 22, color: C.text, lineHeight: 1.4, marginBottom: 14 }}>
-          Seed round · SAFE or priced.
+        <p style={{ fontSize: 17, color: C.subtext0, lineHeight: 1.6, marginBottom: 28 }}>
+          Most of a developer's day is not writing code — it's hunting for context, switching
+          tabs, updating tickets, watching deploys. Genie collapses all of that into one
+          continuous loop the agent can run.
         </p>
-        <p style={{ fontSize: 16, color: C.subtext0, lineHeight: 1.6, maxWidth: 480, marginBottom: 28 }}>
-          18 months of runway to ship the public beta, hit our enterprise milestones, and
-          arrive at Series A with{" "}
-          <span style={{ color: C.text, fontWeight: 600 }}>$2M+ ARR</span> and{" "}
-          <span style={{ color: C.text, fontWeight: 600 }}>SOC 2</span>.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {["Targeting strategic + multi-stage funds", "Lead identified — co-investors welcome", "Closing this quarter"].map((line) => (
-            <div key={line} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <ArrowRight size={14} color={C.green} />
-              <span style={{ fontSize: 14, color: C.text }}>{line}</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {wins.map((w, i) => (
+            <div
+              key={w.title}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 14,
+                padding: "14px 16px",
+                borderRadius: 12,
+                background: C.surface0,
+                border: `1px solid ${C.surface1}`,
+                opacity: active ? 1 : 0,
+                animation: active ? `fadeUp 0.4s ease-out ${0.15 + i * 0.08}s both` : undefined,
+              }}
+            >
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  background: `${w.color}20`,
+                  color: w.color,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                {w.icon}
+              </div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 2 }}>{w.title}</div>
+                <div style={{ fontSize: 13, color: C.subtext0, lineHeight: 1.5 }}>{w.desc}</div>
+              </div>
             </div>
           ))}
         </div>
       </div>
 
-      <div
-        style={{
-          padding: "32px 32px",
-          borderRadius: 20,
-          background: `linear-gradient(160deg, ${C.surface0}, ${C.mantle})`,
-          border: `1px solid ${C.surface1}`,
-        }}
-      >
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.subtext0, letterSpacing: 1.5, marginBottom: 24 }}>
-          USE OF FUNDS
-        </div>
-
-        {/* Stacked allocation bar */}
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+        <DotGrid opacity={0.07} />
+        <BigTenX active={active} color={C.mauve} />
         <div
           style={{
-            display: "flex",
-            height: 14,
-            borderRadius: 7,
-            overflow: "hidden",
-            background: C.crust,
-            marginBottom: 24,
+            position: "relative",
+            padding: "8px 18px",
+            borderRadius: 99,
+            background: `${C.mauve}18`,
+            border: `1px solid ${C.mauve}40`,
+            color: C.mauve,
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: 1,
+            opacity: active ? 1 : 0,
+            animation: active ? "fadeUp 0.5s ease-out 0.5s both" : undefined,
           }}
         >
-          {allocation.map((a, i) => (
-            <div
-              key={a.label}
-              style={{
-                width: active ? `${a.pct}%` : "0%",
-                background: a.color,
-                transition: `width 1s cubic-bezier(0.22, 0.61, 0.36, 1) ${0.2 + i * 0.15}s`,
-                boxShadow: `0 0 12px ${a.color}80`,
-              }}
-            />
-          ))}
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          {allocation.map((a, i) => (
-            <div
-              key={a.label}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 14,
-                opacity: active ? 1 : 0,
-                animation: active ? `fadeUp 0.45s ease-out ${0.45 + i * 0.1}s both` : undefined,
-              }}
-            >
-              <div style={{ width: 12, height: 12, borderRadius: 4, background: a.color, flexShrink: 0 }} />
-              <div style={{ flex: 1, fontSize: 15, color: C.text }}>{a.label}</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: a.color }}>{a.pct}%</div>
-            </div>
-          ))}
-        </div>
-
-        <div
-          style={{
-            marginTop: 28,
-            padding: "14px 18px",
-            borderRadius: 10,
-            background: `${C.green}10`,
-            border: `1px solid ${C.green}33`,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          <Users size={16} color={C.green} />
-          <div style={{ fontSize: 13, color: C.text }}>
-            Team grows from <span style={{ fontWeight: 700 }}>3 → 11</span> over the 18-month runway.
-          </div>
+          DEVELOPER PRODUCTIVITY
         </div>
       </div>
     </div>
@@ -1767,7 +1052,397 @@ function SlideAsk({ active }: { active: boolean }) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Slide 14 — Closing
+   Slide 06 — 10× for non-tech users
+   ───────────────────────────────────────────────────────────── */
+function SlideNonTech({ active }: { active: boolean }) {
+  const personas = [
+    {
+      icon: <Briefcase size={18} />,
+      role: "Product manager",
+      verb: "Writes a ticket → ships the fix.",
+      desc: "Describes the change in plain English. Genie's agent writes the code and opens a review.",
+      color: C.lavender,
+    },
+    {
+      icon: <PenTool size={18} />,
+      role: "Designer",
+      verb: "Drops a screenshot → matches the layout.",
+      desc: "Hands the agent a mockup. It restyles components and shows the live preview in the same window.",
+      color: C.pink,
+    },
+    {
+      icon: <Crown size={18} />,
+      role: "Founder",
+      verb: "Runs the roadmap from chat.",
+      desc: "Talks to the team and the agent in the same thread. Decisions become tickets become commits.",
+      color: C.yellow,
+    },
+    {
+      icon: <Wrench size={18} />,
+      role: "Ops / support",
+      verb: "Closes incidents without a ticket.",
+      desc: "Describes the bug from a customer. Agent reproduces, ships the patch, replies to the user.",
+      color: C.teal,
+    },
+  ];
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        padding: "0 80px",
+        display: "grid",
+        gridTemplateColumns: "1.05fr 1fr",
+        gap: 56,
+        alignItems: "center",
+      }}
+    >
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+        <DotGrid opacity={0.07} />
+        <BigTenX active={active} color={C.blue} />
+        <div
+          style={{
+            position: "relative",
+            padding: "8px 18px",
+            borderRadius: 99,
+            background: `${C.blue}18`,
+            border: `1px solid ${C.blue}40`,
+            color: C.blue,
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: 1,
+            opacity: active ? 1 : 0,
+            animation: active ? "fadeUp 0.5s ease-out 0.5s both" : undefined,
+          }}
+        >
+          NON-TECHNICAL CONTRIBUTORS
+        </div>
+      </div>
+
+      <div>
+        <Eyebrow color={C.blue}>For everyone else</Eyebrow>
+        <h2 style={{ fontSize: 52, fontWeight: 700, color: C.text, lineHeight: 1.05, letterSpacing: -2, marginBottom: 24 }}>
+          Anyone on the team can{" "}
+          <GradientText from={C.blue} to={C.teal}>
+            ship software
+          </GradientText>
+          .
+        </h2>
+        <p style={{ fontSize: 17, color: C.subtext0, lineHeight: 1.6, marginBottom: 28 }}>
+          Product, design, ops, founders — the people who know what's broken are usually the
+          last to fix it. Genie lets them describe a change and watch it ship, with the agent
+          doing the work and a developer optionally reviewing.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {personas.map((p, i) => (
+            <div
+              key={p.role}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 14,
+                padding: "14px 16px",
+                borderRadius: 12,
+                background: C.surface0,
+                border: `1px solid ${C.surface1}`,
+                opacity: active ? 1 : 0,
+                animation: active ? `fadeUp 0.4s ease-out ${0.15 + i * 0.08}s both` : undefined,
+              }}
+            >
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  background: `${p.color}20`,
+                  color: p.color,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                {p.icon}
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: p.color, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 4 }}>
+                  {p.role}
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 3 }}>
+                  {p.verb}
+                </div>
+                <div style={{ fontSize: 13, color: C.subtext0, lineHeight: 1.5 }}>{p.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Slide 07 — Why a single platform wins (moat)
+   ───────────────────────────────────────────────────────────── */
+function SlideMoat({ active }: { active: boolean }) {
+  // Two contexts: limited vs full
+  return (
+    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <SlideHeader
+        eyebrow="Why this wins"
+        eyebrowColor={C.green}
+        title={
+          <>
+            The agent that sees{" "}
+            <GradientText from={C.green} to={C.teal}>
+              everything
+            </GradientText>{" "}
+            beats the one that sees a slice.
+          </>
+        }
+        subtitle="An AI agent is only as good as the context it can read and the surface it can act on. Single-purpose tools cap themselves. Genie doesn't."
+      />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+        {/* Single-purpose tool */}
+        <div
+          style={{
+            padding: "24px 24px",
+            borderRadius: 18,
+            background: C.surface0,
+            border: `1px solid ${C.surface1}`,
+            opacity: active ? 1 : 0,
+            animation: active ? "fadeUp 0.5s ease-out 0.15s both" : undefined,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.red, letterSpacing: 1, marginBottom: 14 }}>
+            SINGLE-PURPOSE TOOL
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 16, lineHeight: 1.2 }}>
+            Sees only its own surface.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[
+              { label: "Repo", has: true },
+              { label: "Tickets", has: false },
+              { label: "Team chat", has: false },
+              { label: "Live infra", has: false },
+              { label: "Customer messages", has: false },
+              { label: "Deploy state", has: false },
+            ].map((row) => (
+              <div
+                key={row.label}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: row.has ? `${C.green}10` : C.mantle,
+                }}
+              >
+                {row.has ? (
+                  <Check size={14} color={C.green} strokeWidth={3} />
+                ) : (
+                  <Minus size={14} color={C.overlay0} strokeWidth={3} />
+                )}
+                <span
+                  style={{
+                    fontSize: 14,
+                    color: row.has ? C.text : C.overlay1,
+                    textDecoration: row.has ? "none" : "line-through",
+                    textDecorationColor: C.overlay0,
+                  }}
+                >
+                  {row.label}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Genie */}
+        <div
+          style={{
+            position: "relative",
+            padding: "24px 24px",
+            borderRadius: 18,
+            background: `linear-gradient(160deg, ${C.mauve}10, ${C.surface0})`,
+            border: `1.5px solid ${C.mauve}80`,
+            boxShadow: `0 16px 48px ${C.mauve}25`,
+            opacity: active ? 1 : 0,
+            animation: active ? "fadeUp 0.5s ease-out 0.3s both" : undefined,
+          }}
+        >
+          <div
+            aria-hidden
+            style={{
+              position: "absolute",
+              top: -40,
+              right: -40,
+              width: 160,
+              height: 160,
+              borderRadius: "50%",
+              background: `radial-gradient(circle, ${C.mauve}30 0%, transparent 70%)`,
+              filter: "blur(20px)",
+            }}
+          />
+          <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.mauve, letterSpacing: 1 }}>
+              GENIE
+            </div>
+            <Zap size={14} fill={C.mauve} stroke="none" />
+          </div>
+          <div style={{ position: "relative", fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 16, lineHeight: 1.2 }}>
+            Sees the whole team.
+          </div>
+          <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 8 }}>
+            {["Repo", "Tickets", "Team chat", "Live infra", "Customer messages", "Deploy state"].map((label) => (
+              <div
+                key={label}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: `${C.green}10`,
+                }}
+              >
+                <Check size={14} color={C.green} strokeWidth={3} />
+                <span style={{ fontSize: 14, color: C.text }}>{label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          marginTop: 24,
+          padding: "14px 20px",
+          borderRadius: 12,
+          background: `linear-gradient(135deg, ${C.green}0e, ${C.teal}06)`,
+          border: `1px solid ${C.green}33`,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          opacity: active ? 1 : 0,
+          animation: active ? "fadeUp 0.4s ease-out 0.55s both" : undefined,
+        }}
+      >
+        <Sparkles size={16} color={C.green} />
+        <div style={{ fontSize: 14, color: C.text }}>
+          More context in →{" "}
+          <span style={{ color: C.green, fontWeight: 700 }}>better decisions out</span>. The
+          single platform compounds, the patchwork can't.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Slide 08 — Vision
+   ───────────────────────────────────────────────────────────── */
+function SlideVision({ active }: { active: boolean }) {
+  const horizons = [
+    {
+      tag: "Today",
+      title: "The cockpit for software teams",
+      desc: "Dev, product, design and ops working with one AI agent that ships real code on real infra.",
+      icon: <Users size={20} />,
+      color: C.mauve,
+    },
+    {
+      tag: "Next",
+      title: "Every product team builds software",
+      desc: "Marketing pages, internal tools, customer dashboards — described once, shipped from the same workspace.",
+      icon: <Layers size={20} />,
+      color: C.blue,
+    },
+    {
+      tag: "Eventually",
+      title: "Any organization authors software",
+      desc: "Software stops being something only engineers make. It becomes how every team expresses its work.",
+      icon: <Globe size={20} />,
+      color: C.teal,
+    },
+  ];
+
+  return (
+    <div style={{ height: "100%", padding: "0 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <SlideHeader
+        eyebrow="Where this goes"
+        eyebrowColor={C.peach}
+        title={
+          <>
+            From <GradientText from={C.mauve} to={C.blue}>dev teams</GradientText> today to{" "}
+            <GradientText from={C.blue} to={C.teal}>every team</GradientText> tomorrow.
+          </>
+        }
+        subtitle="The same platform expands outward as more of the work that used to require an engineer can be authored in chat."
+      />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+        {horizons.map((h, i) => (
+          <div
+            key={h.tag}
+            style={{
+              padding: "26px 24px",
+              borderRadius: 18,
+              background: `linear-gradient(160deg, ${h.color}10, ${C.surface0})`,
+              border: `1px solid ${h.color}40`,
+              position: "relative",
+              overflow: "hidden",
+              opacity: active ? 1 : 0,
+              animation: active ? `fadeUp 0.5s ease-out ${0.15 + i * 0.12}s both` : undefined,
+            }}
+          >
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                top: -50,
+                right: -50,
+                width: 140,
+                height: 140,
+                borderRadius: "50%",
+                background: `radial-gradient(circle, ${h.color}30 0%, transparent 60%)`,
+              }}
+            />
+            <div
+              style={{
+                position: "relative",
+                width: 48,
+                height: 48,
+                borderRadius: 13,
+                background: `${h.color}22`,
+                color: h.color,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                marginBottom: 18,
+              }}
+            >
+              {h.icon}
+            </div>
+            <div style={{ position: "relative", fontSize: 11, fontWeight: 700, color: h.color, letterSpacing: 1.5, marginBottom: 6 }}>
+              {h.tag.toUpperCase()}
+            </div>
+            <h3 style={{ position: "relative", fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 10, lineHeight: 1.2 }}>
+              {h.title}
+            </h3>
+            <p style={{ position: "relative", fontSize: 14, color: C.subtext0, lineHeight: 1.55 }}>{h.desc}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Slide 09 — Closing
    ───────────────────────────────────────────────────────────── */
 function SlideClosing({ active }: { active: boolean }) {
   return (
@@ -1835,28 +1510,28 @@ function SlideClosing({ active }: { active: boolean }) {
           animation: active ? "fadeUp 0.7s ease-out 0.25s both" : undefined,
         }}
       >
-        Software is being{" "}
+        One workspace.
+        <br />
         <GradientText from={C.mauve} to={C.blue}>
-          rebuilt
-        </GradientText>
-        .<br />
-        Let's build the platform.
+          One team.
+        </GradientText>{" "}
+        Software, shipped.
       </h2>
 
       <p
         style={{
           position: "relative",
-          fontSize: 19,
+          fontSize: 20,
           color: C.subtext0,
-          maxWidth: 720,
+          maxWidth: 740,
           lineHeight: 1.6,
           marginBottom: 40,
           opacity: active ? 1 : 0,
           animation: active ? "fadeUp 0.7s ease-out 0.4s both" : undefined,
         }}
       >
-        Genie is the only platform where AI agents own the loop from idea to production —
-        with humans in the driver's seat. We'd love your partnership for this round.
+        Genie replaces the patchwork your team uses today and gives the AI agent everything
+        it needs to do the boring work, so people can stay in flow.
       </p>
 
       <div
@@ -1881,8 +1556,8 @@ function SlideClosing({ active }: { active: boolean }) {
             gap: 8,
           }}
         >
-          <MessageSquare size={16} />
-          paul.brie@teleporthq.io
+          <ArrowRight size={16} />
+          Get a demo
         </div>
         <div
           style={{
@@ -1902,20 +1577,6 @@ function SlideClosing({ active }: { active: boolean }) {
           genie.teleporthq.ai
         </div>
       </div>
-
-      <p
-        style={{
-          position: "relative",
-          fontSize: 13,
-          color: C.overlay0,
-          marginTop: 56,
-          letterSpacing: 1,
-          opacity: active ? 1 : 0,
-          animation: active ? "fadeUp 0.7s ease-out 0.7s both" : undefined,
-        }}
-      >
-        GENIE · 2026 · CONFIDENTIAL
-      </p>
     </div>
   );
 }
@@ -1931,18 +1592,13 @@ interface SlideMeta {
 
 const slides: SlideMeta[] = [
   { id: "title", title: "Title", render: (p) => <SlideTitle {...p} /> },
-  { id: "inflection", title: "Why now", render: (p) => <SlideInflection {...p} /> },
-  { id: "problem", title: "Problem", render: (p) => <SlideProblem {...p} /> },
-  { id: "solution", title: "Solution", render: (p) => <SlideSolution {...p} /> },
-  { id: "product", title: "Product", render: (p) => <SlideProduct {...p} /> },
-  { id: "architecture", title: "Architecture", render: (p) => <SlideArchitecture {...p} /> },
-  { id: "competition", title: "Competition", render: (p) => <SlideCompetition {...p} /> },
-  { id: "market", title: "Market", render: (p) => <SlideMarket {...p} /> },
-  { id: "model", title: "Business model", render: (p) => <SlideBusinessModel {...p} /> },
-  { id: "traction", title: "Traction", render: (p) => <SlideTraction {...p} /> },
-  { id: "roadmap", title: "Roadmap", render: (p) => <SlideRoadmap {...p} /> },
-  { id: "team", title: "Team", render: (p) => <SlideTeam {...p} /> },
-  { id: "ask", title: "The ask", render: (p) => <SlideAsk {...p} /> },
+  { id: "problem", title: "Fragmented stack", render: (p) => <SlideProblem {...p} /> },
+  { id: "solution", title: "One workspace", render: (p) => <SlideSolution {...p} /> },
+  { id: "product", title: "Inside Genie", render: (p) => <SlideProduct {...p} /> },
+  { id: "devs", title: "10× for devs", render: (p) => <SlideDevs {...p} /> },
+  { id: "non-tech", title: "10× for everyone", render: (p) => <SlideNonTech {...p} /> },
+  { id: "moat", title: "Why we win", render: (p) => <SlideMoat {...p} /> },
+  { id: "vision", title: "Vision", render: (p) => <SlideVision {...p} /> },
   { id: "closing", title: "Closing", render: (p) => <SlideClosing {...p} /> },
 ];
 
@@ -1954,16 +1610,13 @@ export default function PresentationPage() {
   const [overview, setOverview] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
 
-  const go = useCallback(
-    (dir: number) => {
-      setCurrent((c) => {
-        const next = c + dir;
-        if (next < 0 || next >= slides.length) return c;
-        return next;
-      });
-    },
-    [],
-  );
+  const go = useCallback((dir: number) => {
+    setCurrent((c) => {
+      const next = c + dir;
+      if (next < 0 || next >= slides.length) return c;
+      return next;
+    });
+  }, []);
 
   const jump = useCallback((i: number) => {
     setCurrent(Math.max(0, Math.min(slides.length - 1, i)));
@@ -2184,7 +1837,8 @@ export default function PresentationPage() {
             <Keyboard size={14} />
           </button>
           <span style={{ fontSize: 12, color: C.overlay1, margin: "0 8px", fontVariantNumeric: "tabular-nums" }}>
-            {String(current + 1).padStart(2, "0")} <span style={{ color: C.overlay0 }}>/ {String(slides.length).padStart(2, "0")}</span>
+            {String(current + 1).padStart(2, "0")}{" "}
+            <span style={{ color: C.overlay0 }}>/ {String(slides.length).padStart(2, "0")}</span>
           </span>
           <button
             onClick={() => go(-1)}
@@ -2262,7 +1916,7 @@ export default function PresentationPage() {
               <X size={16} />
             </button>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
             {slides.map((s, i) => (
               <button
                 key={s.id}
@@ -2273,7 +1927,7 @@ export default function PresentationPage() {
                   background: C.surface0,
                   border: i === current ? `2px solid ${C.mauve}` : `1px solid ${C.surface1}`,
                   cursor: "pointer",
-                  padding: 16,
+                  padding: 18,
                   display: "flex",
                   flexDirection: "column",
                   justifyContent: "space-between",
@@ -2285,17 +1939,10 @@ export default function PresentationPage() {
                 onMouseEnter={(e) => (e.currentTarget.style.transform = "translateY(-2px)")}
                 onMouseLeave={(e) => (e.currentTarget.style.transform = "translateY(0)")}
               >
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: C.overlay0,
-                    fontWeight: 700,
-                    letterSpacing: 1,
-                  }}
-                >
+                <div style={{ fontSize: 10, color: C.overlay0, fontWeight: 700, letterSpacing: 1 }}>
                   {String(i + 1).padStart(2, "0")}
                 </div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{s.title}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>{s.title}</div>
               </button>
             ))}
           </div>
@@ -2374,10 +2021,6 @@ export default function PresentationPage() {
         @keyframes fadeIn {
           from { opacity: 0; }
           to { opacity: 1; }
-        }
-        @keyframes pulse {
-          0%, 100% { transform: scale(1); opacity: 0.5; }
-          50% { transform: scale(1.4); opacity: 0; }
         }
         button:focus { outline: none; }
         button:focus-visible { outline: 2px solid ${C.mauve}; outline-offset: 2px; }
