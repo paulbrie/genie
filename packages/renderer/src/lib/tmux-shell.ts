@@ -26,9 +26,13 @@ export function tmuxAttachShellCommand(sessionName: string): string {
   return withTmux(`${TMUX_SERVER_OPTIONS}; ("$T" attach -t ${target} 2>/dev/null || "$T" switch-client -t ${target})`);
 }
 
-/** Wrap a shell one-liner so keystrokes are not echoed into the live PTY (xterm). */
-export function wrapSilentPtyCommand(command: string): string {
-  return `{ stty -echo 2>/dev/null; ${command}; stty sane 2>/dev/null; } 2>/dev/null`;
+/** Raw key sequence that switches the *current* tmux client to another session
+ *  via tmux command mode: Prefix (C-b) → `:` → `switch-client -t '<name>'` → Enter.
+ *  tmux paints this on its bottom status line and never lets the characters reach
+ *  the running app (shell/Claude), so nothing pollutes the scrollback. Assumes the
+ *  default prefix C-b — remapped prefixes will need to send their own binding. */
+export function tmuxSwitchClientKeys(sessionName: string): string {
+  return `\x02:switch-client -t ${shellSingleQuote(sessionName)}\r`;
 }
 
 export function tmuxRenameCommand(sessionName: string, newName: string): string {

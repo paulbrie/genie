@@ -14,11 +14,12 @@ import {
   pasteVmImage,
   reconnectVmConnection,
   refreshVmStats,
+  sendVmRawData,
   setVmConnectionTmuxSession,
 } from "@/store/actions";
 import type { VmConnectionState } from "@/store/types/vps";
 import { TmuxSessionBadges } from "@/components/tazcloud/tmux-session-badges";
-import { tmuxAttachShellCommand } from "@/lib/tmux-shell";
+import { tmuxAttachShellCommand, tmuxSwitchClientKeys } from "@/lib/tmux-shell";
 import { createTerminal, hasTerminal, reattachTerminal, setTerminalFontSize } from "@/lib/terminal-bridge";
 import { useWindowFontSize, WINDOW_FONT_PX } from "@/components/ui/window-font-size";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -187,9 +188,20 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
   const handleAttachTmux = (sessionName: string) => {
     if (!isLive) return;
     if (conn.tmuxSessionName === sessionName) return;
+    const wasAttached = conn.tmuxSessionName != null;
     setVmConnectionTmuxSession(connectionKey, sessionName);
-    // Switch/attach inside the live PTY without echoing the shell line into Claude.
-    injectVmCommand(connectionKey, tmuxAttachShellCommand(sessionName), { silent: true });
+    if (wasAttached) {
+      // Already inside a tmux client — switch via tmux command mode. The keys are
+      // drawn on tmux's bottom status line, never reach the running shell/Claude,
+      // and leave no trace in the scrollback. The `stty -echo` wrap can't suppress
+      // canonical-mode echo of its own line, so typing the shell command would
+      // dump the entire wrapper into whatever process is at the prompt.
+      sendVmRawData(connectionKey, tmuxSwitchClientKeys(sessionName));
+    } else {
+      // First attach from a bare shell — type `tmux attach -t …` into the PTY.
+      // Echoes one line briefly before tmux takes over the screen.
+      injectVmCommand(connectionKey, tmuxAttachShellCommand(sessionName), { silent: true });
+    }
     window.setTimeout(() => refreshVmStats(connectionKey, { force: true }), 1500);
   };
 
@@ -265,8 +277,14 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
 
       {/* Error band (above the terminal pane) */}
       {conn.status === "error" && conn.errorMessage && (
-        <div className="px-3 py-1.5 text-[11px] text-red bg-red/10 border-b border-red/30 shrink-0">
-          {conn.errorMessage}
+        <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-red bg-red/10 border-b border-red/30 shrink-0">
+          <span className="flex-1">{conn.errorMessage}</span>
+          <button
+            onClick={() => reconnectVmConnection(connectionKey)}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-red/40 text-red hover:bg-red/15 transition-colors shrink-0"
+          >
+            <RotateCcw size={11} /> Try again
+          </button>
         </div>
       )}
 

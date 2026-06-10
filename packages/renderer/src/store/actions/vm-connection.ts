@@ -201,6 +201,15 @@ export function injectVmCommand(
   wsSend("terminal:inject", { terminalId: c.terminalId, command, silent: opts?.silent ?? false });
 }
 
+/** Write raw bytes straight to the PTY (no shell wrapping, no echo suppression).
+ *  Used to drive tmux command-mode keys (prefix + ':' + command) where tmux owns
+ *  the echo and the text never lands in the scrollback or in Claude's input. */
+export function sendVmRawData(key: string, data: string): void {
+  const c = $vmConnections.getValue().connections[key];
+  if (!c) return;
+  wsSend("terminal:data", { terminalId: c.terminalId, data });
+}
+
 /** Track which tmux session a live popup is attached to (drives badge selection). */
 export function setVmConnectionTmuxSession(key: string, sessionName: string): void {
   const c = $vmConnections.getValue().connections[key];
