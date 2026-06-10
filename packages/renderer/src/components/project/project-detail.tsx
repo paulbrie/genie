@@ -462,6 +462,13 @@ function isCriticalSshRule(rule: UfwRule): boolean {
   return port === "22" && rule.action === "ALLOW" && rule.direction === "IN" && rule.from !== "Anywhere" && rule.from !== "Anywhere (v6)";
 }
 
+/** Numeric port for sorting. Strips `/tcp`/`/udp` and `(v6)` suffixes; falls back
+ *  to Infinity for non-numeric `to` values (e.g. "Anywhere") so they sink last. */
+function rulePortKey(rule: UfwRule): number {
+  const port = parseInt(rule.to.replace(/\/.*/, "").trim(), 10);
+  return Number.isFinite(port) ? port : Number.POSITIVE_INFINITY;
+}
+
 /** Function-shaped SSH exec — lets VpsFirewall be reused across project-based and
  *  admin-context VMs by swapping the actual exec function. */
 type VpsExecFn = (command: string) => Promise<{ output: string; error?: boolean }>;
@@ -514,6 +521,12 @@ export function VpsFirewall({ exec }: { exec: VpsExecFn }) {
           parsed.push({ num: parseInt(m[1]), to: m[2].trim(), action: m[3].trim(), direction: m[4].trim(), from: m[5].trim() });
         }
       }
+      // Sort by destination port ascending so the list scans cleanly (22, 3000,
+      // 8008 …) instead of ufw's insertion order. Same-port rules keep their
+      // relative order via the stable sort; non-numeric `to` (e.g. "Anywhere")
+      // sinks to the bottom. Edit/delete still target the rule object, not the
+      // ufw rule number, so reordering here is safe.
+      parsed.sort((a, b) => rulePortKey(a) - rulePortKey(b));
       setRules(parsed);
     } catch (err: any) {
       setError(err.message);
