@@ -10,6 +10,7 @@ let port: chrome.runtime.Port | null = null;
 let iframe: HTMLIFrameElement | null = null;
 let iframeReady = false;
 let swWsUrl = "";
+let swAuthToken = "";
 
 // Current extension context (updated by service worker)
 let currentProject: any = null;
@@ -66,6 +67,15 @@ function connectPort(): void {
         swWsUrl = msg.url;
         if (iframe?.contentWindow) {
           iframe.contentWindow.postMessage({ type: "genie:sw-ws-url", url: msg.url }, "*");
+        }
+        break;
+
+      case "auth:token":
+        // Service worker has a token — hand it to the iframe so it authenticates
+        // its own socket without a separate login.
+        swAuthToken = msg.token;
+        if (iframeReady && iframe?.contentWindow) {
+          iframe.contentWindow.postMessage({ type: "genie:auth-token", token: msg.token }, "*");
         }
         break;
     }
@@ -129,6 +139,10 @@ function initIframe(): void {
           },
           "*",
         );
+        // Replay the SW's WS URL + auth token now that the iframe is alive, so it
+        // matches the manager the SW uses and authenticates with one login.
+        if (swWsUrl) iframe.contentWindow.postMessage({ type: "genie:sw-ws-url", url: swWsUrl }, "*");
+        if (swAuthToken) iframe.contentWindow.postMessage({ type: "genie:auth-token", token: swAuthToken }, "*");
       }
     }, 100);
   });
@@ -171,6 +185,14 @@ window.addEventListener("message", (event) => {
       // iframe wants to switch the service worker's WS URL
       if (data.url && port) {
         port.postMessage({ type: "set:ws-url", url: data.url } satisfies PanelMessage);
+      }
+      break;
+
+    case "genie:set-auth-token":
+      // iframe authenticated — push its token to the SW so its socket auths too.
+      if (data.token && port) {
+        swAuthToken = data.token;
+        port.postMessage({ type: "set:auth-token", token: data.token } satisfies PanelMessage);
       }
       break;
   }

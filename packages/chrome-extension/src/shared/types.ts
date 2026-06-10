@@ -29,7 +29,10 @@ export type PanelMessage =
   | { type: "get:snapshot" }
   | { type: "navigate"; url: string }
   | { type: "open:sidepanel" }
-  | { type: "set:ws-url"; url: string };
+  | { type: "set:ws-url"; url: string }
+  // The renderer iframe seeds the service worker with the token it authed with
+  // (shared single sign-on) so the SW can authenticate its own socket for DOM actions.
+  | { type: "set:auth-token"; token: string };
 
 // Messages from background → side panel / popup
 export type BackgroundMessage =
@@ -37,7 +40,10 @@ export type BackgroundMessage =
   | { type: "dom:snapshot"; html: string }
   | { type: "project:detected"; project: ProjectDef | null; tabUrl: string }
   | { type: "project:list"; projects: ProjectDef[] }
-  | { type: "ws:url"; url: string };
+  | { type: "ws:url"; url: string }
+  // The service worker shares its auth token down to the iframe so a single
+  // login (either side) authenticates both sockets.
+  | { type: "auth:token"; token: string };
 
 // Messages from background → content script
 export type ContentScriptMessage =
