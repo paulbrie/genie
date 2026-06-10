@@ -4,6 +4,7 @@ import path from "node:path";
 import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
 import { execCached, evictSession } from "./ssh-session-cache.js";
 import { ensureStatsToken } from "./stats-token-service.js";
+import { mcpRestBaseUrl } from "./mcp-config-merge.js";
 
 export const VPS_STATS_REMOTE_BASE = "/usr/lib/node_modules/@genie/vps-stats";
 export const VPS_STATS_JSONL_PATH = "/run/genie/stats.jsonl";
@@ -109,19 +110,20 @@ export async function ensureVpsStats(connection: SshConnectionConfig): Promise<v
 /**
  * Write the systemd drop-in that points the on-VM genie-stats daemon at the
  * manager's public URL with a per-instance bearer token, so it can POST stats
- * over HTTPS. Returns false (and writes nothing) when MANAGER_URL is unset —
- * e.g. local dev, where remote VMs can't reach the manager anyway.
+ * over HTTPS. Uses the same resolver as the MCP config (`mcpRestBaseUrl`):
+ * VPS_MANAGER_URL override → MANAGER_URL when it's already public → the public
+ * API default. This matters because the daemon runs on EVERY cloud (DO, Hetzner,
+ * Taz). The old code used raw `process.env.MANAGER_URL`: if that was a dev/private
+ * value, only VMs that happened to share its network (Taz) could reach it and
+ * non-Taz clouds silently never posted. Always resolves to something publicly
+ * reachable now, so it always writes (returns true).
  */
 async function writeStatsPostbackDropin(
   connection: SshConnectionConfig,
   projectId: string,
   instanceId: string,
 ): Promise<boolean> {
-  const managerUrl = process.env.MANAGER_URL?.trim();
-  if (!managerUrl) {
-    console.warn("[vps-stats] MANAGER_URL unset — skipping postback drop-in; VM will not push stats.");
-    return false;
-  }
+  const managerUrl = mcpRestBaseUrl();
   const token = await ensureStatsToken(projectId, instanceId);
   const dropin = [
     "[Service]",
