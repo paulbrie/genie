@@ -11,16 +11,31 @@ function ensureBackupDir(): void {
   }
 }
 
-export async function createBackup(): Promise<string> {
-  ensureBackupDir();
+// Append-only telemetry/log tables excluded from the logical backup. They are
+// regenerable, not core state, and grow unbounded — audit_log alone was 2.5 GB /
+// 1.5M rows, vps_metric_samples 458 MB / 1.3M rows. Including them made the dump
+// load multiple GB into one in-memory string and OOM the process (which would
+// crash the manager when an admin clicks "Download DB"). Skipping them keeps the
+// backup to the few MB of actual operational state.
+export const BACKUP_SKIP_TABLES = new Set([
+  "audit_log",
+  "vps_metric_samples",
+  "server_metric_samples",
+  "analytics_events",
+  "ssh_events",
+]);
 
+/** Build the logical SQL dump (schema-less INSERTs wrapped in a txn) as a string,
+ *  without touching disk. Excludes BACKUP_SKIP_TABLES. Shared by createBackup
+ *  (writes it) and the admin "Download DB" path (sends it to the browser). */
+export async function generateBackupSql(): Promise<string> {
   const sql = getRawClient();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `backup-${timestamp}.sql`;
-  const filepath = path.join(BACKUP_DIR, filename);
 
   const lines: string[] = [];
   lines.push(`-- Genie DB Backup: ${new Date().toISOString()}`);
+  if (BACKUP_SKIP_TABLES.size > 0) {
+    lines.push(`-- Excludes telemetry tables: ${[...BACKUP_SKIP_TABLES].join(", ")}`);
+  }
   lines.push("BEGIN;\n");
 
   // Get all user tables
@@ -31,6 +46,7 @@ export async function createBackup(): Promise<string> {
   `;
 
   for (const { tablename } of tables) {
+    if (BACKUP_SKIP_TABLES.has(tablename as string)) continue;
     // Get column info
     const cols = await sql`
       SELECT column_name, data_type
@@ -64,7 +80,17 @@ export async function createBackup(): Promise<string> {
 
   lines.push("COMMIT;\n");
 
-  fs.writeFileSync(filepath, lines.join("\n"), "utf-8");
+  return lines.join("\n");
+}
+
+export async function createBackup(): Promise<string> {
+  ensureBackupDir();
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `backup-${timestamp}.sql`;
+  const filepath = path.join(BACKUP_DIR, filename);
+
+  const sql = await generateBackupSql();
+  fs.writeFileSync(filepath, sql, "utf-8");
   console.log(`DB backup saved: ${filepath}`);
   return filepath;
 }

@@ -10,7 +10,7 @@ import { hasRole } from "./handler-auth.js";
 const DB_TYPES = new Set([
   "admin:tables", "admin:table:columns", "admin:table:rows",
   "admin:row:get", "admin:row:insert", "admin:row:update", "admin:row:delete",
-  "admin:sql:execute", "admin:drizzle:push",
+  "admin:sql:execute", "admin:drizzle:push", "admin:db:download",
 ]);
 
 
@@ -163,6 +163,21 @@ export async function handleDbMessage(
         send(ws, { type: "admin:row:deleted", payload: { tableName, row } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "admin:db:download": {
+      // Stream the full logical SQL dump back to the admin's browser, which
+      // saves it as a file. Reuses the same dump as the daily backup. reqId is
+      // echoed so the renderer's wsRequest() resolves this exact response.
+      const { reqId } = msg.payload ?? {};
+      try {
+        const content = await backupService.generateBackupSql();
+        const filename = `genie-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.sql`;
+        send(ws, { type: "admin:db:download:result", payload: { ok: true, filename, content, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:db:download:result", payload: { ok: false, error: (err instanceof Error ? err.message : String(err)), reqId } });
       }
       return true;
     }

@@ -82,6 +82,32 @@ export function saveAdminRow(data: Record<string, any>): void {
   }
 }
 
+/** Request a full SQL dump of the manager DB and save it as a file. The dump is
+ *  generated server-side (same as the daily backup) and returned over the
+ *  socket, then turned into a Blob download here. */
+export async function downloadDb(): Promise<void> {
+  try {
+    const res = await wsRequest<{ ok: boolean; filename?: string; content?: string; error?: string }>(
+      "admin:db:download", {}, 120000,
+    );
+    if (!res.ok || typeof res.content !== "string") {
+      alert(`Download failed: ${res.error || "unknown error"}`);
+      return;
+    }
+    const blob = new Blob([res.content], { type: "application/sql" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = res.filename || "genie-backup.sql";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export function deleteAdminRow(pkVal: string): void {
   const v = $admin.getValue();
   if (!v.selectedTable || !v.primaryKey) return;
