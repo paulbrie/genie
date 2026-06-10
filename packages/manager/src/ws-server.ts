@@ -203,6 +203,19 @@ if (ANALYTICS_RETENTION_DAYS > 0) {
   setInterval(() => void analyticsService.pruneOldEvents(ANALYTICS_RETENTION_DAYS), 24 * 60 * 60_000);
 }
 
+// Bound audit_log growth — it gains a row on every WS action (~17k/day) and had
+// reached 2.5 GB / 1.5M rows in under 3 months, so 90d+ would prune nothing.
+// Default 30d; set GENIE_AUDIT_RETENTION_DAYS=0 to keep forever.
+const AUDIT_RETENTION_DAYS = Number(process.env.GENIE_AUDIT_RETENTION_DAYS ?? 30);
+async function runAuditJanitor(): Promise<void> {
+  const removed = await auditService.pruneOldAuditLogs(AUDIT_RETENTION_DAYS);
+  if (removed > 0) console.log(`[audit-janitor] pruned ${removed} audit row(s) older than ${AUDIT_RETENTION_DAYS}d`);
+}
+if (AUDIT_RETENTION_DAYS > 0) {
+  setTimeout(() => void runAuditJanitor(), 60_000);
+  setInterval(() => void runAuditJanitor(), 24 * 60 * 60_000);
+}
+
 // Resume mapping (sessionKey → Claude Code session id) is persisted in the
 // `assistant_session_state` table — see assistant-session-state-service.ts.
 // Survives Manager restarts; conversation content itself lives on the VPS in
