@@ -697,6 +697,20 @@ export const vpsMetricSamples = pgTable("vps_metric_samples", {
   index("idx_vps_metric_samples_sampled_at").on(t.sampledAt),
 ]);
 
+/** Per-minute roll-ups of manager-process throughput for the superadmin Server
+ *  dashboard's 6h/24h ranges. Each row aggregates `windowSec` seconds of the
+ *  in-memory live buffer. Counts are totals over the window; the UI divides by
+ *  windowSec to render a per-second rate. Pruned to ~25h. */
+export const serverMetricSamples = pgTable("server_metric_samples", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sampledAt: timestamp("sampled_at").notNull(),
+  windowSec: integer("window_sec").notNull(),
+  statsRequests: integer("stats_requests").notNull(),
+  wsSent: integer("ws_sent").notNull(),
+}, (t) => [
+  index("idx_server_metric_samples_sampled_at").on(t.sampledAt),
+]);
+
 /**
  * User-definable AI agents. An agent is a named LLM persona with its own
  * system prompt, model, tool allowlist, and sandbox target — think "recipes

@@ -150,6 +150,15 @@ export interface ServerMetricBucket {
   wsSent: number;
 }
 
+/** A persisted per-minute roll-up row for the 6h/24h dashboard ranges. Counts
+ *  are totals over `windowSec`; divide to get a per-second rate. */
+export interface ServerMetricSample {
+  t: number;
+  windowSec: number;
+  statsRequests: number;
+  wsSent: number;
+}
+
 /** Live server throughput for the superadmin "Server" dashboard. */
 export interface ServerMetricsState {
   /** Manager process start time (epoch ms), or null before the first snapshot. */

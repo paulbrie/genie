@@ -4,7 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, XAxis, YAxis } from "recharts";
 import { useSubject } from "subjecto/react";
 import { $serverMetrics } from "@/store/subjects";
-import { watchServerMetrics, unwatchServerMetrics } from "@/store/actions/server-metrics";
+import {
+  watchServerMetrics,
+  unwatchServerMetrics,
+  fetchServerMetricsHistory,
+} from "@/store/actions/server-metrics";
 import {
   ChartContainer,
   ChartTooltip,
@@ -12,26 +16,40 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { SystemStats } from "@/components/ui/system-stats";
-import type { ServerMetricBucket } from "@/store/types/common";
+import { cn } from "@/lib/utils";
+import type { ServerMetricSample } from "@/store/types/common";
+
+/** Unified per-point shape for the charts: `stats`/`ws` are per-second rates. */
+interface ChartPoint {
+  t: number;
+  stats: number;
+  ws: number;
+}
 
 const chartConfig = {
-  statsRequests: { label: "Stats req/s", color: "var(--color-blue)" },
-  wsSent: { label: "WS msgs/s", color: "var(--color-mauve)" },
+  stats: { label: "Stats req/s", color: "var(--color-blue)" },
+  ws: { label: "WS msgs/s", color: "var(--color-mauve)" },
 } satisfies ChartConfig;
 
-/** Average-downsample the per-second buckets to keep the hour chart light. Each
- *  bucket value is already a per-second rate, so averaging preserves the unit. */
-function downsample(buckets: ServerMetricBucket[], maxPoints = 240): ServerMetricBucket[] {
-  if (buckets.length <= maxPoints) return buckets;
-  const groupSize = Math.ceil(buckets.length / maxPoints);
-  const out: ServerMetricBucket[] = [];
-  for (let i = 0; i < buckets.length; i += groupSize) {
-    const slice = buckets.slice(i, i + groupSize);
+const RANGES = [
+  { hours: 1, label: "1h" },
+  { hours: 6, label: "6h" },
+  { hours: 24, label: "24h" },
+] as const;
+
+/** Average-downsample points to keep the chart light. Values are per-second
+ *  rates, so averaging preserves the unit. */
+function downsample(points: ChartPoint[], maxPoints = 300): ChartPoint[] {
+  if (points.length <= maxPoints) return points;
+  const groupSize = Math.ceil(points.length / maxPoints);
+  const out: ChartPoint[] = [];
+  for (let i = 0; i < points.length; i += groupSize) {
+    const slice = points.slice(i, i + groupSize);
     const n = slice.length;
     out.push({
       t: slice[n - 1]!.t,
-      statsRequests: slice.reduce((a, b) => a + b.statsRequests, 0) / n,
-      wsSent: slice.reduce((a, b) => a + b.wsSent, 0) / n,
+      stats: slice.reduce((a, b) => a + b.stats, 0) / n,
+      ws: slice.reduce((a, b) => a + b.ws, 0) / n,
     });
   }
   return out;
@@ -85,11 +103,13 @@ function MetricChart({
   dataKey,
   color,
   unit,
+  showDate,
 }: {
-  data: ServerMetricBucket[];
-  dataKey: "statsRequests" | "wsSent";
+  data: ChartPoint[];
+  dataKey: "stats" | "ws";
   color: string;
   unit: string;
+  showDate: boolean;
 }) {
   const gradientId = `fill-${dataKey}`;
   return (
@@ -109,9 +129,11 @@ function MetricChart({
             <ChartTooltipContent
               labelFormatter={(_, payload) => {
                 const t = payload?.[0]?.payload?.t as number | undefined;
-                return t ? new Date(t).toLocaleTimeString() : "";
+                if (!t) return "";
+                const d = new Date(t);
+                return showDate ? d.toLocaleString() : d.toLocaleTimeString();
               }}
-              formatter={(value) => [`${(Number(value)).toFixed(1)} ${unit}`, chartConfig[dataKey].label]}
+              formatter={(value) => [`${Number(value).toFixed(1)} ${unit}`, chartConfig[dataKey].label]}
             />
           }
         />
@@ -129,8 +151,18 @@ function MetricChart({
   );
 }
 
+function dbToPoints(rows: ServerMetricSample[]): ChartPoint[] {
+  return rows.map((r) => {
+    const w = Math.max(1, r.windowSec);
+    return { t: r.t, stats: r.statsRequests / w, ws: r.wsSent / w };
+  });
+}
+
 export function ServerMetricsPanel() {
   const [metrics] = useSubject($serverMetrics);
+  const [range, setRange] = useState<number>(1);
+  const [history, setHistory] = useState<ServerMetricSample[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   // Re-render every second so the uptime clock keeps ticking even between frames.
   const [now, setNow] = useState(() => Date.now());
 
@@ -144,24 +176,91 @@ export function ServerMetricsPanel() {
     return () => clearInterval(id);
   }, []);
 
-  const { buckets, startedAt } = metrics;
-  const chartData = useMemo(() => downsample(buckets), [buckets]);
+  // For 6h/24h, pull persisted per-minute history (and refresh it each minute).
+  useEffect(() => {
+    if (range === 1) {
+      setHistory([]);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setLoadingHistory(true);
+      try {
+        const rows = await fetchServerMetricsHistory(range);
+        if (!cancelled) setHistory(rows);
+      } catch {
+        if (!cancelled) setHistory([]);
+      } finally {
+        if (!cancelled) setLoadingHistory(false);
+      }
+    };
+    void load();
+    const id = setInterval(() => void load(), 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [range]);
 
+  const { buckets, startedAt } = metrics;
+
+  // Current per-second rates always come from the live 1s stream.
   const last = buckets.at(-1);
   const statsPerSec = last?.statsRequests ?? 0;
   const wsPerSec = last?.wsSent ?? 0;
-  const wsHourTotal = useMemo(() => buckets.reduce((a, b) => a + b.wsSent, 0), [buckets]);
-  const statsHourTotal = useMemo(() => buckets.reduce((a, b) => a + b.statsRequests, 0), [buckets]);
-  const hasData = buckets.length >= 2;
+
+  // Chart data + window totals depend on the selected range.
+  const { chartData, statsTotal, wsTotal, hasData } = useMemo(() => {
+    if (range === 1) {
+      const points: ChartPoint[] = buckets.map((b) => ({ t: b.t, stats: b.statsRequests, ws: b.wsSent }));
+      return {
+        chartData: downsample(points),
+        statsTotal: buckets.reduce((a, b) => a + b.statsRequests, 0),
+        wsTotal: buckets.reduce((a, b) => a + b.wsSent, 0),
+        hasData: buckets.length >= 2,
+      };
+    }
+    return {
+      chartData: downsample(dbToPoints(history)),
+      statsTotal: history.reduce((a, r) => a + r.statsRequests, 0),
+      wsTotal: history.reduce((a, r) => a + r.wsSent, 0),
+      hasData: history.length >= 2,
+    };
+  }, [range, buckets, history]);
+
+  const rangeLabel = RANGES.find((r) => r.hours === range)?.label ?? "1h";
+  const showDate = range !== 1;
+  const collecting = range === 1 ? false : loadingHistory;
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-y-auto">
       <div className="px-5 py-4 border-b border-surface0">
-        <h1 className="text-xl font-semibold text-text">Server</h1>
-        <p className="text-md text-subtext0 mt-1">
-          Live manager throughput — stats-daemon postbacks and WebSocket frames sent, per second
-          over the last hour. Updates every second.
-        </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-semibold text-text">Server</h1>
+            <p className="text-md text-subtext0 mt-1">
+              Manager throughput — stats-daemon postbacks and WebSocket frames sent. The 1h view is
+              live (per-second); 6h/24h are per-minute history from the database.
+            </p>
+          </div>
+          <div className="flex items-center gap-1 rounded-lg border border-surface0 bg-mantle p-0.5 shrink-0">
+            {RANGES.map((r) => (
+              <button
+                key={r.hours}
+                type="button"
+                onClick={() => setRange(r.hours)}
+                className={cn(
+                  "px-3 py-1 rounded-md text-sm font-medium border-none cursor-pointer transition-colors",
+                  range === r.hours
+                    ? "bg-surface0 text-text"
+                    : "bg-transparent text-overlay0 hover:text-subtext0",
+                )}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <p className="text-sm text-subtext0 mt-2">
           {startedAt ? (
             <>
@@ -179,20 +278,20 @@ export function ServerMetricsPanel() {
         <div className="flex flex-wrap gap-3 items-stretch">
           <StatCard
             label="Stats req / sec"
-            value={hasData ? formatNumber(statsPerSec) : "—"}
-            sub={`${formatNumber(statsHourTotal)} in last hour`}
+            value={formatNumber(statsPerSec)}
+            sub={`${formatNumber(statsTotal)} in last ${rangeLabel}`}
             accent="var(--color-blue)"
           />
           <StatCard
             label="WS msgs / sec"
-            value={hasData ? formatNumber(wsPerSec) : "—"}
+            value={formatNumber(wsPerSec)}
             sub="current rate"
             accent="var(--color-mauve)"
           />
           <StatCard
-            label="WS msgs sent (1h)"
-            value={hasData ? formatNumber(wsHourTotal) : "—"}
-            sub="total sent, last hour"
+            label={`WS msgs sent (${rangeLabel})`}
+            value={hasData ? formatNumber(wsTotal) : "—"}
+            sub={`total sent, last ${rangeLabel}`}
             accent="var(--color-mauve)"
           />
           {/* Live gauges relocated from the left sidebar. */}
@@ -203,20 +302,20 @@ export function ServerMetricsPanel() {
         </div>
 
         <section className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium text-subtext0">Stats requests / sec</h2>
+          <h2 className="text-sm font-medium text-subtext0">Stats requests / sec · last {rangeLabel}</h2>
           {hasData ? (
-            <MetricChart data={chartData} dataKey="statsRequests" color="var(--color-blue)" unit="req/s" />
+            <MetricChart data={chartData} dataKey="stats" color="var(--color-blue)" unit="req/s" showDate={showDate} />
           ) : (
-            <CollectingPlaceholder />
+            <CollectingPlaceholder loading={collecting} />
           )}
         </section>
 
         <section className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium text-subtext0">WebSocket messages sent / sec</h2>
+          <h2 className="text-sm font-medium text-subtext0">WebSocket messages sent / sec · last {rangeLabel}</h2>
           {hasData ? (
-            <MetricChart data={chartData} dataKey="wsSent" color="var(--color-mauve)" unit="msg/s" />
+            <MetricChart data={chartData} dataKey="ws" color="var(--color-mauve)" unit="msg/s" showDate={showDate} />
           ) : (
-            <CollectingPlaceholder />
+            <CollectingPlaceholder loading={collecting} />
           )}
         </section>
       </div>
@@ -224,10 +323,10 @@ export function ServerMetricsPanel() {
   );
 }
 
-function CollectingPlaceholder() {
+function CollectingPlaceholder({ loading }: { loading: boolean }) {
   return (
     <div className="h-44 w-full rounded-lg border border-surface0/80 bg-surface0/30 flex items-center justify-center text-sm text-overlay0">
-      Collecting data…
+      {loading ? "Loading history…" : "Collecting data…"}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Send, Square, Globe, Wrench, ChevronDown, ChevronRight, MessageSquare, FolderOpen, Terminal, Container, File, Folder, ArrowLeft, Save, RefreshCw, Loader2, Play, TerminalSquare, Plus, X, Users, Bot, Share2, Minus, Maximize2, Minimize2, Database, Table2, SearchCode, GitBranch, GitCommit, ArrowUp, ArrowDown, Check, Circle, FilePlus, FileEdit, FileX, FileQuestion, Copy, ExternalLink, LogOut, Trash2, Lightbulb, ClipboardList, History } from "lucide-react";
+import { Send, Square, Globe, Wrench, ChevronDown, ChevronRight, MessageSquare, FolderOpen, Terminal, Container, File, Folder, Save, RefreshCw, Loader2, Play, TerminalSquare, Plus, X, Users, Bot, Share2, Minus, Maximize2, Minimize2, Database, Table2, SearchCode, GitBranch, GitCommit, ArrowUp, ArrowDown, Check, Circle, FilePlus, FileEdit, FileX, FileQuestion, Copy, ExternalLink, LogOut, Trash2, Lightbulb, ClipboardList, History } from "lucide-react";
 import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import ReactMarkdown from "react-markdown";
@@ -13,7 +13,7 @@ import type { ChatModelId } from "@/store/actions";
 import { CHAT_MODELS, createGenieDm, createRoom, createTrackerIssue, deleteChatSession, fetchVpsStats, loadChatSession, loadChatSessions, loadChatUsers, loadConversations, newChat, renameChatSession, runProjectCommand, selectConversation, sendConversationMessage, setChatModel, setTrackerProject, stopProjectCommand, unwatchVpsStats, watchVpsStats } from "@/store/actions";
 import dynamic from "next/dynamic";
 import type { BeforeMount } from "@monaco-editor/react";
-import { connectWs, setManagerRunning, wsSend, wsRequest, triggerGoogleLogin, logout, getWsUrl, isWsConnected } from "@/lib/ws";
+import { connectWs, setManagerRunning, wsSend, wsRequest, triggerGoogleLogin, logout, getWsUrl, isWsConnected, setWsUrl, getStoredToken, setStoredToken, sendAuthToken } from "@/lib/ws";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { DbExplorer } from "./tabs/db";
@@ -137,6 +137,22 @@ interface ExtensionProject {
     connection: { host: string };
     digitalocean?: { ipAddress: string };
   }[];
+}
+
+/** Map a full store ProjectDef to the lean ExtensionProject the panel uses. */
+function toExtProject(p: ProjectDef): ExtensionProject {
+  return {
+    id: p.id,
+    name: p.name,
+    dbUrl: p.dbUrl,
+    vpsInstances: p.vpsInstances.map((v) => ({
+      id: v.id,
+      label: v.label,
+      connection: { host: v.connection.host },
+      digitalocean: v.digitalocean ? { ipAddress: v.digitalocean.ipAddress } : undefined,
+    })),
+    gitFolders: p.gitFolders,
+  };
 }
 
 type ParentMessage = GenieInitMessage | GenieContextUpdate | GenieSnapshotResult;
@@ -419,6 +435,78 @@ function DropletPicker({
   );
 }
 
+// --- Server switcher (target any accessible server, independent of the page URL) ---
+
+function ServerSwitcher({
+  projects,
+  current,
+  isAuto,
+  onPick,
+  onAuto,
+}: {
+  projects: ProjectDef[];
+  current: ExtensionProject | null;
+  isAuto: boolean;
+  onPick: (id: string) => void;
+  onAuto: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  return (
+    <div className="relative min-w-0" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 min-w-0 text-mauve font-medium hover:text-lavender transition-colors"
+        style={{ fontSize: 13 }}
+        title="Switch server"
+      >
+        <span className="truncate">{current?.name ?? "Select server"}</span>
+        {isAuto && <span className="shrink-0 text-overlay0" style={{ fontSize: 10 }}>auto</span>}
+        <ChevronDown size={11} className="shrink-0 text-overlay0" />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[220px] max-h-[320px] overflow-y-auto z-50">
+          <button
+            onClick={() => { onAuto(); setOpen(false); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer hover:bg-surface0 transition-colors text-left"
+            style={{ fontSize: 12 }}
+          >
+            <Globe size={12} className={isAuto ? "text-mauve" : "text-overlay0"} />
+            <span className={isAuto ? "text-mauve" : "text-text"}>Auto · follow page</span>
+            {isAuto && <Check size={12} className="ml-auto shrink-0 text-mauve" />}
+          </button>
+          {projects.length > 0 && <div className="h-px bg-surface0 my-1" />}
+          {projects.map((p) => {
+            const selected = !isAuto && current?.id === p.id;
+            return (
+              <button
+                key={p.id}
+                onClick={() => { onPick(p.id); setOpen(false); }}
+                className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer hover:bg-surface0 transition-colors text-left"
+                style={{ fontSize: 12 }}
+              >
+                <span className={`truncate ${selected ? "text-mauve" : "text-text"}`}>{p.name}</span>
+                {p.vpsInstances.length === 0 && <span className="shrink-0 text-overlay0" style={{ fontSize: 10 }}>no server</span>}
+                {selected && <Check size={12} className="ml-auto shrink-0 text-mauve" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- Main extension page ---
 
 export default function ExtensionPage() {
@@ -464,6 +552,10 @@ export default function ExtensionPage() {
   // updated by an effect so we don't have a forward reference at declaration
   // time.
   const projectRef = useRef<{ id: string; vpsInstanceId: string | null } | null>(null);
+  // Full resolved target project, mirrored into a ref so buildContext (declared
+  // before `project` is derived) reads the current server at send time — including
+  // a manual override that doesn't match the page URL.
+  const extProjectRef = useRef<ExtensionProject | null>(null);
 
   const addTermTab = useCallback(() => {
     const id = crypto.randomUUID();
@@ -592,6 +684,28 @@ export default function ExtensionPage() {
   const [tabUrlState, setTabUrlState] = useState("");
   const [manualProjectId, setManualProjectId] = useState<string | null>(null);
 
+  // Persist the manual server pick per user so targeting a specific server
+  // survives reloads and page navigation (the whole point: connect to a server
+  // regardless of the URL). Null → "Auto", i.e. follow the page/SW detection.
+  const serverStorageKey = auth.user?.id ? `genie:ext:server:${auth.user.id}` : null;
+  const serverHydratedRef = useRef<string | null>(null);
+  const selectServer = useCallback((id: string | null) => {
+    setManualProjectId(id);
+    if (!serverStorageKey) return;
+    try {
+      if (id) localStorage.setItem(serverStorageKey, id);
+      else localStorage.removeItem(serverStorageKey);
+    } catch { /* ignore */ }
+  }, [serverStorageKey]);
+  useEffect(() => {
+    if (!serverStorageKey || serverHydratedRef.current === serverStorageKey) return;
+    serverHydratedRef.current = serverStorageKey;
+    try {
+      const saved = localStorage.getItem(serverStorageKey);
+      if (saved) setManualProjectId(saved);
+    } catch { /* ignore */ }
+  }, [serverStorageKey]);
+
   // Pending snapshot request resolver
   const snapshotResolver = useRef<((snapshot: string) => void) | null>(null);
   const isInIframe = useRef(typeof window !== "undefined" && window.parent !== window);
@@ -605,9 +719,27 @@ export default function ExtensionPage() {
   // Listen for postMessage from parent (chrome extension bridge)
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
-      const data = event.data as ParentMessage;
-      if (!data?.type?.startsWith("genie:")) return;
+      const raw = event.data;
+      if (!raw?.type?.startsWith("genie:")) return;
 
+      // Extension bridge handshake: keep this iframe on the same manager as the
+      // service worker, and adopt its shared token so a single login authenticates
+      // both sockets (the SW socket is what runs Claude's page DOM actions).
+      if (raw.type === "genie:sw-ws-url") {
+        if (raw.url) setWsUrl(raw.url);
+        return;
+      }
+      if (raw.type === "genie:auth-token") {
+        const token = raw.token as string | undefined;
+        if (token && token !== getStoredToken()) {
+          setStoredToken(token);
+          if (isWsConnected()) sendAuthToken(token);
+          else connectWs();
+        }
+        return;
+      }
+
+      const data = raw as ParentMessage;
       switch (data.type) {
         case "genie:init":
           extensionCtx.current = {
@@ -639,6 +771,15 @@ export default function ExtensionPage() {
     return () => window.removeEventListener("message", handleMessage);
   }, []);
 
+  // Share our token up to the extension service worker so its socket authenticates
+  // too — that socket is what brokers Claude's page DOM actions. Fires whenever we
+  // become authenticated (e.g. signed into the web app, or just logged in here).
+  useEffect(() => {
+    if (!isInIframe.current || authStatus !== "authenticated") return;
+    const token = getStoredToken();
+    if (token) window.parent.postMessage({ type: "genie:set-auth-token", token }, "*");
+  }, [authStatus]);
+
   // Auto-scroll chat
   useEffect(() => {
     if (activeTab !== "chat") return;
@@ -669,7 +810,8 @@ export default function ExtensionPage() {
   }, []);
 
   const buildContext = useCallback((): string => {
-    const { project, tabUrl } = extensionCtx.current;
+    const project = extProjectRef.current;
+    const tabUrl = extensionCtx.current.tabUrl;
     if (!project) return "";
 
     let context = `\n\n=== Chrome Extension Context ===`;
@@ -778,30 +920,24 @@ export default function ExtensionPage() {
   }, [bridgeProject, hostname, storeProjects]);
 
 
-  // If URL doesn't match any project, user must pick one manually (no auto-fallback)
+  // A persisted manual pick overrides URL/SW auto-detection — the user targets a
+  // specific server they have access to from any page. Unset = "Auto": fall back
+  // to the SW bridge project, then the hostname match.
   const manualProject = manualProjectId ? storeProjects.find((p) => p.id === manualProjectId) ?? null : null;
-  const resolvedStore = urlMatchedProject ?? manualProject;
-  // Clear manual pick when bridge/URL match kicks in
-  const isUrlMatched = !!(bridgeProject || urlMatchedProject);
-  useEffect(() => {
-    if (isUrlMatched) setManualProjectId(null);
-  }, [isUrlMatched]);
+  const isAuto = !manualProject;
+  // "This page IS the selected server" — only meaningful in Auto mode; drives the
+  // hostname hint beside the switcher.
+  const isUrlMatched = isAuto && !!(bridgeProject || urlMatchedProject);
 
-  // Enrich bridge project with store-only fields (gitFolders, dbUrl)
+  // Enrich the SW bridge project with store-only fields (gitFolders, dbUrl).
   const storeMatch = bridgeProject ? storeProjects.find((p) => p.id === bridgeProject.id) : null;
-  const project: ExtensionProject | null = bridgeProject
-    ? { ...bridgeProject, gitFolders: storeMatch?.gitFolders, dbUrl: bridgeProject.dbUrl || storeMatch?.dbUrl }
-    : (resolvedStore ? {
-      id: resolvedStore.id,
-      name: resolvedStore.name,
-      dbUrl: resolvedStore.dbUrl,
-      vpsInstances: resolvedStore.vpsInstances.map((v) => ({
-        id: v.id, label: v.label,
-        connection: { host: v.connection.host },
-        digitalocean: v.digitalocean ? { ipAddress: v.digitalocean.ipAddress } : undefined,
-      })),
-      gitFolders: resolvedStore.gitFolders,
-    } : null);
+  const project: ExtensionProject | null = manualProject
+    ? toExtProject(manualProject)
+    : bridgeProject
+      ? { ...bridgeProject, gitFolders: storeMatch?.gitFolders, dbUrl: bridgeProject.dbUrl || storeMatch?.dbUrl }
+      : urlMatchedProject
+        ? toExtProject(urlMatchedProject)
+        : null;
 
   // Mirror the derived `project` into a ref so callbacks declared earlier in
   // the component body (openClaudeTerminal) can read its current value at
@@ -810,6 +946,7 @@ export default function ExtensionPage() {
     projectRef.current = project
       ? { id: project.id, vpsInstanceId: project.vpsInstances?.[0]?.id ?? null }
       : null;
+    extProjectRef.current = project;
   }, [project]);
 
   // Persist terminal tab list per (userId, projectId) so reopening the
@@ -907,7 +1044,7 @@ export default function ExtensionPage() {
         projects={storeProjects}
         hostname={hostname}
         isInIframe={isInIframe.current}
-        onSelectProject={setManualProjectId}
+        onSelectProject={selectServer}
         user={auth.user}
       />
     );
@@ -935,20 +1072,17 @@ export default function ExtensionPage() {
       {project && (
         <div className="flex items-center gap-2 px-4 py-2 border-b border-surface0 bg-mantle shrink-0" style={{ fontSize: 13 }}>
           <Globe size={13} className="text-mauve shrink-0" />
-          <span className="text-mauve font-medium truncate">{project.name}</span>
-          {hostname && <span className="text-overlay0 truncate" style={{ fontSize: 12 }}>· {hostname}</span>}
+          <ServerSwitcher
+            projects={storeProjects}
+            current={project}
+            isAuto={isAuto}
+            onPick={selectServer}
+            onAuto={() => selectServer(null)}
+          />
+          {isUrlMatched && hostname && (
+            <span className="text-overlay0 truncate" style={{ fontSize: 12 }} title="This page matches the selected server">· {hostname}</span>
+          )}
           <div className="ml-auto flex items-center gap-2 shrink-0">
-            {!isUrlMatched && (
-              <button
-                onClick={() => setManualProjectId(null)}
-                className="flex items-center gap-1 text-overlay0 hover:text-text transition-colors"
-                style={{ fontSize: 12 }}
-                title="Back to droplet list"
-              >
-                <ArrowLeft size={12} />
-                Droplets
-              </button>
-            )}
             {project && <FeedbackButton projectId={project.id} />}
             {auth.user && (
               <div className="flex items-center gap-1.5">
