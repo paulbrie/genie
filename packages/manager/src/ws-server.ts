@@ -266,6 +266,13 @@ const closeReasonHint = new WeakMap<WebSocket, string>();
 // panel without external aggregation. Keyed by server-hint or decoded code.
 const wsCloseTally = new Map<string, number>();
 
+// Throttle the per-postback [stats] log. Each VM posts every ~5s and there are
+// dozens of them, so logging every postback floods the 100KB log buffer and
+// evicts everything else (ws-close forensics, errors) within minutes. Log at
+// most one line per instance per window; ingestion + metrics are unaffected.
+const STATS_LOG_THROTTLE_MS = 60_000;
+const lastStatsLogAt = new Map<string, number>();
+
 // Decode a WS close code (RFC 6455). 1006 (abnormal, no close frame) is the
 // signature of a TCP reset / proxy idle-kill / peer vanishing — i.e. the edge
 // dropped it, not a clean app close.
@@ -1185,12 +1192,17 @@ export async function createServer(): Promise<WebSocketServer> {
           return;
         }
         const ts = typeof body.ts === "number" && Number.isFinite(body.ts) ? body.ts : Date.now();
-        // for now: one Logs-panel line per VM stats postback (via log-capture).
-        const ip = req.socket.remoteAddress ?? "?";
-        console.log(
-          `[stats] postback from ${ip} · ${owner.projectId}:${owner.instanceId} ` +
-            `cpu=${body.stats.cpuPercent.toFixed(0)}% mem=${body.stats.memPercent.toFixed(0)}% disk=${body.stats.diskPercent.toFixed(0)}%`,
-        );
+        // Throttled Logs-panel line per VM (≤1/min/instance — see lastStatsLogAt).
+        const statsKey = `${owner.projectId}:${owner.instanceId}`;
+        const nowMs = Date.now();
+        if (nowMs - (lastStatsLogAt.get(statsKey) ?? 0) >= STATS_LOG_THROTTLE_MS) {
+          lastStatsLogAt.set(statsKey, nowMs);
+          const ip = req.socket.remoteAddress ?? "?";
+          console.log(
+            `[stats] postback from ${ip} · ${statsKey} ` +
+              `cpu=${body.stats.cpuPercent.toFixed(0)}% mem=${body.stats.memPercent.toFixed(0)}% disk=${body.stats.diskPercent.toFixed(0)}%`,
+          );
+        }
         recordStatsRequest();
         ingestVpsStats(owner.projectId, owner.instanceId, ts, body.stats, send);
         sendJson(200, { ok: true });

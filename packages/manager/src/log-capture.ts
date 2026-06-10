@@ -1,4 +1,4 @@
-export const LOG_CAPTURE_MAX_BUFFER = 100_000;
+export const LOG_CAPTURE_MAX_BUFFER = 500_000;
 const MAX_BUFFER = LOG_CAPTURE_MAX_BUFFER;
 
 /** Log streams surfaced to the /logs panel. "manager" is the stdout feed
