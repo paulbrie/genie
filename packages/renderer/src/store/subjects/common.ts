@@ -8,6 +8,7 @@ import type {
   LogsState,
   NavKey,
   ProcessInfo,
+  ServerMetricsState,
   SystemState,
   WindowManagerState,
   PresenceSession,
@@ -48,3 +49,4 @@ function loadWindowFontSize(): "small" | "medium" | "large" {
 }
 export const $windowFontSize = new Subject<"small" | "medium" | "large">(loadWindowFontSize());
 export const $presenceSessions = new Subject<PresenceSession[]>([]);
+export const $serverMetrics = new Subject<ServerMetricsState>({ startedAt: null, buckets: [] });

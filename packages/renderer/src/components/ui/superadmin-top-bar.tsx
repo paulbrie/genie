@@ -1,7 +1,7 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { ChefHat, ScrollText, Clock, Users, Boxes } from "lucide-react";
+import { ChefHat, ScrollText, Clock, Users, Boxes, Activity } from "lucide-react";
 import type { NavKey } from "@/store/types";
 import { $activeNav, $auth, $presenceSessions } from "@/store/subjects";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,7 @@ const ADMIN_BAR_SHARED_ITEMS: BarNavItem[] = [
  *  the manager process logs can carry cross-tenant detail, so they're
  *  superadmin-only (mirrors the logs:* ACL gate). */
 const SUPERADMIN_BAR_EXTRA_ITEMS: BarNavItem[] = [
+  { key: "server", label: "Server", icon: Activity },
   { key: "recipes", label: "Recipes", icon: ChefHat },
   { key: "logs", label: "Logs", icon: ScrollText },
 ];

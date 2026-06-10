@@ -107,6 +107,8 @@ import { handleLocalFsMessage } from "./handlers/local-fs-handler.js";
 import { handleMiscMessage } from "./handlers/misc-handler.js";
 
 import { handleVpsRuntimeMessage } from "./handlers/vps-runtime-handler.js";
+import { handleAdminServerMetricsMessage } from "./handlers/admin-server-metrics-handler.js";
+import { recordStatsRequest, recordWsSent, startServerMetrics, stopServerMetrics, unwatchServerMetrics } from "./server-metrics.js";
 
 import { handleVpsLifecycleMessage } from "./handlers/vps-lifecycle-handler.js";
 
@@ -487,6 +489,7 @@ function broadcast(message: WsMessage): void {
     if (ws.readyState === ws.OPEN && state.userId && aclAllowsDelivery(state, message.type)) {
       ws.send(data);
       wsFrameCount++;
+      recordWsSent();
     }
   }
 }
@@ -498,6 +501,7 @@ export function broadcastToUsers(userIds: string[], message: WsMessage): void {
     if (ws.readyState === ws.OPEN && state.userId && idSet.has(state.userId) && aclAllowsDelivery(state, message.type)) {
       ws.send(data);
       wsFrameCount++;
+      recordWsSent();
     }
   }
 }
@@ -533,6 +537,7 @@ function send(ws: WebSocket, message: WsMessage): void {
   }
   ws.send(JSON.stringify(message));
   wsFrameCount++;
+  recordWsSent();
 }
 
 /**
@@ -935,6 +940,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleLocalFsMessage(ws, msg, send)) return;
   if (await handleMiscMessage(ws, msg, send, broadcast, state)) return;
   if (await handleVpsRuntimeMessage(ws, msg, send, userId, state.role)) return;
+  if (await handleAdminServerMetricsMessage(ws, msg, send, state.role)) return;
   if (await handleVpsLifecycleMessage(ws, msg, send, broadcast, state)) return;
   if (await handleMcpMessage(ws, msg, send, state)) return;
 
@@ -1151,6 +1157,7 @@ export async function createServer(): Promise<WebSocketServer> {
           `[stats] postback from ${ip} · ${owner.projectId}:${owner.instanceId} ` +
             `cpu=${body.stats.cpuPercent.toFixed(0)}% mem=${body.stats.memPercent.toFixed(0)}% disk=${body.stats.diskPercent.toFixed(0)}%`,
         );
+        recordStatsRequest();
         ingestVpsStats(owner.projectId, owner.instanceId, ts, body.stats, send);
         sendJson(200, { ok: true });
       } catch (err: unknown) {
@@ -1206,6 +1213,9 @@ export async function createServer(): Promise<WebSocketServer> {
   startMonitoring((stats) => {
     broadcastStats(stats);
   });
+
+  // Per-second server throughput buffer for the superadmin "Server" dashboard.
+  startServerMetrics(send);
 
   // Dev-only: when this manager doesn't receive the VM's postback (shared DB),
   // read the latest persisted samples and push them to watchers (GENIE_STATS_DB_POLL=1).
@@ -1276,6 +1286,7 @@ export async function createServer(): Promise<WebSocketServer> {
 
     ws.on("close", () => {
       unwatchVpsStatsForClient(ws);
+      unwatchServerMetrics(ws);
 
       // Abort any active chat stream for this connection
       const chatAbort = activeChatAbortControllers.get(ws);
@@ -1339,6 +1350,7 @@ export function shutdown(wss: WebSocketServer): void {
   if (wsHeartbeatTimer) { clearInterval(wsHeartbeatTimer); wsHeartbeatTimer = null; }
   backupService.stopBackupCron();
   stopMonitoring();
+  stopServerMetrics();
   projectManager.stopEverything();
   // Close all VPS agent sessions
   for (const [, session] of activeAgentSessions) {

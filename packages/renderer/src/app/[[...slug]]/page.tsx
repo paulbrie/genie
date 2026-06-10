@@ -29,6 +29,7 @@ import { ConnectedUsersPanel } from "@/components/chat/connected-users-panel";
 import { SecurityPanel } from "@/components/project/security-panel";
 import { HelpPanel } from "@/components/ui/help-panel";
 import { SshPanel } from "@/components/ui/ssh-panel";
+import { ServerMetricsPanel } from "@/components/ui/server-metrics-panel";
 import { HistoryPanel } from "@/components/ui/history-panel";
 import { ProjectsGrid } from "@/components/project/projects-grid";
 import { defaultNavForRole, navAllowedForRole, parseRoute, type ProjectTab, type SettingsTab } from "@/lib/routes";
@@ -249,6 +250,10 @@ function MainPanel({ activeTab, settingsTab, settingsOrgId }: { activeTab?: Proj
 
   if (activeNav === "agents") {
     return <AgentsPanel />;
+  }
+
+  if (activeNav === "server") {
+    return <ServerMetricsPanel />;
   }
 
   // Default: projects

@@ -9,7 +9,6 @@ import { $orgSettings } from "@/store/subjects/org-settings";
 import { addTerminalTab, markUpdatesSeen } from "@/store/actions";
 import { loadMyOrgs } from "@/store/actions/org-settings";
 import { logout } from "@/lib/ws";
-import { SystemStats } from "@/components/ui/system-stats";
 import { SidebarNav } from "@/components/ui/sidebar-nav";
 import { FileExplorerToggle } from "@/components/project/file-explorer-toggle";
 import { FeedbackModal } from "@/components/ui/feedback-modal";
@@ -80,7 +79,6 @@ export function Sidebar({
         />
       </div>
 
-      {isSuperadmin && <SystemStats />}
       <SidebarNav />
       <div className="mt-auto pt-2 border-t border-surface0 flex flex-col gap-0.5">
         {isAdmin && (

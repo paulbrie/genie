@@ -4,7 +4,7 @@ import type { DirEntry } from "@/lib/genie-api";
 
 export type ProcessStatus = "running" | "stopped" | "crashed";
 
-export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "history" | "tracker" | "settings" | "admin" | "architecture" | "topology" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help" | "ssh" | "agents";
+export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "logs" | "terminal" | "chat" | "history" | "tracker" | "settings" | "admin" | "architecture" | "topology" | "users" | "security" | "tazcloud" | "clouds" | "recipes" | "help" | "ssh" | "agents" | "server";
 
 /** Sub-tab for the `/clouds/*` route group (the unified DigitalOcean / TazCloud
  *  / Hetzner admin panel). The URL segment after `/clouds/` is one of these literals. */
@@ -141,6 +141,21 @@ export interface SystemState {
   wsMessagesPerSec?: number;
   wsConnections?: number;
   sshConnections?: number;
+}
+
+/** One closed second of server throughput, mirrors the manager's ServerMetricBucket. */
+export interface ServerMetricBucket {
+  t: number;
+  statsRequests: number;
+  wsSent: number;
+}
+
+/** Live server throughput for the superadmin "Server" dashboard. */
+export interface ServerMetricsState {
+  /** Manager process start time (epoch ms), or null before the first snapshot. */
+  startedAt: number | null;
+  /** Per-second buckets for the trailing hour, oldest first. */
+  buckets: ServerMetricBucket[];
 }
 
 export interface UiState {

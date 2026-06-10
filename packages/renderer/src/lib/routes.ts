@@ -65,6 +65,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
   help: "help",
   ssh: "ssh",
   agents: "agents",
+  server: "server",
 };
 
 const VALID_CLOUD_SUBTABS = new Set<CloudSubTab>(["do", "taz", "hetzner"]);
