@@ -46,7 +46,7 @@ import { handleMcpRestRequest, type McpRestService } from "./vps/mcp-rest-router
 
 import { type ClientType, type DomActionExecutor, type DomActionRequestContext, type StatsPayload } from "./types.js";
 
-import { getActiveTunnelCount } from "./vps/ssh-session-cache.js";
+import { getActiveTunnelCount, releaseAllManageRefsForWs } from "./vps/ssh-session-cache.js";
 
 import * as settingsService from "./settings-service.js";
 import fsp from "node:fs/promises";
@@ -1298,6 +1298,10 @@ export async function createServer(): Promise<WebSocketServer> {
       // no persistent reuse — closing the WS kills the dial / pty.
       closeAllSessionsForWs(ws);
       closeAllLocalPtySessionsForWs(ws);
+      // Tab close skips React useEffect cleanup, so the renderer's paired
+      // admin:server:tunnel:release never arrives. Drop every manage ref this
+      // ws bumped via ensureServerTunnel so the cached SshSession can evict.
+      releaseAllManageRefsForWs(ws);
       clients.delete(ws);
       console.log(`Client disconnected (${clients.size} total)`);
       if (wasAuthenticated) broadcastPresence();

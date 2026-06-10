@@ -1,3 +1,4 @@
+import type { WebSocket } from "ws";
 import {
   connectSsh,
   type ShellHandle,
@@ -210,15 +211,41 @@ export function isServerTunnelPinned(cfg: SshConnectionConfig): boolean {
   return (entry?.manageRefs ?? 0) > 0;
 }
 
-/** Establish (or reuse) one SSH tunnel for this server and pin until release. */
-export async function ensureServerTunnel(cfg: SshConnectionConfig): Promise<SshSession> {
+/** Per-ws ledger of which tunnel keys this socket pinned via ensureServerTunnel.
+ *  Replays as releaseManageRef on ws close so tab-close (no React useEffect
+ *  cleanup) doesn't leak manageRefs and keep tunnels alive forever — every
+ *  leaked ref pins a whole SshSession (TLS + keepalive + sockets). */
+const refsByWs = new WeakMap<WebSocket, Map<string, number>>();
+
+function trackManageRef(ws: WebSocket | null, key: string): void {
+  if (!ws) return;
+  let m = refsByWs.get(ws);
+  if (!m) { m = new Map(); refsByWs.set(ws, m); }
+  m.set(key, (m.get(key) ?? 0) + 1);
+}
+
+function untrackManageRef(ws: WebSocket | null, key: string): void {
+  if (!ws) return;
+  const m = refsByWs.get(ws);
+  if (!m) return;
+  const next = (m.get(key) ?? 0) - 1;
+  if (next <= 0) m.delete(key); else m.set(key, next);
+  if (m.size === 0) refsByWs.delete(ws);
+}
+
+/** Establish (or reuse) one SSH tunnel for this server and pin until release.
+ *  Pass `ws` so the ref is auto-released if the socket dies without the renderer
+ *  sending a paired release (the common tab-close case). */
+export async function ensureServerTunnel(cfg: SshConnectionConfig, ws?: WebSocket | null): Promise<SshSession> {
   ensureEntry(cfg).manageRefs++;
+  trackManageRef(ws ?? null, keyOf(cfg));
   return getCachedSession(cfg);
 }
 
 /** Decrement Manage popup ref; evict only when no terminals are attached. */
-export function releaseServerTunnel(cfg: SshConnectionConfig): void {
+export function releaseServerTunnel(cfg: SshConnectionConfig, ws?: WebSocket | null): void {
   releaseManageRef(cfg);
+  untrackManageRef(ws ?? null, keyOf(cfg));
 }
 
 export function releaseManageRef(cfg: SshConnectionConfig): void {
@@ -227,6 +254,21 @@ export function releaseManageRef(cfg: SshConnectionConfig): void {
   if (!entry) return;
   entry.manageRefs = Math.max(0, entry.manageRefs - 1);
   evictIfIdle(key);
+}
+
+/** Release every manage ref this ws bumped — called from the ws-close handler so
+ *  closing the browser tab evicts the tunnel even though the renderer's React
+ *  cleanup never got to send a paired admin:server:tunnel:release. */
+export function releaseAllManageRefsForWs(ws: WebSocket): void {
+  const m = refsByWs.get(ws);
+  if (!m) return;
+  refsByWs.delete(ws);
+  for (const [key, count] of m) {
+    const entry = cache.get(key);
+    if (!entry) continue;
+    entry.manageRefs = Math.max(0, entry.manageRefs - count);
+    evictIfIdle(key);
+  }
 }
 
 /** Ensure shared tunnel exists for a terminal (does not bump manageRefs). */

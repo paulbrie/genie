@@ -367,7 +367,7 @@ export async function handleTazcloudMessage(
             privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey),
           };
         }
-        await ensureServerTunnel(sshConfig);
+        await ensureServerTunnel(sshConfig, ws);
         send(ws, {
           type: "admin:server:tunnel:ready",
           payload: {
@@ -401,13 +401,13 @@ export async function handleTazcloudMessage(
       };
       try {
         if (payload.projectId && payload.instanceId) {
-          releaseServerTunnel(await getVpsConnection(payload.projectId, payload.instanceId));
+          releaseServerTunnel(await getVpsConnection(payload.projectId, payload.instanceId), ws);
         } else if (payload.provider === "do" && payload.dropletId != null) {
           const projects = await projectService.getAll();
           for (const p of projects) {
             for (const v of p.vpsInstances) {
               if (v.digitalocean?.dropletId === payload.dropletId && v.connection?.host) {
-                releaseServerTunnel({ ...v.connection, username: payload.sshUser || "genie" });
+                releaseServerTunnel({ ...v.connection, username: payload.sshUser || "genie" }, ws);
                 break;
               }
             }
@@ -420,7 +420,7 @@ export async function handleTazcloudMessage(
               port: 22,
               username: payload.sshUser || "genie",
               privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey),
-            });
+            }, ws);
           }
         }
       } catch {
@@ -467,7 +467,7 @@ export async function handleTazcloudMessage(
         activeExecTargets.set(execId, sshConfig);
         const shQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
         try {
-          await ensureServerTunnel(sshConfig);
+          await ensureServerTunnel(sshConfig, ws);
           const output = await execCached(sshConfig, `bash -c ${shQuote(`${command} 2>&1`)}`, (chunk) => {
             send(ws, { type: "admin:tazcloud:exec:progress", payload: { execId, chunk } });
           }, { timeoutMs: 900_000, idleTimeoutMs: 600_000 });

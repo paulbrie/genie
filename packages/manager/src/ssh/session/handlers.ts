@@ -179,7 +179,6 @@ export async function startSshSession(
     },
     onReady: () => {
       if (!isCurrentSession(terminalId, session)) return;
-      sessionMeta.set(terminalId, { projectId, instanceId, host, ws, kind });
       emitTraffic(terminalId, ws);
       console.log(`[ssh] ready terminal=${terminalId} ${shellOpts.username}@${host}`);
       // Push mouse + scrollback into the running tmux server via a side-channel
@@ -252,7 +251,15 @@ export async function startSshSession(
     },
   }, { projectId, instanceId, openedByUserName });
 
+  // Register both maps synchronously, BEFORE the async shell open. The cleanup
+  // path (closeAllSessionsForWs → closeSshSession) iterates sessionMeta to find
+  // sessions owned by a closing ws — if the ws drops while openShell is still
+  // pending, a deferred-until-onReady entry would be invisible to that loop, and
+  // every per-terminal map (outputBatches, traffic timers, inject cancellers,
+  // command tracking, the ssh-cache channel entry, and the ssh-metrics registry
+  // row) would leak forever along with a live WebSocket reference.
   sessions.set(terminalId, session);
+  sessionMeta.set(terminalId, { projectId, instanceId, host, ws, kind });
   session.start(cols, rows);
 }
 
