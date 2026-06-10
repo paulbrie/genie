@@ -1201,4 +1201,129 @@ systemctl daemon-reload && systemctl enable --now nextjs-dev`,
       { name: "Hit local URL", command: "curl -fsS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\\n' http://127.0.0.1:3000/ || echo 'not reachable yet'" },
     ],
   },
+  {
+    slug: "crawl4ai",
+    label: "Crawl4AI",
+    icon: "Globe",
+    description: "Run the crawl4ai web crawler (unclecode/crawl4ai) as a Docker container bound to 127.0.0.1:11235 (VM-only). Basic crawl→markdown/html needs no keys; add LLM keys in /opt/crawl4ai/.llm.env for extraction. Registers its native MCP (sse) in /opt/project/.mcp.json so the agent can crawl/scrape.",
+    port: 11235,
+    checkScript: `docker ps --format "{{.Names}}" 2>/dev/null | grep -qx "crawl4ai" && echo "INSTALLED" || echo "NOT_INSTALLED"`,
+    installScript: `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+# crawl4ai's image + Chromium come from Docker Hub (Cloudflare-fronted), which
+# stalls over broken IPv6 on Taz VMs — force IPv4 for the pull (taz-ipv6-quirk).
+force_ipv4_dns
+C4AI_TAG=0.8.9
+
+# Ensure Docker first — crawl4ai depends on it (mirrors the navision recipe).
+if ! command -v docker >/dev/null 2>&1; then
+  log "Docker not found — installing first..."
+  if command -v apt-get >/dev/null 2>&1; then
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io curl ca-certificates > /dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y -q docker curl > /dev/null
+  else
+    log "Unsupported package manager (need apt-get or dnf)"; exit 1
+  fi
+  sudo systemctl enable --now docker > /dev/null 2>&1
+  sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
+fi
+
+# crawl4ai runs a headless-Chromium browser pool: it wants >=4GB RAM + 1GB shm.
+# Warn (don't fail) on small VMs so an eventual OOM is self-explanatory.
+MEM_GB=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+if [ "\${MEM_GB:-0}" -lt 4 ]; then
+  log "WARNING: only $MEM_GB GB RAM — crawl4ai recommends >=4GB + 1GB shm; Chromium may OOM under load."
+fi
+
+# Optional LLM keys (for extraction strategies). Basic crawl -> markdown/html/
+# screenshot/pdf needs none, so just create an empty, user-editable env file and
+# reuse it across re-installs. Add OPENAI_API_KEY=... etc., then restart.
+sudo mkdir -p /opt/crawl4ai
+if [ ! -f /opt/crawl4ai/.llm.env ]; then
+  sudo touch /opt/crawl4ai/.llm.env
+  sudo chmod 600 /opt/crawl4ai/.llm.env
+fi
+
+log "Pulling unclecode/crawl4ai:$C4AI_TAG (~2-3GB incl. Chromium, a few minutes)..."
+sudo docker pull unclecode/crawl4ai:$C4AI_TAG 2>&1 | while IFS= read -r l; do
+  case "$l" in
+    *"Pull complete"*|*"Status:"*|*"Digest:"*) log "$l" ;;
+  esac
+done
+
+log "Starting crawl4ai container on 127.0.0.1:11235 (VM-only)..."
+sudo docker rm -f crawl4ai 2>/dev/null || true
+sudo docker run -d --name crawl4ai \\
+  -p 127.0.0.1:11235:11235 \\
+  --shm-size=1g \\
+  --env-file /opt/crawl4ai/.llm.env \\
+  --restart unless-stopped \\
+  unclecode/crawl4ai:$C4AI_TAG > /dev/null
+
+log "Waiting for crawl4ai /health on 127.0.0.1:11235..."
+ready=0
+for i in $(seq 1 60); do
+  code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:11235/health 2>/dev/null || echo 000)
+  if [ "$code" = "200" ]; then
+    log "  HTTP 200 from /health after $((i*2))s — crawl4ai is up."
+    ready=1
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" != "1" ]; then
+  log "WARNING: container is running but /health didn't return 200 in ~120s. Recent logs:"
+  sudo docker logs --tail 40 crawl4ai 2>&1 | sed 's/^/  /' || true
+fi
+
+# Register crawl4ai's native MCP (SSE) with the VM's Claude Code agent so it can
+# crawl/scrape. Mirrors the genie-browser recipe's .mcp.json merge; skipped when
+# Genie Standard Setup hasn't run (no genie user / node / /opt/project).
+if id genie >/dev/null 2>&1 && [ -d /opt/project ] && command -v node >/dev/null 2>&1; then
+  [ -f /opt/project/.mcp.json ] || echo '{"mcpServers":{}}' > /opt/project/.mcp.json
+  node -e "const fs=require('fs');const p='/opt/project/.mcp.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.mcpServers=c.mcpServers||{};c.mcpServers['crawl4ai']={type:'sse',url:'http://127.0.0.1:11235/mcp/sse'};fs.writeFileSync(p,JSON.stringify(c,null,2));"
+  sudo chown genie:genie /opt/project/.mcp.json 2>/dev/null || true
+  log "Registered crawl4ai MCP (sse) in /opt/project/.mcp.json"
+else
+  log "Note: skipped agent MCP wiring — run 'Genie Standard Setup' first to expose crawl4ai to Claude."
+fi
+log "Done. crawl4ai: http://127.0.0.1:11235  (playground: /playground, docs: /docs)"`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Stopping and removing crawl4ai container..."
+sudo docker stop crawl4ai 2>/dev/null || true
+sudo docker rm crawl4ai 2>/dev/null || true
+# Best-effort removal of the crawl4ai entry from the agent's .mcp.json.
+if [ -f /opt/project/.mcp.json ] && command -v node >/dev/null 2>&1; then
+  node -e "const fs=require('fs');const p='/opt/project/.mcp.json';try{const c=JSON.parse(fs.readFileSync(p,'utf8'));if(c.mcpServers){delete c.mcpServers['crawl4ai'];fs.writeFileSync(p,JSON.stringify(c,null,2));}}catch(e){}" || true
+  sudo chown genie:genie /opt/project/.mcp.json 2>/dev/null || true
+fi
+log "crawl4ai removed. The cached image and /opt/crawl4ai/.llm.env are left in place."
+log "Free disk with: docker rmi unclecode/crawl4ai:0.8.9   (and: sudo rm -rf /opt/crawl4ai)"`,
+    setupShSnippet: `# crawl4ai web crawler — VM-only on 127.0.0.1:11235 (Docker assumed present)
+mkdir -p /opt/crawl4ai
+[ -f /opt/crawl4ai/.llm.env ] || { touch /opt/crawl4ai/.llm.env; chmod 600 /opt/crawl4ai/.llm.env; }
+docker pull unclecode/crawl4ai:0.8.9
+docker rm -f crawl4ai 2>/dev/null || true
+docker run -d --name crawl4ai \\
+  -p 127.0.0.1:11235:11235 --shm-size=1g \\
+  --env-file /opt/crawl4ai/.llm.env --restart unless-stopped \\
+  unclecode/crawl4ai:0.8.9`,
+    commands: [
+      { name: "Container status", command: "docker ps --filter name=crawl4ai --format 'table {{.Status}}\t{{.Ports}}'" },
+      { name: "Health check", command: "curl -fsS http://127.0.0.1:11235/health && echo" },
+      { name: "View logs (tail 80)", command: "docker logs --tail 80 crawl4ai" },
+      { name: "Follow logs (5s)", command: "timeout 5 docker logs -f --tail 30 crawl4ai || true" },
+      { name: "Restart", command: "docker restart crawl4ai && echo restarted" },
+      { name: "Stop", command: "docker stop crawl4ai" },
+      { name: "Start", command: "docker start crawl4ai" },
+      { name: "Test crawl → markdown", command: "curl -s -X POST http://127.0.0.1:11235/md -H 'Content-Type: application/json' -d '{\"url\":\"https://example.com\"}' | head -c 600 && echo" },
+      { name: "Edit LLM keys", command: "echo 'Add keys to /opt/crawl4ai/.llm.env (e.g. OPENAI_API_KEY=sk-...), then: docker restart crawl4ai'" },
+      { name: "View agent MCP entry", command: "cat /opt/project/.mcp.json 2>/dev/null || echo 'no .mcp.json'" },
+      { name: "Playground URL", command: "echo http://127.0.0.1:11235/playground" },
+    ],
+  },
 ];
