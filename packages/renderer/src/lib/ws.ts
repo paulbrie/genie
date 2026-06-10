@@ -6,6 +6,10 @@ let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let managerRunning = false;
 let currentWsUrl = "";
+// Runtime override for the manager URL. Set by the Chrome extension sidepanel so
+// the iframe's socket targets the same manager the service worker uses (otherwise
+// chat hits one manager while DOM actions are brokered on another). Null → use env.
+let wsUrlOverride: string | null = null;
 
 // App-level heartbeat. A socket can go HALF-OPEN (laptop sleep, edge idle-timeout,
 // network blip during a long no-token "thinking" gap) without firing `onclose`,
@@ -18,6 +22,32 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let lastPongAt = 0;
 const HEARTBEAT_MS = 25_000;
 const HEARTBEAT_TIMEOUT_MS = 70_000; // ~3 missed pongs before we give up
+
+// When the current socket opened — lets onclose report how long it survived, so
+// we can tell "drops right after an idle gap" (edge timeout) from "drops mid-use".
+let wsOpenedAt = 0;
+
+// Decode a WebSocket close code into a human label. The code is the single most
+// diagnostic signal for *why* a socket dropped:
+//   1000 normal · 1001 going-away (server shutdown/nav) · 1005 no-status
+//   1006 abnormal — no close frame: TCP reset / proxy idle-kill / server vanished
+//   1011 server-error · 1012 service-restart · 1013 try-again-later
+function describeWsCloseCode(code: number): string {
+  switch (code) {
+    case 1000: return "normal";
+    case 1001: return "going-away";
+    case 1002: return "protocol-error";
+    case 1005: return "no-status";
+    case 1006: return "abnormal-no-close-frame";
+    case 1008: return "policy-violation";
+    case 1009: return "message-too-big";
+    case 1011: return "server-error";
+    case 1012: return "service-restart";
+    case 1013: return "try-again-later";
+    case 1015: return "tls-failure";
+    default: return code >= 4000 ? "app-defined" : "other";
+  }
+}
 
 function startHeartbeat(): void {
   stopHeartbeat();
@@ -59,6 +89,17 @@ function ensureDispatcherLoaded() {
 
 export function getWsUrl(): string {
   return currentWsUrl;
+}
+
+/** Point the socket at a specific manager URL and reconnect. Used by the Chrome
+ *  extension sidepanel to keep the iframe on the same manager as the service
+ *  worker. No-op if it already matches the live URL. */
+export function setWsUrl(url: string): void {
+  if (!url || url === currentWsUrl) return;
+  wsUrlOverride = url;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (ws) { try { ws.close(); } catch { /* ignore */ } ws = null; }
+  connectWs();
 }
 
 const AUTH_TOKEN_KEY = "genie-auth-token";
@@ -117,11 +158,12 @@ export function connectWs(): void {
 
   ensureDispatcherLoaded();
 
-  const url = process.env.NEXT_PUBLIC_WS_URL || (window.location.hostname !== "localhost" ? "wss://api.genie.teleporthq.ai" : "ws://localhost:9876");
+  const url = wsUrlOverride || process.env.NEXT_PUBLIC_WS_URL || (window.location.hostname !== "localhost" ? "wss://api.genie.teleporthq.ai" : "ws://localhost:9876");
   currentWsUrl = url;
   ws = new WebSocket(url);
 
   ws.onopen = () => {
+    wsOpenedAt = Date.now();
     console.log("Connected to manager");
     // Drive the sidebar's "connected" dot off the actual socket lifecycle.
     // setManagerRunning(true) elsewhere only flips an internal reconnect-intent
@@ -174,7 +216,17 @@ export function connectWs(): void {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
+    // Record WHY the socket dropped. code+wasClean distinguish an edge/proxy
+    // idle-kill (1006, !wasClean) from a graceful server close (1000/1001), and
+    // connectedSec shows whether it died after an idle gap or mid-stream.
+    const connectedSec = wsOpenedAt ? Math.round((Date.now() - wsOpenedAt) / 1000) : -1;
+    console.warn(
+      `[ws] closed code=${event.code} (${describeWsCloseCode(event.code)}) ` +
+      `wasClean=${event.wasClean}${event.reason ? ` reason="${event.reason}"` : ""} ` +
+      `connectedSec=${connectedSec} url=${currentWsUrl}`,
+    );
+    wsOpenedAt = 0;
     ws = null;
     stopHeartbeat();
     $manager.next({ running: false });

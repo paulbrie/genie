@@ -245,6 +245,9 @@ export interface ClientState {
   openWindows: PresenceWindow[];
   ip: string | null;
   userAgent: string | null;
+  /** When this socket connected — lets the close handler report session length,
+   *  separating idle-timeout drops from mid-stream ones. */
+  connectedAt: number;
 }
 
 const clients = new Map<WebSocket, ClientState>();
@@ -252,6 +255,36 @@ const clients = new Map<WebSocket, ClientState>();
 // WS heartbeat liveness, keyed by socket (covers pre-auth sockets too, so it
 // isn't entangled with ClientState lifecycle). true = pong seen since last ping.
 const wsAlive = new WeakMap<WebSocket, boolean>();
+
+// Annotates a socket the SERVER is about to close/terminate, so the `close`
+// handler can attribute the drop to a known cause (heartbeat reaped a half-open
+// socket, admin revoked auth, graceful shutdown) instead of blaming the
+// peer/edge. Set right before close()/terminate(); read once in the handler.
+const closeReasonHint = new WeakMap<WebSocket, string>();
+
+// Running breakdown of why sockets close, so a pattern is visible in the Logs
+// panel without external aggregation. Keyed by server-hint or decoded code.
+const wsCloseTally = new Map<string, number>();
+
+// Decode a WS close code (RFC 6455). 1006 (abnormal, no close frame) is the
+// signature of a TCP reset / proxy idle-kill / peer vanishing — i.e. the edge
+// dropped it, not a clean app close.
+function describeWsCloseCode(code: number): string {
+  switch (code) {
+    case 1000: return "normal";
+    case 1001: return "going-away";
+    case 1002: return "protocol-error";
+    case 1005: return "no-status";
+    case 1006: return "abnormal-no-close-frame";
+    case 1008: return "policy-violation";
+    case 1009: return "message-too-big";
+    case 1011: return "server-error";
+    case 1012: return "service-restart";
+    case 1013: return "try-again-later";
+    case 1015: return "tls-failure";
+    default: return code >= 4000 ? "app-defined" : "other";
+  }
+}
 let wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 // 30s ping with terminate-on-missed-pong gives ≤60s to reap a half-open socket —
 // under Railway's ~5min edge idle window, and frequent enough to keep it warm.
@@ -313,6 +346,7 @@ export function disconnectUser(targetUserId: string): void {
       state.user = null;
       state.role = null;
       // Delay close to let the message flush
+      closeReasonHint.set(clientWs, "auth-revoked");
       setTimeout(() => clientWs.close(), 1000);
     }
   }
@@ -1244,7 +1278,7 @@ export async function createServer(): Promise<WebSocketServer> {
   wss.on("connection", (ws, req) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
     const userAgent = (req.headers["user-agent"] as string) || null;
-    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, selectedProjectId: null, recentActions: [], openWindows: [], ip, userAgent });
+    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, selectedProjectId: null, recentActions: [], openWindows: [], ip, userAgent, connectedAt: Date.now() });
     console.log(`Client connected (${clients.size} total)`);
 
     // Seed heartbeat liveness and mark alive on every pong (see WS_PING_INTERVAL_MS).
@@ -1284,7 +1318,29 @@ export async function createServer(): Promise<WebSocketServer> {
       }
     });
 
-    ws.on("close", () => {
+    ws.on("close", (code: number, reasonBuf: Buffer) => {
+      // --- Disconnect forensics ---------------------------------------------
+      // Attribute every drop. `hint` is set when WE closed it (heartbeat reaped a
+      // half-open socket, auth revoked, shutdown); otherwise the peer/edge did.
+      // wsAlive=false at close time means the last ping went unanswered → the
+      // socket was already half-open (network/edge), not a clean client close.
+      const hint = closeReasonHint.get(ws);
+      closeReasonHint.delete(ws);
+      const stateForLog = clients.get(ws);
+      const durSec = stateForLog ? Math.round((Date.now() - stateForLog.connectedAt) / 1000) : -1;
+      const who = stateForLog?.user?.email ?? stateForLog?.userId ?? "unauthed";
+      const reasonStr = reasonBuf?.toString() || "";
+      const tallyKey = hint ?? `code:${code}`;
+      wsCloseTally.set(tallyKey, (wsCloseTally.get(tallyKey) ?? 0) + 1);
+      const tally = [...wsCloseTally].map(([k, v]) => `${k}=${v}`).join(" ");
+      console.log(
+        `[ws-close] ${who} code=${code}(${describeWsCloseCode(code)}) ` +
+        `${hint ? `server-initiated=${hint}` : "peer-or-edge-closed"} ` +
+        `aliveLastPing=${wsAlive.get(ws)} durSec=${durSec} ` +
+        `clientType=${stateForLog?.clientType ?? "?"} ip=${stateForLog?.ip ?? "?"}` +
+        `${reasonStr ? ` reason="${reasonStr}"` : ""} | tally: ${tally}`,
+      );
+
       unwatchVpsStatsForClient(ws);
       unwatchServerMetrics(ws);
 
@@ -1334,6 +1390,11 @@ export async function createServer(): Promise<WebSocketServer> {
   wsHeartbeatTimer = setInterval(() => {
     for (const ws of wss.clients) {
       if (wsAlive.get(ws) === false) {
+        // Missed the previous ping round → half-open. Tag before terminate() so
+        // the close log shows OUR heartbeat reaped it (vs the edge dropping it).
+        // A high count here means either real half-opens (edge/network) or the
+        // event loop stalling so pongs aren't read in time — both worth knowing.
+        closeReasonHint.set(ws, "heartbeat-missed-pong");
         try { ws.terminate(); } catch { /* ignore */ }
         continue;
       }
@@ -1358,6 +1419,7 @@ export function shutdown(wss: WebSocketServer): void {
   }
   activeAgentSessions.clear();
   for (const [ws] of clients) {
+    closeReasonHint.set(ws, "server-shutdown");
     ws.close();
   }
   clients.clear();

@@ -8,7 +8,16 @@ import type {
 } from "../shared/types";
 import { matchProject } from "./project-matcher";
 
-const WS_URLS = ["ws://127.0.0.1:9876", "wss://api.genie.teleporthq.ai"];
+// Production builds (`webpack --mode production`) talk ONLY to the public
+// manager. The localhost dev URL is omitted entirely so a prod extension never
+// connects to, fails on, or rotates into 127.0.0.1 — that was generating failed-
+// connect noise and reconnect churn for real users. webpack's DefinePlugin
+// inlines process.env.NODE_ENV as a string literal at build time, so the unused
+// branch is dead-code-eliminated.
+declare const process: { env: { NODE_ENV?: string } };
+const WS_URLS = process.env.NODE_ENV === "production"
+  ? ["wss://api.genie.teleporthq.ai"]
+  : ["ws://127.0.0.1:9876", "wss://api.genie.teleporthq.ai"];
 let WS_URL = WS_URLS[0];
 const RECONNECT_DELAY = 3000;
 const KEEPALIVE_INTERVAL = 20000;
@@ -16,7 +25,27 @@ const AUTH_TOKEN_KEY = "genie-auth-token";
 const WS_URL_KEY = "genie-ws-url";
 
 let ws: WebSocket | null = null;
+let wsOpenedAt = 0;
 let authenticated = false;
+
+// Decode a WS close code so the disconnect log says *why* it dropped. 1006
+// (abnormal, no close frame) = TCP reset / proxy idle-kill / server vanished.
+function describeWsCloseCode(code: number): string {
+  switch (code) {
+    case 1000: return "normal";
+    case 1001: return "going-away";
+    case 1005: return "no-status";
+    case 1006: return "abnormal-no-close-frame";
+    case 1011: return "server-error";
+    case 1012: return "service-restart";
+    case 1013: return "try-again-later";
+    case 1015: return "tls-failure";
+    default: return code >= 4000 ? "app-defined" : "other";
+  }
+}
+// The token this connection authenticated with. Shared with the renderer iframe
+// (and seeded by it) so a single login authenticates both the SW and iframe sockets.
+let authToken: string | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 let projects: ProjectDef[] = [];
@@ -44,12 +73,14 @@ function connect(): void {
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
+    wsOpenedAt = Date.now();
     console.log(`[Genie] Connected to manager at ${WS_URL}`);
     startKeepalive();
     // Try to authenticate with stored token
     chrome.storage.local.get(AUTH_TOKEN_KEY, (data) => {
       const token = data[AUTH_TOKEN_KEY];
       if (token) {
+        authToken = token;
         wsSend("auth:token", { token });
       }
     });
@@ -66,7 +97,14 @@ function connect(): void {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
+    const connectedSec = wsOpenedAt ? Math.round((Date.now() - wsOpenedAt) / 1000) : -1;
+    console.warn(
+      `[Genie] WS closed code=${event.code} (${describeWsCloseCode(event.code)}) ` +
+      `wasClean=${event.wasClean}${event.reason ? ` reason="${event.reason}"` : ""} ` +
+      `connectedSec=${connectedSec} url=${WS_URL}`,
+    );
+    wsOpenedAt = 0;
     ws = null;
     authenticated = false;
     stopKeepalive();
@@ -122,9 +160,12 @@ function handleWsMessage(msg: WsMessage): void {
   switch (msg.type) {
     case "auth:success": {
       authenticated = true;
-      // Store token for reconnections
+      // Store token for reconnections and share it down to the iframe.
       if (msg.payload?.token) {
-        chrome.storage.local.set({ [AUTH_TOKEN_KEY]: msg.payload.token });
+        const token: string = msg.payload.token;
+        authToken = token;
+        chrome.storage.local.set({ [AUTH_TOKEN_KEY]: token });
+        broadcastToPorts({ type: "auth:token", token });
       }
       // Identify as chrome extension
       wsSend("extension:identify", {});
@@ -134,6 +175,7 @@ function handleWsMessage(msg: WsMessage): void {
 
     case "auth:failed": {
       authenticated = false;
+      authToken = null;
       chrome.storage.local.remove(AUTH_TOKEN_KEY);
       broadcastToPorts({ type: "ws:status", connected: true, authenticated: false });
       break;
@@ -322,6 +364,13 @@ chrome.runtime.onConnect.addListener((port) => {
     authenticated,
   } satisfies BackgroundMessage);
 
+  // Seed the panel with the active WS URL (so the iframe can match it) and the
+  // shared auth token (so the iframe authenticates without a separate login).
+  port.postMessage({ type: "ws:url", url: WS_URL } satisfies BackgroundMessage);
+  if (authToken) {
+    port.postMessage({ type: "auth:token", token: authToken } satisfies BackgroundMessage);
+  }
+
   if (projects.length > 0) {
     port.postMessage({ type: "project:list", projects } satisfies BackgroundMessage);
   }
@@ -408,6 +457,22 @@ chrome.runtime.onConnect.addListener((port) => {
         connect();
         break;
       }
+
+      case "set:auth-token": {
+        // The iframe authenticated (or shares the web app's session) — adopt its
+        // token so the SW socket authenticates too (required for DOM actions).
+        const token = msg.token;
+        if (token && token !== authToken) {
+          authToken = token;
+          chrome.storage.local.set({ [AUTH_TOKEN_KEY]: token });
+          if (ws?.readyState === WebSocket.OPEN) {
+            wsSend("auth:token", { token });
+          } else {
+            connect();
+          }
+        }
+        break;
+      }
     }
   });
 
@@ -418,13 +483,16 @@ chrome.runtime.onConnect.addListener((port) => {
 
 // --- Startup ---
 // Load persisted WS URL preference, then connect
-chrome.storage.local.get(WS_URL_KEY, (data) => {
+chrome.storage.local.get([WS_URL_KEY, AUTH_TOKEN_KEY], (data) => {
   const saved = data[WS_URL_KEY];
-  if (saved) {
+  // Only honor a persisted choice if it's a URL this build actually allows. A
+  // prod build thus ignores a stale "ws://127.0.0.1:9876" left over from a dev
+  // session instead of booting straight into a doomed localhost connect.
+  if (saved && WS_URLS.includes(saved)) {
     WS_URL = saved;
-    const idx = WS_URLS.indexOf(saved);
-    wsUrlIndex = idx >= 0 ? idx : 0;
+    wsUrlIndex = WS_URLS.indexOf(saved);
   }
+  if (data[AUTH_TOKEN_KEY]) authToken = data[AUTH_TOKEN_KEY];
   connect();
 });
 detectActiveTab();
