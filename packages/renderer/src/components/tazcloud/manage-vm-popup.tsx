@@ -11,7 +11,7 @@ import { batch } from "subjecto";
 import { useSubject } from "subjecto/react";
 import {
   Activity, Brain, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, KeyRound, Link2, Loader2,
-  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, RefreshCw, ScrollText,
+  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, Puzzle, RefreshCw, ScrollText,
   Settings as SettingsIcon, Shield, Sparkles, Terminal, TriangleAlert, Trash2, X,
 } from "lucide-react";
 import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $vpsStatsSync, $windowManager } from "@/store/subjects";
@@ -27,6 +27,7 @@ import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { openVmConnectionWindow } from "@/components/tazcloud/vm-connection-window";
 import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
+import { ClaudePluginsPanel } from "@/components/admin/claude-plugins-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
 import { VpsResourceBar, VpsResourceGauges, vpsStatsToBarStats } from "@/components/project/vps-resource-gauges";
 import { FileExplorer } from "@/components/project/vps-file-explorer";
@@ -818,7 +819,7 @@ function AddSshKeyForm({ exec, connectUser, host }: { exec: VmExecFn; connectUse
   );
 }
 
-type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "claude-logs" | "claude-memory" | "files" | "db" | "commands";
+type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "claude-logs" | "claude-memory" | "claude-plugins" | "files" | "db" | "commands";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -880,11 +881,16 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   const user = resolvedUser ?? imageDefault;
 
   const [tab, setTab] = useState<ManageTab>("manage");
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   const selectTab = useCallback((next: ManageTab) => {
-    setTab((cur) => {
-      if (cur !== next) track("tab.view", { scope: "manage", tab: next });
-      return next;
-    });
+    // track() → wsSend() → ws-log notify() fans out to subscribers' setState, so
+    // it must NOT run inside the setState updater — React runs updaters during
+    // render, which triggered "Cannot update a component while rendering another".
+    // selectTab is only called from event handlers, so fire the side effect here
+    // in the handler body; read current tab via a ref to avoid a stale closure.
+    if (tabRef.current !== next) track("tab.view", { scope: "manage", tab: next });
+    setTab(next);
   }, []);
   const [projects] = useSubject($projects);
   // Find the project + VPS instance this VM is attached to, if any. The Files
@@ -1029,6 +1035,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     { key: "sessions", label: "Sessions", icon: Activity, enabled: true },
     { key: "claude-logs", label: "Claude Logs", icon: ScrollText, enabled: true },
     { key: "claude-memory", label: "Claude Memory", icon: Brain, enabled: true },
+    { key: "claude-plugins", label: "Claude Plugins", icon: Puzzle, enabled: true },
     { key: "commands", label: "Commands", icon: PlayCircle, enabled: hasProject, reason: "Attach this VM to a project to manage commands" },
     { key: "files", label: "Files", icon: FolderTree, enabled: hasProject, reason: "Attach this VM to a project to browse files" },
     { key: "db", label: "DB", icon: DatabaseIcon, enabled: hasProject, reason: "Attach this VM to a project to browse the database" },
@@ -1190,6 +1197,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
           )}
           {tab === "claude-memory" && (
             <VmClaudeMemoryTab exec={exec} />
+          )}
+          {tab === "claude-plugins" && (
+            <ClaudePluginsPanel exec={exec} deferAutoCheckMs={2000} />
           )}
         </>
       )}
