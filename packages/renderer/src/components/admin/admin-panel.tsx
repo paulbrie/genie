@@ -85,7 +85,7 @@ function CopyButton({ text }: { text: string }) {
 export function AdminPanel() {
   const router = useRouter();
   const admin = useDeepSubjectAll($admin);
-  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, sqlResult, sqlError, sqlLoading, sqlOpen, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush, users: usersState, teams: teamsState, orgs: orgsState } = admin;
+  const { activeTab, tables, selectedTable, columns, primaryKey, rows, totalCount, page, pageSize, orderBy, orderDir, loading, drawerOpen, drawerMode, drawerRow, drawerError, sqlResult, sqlError, sqlLoading, sqlOpen, baseImage, dropletsSubTab, sshKey, ai: aiState, drizzlePush, users: usersState, teams: teamsState, orgs: orgsState } = admin;
 
 
   const [auth] = useSubject($auth);
@@ -1308,6 +1308,7 @@ export function AdminPanel() {
         columns={columns}
         primaryKey={primaryKey}
         row={drawerRow}
+        error={drawerError}
         onSave={saveAdminRow}
         onClose={closeAdminRowDrawer}
       />

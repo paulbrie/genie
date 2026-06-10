@@ -5,7 +5,7 @@ export const $admin = new DeepSubject<AdminState>({
   activeTab: "database", dropletsSubTab: "instances",
   tables: [], selectedTable: null, columns: [], primaryKey: null,
   rows: [], totalCount: 0, page: 1, pageSize: 50, orderBy: null, orderDir: "asc",
-  loading: false, drawerOpen: false, drawerMode: "edit", drawerRow: null,
+  loading: false, drawerOpen: false, drawerMode: "edit", drawerRow: null, drawerError: null,
   sqlQuery: "", sqlResult: null, sqlError: null, sqlLoading: false, sqlOpen: false,
   droplets: [], dropletsLoading: false, dropletsError: null, dropletsCreating: false, dropletsCreateError: null, dropletStats: {}, dropletResize: {}, dropletReboot: {},
   dropletDomainBusy: {}, dropletDomainError: null, dropletDomainProgress: {},

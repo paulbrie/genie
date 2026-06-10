@@ -56,7 +56,7 @@ export const handlers: HandlerMap = {
 
   "admin:row:inserted": (payload) => {
     const v = $admin.getValue();
-    batch(() => { v.drawerOpen = false; v.drawerRow = null; });
+    batch(() => { v.drawerOpen = false; v.drawerRow = null; v.drawerError = null; });
     if (v.selectedTable === payload.tableName) {
       loadAdminRows();
       loadAdminTables();
@@ -65,7 +65,7 @@ export const handlers: HandlerMap = {
 
   "admin:row:updated": (payload) => {
     const v = $admin.getValue();
-    batch(() => { v.drawerOpen = false; v.drawerRow = null; });
+    batch(() => { v.drawerOpen = false; v.drawerRow = null; v.drawerError = null; });
     if (v.selectedTable === payload.tableName) {
       loadAdminRows();
     }
@@ -88,7 +88,14 @@ export const handlers: HandlerMap = {
 
   "admin:error": (payload) => {
     console.warn("Admin error:", payload.message);
-    $admin.getValue().loading = false;
+    const v = $admin.getValue();
+    batch(() => {
+      v.loading = false;
+      // If the row drawer is open this is almost certainly a failed insert/update
+      // — surface it there instead of swallowing it to the console (the silent
+      // "Save does nothing" report).
+      if (v.drawerOpen) v.drawerError = payload.message;
+    });
   },
 
   "admin:drizzle:push:output": (payload) => {

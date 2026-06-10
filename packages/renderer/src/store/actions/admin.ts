@@ -56,20 +56,27 @@ export function openAdminRowDrawer(mode: "edit" | "create", row?: Record<string,
     v.drawerOpen = true;
     v.drawerMode = mode;
     v.drawerRow = row ?? null;
+    v.drawerError = null;
   });
 }
 
 export function closeAdminRowDrawer(): void {
-  batch(() => { const v = $admin.getValue(); v.drawerOpen = false; v.drawerRow = null; });
+  batch(() => { const v = $admin.getValue(); v.drawerOpen = false; v.drawerRow = null; v.drawerError = null; });
 }
 
 export function saveAdminRow(data: Record<string, any>): void {
   const v = $admin.getValue();
   if (!v.selectedTable) return;
+  v.drawerError = null;
   if (v.drawerMode === "create") {
     wsSend("admin:row:insert", { tableName: v.selectedTable, data });
   } else {
-    if (!v.primaryKey) return;
+    // No detectable primary key → we can't build a safe WHERE clause. Tell the
+    // user instead of returning silently (this was a cause of "Save does nothing").
+    if (!v.primaryKey) {
+      v.drawerError = "Cannot update: this table has no primary key.";
+      return;
+    }
     const pkVal = v.drawerRow?.[v.primaryKey];
     wsSend("admin:row:update", { tableName: v.selectedTable, pkCol: v.primaryKey, pkVal, data });
   }

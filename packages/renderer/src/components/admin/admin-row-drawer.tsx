@@ -12,10 +12,11 @@ interface AdminRowDrawerProps {
   primaryKey: string | null;
   row: Record<string, any> | null;
   onSave: (data: Record<string, any>) => void;
+  error?: string | null;
   onClose: () => void;
 }
 
-export function AdminRowDrawer({ open, mode, columns, primaryKey, row, onSave, onClose }: AdminRowDrawerProps) {
+export function AdminRowDrawer({ open, mode, columns, primaryKey, row, onSave, onClose, error }: AdminRowDrawerProps) {
   const [formData, setFormData] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -116,6 +117,11 @@ export function AdminRowDrawer({ open, mode, columns, primaryKey, row, onSave, o
       </div>
 
       {/* Footer */}
+      {error && (
+        <div className="px-4 py-2 text-sm text-red border-t border-surface0 bg-red/10 break-words">
+          {error}
+        </div>
+      )}
       <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-surface0">
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
         <Button variant="primary" onClick={handleSubmit}>

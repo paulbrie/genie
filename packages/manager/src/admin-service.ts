@@ -178,6 +178,16 @@ export async function getRow(
   return rows.length > 0 ? rows[0] : null;
 }
 
+/** postgres-js's sql.unsafe() can't bind a JS object/array param to a jsonb/json
+ *  column — it throws "Received an instance of Object". The admin row drawer
+ *  parses jsonb cells into JS objects, so serialize them back to JSON text for
+ *  binding. Safe because the schema has no native pg array/composite columns
+ *  (all array-like data is jsonb), so a JS array here is always jsonb. */
+function serializeForBind(v: unknown): string | number | boolean | null {
+  if (v !== null && typeof v === "object") return JSON.stringify(v);
+  return v as string | number | boolean | null;
+}
+
 export async function insertRow(
   tableName: string,
   data: Record<string, unknown>
@@ -190,7 +200,7 @@ export async function insertRow(
   const sql = getRawClient();
   const colList = columns.map((c) => `"${c}"`).join(", ");
   const placeholders = columns.map((_, i) => `$${i + 1}`).join(", ");
-  const values = columns.map((c) => data[c]) as (string | number | boolean | null)[];
+  const values = columns.map((c) => serializeForBind(data[c]));
 
   const rows = await sql.unsafe(
     `INSERT INTO "${tableName}" (${colList}) VALUES (${placeholders}) RETURNING *`,
@@ -212,7 +222,7 @@ export async function updateRow(
 
   const sql = getRawClient();
   const setClauses = columns.map((c, i) => `"${c}" = $${i + 1}`).join(", ");
-  const values = [...columns.map((c) => data[c]), pkVal] as (string | number | boolean | null)[];
+  const values = [...columns.map((c) => serializeForBind(data[c])), pkVal];
 
   const rows = await sql.unsafe(
     `UPDATE "${tableName}" SET ${setClauses} WHERE "${pkCol}" = $${columns.length + 1} RETURNING *`,

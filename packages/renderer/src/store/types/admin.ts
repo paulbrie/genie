@@ -376,6 +376,10 @@ export interface AdminState {
   drawerOpen: boolean;
   drawerMode: "edit" | "create";
   drawerRow: Record<string, any> | null;
+  /** Error from the last row insert/update, shown in the row drawer. Without
+   *  this an admin:error from a failed save was only console.warn'd, so Save
+   *  looked like a silent no-op. */
+  drawerError: string | null;
   sqlQuery: string;
   sqlResult: { rows: Record<string, any>[]; columns: string[]; rowCount: number } | null;
   sqlError: string | null;
