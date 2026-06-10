@@ -82,6 +82,13 @@ export async function handleVpsLifecycleMessage(
           send(ws, { type: "vps:connect:error", payload: { message: "That host is not allowed (loopback / link-local / metadata addresses are blocked)." } });
           return true;
         }
+        // A server may only belong to one project — two would collide on the
+        // fixed /opt/project deploy path and split the VM's single bearer token.
+        const connectConflict = await projectService.findExternalAttachment({ host }, p.projectId);
+        if (connectConflict) {
+          send(ws, { type: "vps:connect:error", payload: { message: `That server (${host}) is already attached to project "${connectConflict.projectName}". Detach it there first — a server can only belong to one project.` } });
+          return true;
+        }
         const port = p.port || 22;
         const username = (p.username || "").trim() || "root";
         const instanceId = uuidv4();
@@ -151,17 +158,16 @@ export async function handleVpsLifecycleMessage(
           try { await projectService.removeVpsInstance(detachFrom.projectId, detachFrom.instanceId); } catch { /* already gone */ }
         }
 
-        const allProjects = await projectService.getAll();
-        for (const pp of allProjects) {
-          for (const v of pp.vpsInstances) {
-            const matchDo = provider === "digitalocean" && v.digitalocean?.dropletId === Number(vmId);
-            const matchTaz = provider === "tazcloud" && v.tazcloud?.vmId === String(vmId);
-            const matchHz = provider === "hetzner" && v.hetzner?.serverId === Number(vmId);
-            if (matchDo || matchTaz || matchHz) {
-              send(ws, { type: "vps:attach-existing:error", payload: { message: `Already attached to project "${pp.name}"` } });
-              return true;
-            }
-          }
+        // Block if this VM (by provider resource id) is already attached to
+        // another project. The host-based check below additionally catches the
+        // same box attached via the generic-SSH path (no provider id).
+        const providerKey = provider === "digitalocean" ? `do:${Number(vmId)}`
+          : provider === "tazcloud" ? `taz:${String(vmId)}`
+          : `hz:${Number(vmId)}`;
+        const keyConflict = await projectService.findExternalAttachment({ targetKey: providerKey }, projectId);
+        if (keyConflict) {
+          send(ws, { type: "vps:attach-existing:error", payload: { message: `Already attached to project "${keyConflict.projectName}"` } });
+          return true;
         }
 
         const onAttachProgress = (m: string) =>
@@ -270,6 +276,15 @@ export async function handleVpsLifecycleMessage(
             },
           };
           resolvedLabel = (label || vm.name).slice(0, 64);
+        }
+
+        // Same box may already be attached to another project under the generic
+        // SSH path (host only, no provider id) — that wouldn't match providerKey
+        // above, so check the resolved host before bootstrapping.
+        const hostConflict = await projectService.findExternalAttachment({ host: initialConnection.host }, projectId);
+        if (hostConflict) {
+          send(ws, { type: "vps:attach-existing:error", payload: { message: `That server (${initialConnection.host}) is already attached to project "${hostConflict.projectName}" — detach it there first.` } });
+          return true;
         }
 
         // Ensure the `genie` user exists and owns /opt/project regardless of how

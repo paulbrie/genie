@@ -772,6 +772,32 @@ export async function patchProject(id: string, patch: Partial<{
 
 // --- VPS Instance helpers ---
 
+/** Find an instance with the same host or provider-resource key attached to a
+ *  DIFFERENT project. Used to block attaching one physical server to two
+ *  projects: they would collide on the fixed `/opt/project` deploy path, and the
+ *  VM holds a single bearer token so stats/MCP only ever resolve to whichever
+ *  project synced last. Returns the conflicting project + instance, or null.
+ *  `targetKey` is an instanceTargetKey() value ("do:123" / "taz:x" / "hz:456"). */
+export async function findExternalAttachment(
+  match: { host?: string | null; targetKey?: string | null },
+  selfProjectId: string,
+): Promise<{ projectId: string; projectName: string; instanceId: string } | null> {
+  const host = match.host?.trim() || null;
+  const targetKey = match.targetKey || null;
+  if (!host && !targetKey) return null;
+  for (const p of await getAll()) {
+    if (p.id === selfProjectId) continue;
+    for (const v of p.vpsInstances) {
+      const sameHost = host !== null && v.connection?.host === host;
+      const sameKey = targetKey !== null && instanceTargetKey(v) === targetKey;
+      if (sameHost || sameKey) {
+        return { projectId: p.id, projectName: p.name, instanceId: v.id };
+      }
+    }
+  }
+  return null;
+}
+
 export async function addVpsInstance(projectId: string, instance: VpsInstance): Promise<ProjectDef | null> {
   const project = await getById(projectId);
   if (!project) return null;
