@@ -31,6 +31,12 @@ function dedupeVpsInstances(instances: VpsInstance[]): VpsInstance[] {
   const keptIndexByKey = new Map<string, number>();
   const result: VpsInstance[] = [];
   for (const inst of instances) {
+    // Key on the provider resource id only. We deliberately do NOT merge by host
+    // here: two records can share an IP yet be different provider resources (a
+    // destroyed server whose public IP was recycled to a freshly-provisioned
+    // one). Merging those on read would silently hide the live box behind the
+    // stale ghost. Host collisions are prevented at write time (addVpsInstance)
+    // and reconciled by status sync, not by lossy read-time guessing.
     const key = instanceTargetKey(inst);
     if (!key) { result.push(inst); continue; }
     const existingIdx = keptIndexByKey.get(key);
@@ -807,8 +813,11 @@ export async function addVpsInstance(projectId: string, instance: VpsInstance): 
   // error path adds a failed record) followed by a fresh-id retry would leave
   // two buttons for one droplet.
   const key = instanceTargetKey(instance);
+  const host = instance.connection?.host?.trim() || null;
   const existingIdx = project.vpsInstances.findIndex(
-    v => v.id === instance.id || (key !== null && instanceTargetKey(v) === key),
+    v => v.id === instance.id
+      || (key !== null && instanceTargetKey(v) === key)
+      || (host !== null && v.connection?.host?.trim() === host),
   );
   const instances = existingIdx >= 0
     ? project.vpsInstances.map((v, i) => (i === existingIdx ? instance : v))
