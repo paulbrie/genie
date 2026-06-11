@@ -33,6 +33,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "analytics_events", run: migrateAnalyticsEvents },
   { id: "analytics_events_project", run: migrateAnalyticsEventsProject },
   { id: "claude_plugins", run: migrateClaudePlugins },
+  { id: "connection_log", run: migrateConnectionLog },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -84,6 +85,7 @@ async function migrationTablesExist(id: string): Promise<boolean> {
     case "base_image_history": return tableExists("base_image_template_history");
     case "analytics_events": return tableExists("analytics_events");
     case "claude_plugins": return tableExists("claude_plugins");
+    case "connection_log": return tableExists("connection_log");
     // security_scan_project only adds a column (idempotent ALTER) — let the
     // catch-up path run it rather than guessing from a table name.
     default: return false;
@@ -450,6 +452,34 @@ export async function migrateClaudePlugins(): Promise<void> {
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
   )`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_claude_plugins_slug ON claude_plugins(slug)`);
+}
+
+/** One row per WebSocket close — written from ws-server. Lets us hand Railway
+ *  support sample `x-railway-request-id`s after Railway's log retention rolls
+ *  off, and track baseline disconnect rates over time. Idempotent. */
+export async function migrateConnectionLog(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS connection_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID,
+    user_name TEXT,
+    client_type TEXT,
+    ip TEXT,
+    user_agent TEXT,
+    railway_request_id TEXT,
+    connected_at TIMESTAMP NOT NULL,
+    closed_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    duration_sec INTEGER,
+    close_code INTEGER,
+    close_description TEXT,
+    close_hint TEXT,
+    close_reason TEXT,
+    alive_last_ping BOOLEAN
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_connection_log_closed ON connection_log(closed_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_connection_log_code ON connection_log(close_code)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_connection_log_user ON connection_log(user_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_connection_log_request_id ON connection_log(railway_request_id)`);
 }
 
 /** Base image template edit history. Idempotent. */

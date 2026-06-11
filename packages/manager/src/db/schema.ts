@@ -376,6 +376,44 @@ export const auditLog = pgTable("audit_log", {
   index("idx_audit_log_created").on(t.createdAt),
 ]);
 
+// One row per WebSocket close — written from ws-server's ws.on("close") path,
+// mirroring the [ws-close] log line. Lets us hand Railway support sample
+// `x-railway-request-id`s across burst windows after the Railway log retention
+// window has rolled off, and lets us track baseline disconnect rates over time.
+// No row for currently-open connections (those live in the ws-server's
+// in-memory `clients` map).
+export const connectionLog = pgTable("connection_log", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id"),
+  /** Denormalized — survives user deletion, matches audit_log convention. */
+  userName: text("user_name"),
+  clientType: text("client_type"),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  /** `x-railway-request-id` from the HTTP upgrade — the key field for Railway
+   *  edge-side forensics. Indexed for fast lookup when support hands us an ID. */
+  railwayRequestId: text("railway_request_id"),
+  connectedAt: timestamp("connected_at").notNull(),
+  closedAt: timestamp("closed_at").defaultNow().notNull(),
+  durationSec: integer("duration_sec"),
+  closeCode: integer("close_code"),
+  /** Short label from describeWsCloseCode (e.g. "abnormal" for 1006). */
+  closeDescription: text("close_description"),
+  /** Set when WE closed it ("heartbeat-missed-pong", "auth-revoked",
+   *  "server-shutdown"); null for peer/edge-initiated closes. */
+  closeHint: text("close_hint"),
+  /** Reason buffer payload, if any. */
+  closeReason: text("close_reason"),
+  /** Did the last heartbeat ping receive a pong? false at close time means the
+   *  socket was already half-open (network/edge), not a clean client close. */
+  aliveLastPing: boolean("alive_last_ping"),
+}, (t) => [
+  index("idx_connection_log_closed").on(t.closedAt),
+  index("idx_connection_log_code").on(t.closeCode),
+  index("idx_connection_log_user").on(t.userId),
+  index("idx_connection_log_request_id").on(t.railwayRequestId),
+]);
+
 // Product-analytics events (DAU, feature usage, funnels). Distinct from
 // audit_log: audit is transport-level (every WS message + full payload, for
 // forensics); this is a small set of semantic, named events with metadata-only

@@ -22,6 +22,7 @@ import * as docsService from "./docs-service.js";
 import * as trackerService from "./tracker-service.js";
 import * as backupService from "./backup-service.js";
 import * as auditService from "./audit-service.js";
+import * as connectionLogService from "./connection-log-service.js";
 import { getDb } from "./db/index.js";
 
 import { users } from "./db/schema.js";
@@ -218,6 +219,20 @@ if (AUDIT_RETENTION_DAYS > 0) {
   setInterval(() => void runAuditJanitor(), 24 * 60 * 60_000);
 }
 
+// connection_log holds one row per WS close — much sparser than audit_log, but
+// still bounded. 30d is enough to compare burst windows month-to-month and to
+// hand Railway support sample request IDs long after the Railway log retention
+// window has rolled off. Set GENIE_CONNECTION_LOG_RETENTION_DAYS=0 to keep forever.
+const CONNECTION_LOG_RETENTION_DAYS = Number(process.env.GENIE_CONNECTION_LOG_RETENTION_DAYS ?? 30);
+async function runConnectionLogJanitor(): Promise<void> {
+  const removed = await connectionLogService.pruneOldConnectionLogs(CONNECTION_LOG_RETENTION_DAYS);
+  if (removed > 0) console.log(`[connection-log-janitor] pruned ${removed} row(s) older than ${CONNECTION_LOG_RETENTION_DAYS}d`);
+}
+if (CONNECTION_LOG_RETENTION_DAYS > 0) {
+  setTimeout(() => void runConnectionLogJanitor(), 60_000);
+  setInterval(() => void runConnectionLogJanitor(), 24 * 60 * 60_000);
+}
+
 // Resume mapping (sessionKey → Claude Code session id) is persisted in the
 // `assistant_session_state` table — see assistant-session-state-service.ts.
 // Survives Manager restarts; conversation content itself lives on the VPS in
@@ -252,6 +267,11 @@ export interface ClientState {
   clientType: ClientType;
   assistantSessionId: string | null;
   currentNav: string | null;
+  /** The browser URL path this client is currently on (e.g. "/projects/foo/servers"),
+   *  reported by the renderer via presence:path. More granular than currentNav —
+   *  carries the entity slug / sub-tab the nav label alone drops. Admin-only (rides
+   *  the admin-gated presence:detail broadcast). */
+  currentPath: string | null;
   /** The project the client currently has selected (or null on non-project navs).
    *  Used by the 3D topology to draw real user → server lines. */
   selectedProjectId: string | null;
@@ -263,6 +283,10 @@ export interface ClientState {
   /** When this socket connected — lets the close handler report session length,
    *  separating idle-timeout drops from mid-stream ones. */
   connectedAt: number;
+  /** Railway edge request id (`x-railway-request-id` on the HTTP upgrade) —
+   *  echoed in `[ws-close]` so we can hand Railway support the IDs they need to
+   *  trace edge-side resets back to specific connections. */
+  railwayRequestId: string | null;
 }
 
 const clients = new Map<WebSocket, ClientState>();
@@ -638,7 +662,7 @@ export function getClientUserName(ws: WebSocket): string | null {
 }
 
 const PRESENCE_SKIP_TYPES = new Set([
-  "ping", "pong", "stats", "presence:nav", "presence:windows", "presence:detail",
+  "ping", "pong", "stats", "presence:nav", "presence:path", "presence:windows", "presence:detail",
 ]);
 
 export function broadcastPresence(): void {
@@ -661,6 +685,8 @@ interface PresenceSession {
   avatarUrl: string | null;
   clientType: string;
   currentNav: string | null;
+  /** The browser URL path this session is currently on (e.g. "/clouds/taz"). */
+  currentPath: string | null;
   selectedProjectId: string | null;
   /** Servers this user currently has live PTY sessions attached to. Sourced
    *  from the ptySessions table; the topology graph draws one user→server
@@ -687,6 +713,7 @@ async function buildPresenceDetail(): Promise<PresenceSession[]> {
       avatarUrl: state.user.avatarUrl,
       clientType: state.clientType,
       currentNav: state.currentNav,
+      currentPath: state.currentPath,
       selectedProjectId: state.selectedProjectId,
       attachedServers: [],
       recentActions: state.recentActions.slice(-25),
@@ -894,6 +921,16 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   // --- Presence handlers ---
   if (msg.type === "presence:nav") {
     state.currentNav = (msg.payload?.nav as string) || null;
+    void broadcastPresenceDetail();
+    return;
+  }
+
+  if (msg.type === "presence:path") {
+    // Cap at 256 chars — app paths are short slug/sub-tab segments. Without this
+    // an authenticated client could ship a huge string that broadcastPresenceDetail
+    // amplifies to every admin on each presence tick (same guard as openWindows).
+    const p = msg.payload?.path;
+    state.currentPath = typeof p === "string" && p ? p.slice(0, 256) : null;
     void broadcastPresenceDetail();
     return;
   }
@@ -1306,8 +1343,9 @@ export async function createServer(): Promise<WebSocketServer> {
   wss.on("connection", (ws, req) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
     const userAgent = (req.headers["user-agent"] as string) || null;
-    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, selectedProjectId: null, recentActions: [], openWindows: [], ip, userAgent, connectedAt: Date.now() });
-    console.log(`Client connected (${clients.size} total)`);
+    const railwayRequestId = (req.headers["x-railway-request-id"] as string) || (req.headers["x-request-id"] as string) || null;
+    clients.set(ws, { userId: null, user: null, role: null, impersonatedBy: null, clientType: "web", assistantSessionId: null, currentNav: null, currentPath: null, selectedProjectId: null, recentActions: [], openWindows: [], ip, userAgent, connectedAt: Date.now(), railwayRequestId });
+    console.log(`Client connected (${clients.size} total)${railwayRequestId ? ` reqId=${railwayRequestId}` : ""}`);
 
     // Seed heartbeat liveness and mark alive on every pong (see WS_PING_INTERVAL_MS).
     wsAlive.set(ws, true);
@@ -1365,9 +1403,30 @@ export async function createServer(): Promise<WebSocketServer> {
         `[ws-close] ${who} code=${code}(${describeWsCloseCode(code)}) ` +
         `${hint ? `server-initiated=${hint}` : "peer-or-edge-closed"} ` +
         `aliveLastPing=${wsAlive.get(ws)} durSec=${durSec} ` +
-        `clientType=${stateForLog?.clientType ?? "?"} ip=${stateForLog?.ip ?? "?"}` +
+        `clientType=${stateForLog?.clientType ?? "?"} ip=${stateForLog?.ip ?? "?"} ` +
+        `reqId=${stateForLog?.railwayRequestId ?? "?"}` +
         `${reasonStr ? ` reason="${reasonStr}"` : ""} | tally: ${tally}`,
       );
+
+      // Persist to connection_log for cross-burst analysis and to outlive
+      // Railway's log retention. Fire-and-forget; errors are logged inside
+      // recordDisconnect so a DB hiccup doesn't break the close path.
+      void connectionLogService.recordDisconnect({
+        userId: stateForLog?.userId ?? null,
+        userName: stateForLog?.user?.name ?? null,
+        clientType: stateForLog?.clientType ?? null,
+        ip: stateForLog?.ip ?? null,
+        userAgent: stateForLog?.userAgent ?? null,
+        railwayRequestId: stateForLog?.railwayRequestId ?? null,
+        connectedAt: stateForLog ? new Date(stateForLog.connectedAt) : new Date(),
+        closedAt: new Date(),
+        durationSec: durSec >= 0 ? durSec : null,
+        closeCode: code,
+        closeDescription: describeWsCloseCode(code),
+        closeHint: hint ?? null,
+        closeReason: reasonStr || null,
+        aliveLastPing: wsAlive.get(ws) ?? null,
+      });
 
       unwatchVpsStatsForClient(ws);
       unwatchServerMetrics(ws);
