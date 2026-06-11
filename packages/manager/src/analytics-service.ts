@@ -214,6 +214,130 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
   };
 }
 
+/** The three user-initiated "request" surfaces the Server dashboard stacks by
+ *  user: Claude popup (assistant.message), Genie Chat (chat.message), and the
+ *  Terminal (terminal.command_sent). These are exactly the inbound submits we
+ *  already record as analytics events — no new instrumentation needed. */
+const REQUEST_EVENTS = ["assistant.message", "chat.message", "terminal.command_sent"] as const;
+
+/** Friendly per-surface labels used when the chart is filtered to one user. */
+const SURFACE_LABELS: Record<string, string> = {
+  "assistant.message": "Claude popup",
+  "chat.message": "Genie Chat",
+  "terminal.command_sent": "Terminal",
+};
+
+/** How many distinct users get their own band before the rest fold into "Other".
+ *  Lower than topUsers' 10 so the stacked area stays legible. */
+const REQUEST_TOP_N = 8;
+
+export interface RequestVolumeSeries {
+  /** dataKey on each point: a userId (mode "user"), the literal "other", or an
+   *  event name (mode "surface"). */
+  key: string;
+  label: string;
+}
+
+export interface RequestVolumeResult {
+  /** Width of each time bucket in seconds. */
+  bucketSeconds: number;
+  /** "user": stacked by top-N users + Other. "surface": stacked by the three
+   *  request surfaces (when filtered to a single user). */
+  mode: "user" | "surface";
+  /** Stack order, bottom → top. */
+  series: RequestVolumeSeries[];
+  /** One entry per time bucket (zero-filled, oldest first). `t` is epoch ms;
+   *  every series key is present with its count. */
+  points: ({ t: number } & Record<string, number>)[];
+}
+
+/** Per-user (or, when filtered to one user, per-surface) request volume over
+ *  time, for the Server dashboard's stacked "Requests by user" chart. Counts the
+ *  three REQUEST_EVENTS, excluding silent programmatic terminal injects (same
+ *  convention as commandsByUser). Buckets are epoch-floored to `bucketSeconds`
+ *  and zero-filled across the [from, now] window so the area chart is continuous. */
+export async function getRequestVolumeByUser(
+  from: Date,
+  bucketSeconds: number,
+  filters: AnalyticsFilters = {},
+): Promise<RequestVolumeResult> {
+  const db = getDb();
+  const bucketSec = sql<number>`(floor(extract(epoch from ${analyticsEvents.createdAt}) / ${bucketSeconds}) * ${bucketSeconds})`;
+  // Shared filters: time range + project filter (+ userId when set) + the three
+  // request events + exclude silent injects.
+  const baseExtra: (SQL | undefined)[] = [
+    inArray(analyticsEvents.event, REQUEST_EVENTS as unknown as string[]),
+    sql`coalesce(${analyticsEvents.props}->>'silent', '') <> 'true'`,
+  ];
+
+  let series: RequestVolumeSeries[];
+  // bucketEpochSec → { seriesKey → count }
+  const byBucket = new Map<number, Record<string, number>>();
+  const bump = (b: number, key: string, count: number) => {
+    let o = byBucket.get(b);
+    if (!o) { o = {}; byBucket.set(b, o); }
+    o[key] = (o[key] ?? 0) + count;
+  };
+
+  if (filters.userId) {
+    // Single user → stack by surface (one band per event).
+    series = REQUEST_EVENTS.map((e) => ({ key: e, label: SURFACE_LABELS[e] ?? e }));
+    const rows = await db
+      .select({ b: bucketSec, event: analyticsEvents.event, count: sql<number>`count(*)::int` })
+      .from(analyticsEvents)
+      .where(scopeWhere(from, filters, ...baseExtra))
+      .groupBy(bucketSec, analyticsEvents.event);
+    for (const r of rows) bump(Number(r.b), r.event, r.count);
+  } else {
+    // All users → top-N by volume get their own band, the rest fold into "Other".
+    const top = await db
+      .select({
+        userId: analyticsEvents.userId,
+        storedName: sql<string | null>`max(${analyticsEvents.userName})`,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(analyticsEvents)
+      .where(scopeWhere(from, filters, ...baseExtra, isNotNull(analyticsEvents.userId)))
+      .groupBy(analyticsEvents.userId)
+      .orderBy(desc(sql`count(*)`))
+      .limit(REQUEST_TOP_N);
+    const topIds = top.map((t) => t.userId).filter((id): id is string => !!id);
+
+    if (topIds.length > 0) {
+      const nameMap = await resolveUserNames(topIds);
+      series = top.map((t) => ({ key: t.userId!, label: pickName(t.userId, t.storedName, nameMap) }));
+      const groupKey = sql<string>`case when ${inArray(analyticsEvents.userId, topIds)} then ${analyticsEvents.userId}::text else 'other' end`;
+      const rows = await db
+        .select({ b: bucketSec, key: groupKey, count: sql<number>`count(*)::int` })
+        .from(analyticsEvents)
+        .where(scopeWhere(from, filters, ...baseExtra, isNotNull(analyticsEvents.userId)))
+        .groupBy(bucketSec, groupKey);
+      let sawOther = false;
+      for (const r of rows) {
+        if (r.key === "other") sawOther = true;
+        bump(Number(r.b), r.key, r.count);
+      }
+      if (sawOther) series.push({ key: "other", label: "Other" });
+    } else {
+      series = [];
+    }
+  }
+
+  // Zero-fill every bucket from the window start to now so the chart is continuous.
+  const seriesKeys = series.map((s) => s.key);
+  const startBucket = Math.floor(from.getTime() / 1000 / bucketSeconds) * bucketSeconds;
+  const endBucket = Math.floor(Date.now() / 1000 / bucketSeconds) * bucketSeconds;
+  const points: ({ t: number } & Record<string, number>)[] = [];
+  for (let b = startBucket; b <= endBucket; b += bucketSeconds) {
+    const counts = byBucket.get(b) ?? {};
+    const point: { t: number } & Record<string, number> = { t: b * 1000 };
+    for (const k of seriesKeys) point[k] = counts[k] ?? 0;
+    points.push(point);
+  }
+
+  return { bucketSeconds, mode: filters.userId ? "surface" : "user", series, points };
+}
+
 /** Per-user tab-access matrix, merging main-nav `nav.view` events with the
  *  namespaced `tab.view` events emitted for Admin and Manage-popup sub-tabs. */
 async function getTabAccess(

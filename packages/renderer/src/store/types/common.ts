@@ -159,6 +159,23 @@ export interface ServerMetricSample {
   wsSent: number;
 }
 
+/** One stacked band in the "Requests by user" chart. Mirrors the manager's
+ *  RequestVolumeSeries: `key` is a userId, the literal "other", or an event name
+ *  (when filtered to a single user → per-surface). */
+export interface RequestVolumeSeries {
+  key: string;
+  label: string;
+}
+
+/** Per-user (or per-surface) request volume over time. Mirrors the manager's
+ *  RequestVolumeResult. Each point has `t` (epoch ms) plus one count per series key. */
+export interface RequestVolumeResult {
+  bucketSeconds: number;
+  mode: "user" | "surface";
+  series: RequestVolumeSeries[];
+  points: ({ t: number } & Record<string, number>)[];
+}
+
 /** Live server throughput for the superadmin "Server" dashboard. */
 export interface ServerMetricsState {
   /** Manager process start time (epoch ms), or null before the first snapshot. */

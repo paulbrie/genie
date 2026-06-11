@@ -1,23 +1,26 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Area, AreaChart, XAxis, YAxis } from "recharts";
-import { useSubject } from "subjecto/react";
-import { $serverMetrics } from "@/store/subjects";
+import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useDeepSubject, useSubject } from "subjecto/react";
+import { $admin, $serverMetrics } from "@/store/subjects";
 import {
   watchServerMetrics,
   unwatchServerMetrics,
   fetchServerMetricsHistory,
+  fetchRequestsByUser,
 } from "@/store/actions/server-metrics";
+import { loadAdminUsers } from "@/store/actions";
 import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { FilterableSelect } from "@/components/ui/filterable-select";
 import { SystemStats } from "@/components/ui/system-stats";
 import { cn } from "@/lib/utils";
-import type { ServerMetricSample } from "@/store/types/common";
+import type { RequestVolumeResult, ServerMetricSample } from "@/store/types/common";
 
 /** Unified per-point shape for the charts: `stats`/`ws` are per-second rates. */
 interface ChartPoint {
@@ -318,8 +321,139 @@ export function ServerMetricsPanel() {
             <CollectingPlaceholder loading={collecting} />
           )}
         </section>
+
+        <RequestsByUserSection range={range} rangeLabel={rangeLabel} showDate={showDate} />
       </div>
     </div>
+  );
+}
+
+/** Distinct band colours for the stacked "Requests by user" chart; "Other" gets
+ *  a muted overlay tone so it reads as the catch-all. */
+const SERIES_COLORS = [
+  "#89b4fa", "#cba6f7", "#a6e3a1", "#fab387", "#94e2d5",
+  "#f9e2af", "#f38ba8", "#89dceb", "#f5c2e7", "#b4befe",
+];
+const OTHER_COLOR = "#6c7086";
+const seriesColor = (key: string, i: number) => (key === "other" ? OTHER_COLOR : SERIES_COLORS[i % SERIES_COLORS.length]!);
+
+/** Stacked request-volume chart sourced from analytics_events. With no user
+ *  selected it stacks the top users (+ Other); with one selected it splits that
+ *  user's volume by surface (Claude popup / Genie Chat / Terminal). Shares the
+ *  panel's 1h/6h/24h range. */
+function RequestsByUserSection({
+  range,
+  rangeLabel,
+  showDate,
+}: {
+  range: number;
+  rangeLabel: string;
+  showDate: boolean;
+}) {
+  const [usersSlice] = useDeepSubject($admin, "users");
+  const [userId, setUserId] = useState("");
+  const [result, setResult] = useState<RequestVolumeResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (usersSlice.list.length === 0) loadAdminUsers();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const r = await fetchRequestsByUser(range, userId || null);
+        if (!cancelled) setResult(r);
+      } catch {
+        if (!cancelled) setResult(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [range, userId]);
+
+  const userOptions = useMemo(
+    () => [
+      { value: "", label: "All users (stack by user)" },
+      ...usersSlice.list
+        .filter((u) => !u.isAgent)
+        .map((u) => ({ value: u.id, label: u.name || u.email || u.id })),
+    ],
+    [usersSlice.list],
+  );
+
+  const hasData =
+    !!result &&
+    result.series.length > 0 &&
+    result.points.some((p) => result.series.some((s) => (p[s.key] ?? 0) > 0));
+
+  return (
+    <section className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-sm font-medium text-subtext0">
+          Requests by user · last {rangeLabel}
+          <span className="text-overlay0 font-normal"> · Claude popup + Genie Chat + Terminal</span>
+        </h2>
+        <div className="w-64">
+          <FilterableSelect
+            value={userId}
+            options={userOptions}
+            onChange={(v) => setUserId(v)}
+            placeholder="All users"
+          />
+        </div>
+      </div>
+      {hasData ? (
+        <div className="h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={result!.points} margin={{ top: 6, right: 8, bottom: 0, left: -16 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#313244" vertical={false} />
+              <XAxis
+                dataKey="t"
+                tick={{ fill: "#7f849c", fontSize: 11 }}
+                minTickGap={24}
+                tickFormatter={(t: number) => {
+                  const d = new Date(t);
+                  return showDate
+                    ? d.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit" })
+                    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                }}
+              />
+              <YAxis allowDecimals={false} tick={{ fill: "#7f849c", fontSize: 11 }} width={32} />
+              <Tooltip
+                contentStyle={{ background: "#181825", border: "1px solid #313244", borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: "#cdd6f4" }}
+                labelFormatter={(t) => new Date(Number(t)).toLocaleString()}
+              />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              {result!.series.map((s, i) => (
+                <Area
+                  key={s.key}
+                  type="monotone"
+                  dataKey={s.key}
+                  name={s.label}
+                  stackId="1"
+                  stroke={seriesColor(s.key, i)}
+                  fill={seriesColor(s.key, i)}
+                  fillOpacity={0.5}
+                  strokeWidth={1}
+                  isAnimationActive={false}
+                  dot={false}
+                />
+              ))}
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <CollectingPlaceholder loading={loading} />
+      )}
+    </section>
   );
 }
 
