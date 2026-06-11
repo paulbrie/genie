@@ -14,6 +14,33 @@
 import type { ClaudePluginInput } from "./claude-plugins-service.js";
 import { BASH_HELPERS } from "./default-recipes.js";
 
+// Plain-grep check (no jq dependency — most fresh VMs don't have jq, and the
+// old check silently fell through to NOT_INSTALLED when jq was missing). The
+// script always exits 0 and prints ONE line starting with INSTALLED or
+// NOT_INSTALLED — the renderer matches on substring, so the diagnostic suffix
+// after NOT_INSTALLED is shown in the expanded panel for self-service debug.
+function makePluginCheckScript(slug: string): string {
+  const pluginId = `${slug}@claude-plugins-official`;
+  return `set +e
+PLUGIN_ID="${pluginId}"
+if ! command -v claude > /dev/null 2>&1; then
+  echo "NOT_INSTALLED (claude CLI not in PATH)"
+  exit 0
+fi
+LIST=$(claude plugin list --json 2>&1)
+RC=$?
+if [ $RC -ne 0 ]; then
+  echo "NOT_INSTALLED (claude plugin list exited $RC)"
+  printf '%s\\n' "$LIST" | head -3
+  exit 0
+fi
+if printf '%s' "$LIST" | grep -Eq "\\"id\\"[[:space:]]*:[[:space:]]*\\"$PLUGIN_ID\\""; then
+  echo "INSTALLED"
+else
+  echo "NOT_INSTALLED (looking for $PLUGIN_ID)"
+fi`;
+}
+
 export const DEFAULT_CLAUDE_PLUGINS: ClaudePluginInput[] = [
   {
     slug: "chrome-devtools-mcp",
@@ -21,19 +48,13 @@ export const DEFAULT_CLAUDE_PLUGINS: ClaudePluginInput[] = [
     icon: "Chrome",
     description: "Browser automation & debugging — drive Chrome from Claude (click, evaluate, screenshot, network/console inspection, performance traces).",
     homepageUrl: "https://github.com/ChromeDevTools/chrome-devtools-mcp",
-    checkScript: `if command -v claude > /dev/null 2>&1 && command -v jq > /dev/null 2>&1 && claude plugin list --json 2>/dev/null | jq -e '.[] | select(.id == "chrome-devtools-mcp@claude-plugins-official")' > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: makePluginCheckScript("chrome-devtools-mcp"),
     installScript: `set -e
 ${BASH_HELPERS}
 force_ipv4_dns
 log "Installing Chrome DevTools MCP plugin for Claude Code..."
 if ! command -v claude > /dev/null 2>&1; then
   log "Claude Code CLI not found — install Genie Standard Setup first."; exit 1
-fi
-if ! command -v jq > /dev/null 2>&1; then
-  log "Installing jq..."
-  if command -v apt-get > /dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y jq;
-  elif command -v dnf > /dev/null 2>&1; then sudo dnf install -y jq;
-  else log "Cannot install jq automatically — install it and re-run."; exit 1; fi
 fi
 claude plugin install chrome-devtools-mcp@claude-plugins-official
 log "Chrome DevTools MCP installed. Re-open any active Claude Code session for the plugin to be picked up."`,
@@ -49,19 +70,13 @@ log "Done. Re-open any active Claude Code session."`,
     icon: "TestTube",
     description: "Cross-browser automation via Playwright — drive Chromium/Firefox/WebKit from Claude for end-to-end testing and scripted browsing. Wraps the @playwright/mcp server via Claude's plugin manifest.",
     homepageUrl: "https://github.com/microsoft/playwright-mcp",
-    checkScript: `if command -v claude > /dev/null 2>&1 && command -v jq > /dev/null 2>&1 && claude plugin list --json 2>/dev/null | jq -e '.[] | select(.id == "playwright@claude-plugins-official")' > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: makePluginCheckScript("playwright"),
     installScript: `set -e
 ${BASH_HELPERS}
 force_ipv4_dns
 log "Installing Playwright plugin for Claude Code..."
 if ! command -v claude > /dev/null 2>&1; then
   log "Claude Code CLI not found — install Genie Standard Setup first."; exit 1
-fi
-if ! command -v jq > /dev/null 2>&1; then
-  log "Installing jq..."
-  if command -v apt-get > /dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y jq;
-  elif command -v dnf > /dev/null 2>&1; then sudo dnf install -y jq;
-  else log "Cannot install jq automatically — install it and re-run."; exit 1; fi
 fi
 claude plugin install playwright@claude-plugins-official
 log "Playwright installed. Re-open any active Claude Code session for the plugin to be picked up."`,
@@ -77,19 +92,13 @@ log "Done. Re-open any active Claude Code session."`,
     icon: "Palette",
     description: "Create distinctive, production-grade frontend interfaces with high design quality. Generates creative, polished code that avoids generic AI aesthetics — useful when building web components, pages, or apps.",
     homepageUrl: "https://github.com/anthropics/claude-code",
-    checkScript: `if command -v claude > /dev/null 2>&1 && command -v jq > /dev/null 2>&1 && claude plugin list --json 2>/dev/null | jq -e '.[] | select(.id == "frontend-design@claude-plugins-official")' > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: makePluginCheckScript("frontend-design"),
     installScript: `set -e
 ${BASH_HELPERS}
 force_ipv4_dns
 log "Installing Frontend Design plugin for Claude Code..."
 if ! command -v claude > /dev/null 2>&1; then
   log "Claude Code CLI not found — install Genie Standard Setup first."; exit 1
-fi
-if ! command -v jq > /dev/null 2>&1; then
-  log "Installing jq..."
-  if command -v apt-get > /dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y jq;
-  elif command -v dnf > /dev/null 2>&1; then sudo dnf install -y jq;
-  else log "Cannot install jq automatically — install it and re-run."; exit 1; fi
 fi
 claude plugin install frontend-design@claude-plugins-official
 log "Frontend Design installed. Re-open any active Claude Code session for the skill to load."`,
@@ -105,23 +114,13 @@ log "Done. Re-open any active Claude Code session."`,
     icon: "Sparkles",
     description: "Agentic skills framework — composable skills for TDD, debugging, planning, and code review that auto-trigger during the development workflow. By Jesse Vincent (obra).",
     homepageUrl: "https://github.com/obra/superpowers",
-    // Installed via Claude Code's official marketplace plugin system (NOT an
-    // MCP-server-as-config). \`claude plugin list --json\` returns rows keyed by
-    // "<slug>@<marketplace>" — grep for the id to detect installation. jq is
-    // installed first because the install script needs it too on some images.
-    checkScript: `if command -v claude > /dev/null 2>&1 && command -v jq > /dev/null 2>&1 && claude plugin list --json 2>/dev/null | jq -e '.[] | select(.id == "superpowers@claude-plugins-official")' > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: makePluginCheckScript("superpowers"),
     installScript: `set -e
 ${BASH_HELPERS}
 force_ipv4_dns
 log "Installing Superpowers plugin for Claude Code..."
 if ! command -v claude > /dev/null 2>&1; then
   log "Claude Code CLI not found — install Genie Standard Setup first."; exit 1
-fi
-if ! command -v jq > /dev/null 2>&1; then
-  log "Installing jq..."
-  if command -v apt-get > /dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y jq;
-  elif command -v dnf > /dev/null 2>&1; then sudo dnf install -y jq;
-  else log "Cannot install jq automatically — install it and re-run."; exit 1; fi
 fi
 # Idempotent: \`claude plugin install\` is a no-op when the plugin is already
 # present at the same version (it just reports the existing install).
