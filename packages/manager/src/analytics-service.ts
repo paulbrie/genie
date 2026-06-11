@@ -286,7 +286,11 @@ export async function getRequestVolumeByUser(
       .select({ b: bucketSec, event: analyticsEvents.event, count: sql<number>`count(*)::int` })
       .from(analyticsEvents)
       .where(scopeWhere(from, filters, ...baseExtra))
-      .groupBy(bucketSec, analyticsEvents.event);
+      // Group by output position: reusing the param-bearing `bucketSec` fragment
+      // in groupBy makes Drizzle re-bind its params under a different placeholder
+      // number, so Postgres can't match it to the select expression and rejects
+      // created_at as ungrouped. Ordinals resolve against the select list directly.
+      .groupBy(sql`1`, sql`2`);
     for (const r of rows) bump(Number(r.b), r.event, r.count);
   } else {
     // All users → top-N by volume get their own band, the rest fold into "Other".
@@ -311,7 +315,9 @@ export async function getRequestVolumeByUser(
         .select({ b: bucketSec, key: groupKey, count: sql<number>`count(*)::int` })
         .from(analyticsEvents)
         .where(scopeWhere(from, filters, ...baseExtra, isNotNull(analyticsEvents.userId)))
-        .groupBy(bucketSec, groupKey);
+        // Group by output position — see note above; `bucketSec` and `groupKey`
+        // both carry bound params that won't match if reused here.
+        .groupBy(sql`1`, sql`2`);
       let sawOther = false;
       for (const r of rows) {
         if (r.key === "other") sawOther = true;
