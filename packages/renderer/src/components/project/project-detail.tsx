@@ -131,6 +131,8 @@ function ProjectDetailBody({ project, activeTab }: { project: ProjectDef; active
       <ViewHeader
         title={project.name}
         subtitle={undefined}
+        onBack={() => navigateToNav("projects")}
+        backLabel="Back to projects"
         actions={
           canManage ? (
             <Button size="sm" variant="danger" onClick={handleRemove}>
