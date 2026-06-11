@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDb } from "./db/index.js";
 import { orgMembers, projectMembers, projectTeams, projects, teamMembers, teams, users } from "./db/schema.js";
 import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "./types.js";
@@ -6,6 +6,11 @@ import { deleteInstanceToken } from "./vps/stats-token-service.js";
 import { v4 as uuidv4 } from "uuid";
 
 // --- Helpers ---
+
+/** Filter expression that excludes soft-deleted projects. AND this into every
+ *  query that selects from `projects` so deleted rows are invisible to all
+ *  callers; only restore tooling (not in this service) should see them. */
+const notDeleted = isNull(projects.deletedAt);
 
 function normalizeConnection(conn: VpsInstance["connection"]): VpsInstance["connection"] {
   return conn.username === "root" ? { ...conn, username: VPS_SSH_USERNAME } : conn;
@@ -137,7 +142,7 @@ function attachTeamName(p: ProjectDef, teamMap: Map<string, string>): ProjectDef
 export async function getAll(): Promise<ProjectDef[]> {
 
   const db = getDb();
-  const rows = await db.select().from(projects).orderBy(projects.createdAt);
+  const rows = await db.select().from(projects).where(notDeleted).orderBy(projects.createdAt);
   const teamMap = await getTeamNameMap();
   return rows.map((r) => attachTeamName(rowToProjectDef(r), teamMap));
 }
@@ -200,10 +205,11 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   const conds = [] as ReturnType<typeof inArray>[];
   if (teamIdsAll.length > 0) conds.push(inArray(projects.teamId, teamIdsAll));
   if (projectIdAccess.length > 0) conds.push(inArray(projects.id, projectIdAccess));
+  const access = conds.length === 1 ? conds[0] : or(...conds);
   const rows = await db
     .select()
     .from(projects)
-    .where(conds.length === 1 ? conds[0] : or(...conds))
+    .where(and(notDeleted, access))
     .orderBy(projects.createdAt);
   const teamMap = await getTeamNameMap();
   return rows.map((r) => attachTeamName(rowToProjectDef(r), teamMap));
@@ -261,7 +267,7 @@ export async function listProjectAssignableUsers(projectId: string): Promise<Ass
   const [proj] = await db
     .select({ teamId: projects.teamId })
     .from(projects)
-    .where(eq(projects.id, projectId))
+    .where(and(eq(projects.id, projectId), notDeleted))
     .limit(1);
   if (!proj) return [];
 
@@ -338,7 +344,7 @@ export async function userCanSeeProject(userId: string | null, projectId: string
   const [u] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
   if (u?.role === "superadmin") return true;
 
-  const [row] = await db.select({ teamId: projects.teamId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [row] = await db.select({ teamId: projects.teamId }).from(projects).where(and(eq(projects.id, projectId), notDeleted)).limit(1);
   if (!row) return false;
 
   // Explicit project member?
@@ -386,7 +392,7 @@ export async function userCanManageProject(userId: string | null, projectId: str
   const [u] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
   if (u?.role === "superadmin") return true;
 
-  const [row] = await db.select({ teamId: projects.teamId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [row] = await db.select({ teamId: projects.teamId }).from(projects).where(and(eq(projects.id, projectId), notDeleted)).limit(1);
   if (!row) return false;
 
   // Owner of this project (explicit)?
@@ -536,7 +542,7 @@ export async function addProjectTeam(
 ): Promise<ProjectTeamDef | null> {
   const db = getDb();
   // Adding the primary owning team is redundant — skip.
-  const [proj] = await db.select({ teamId: projects.teamId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [proj] = await db.select({ teamId: projects.teamId }).from(projects).where(and(eq(projects.id, projectId), notDeleted)).limit(1);
   if (proj?.teamId === teamId) return null;
 
   await db
@@ -590,7 +596,7 @@ void sql;
 
 export async function getById(id: string): Promise<ProjectDef | null> {
   const db = getDb();
-  const [row] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+  const [row] = await db.select().from(projects).where(and(eq(projects.id, id), notDeleted)).limit(1);
   if (!row) return null;
   return rowToProjectDef(row);
 }
@@ -677,7 +683,7 @@ export async function update(
   },
 ): Promise<ProjectDef | null> {
   const db = getDb();
-  const [existing] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+  const [existing] = await db.select().from(projects).where(and(eq(projects.id, id), notDeleted)).limit(1);
   if (!existing) return null;
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -718,16 +724,25 @@ export async function update(
   const [row] = await db
     .update(projects)
     .set(updates)
-    .where(eq(projects.id, id))
+    .where(and(eq(projects.id, id), notDeleted))
     .returning();
 
   if (!row) return null;
   return rowToProjectDef(row);
 }
 
+/** Soft-delete: stamp deletedAt instead of running DELETE. All read paths in
+ *  this service filter `deletedAt IS NULL`, so the project disappears from
+ *  every list and getById call, but its tracker issues and deploy logs stay
+ *  attached (audit trail). Re-deleting an already-deleted row returns false. */
 export async function remove(id: string): Promise<boolean> {
   const db = getDb();
-  const result = await db.delete(projects).where(eq(projects.id, id)).returning({ id: projects.id });
+  const now = new Date();
+  const result = await db
+    .update(projects)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(and(eq(projects.id, id), notDeleted))
+    .returning({ id: projects.id });
   return result.length > 0;
 }
 
@@ -740,7 +755,7 @@ export async function updateCommandStatus(
   const [existing] = await db
     .select({ commandStatuses: projects.commandStatuses })
     .from(projects)
-    .where(eq(projects.id, projectId))
+    .where(and(eq(projects.id, projectId), notDeleted))
     .limit(1);
   if (!existing) return;
 
@@ -750,7 +765,7 @@ export async function updateCommandStatus(
   await db
     .update(projects)
     .set({ commandStatuses: statuses, updatedAt: new Date() })
-    .where(eq(projects.id, projectId));
+    .where(and(eq(projects.id, projectId), notDeleted));
 }
 
 // --- Bulk mutation helper (for ws-server patterns that mutate and save) ---
@@ -769,7 +784,7 @@ export async function patchProject(id: string, patch: Partial<{
   const [row] = await db
     .update(projects)
     .set(updates)
-    .where(eq(projects.id, id))
+    .where(and(eq(projects.id, id), notDeleted))
     .returning();
 
   if (!row) return null;

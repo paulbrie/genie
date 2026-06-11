@@ -124,6 +124,10 @@ export const projects = pgTable("projects", {
   teamId: uuid("team_id").references(() => teams.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  // Soft delete — set by projectService.remove(). All read paths filter rows
+  // with deletedAt IS NOT NULL so audit data (tracker issues, deploy logs)
+  // stays attached without polluting visible project lists.
+  deletedAt: timestamp("deleted_at"),
 }, (table) => [
   index("idx_projects_team").on(table.teamId),
 ]);

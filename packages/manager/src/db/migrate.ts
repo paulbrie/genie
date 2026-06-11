@@ -34,6 +34,8 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "analytics_events_project", run: migrateAnalyticsEventsProject },
   { id: "claude_plugins", run: migrateClaudePlugins },
   { id: "connection_log", run: migrateConnectionLog },
+  { id: "projects_soft_delete", run: migrateProjectsSoftDelete },
+  { id: "projects_revert_fk_cascade", run: migrateProjectsRevertFkCascade },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -480,6 +482,33 @@ export async function migrateConnectionLog(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_connection_log_code ON connection_log(close_code)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_connection_log_user ON connection_log(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_connection_log_request_id ON connection_log(railway_request_id)`);
+}
+
+/** Add projects.deleted_at to enable soft delete. project-service.remove() sets
+ *  this instead of running DELETE so audit data (tracker issues, deploy logs)
+ *  stays attached without polluting visible project lists. Idempotent. */
+export async function migrateProjectsSoftDelete(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
+}
+
+/** Ensure projects→{tracker_issues, deploy_logs} FKs are NO ACTION (default),
+ *  not CASCADE. A short-lived prior step flipped them to CASCADE before we
+ *  settled on soft delete; with cascade in place a stray hard DELETE on
+ *  projects would silently wipe historical issues and deploy logs. Re-declares
+ *  the constraints without an ON DELETE clause. Idempotent. */
+export async function migrateProjectsRevertFkCascade(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`ALTER TABLE tracker_issues
+    DROP CONSTRAINT IF EXISTS tracker_issues_project_id_projects_id_fk`);
+  await db.execute(sql`ALTER TABLE tracker_issues
+    ADD CONSTRAINT tracker_issues_project_id_projects_id_fk
+    FOREIGN KEY (project_id) REFERENCES projects(id)`);
+  await db.execute(sql`ALTER TABLE deploy_logs
+    DROP CONSTRAINT IF EXISTS deploy_logs_project_id_projects_id_fk`);
+  await db.execute(sql`ALTER TABLE deploy_logs
+    ADD CONSTRAINT deploy_logs_project_id_projects_id_fk
+    FOREIGN KEY (project_id) REFERENCES projects(id)`);
 }
 
 /** Base image template edit history. Idempotent. */
