@@ -61,6 +61,10 @@ export function sendPresenceNav(nav: string): void {
   wsSend("presence:nav", { nav });
 }
 
+export function sendPresencePath(path: string): void {
+  wsSend("presence:path", { path });
+}
+
 export function sendPresenceProject(projectId: string | null): void {
   wsSend("presence:project", { projectId });
 }

@@ -199,6 +199,10 @@ export interface PresenceSession {
   avatarUrl: string | null;
   clientType: string;
   currentNav: string | null;
+  /** The browser URL path this session is currently on (e.g. "/projects/foo/servers").
+   *  Reported by the renderer via presence:path on every route change; more granular
+   *  than currentNav, which only carries the top-level nav label. */
+  currentPath: string | null;
   /** Project currently selected by this session, if any. Updated by the
    *  renderer whenever `$selectedProjectId` changes; used by the 3D topology
    *  to draw real user → server lines. */

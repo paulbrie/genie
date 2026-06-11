@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { useSubject } from "subjecto/react";
 import { $activeNav, $auth, $projects, $selectedProjectId, $showAddProjectForm } from "@/store/subjects";
-import { loadAiCosts, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDocsList, loadEmailLogs, loadProdDeployments, loadSshKey, openDoc, selectProject, setAdminTab, setAiSubTab, setDropletsSubTab, switchNav } from "@/store/actions";
+import { loadAiCosts, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDocsList, loadEmailLogs, loadProdDeployments, loadSshKey, openDoc, selectProject, sendPresencePath, setAdminTab, setAiSubTab, setDropletsSubTab, switchNav } from "@/store/actions";
 import { AddProjectForm } from "@/components/project/add-project-form";
 import { ProjectDetail } from "@/components/project/project-detail";
 import { ProcessesPanel } from "@/components/ui/processes-panel";
@@ -267,6 +267,17 @@ function MainPanel({ activeTab, settingsTab, settingsOrgId }: { activeTab?: Proj
 
 export default function Home() {
   const { activeTab, settingsTab, settingsOrgId } = useRouteSync();
+  const pathname = usePathname();
+  const [auth] = useSubject($auth);
+  const userId = auth?.user?.id;
+
+  // Report the exact browser path to the manager so admins see each session's
+  // real route (e.g. /projects/foo/servers, /clouds/taz) in the Connected Users
+  // panel — more granular than the nav label. Keyed on userId too so the initial
+  // path, sent pre-auth and dropped by the server, gets resent once a role attaches.
+  useEffect(() => {
+    if (userId && pathname) sendPresencePath(pathname);
+  }, [pathname, userId]);
 
   return (
     <>

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { Users, Monitor, Chrome, MapPin, Globe, Wifi, AppWindow, History, X, Search } from "lucide-react";
+import { Users, Monitor, Chrome, MapPin, Globe, Wifi, AppWindow, History, X, Search, Route } from "lucide-react";
 import type { PresenceSession } from "@/store/types";
 import { $presenceSessions } from "@/store/subjects";
 import { $windowManager } from "@/store/subjects/common";
@@ -233,6 +233,14 @@ export function ConnectedUsersPanel() {
                               </span>
                             )}
                           </div>
+                          {s.currentPath && (
+                            <div className="flex items-center gap-1 text-[11px] text-overlay0 pl-5 min-w-0">
+                              <Route size={10} className="shrink-0" />
+                              <span className="font-mono text-subtext0 truncate" title={s.currentPath}>
+                                {s.currentPath}
+                              </span>
+                            </div>
+                          )}
                           {s.openWindows && s.openWindows.length > 0 && (
                             <div className="flex flex-wrap items-center gap-1.5 pl-5">
                               {s.openWindows.map((w, wi) => {
