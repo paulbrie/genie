@@ -337,7 +337,6 @@ export function VpsResourceBar({
         "flex flex-col gap-1.5 py-2 px-3 bg-mantle rounded-lg border border-overlay0/20",
         className,
       )}
-      onClick={(e) => e.stopPropagation()}
     >
       <div className={cn("flex items-center gap-4", hideGauges && "gap-0")}>
         <div className="flex flex-col gap-1 flex-1 min-w-0 justify-center">
