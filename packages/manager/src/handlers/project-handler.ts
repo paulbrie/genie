@@ -120,6 +120,13 @@ export async function handleProjectMessage(
         send(ws, { type: "error", payload: { message: "You don't have permission to remove this project" } });
         return true;
       }
+      // Block removal while servers are still attached — they must be detached
+      // first (the UI also enforces this, but the socket must too).
+      const projectToRemove = await projectService.getById(id);
+      if (projectToRemove && projectToRemove.vpsInstances.length > 0) {
+        send(ws, { type: "error", payload: { message: `Cannot remove a project with ${projectToRemove.vpsInstances.length} server(s) attached. Detach them first.` } });
+        return true;
+      }
       await projectManager.stopAll(id);
       const removed = await projectService.remove(id);
       if (!removed) {

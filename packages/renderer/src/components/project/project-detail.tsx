@@ -73,6 +73,7 @@ import type { ProcessInfo } from "@/store/types";
 import { useNavigate } from "@/lib/navigation";
 import type { ProjectTab } from "@/lib/routes";
 import { ProjectMembersTab } from "@/components/project/project-members-tab";
+import { ProjectRemoveConfirm } from "@/components/project/project-remove-confirm";
 import { ProjectServersTab } from "@/components/project/project-servers-tab";
 import { useCanManageProject } from "@/lib/use-project-permissions";
 import { VpsRecipes, VpsRunCommands } from "@/components/project/vps-recipes";
@@ -121,13 +122,24 @@ function ProjectDetailBody({ project, activeTab }: { project: ProjectDef; active
   // If a non-manager deep-links to /settings, fall back to the servers view.
   const effectiveTab: ProjectTab = activeTab === "settings" && !canManage ? "servers" : activeTab;
 
-  function handleRemove() {
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+
+  function handleConfirmRemove() {
     wsSend("project:remove", { id: project.id });
+    setShowRemoveConfirm(false);
     navigateToNav("projects");
   }
 
   return (
     <div className="flex-1 flex flex-col px-5 pb-5 overflow-y-auto">
+      {showRemoveConfirm && (
+        <ProjectRemoveConfirm
+          name={project.name}
+          attachedServers={project.vpsInstances.length}
+          onConfirm={handleConfirmRemove}
+          onCancel={() => setShowRemoveConfirm(false)}
+        />
+      )}
       <ViewHeader
         title={project.name}
         subtitle={undefined}
@@ -135,7 +147,7 @@ function ProjectDetailBody({ project, activeTab }: { project: ProjectDef; active
         backLabel="Back to projects"
         actions={
           canManage ? (
-            <Button size="sm" variant="danger" onClick={handleRemove}>
+            <Button size="sm" variant="danger" onClick={() => setShowRemoveConfirm(true)}>
               Remove
             </Button>
           ) : undefined
