@@ -19,7 +19,16 @@ const WS_URLS = process.env.NODE_ENV === "production"
   ? ["wss://api.genie.teleporthq.ai"]
   : ["ws://127.0.0.1:9876", "wss://api.genie.teleporthq.ai"];
 let WS_URL = WS_URLS[0];
-const RECONNECT_DELAY = 3000;
+// Exponential backoff with full jitter. The fixed 3s reconnect we had before
+// guaranteed a thundering herd when the platform's networking layer cycled and
+// dropped every client at once. Full jitter spreads us across [0.5..1.0]×delay.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_CAP_MS = 30_000;
+let reconnectAttempt = 0;
+function computeReconnectDelay(attempt: number): number {
+  const ceiling = Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * Math.pow(2, attempt));
+  return Math.round(ceiling * (0.5 + Math.random() * 0.5));
+}
 const KEEPALIVE_INTERVAL = 20000;
 const AUTH_TOKEN_KEY = "genie-auth-token";
 const WS_URL_KEY = "genie-ws-url";
@@ -74,6 +83,7 @@ function connect(): void {
 
   ws.onopen = () => {
     wsOpenedAt = Date.now();
+    reconnectAttempt = 0;
     console.log(`[Genie] Connected to manager at ${WS_URL}`);
     startKeepalive();
     // Try to authenticate with stored token
@@ -114,7 +124,7 @@ function connect(): void {
       if (!data[WS_URL_KEY]) {
         wsUrlIndex = (wsUrlIndex + 1) % WS_URLS.length;
       }
-      scheduleReconnect();
+      scheduleReconnect(event.code);
     });
   };
 
@@ -123,12 +133,18 @@ function connect(): void {
   };
 }
 
-function scheduleReconnect(): void {
+function scheduleReconnect(closeCode?: number): void {
   if (reconnectTimer) return;
+  // If the server explicitly asked us to back off (1013 try-again-later),
+  // start with a meaningful floor so we don't slam it on attempt 0.
+  if (closeCode === 1013 && reconnectAttempt < 3) reconnectAttempt = 3;
+  const delay = computeReconnectDelay(reconnectAttempt);
+  reconnectAttempt = Math.min(reconnectAttempt + 1, 10); // cap exponent at 10
+  console.log(`[Genie] reconnect attempt=${reconnectAttempt} in ${delay}ms`);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
-  }, RECONNECT_DELAY);
+  }, delay);
 }
 
 function startKeepalive(): void {

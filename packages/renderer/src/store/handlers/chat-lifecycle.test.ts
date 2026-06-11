@@ -22,6 +22,7 @@ const FRESH: ChatState = {
   activeSessionId: null,
   resumedFrom: null,
   connectionError: null,
+  reconnecting: false,
   lastSendMeta: null,
 };
 

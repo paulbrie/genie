@@ -27,6 +27,19 @@ const HEARTBEAT_TIMEOUT_MS = 70_000; // ~3 missed pongs before we give up
 // we can tell "drops right after an idle gap" (edge timeout) from "drops mid-use".
 let wsOpenedAt = 0;
 
+// Exponential backoff with full jitter. The fixed-2s reconnect we had before
+// guaranteed a thundering herd when the platform's networking layer cycled — N
+// clients all reconnect at the same instant and hammer the manager. Full jitter
+// spreads them across [0.5..1.0]×delay so the server sees a smooth reconnect
+// curve. Attempt resets to 0 on a successful onopen.
+let reconnectAttempt = 0;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_CAP_MS = 30_000;
+function computeReconnectDelay(attempt: number): number {
+  const ceiling = Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * Math.pow(2, attempt));
+  return Math.round(ceiling * (0.5 + Math.random() * 0.5));
+}
+
 // Decode a WebSocket close code into a human label. The code is the single most
 // diagnostic signal for *why* a socket dropped:
 //   1000 normal · 1001 going-away (server shutdown/nav) · 1005 no-status
@@ -129,6 +142,17 @@ export function onWsClose(handler: (reason: string) => void): () => void {
   return () => { closeDrains.delete(handler); };
 }
 
+// Mirror of closeDrains for the open side. Subscribers (e.g. chat actions) use
+// this to clear "reconnecting" state and re-attach to in-flight streams. Fires
+// AFTER auth is sent so handlers can assume the next inbound chat events relate
+// to an authenticated session.
+const openHandlers = new Set<() => void>();
+
+export function onWsOpen(handler: () => void): () => void {
+  openHandlers.add(handler);
+  return () => { openHandlers.delete(handler); };
+}
+
 export function isWsConnected(): boolean {
   return ws !== null && ws.readyState === WebSocket.OPEN;
 }
@@ -164,6 +188,7 @@ export function connectWs(): void {
 
   ws.onopen = () => {
     wsOpenedAt = Date.now();
+    reconnectAttempt = 0;
     console.log("Connected to manager");
     // Drive the sidebar's "connected" dot off the actual socket lifecycle.
     // setManagerRunning(true) elsewhere only flips an internal reconnect-intent
@@ -183,13 +208,18 @@ export function connectWs(): void {
       // Clean URL
       window.history.replaceState({}, "", window.location.pathname);
       sendAuthToken(urlToken);
-      return;
+    } else {
+      // Try stored token
+      const storedToken = getStoredToken();
+      if (storedToken) {
+        sendAuthToken(storedToken);
+      }
     }
 
-    // Try stored token
-    const storedToken = getStoredToken();
-    if (storedToken) {
-      sendAuthToken(storedToken);
+    // Notify open-subscribers (chat actions clear "reconnecting" state here).
+    // Errors in one handler must not block the others, so each is guarded.
+    for (const handler of openHandlers) {
+      try { handler(); } catch (err) { console.warn("[ws] open handler threw:", err); }
     }
   };
 
@@ -244,7 +274,14 @@ export function connectWs(): void {
       try { drain(reason); } catch (err) { console.warn("[ws] drain handler threw:", err); }
     }
     if (managerRunning) {
-      reconnectTimer = setTimeout(connectWs, 2000);
+      // If the server asked us to back off (1013 try-again-later), don't slam
+      // it on attempt 0. Start at attempt 3 so the floor is ~4s and the cap
+      // engages sooner.
+      if (event.code === 1013 && reconnectAttempt < 3) reconnectAttempt = 3;
+      const delay = computeReconnectDelay(reconnectAttempt);
+      reconnectAttempt = Math.min(reconnectAttempt + 1, 10); // cap exponent at 10
+      console.log(`[ws] reconnect attempt=${reconnectAttempt} in ${delay}ms`);
+      reconnectTimer = setTimeout(connectWs, delay);
     }
   };
 

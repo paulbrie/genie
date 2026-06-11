@@ -41,7 +41,7 @@ const FRESH_CHAT: ChatState = {
   toolUses: [], statusText: "", modelId: "claude-code", maxToolRounds: 0,
   toolRoundsUsed: 0, claudeInfo: null,
   sessions: [], sessionsLoading: false, activeSessionId: null,
-  resumedFrom: null, connectionError: null, lastSendMeta: null,
+  resumedFrom: null, connectionError: null, reconnecting: false, lastSendMeta: null,
 };
 
 beforeEach(() => {

@@ -368,6 +368,7 @@ function FloatingChatWindow({
     maxToolRounds,
     toolRoundsUsed,
     connectionError,
+    reconnecting,
     resumedFrom,
   } = chatState;
 
@@ -613,6 +614,13 @@ function FloatingChatWindow({
             Resumed Claude Code session · last active{" "}
             {new Date(resumedFrom.lastActivity).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
           </span>
+        </div>
+      )}
+
+      {reconnecting && !connectionError && (
+        <div className="flex items-center gap-2 px-3 py-1 border-b border-yellow/20 bg-yellow/10 text-[11px] shrink-0 text-yellow">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow animate-pulse" />
+          <span className="flex-1">Reconnecting…</span>
         </div>
       )}
 

@@ -31,7 +31,7 @@ export function setChatModel(modelId: ChatModelId): void {
       messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [],
       statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null,
       sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null,
-      connectionError: null, lastSendMeta: null,
+      connectionError: null, reconnecting: false, lastSendMeta: null,
     });
   }
 }
@@ -56,6 +56,7 @@ export function sendChatMessage(
     streamingSteps: [],
     toolRoundsUsed: 0,
     connectionError: null,
+    reconnecting: false,
     lastSendMeta: sendMeta,
   });
 
@@ -87,6 +88,7 @@ function failChatSend(messagesWithUser: ChatMessage[], error: string): void {
     streamingSteps: [],
     toolUses: [],
     statusText: "",
+    reconnecting: false,
     connectionError: error,
   });
 }
@@ -114,6 +116,7 @@ export function retryLastChatMessage(context?: string, domSnapshot?: string): vo
     toolUses: [],
     toolRoundsUsed: 0,
     connectionError: null,
+    reconnecting: false,
     statusText: "",
     lastSendMeta: {
       context: resolvedContext,
@@ -144,19 +147,56 @@ export function dismissChatConnectionError(): void {
   $chat.nextAssign({ connectionError: null });
 }
 
+/** Grace window after the WS dies before we degrade the streaming bubble into a
+ *  hard "Connection lost" error. Set when the disconnect happens, cleared on a
+ *  successful reconnect. Tuned to roughly cover Railway's networking-layer
+ *  cycling — they typically settle within seconds, never minutes. */
+const RECONNECT_DEGRADE_MS = 60_000;
+let degradeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearDegradeTimer(): void {
+  if (degradeTimer) {
+    clearTimeout(degradeTimer);
+    degradeTimer = null;
+  }
+}
+
+/** WS closed mid-turn. Keep the streaming bubble visible and show a subtle
+ *  "Reconnecting…" indicator instead of wiping the partial response. If the
+ *  socket doesn't come back within RECONNECT_DEGRADE_MS, degrade to the
+ *  existing "Connection lost. Retry?" UX so the user isn't stuck. */
 export function handleChatWsDisconnect(reason: string): void {
   const c = $chat.getValue();
   if (!c.loading) return;
-  $chat.next({
-    ...c,
-    loading: false,
-    streamingContent: "",
-    streamingSteps: [],
-    toolUses: [],
-    statusText: "",
-    toolRoundsUsed: 0,
-    connectionError: reason || "Connection lost. Your message may not have completed.",
-  });
+  $chat.nextAssign({ reconnecting: true });
+  clearDegradeTimer();
+  degradeTimer = setTimeout(() => {
+    degradeTimer = null;
+    const cur = $chat.getValue();
+    if (!cur.loading || !cur.reconnecting) return;
+    $chat.next({
+      ...cur,
+      loading: false,
+      streamingContent: "",
+      streamingSteps: [],
+      toolUses: [],
+      statusText: "",
+      toolRoundsUsed: 0,
+      reconnecting: false,
+      connectionError: reason || "Connection lost. Your message may not have completed.",
+    });
+  }, RECONNECT_DEGRADE_MS);
+}
+
+/** WS reconnected. Drop the "Reconnecting…" badge. The in-flight stream isn't
+ *  yet resumed — that's Phase 2 — but if the user's turn happened to complete
+ *  while disconnected the next `chat:token` / `chat:done` flowing in will still
+ *  reach the bubble because we kept `streamingContent` intact. */
+export function handleChatWsReconnect(): void {
+  clearDegradeTimer();
+  const c = $chat.getValue();
+  if (!c.reconnecting) return;
+  $chat.nextAssign({ reconnecting: false });
 }
 
 /** Set or clear the assistant's pinned VM. Persisted to localStorage so the
@@ -185,7 +225,7 @@ export function resetChat(): void {
     messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [],
     statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null,
     sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null,
-    connectionError: null, lastSendMeta: null,
+    connectionError: null, reconnecting: false, lastSendMeta: null,
   });
 }
 
@@ -203,7 +243,7 @@ export function newChat(): void {
   $chat.nextAssign({
     messages: [], loading: false, streamingContent: "", streamingSteps: [],
     toolUses: [], statusText: "", activeSessionId: null, resumedFrom: null,
-    connectionError: null, lastSendMeta: null,
+    connectionError: null, reconnecting: false, lastSendMeta: null,
   });
 }
 

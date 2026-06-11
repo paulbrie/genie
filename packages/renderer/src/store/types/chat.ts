@@ -102,6 +102,11 @@ export interface ChatState {
   resumedFrom: ResumedFrom | null;
   /** Non-null when the last send failed or the connection dropped mid-turn. */
   connectionError: string | null;
+  /** True while the WS is reconnecting and a chat turn was in flight when the
+   *  drop happened. UI uses this to keep `streamingContent` visible and show a
+   *  subtle "Reconnecting…" inline instead of wiping the bubble. Cleared on
+   *  successful reconnect or after a degradation timeout. */
+  reconnecting: boolean;
   /** Metadata for the most recent user turn — used to retry after errors. */
   lastSendMeta: ChatSendMeta | null;
 }
