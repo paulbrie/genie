@@ -10,7 +10,7 @@ import {
   $vpsMonitor,
   $vpsStatsSync,
 } from "../subjects/vps";
-import type { VpsConnectionConfig, VpsInstanceState } from "../types/vps";
+import type { VpsConnectionConfig, VpsInstanceState, VpsMetricSample, VpsStats } from "../types/vps";
 
 // --- VPS deploy actions ---
 
@@ -243,6 +243,42 @@ export function syncVmStatsAgent(projectId: string, instanceId: string): void {
 export function loadVpsMonitor(hours = 1): void {
   $vpsMonitor.next({ ...$vpsMonitor.getValue(), loading: true, error: null, hours });
   wsSend("vps:monitor:load", { hours });
+}
+
+// --- Live Monitor chart feed ---------------------------------------------
+// The Monitor tab seeds its charts from a one-shot history backfill
+// (loadVpsMonitor) and then keeps them live by appending each pushed
+// `vps:stats:update` sample — no periodic re-poll. Only VMs the Monitor tab is
+// actively charting are tracked here; the stats handler fires for every watched
+// surface (cards, topology, Manage popup), so this gate stops unrelated watches
+// from growing the history store.
+const monitorChartKeys = new Set<string>();
+
+/** Replace the set of `${projectId}:${instanceId}` keys the Monitor tab charts. */
+export function setMonitorChartKeys(keys: string[]): void {
+  monitorChartKeys.clear();
+  for (const k of keys) monitorChartKeys.add(k);
+}
+
+/** Append one live daemon sample to a charted VM's history, trimmed to the
+ *  active window. No-op unless the Monitor tab is charting this VM. */
+export function appendLiveMonitorSample(projectId: string, instanceId: string, stats: VpsStats): void {
+  const key = watchKey(projectId, instanceId);
+  if (!monitorChartKeys.has(key)) return;
+  const mon = $vpsMonitor.getValue();
+  const sample: VpsMetricSample = {
+    // The broadcast carries no timestamp; the chart is ordinal (sampledAt isn't
+    // plotted), so receive-time is accurate enough and keeps order ascending.
+    sampledAt: new Date().toISOString(),
+    cpuPercent: stats.cpuPercent,
+    memPercent: stats.memPercent,
+    diskPercent: stats.diskPercent,
+    memUsedBytes: stats.memUsedBytes,
+    diskUsedBytes: stats.diskUsedBytes,
+  };
+  const cutoff = Date.now() - mon.hours * 3_600_000;
+  const next = [...(mon.history[key] ?? []), sample].filter((s) => Date.parse(s.sampledAt) >= cutoff);
+  $vpsMonitor.next({ ...mon, history: { ...mon.history, [key]: next } });
 }
 
 export function fetchVpsStatsHistory(projectId: string, instanceId: string, hours = 1): void {

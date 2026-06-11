@@ -11,7 +11,7 @@ import {
   $vpsStatsSync,
 } from "../subjects/vps";
 import type { VpsProcessInfo } from "../types/vps";
-import { ensureInstanceState, execCallbacks, updateInstanceState } from "../actions/vps";
+import { appendLiveMonitorSample, ensureInstanceState, execCallbacks, updateInstanceState } from "../actions/vps";
 import { applyVmConnStats } from "../actions/vm-connection";
 import type { HandlerMap } from "./types";
 
@@ -162,6 +162,8 @@ export const handlers: HandlerMap = {
           slot.lastStatsAt = now;
         }
       });
+      // Feed the Monitor tab's live chart (no-op unless it's charting this VM).
+      appendLiveMonitorSample(projectId, statsInstId, stats);
     }
   },
 

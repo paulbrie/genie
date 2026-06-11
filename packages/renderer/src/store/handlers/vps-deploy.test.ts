@@ -4,7 +4,8 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { handlers } from "./vps";
-import { $vpsDeploy } from "../subjects/vps";
+import { setMonitorChartKeys } from "../actions/vps";
+import { $vpsDeploy, $vpsMonitor } from "../subjects/vps";
 
 const INST = "inst-1";
 
@@ -307,5 +308,57 @@ describe("vps:wake", () => {
     handlers["vps:wake:error"]({ instanceId: INST, message: "snapshot not found" });
     expect($vpsDeploy.getValue().instances[INST].wakingUp).toBe(false);
     expect($vpsDeploy.getValue().instances[INST].error).toBe("snapshot not found");
+  });
+});
+
+// The Monitor tab seeds charts from a one-shot history backfill and then keeps
+// them live by appending each pushed `vps:stats:update` sample (no 60s re-poll).
+// setMonitorChartKeys gates which VMs get appended — the stats handler also
+// fires for cards/topology/Manage-popup watches, which must not grow history.
+describe("vps:stats:update → live Monitor chart feed", () => {
+  const KEY = "p-1:i-1";
+  const liveStats = {
+    cpuPercent: 40, memUsedBytes: 1_000_000_000, memTotalBytes: 2_000_000_000, memPercent: 50,
+    diskUsedBytes: 8_000_000_000, diskTotalBytes: 20_000_000_000, diskPercent: 40,
+    processes: [], openPorts: [], externalPorts: [], sshSessions: 0,
+  };
+
+  beforeEach(() => {
+    $vpsMonitor.next({ history: {}, hours: 1, loading: false, error: null });
+    setMonitorChartKeys([]);
+  });
+
+  it("appends a scalar sample for a VM the Monitor tab is charting", () => {
+    setMonitorChartKeys([KEY]);
+
+    handlers["vps:stats:update"]({ projectId: "p-1", instanceId: "i-1", stats: liveStats });
+
+    const series = $vpsMonitor.getValue().history[KEY];
+    expect(series).toHaveLength(1);
+    expect(series[0]).toMatchObject({
+      cpuPercent: 40, memPercent: 50, diskPercent: 40,
+      memUsedBytes: 1_000_000_000, diskUsedBytes: 8_000_000_000,
+    });
+    expect(typeof series[0].sampledAt).toBe("string");
+  });
+
+  it("ignores stats for a VM not in the chart set (gate)", () => {
+    handlers["vps:stats:update"]({ projectId: "p-1", instanceId: "i-1", stats: liveStats });
+    expect($vpsMonitor.getValue().history[KEY]).toBeUndefined();
+  });
+
+  it("trims samples older than the active window on append", () => {
+    setMonitorChartKeys([KEY]);
+    const stale = {
+      sampledAt: new Date(Date.now() - 2 * 3_600_000).toISOString(), // 2h ago; hours=1
+      cpuPercent: 1, memPercent: 1, diskPercent: 1, memUsedBytes: 1, diskUsedBytes: 1,
+    };
+    $vpsMonitor.next({ history: { [KEY]: [stale] }, hours: 1, loading: false, error: null });
+
+    handlers["vps:stats:update"]({ projectId: "p-1", instanceId: "i-1", stats: liveStats });
+
+    const series = $vpsMonitor.getValue().history[KEY];
+    expect(series).toHaveLength(1); // stale 2h sample dropped, only the fresh one kept
+    expect(series[0].cpuPercent).toBe(40);
   });
 });
