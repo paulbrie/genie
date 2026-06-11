@@ -2,18 +2,18 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSubject, useDeepSubject } from "subjecto/react";
-import { Cloud, RefreshCw, Loader2, Pencil, Check, X, Plus, Lock, Unlock, RotateCw, Shield, MoreVertical, Search, Trash2, Terminal, Unlink } from "lucide-react";
+import { Cloud, RefreshCw, Loader2, Pencil, Check, X, Plus, Lock, Unlock, RotateCw, Shield, MoreVertical, Search, Trash2, Unlink } from "lucide-react";
 import type { AdminHetznerServer, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { $admin, $auth, $manager, $projects, $vpsDeploy, $windowManager } from "@/store/subjects";
 import { track } from "@/lib/analytics";
 import { $orgSettings } from "@/store/subjects/org-settings";
 import {
-  addSshTerminalTab, disconnectVps, fetchVpsStats, focusWindow,
+  disconnectVps, fetchVpsStats, focusWindow,
   loadAdminHetznerServers, loadAdminHetznerStats, lockAdminHetznerServer, openWindow,
   rebootAdminHetznerServer, registerWindow, renameAdminHetznerServer, startSecurityScan,
   switchNav, unlockAdminHetznerServer, watchVpsStats, unwatchVpsStats,
 } from "@/store/actions";
-import { wsRequest, wsSend } from "@/lib/ws";
+import { wsSend } from "@/lib/ws";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -197,28 +197,6 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
             </div>
           );
 
-          const renderSshButton = (s: AdminHetznerServer, isActive: boolean) => (
-            <button
-              onClick={async () => {
-                if (!s.ip) return;
-                try {
-                  const res = await wsRequest<{ username: string | null; error?: string }>(
-                    "admin:hetzner:resolve-ssh-user", { serverId: s.id },
-                  );
-                  const user = res.username ?? "root";
-                  addSshTerminalTab({ host: s.ip, username: user, port: 22 }, `SSH ${user}@${s.name}`);
-                } catch {
-                  addSshTerminalTab({ host: s.ip, username: "root", port: 22 }, `SSH root@${s.name}`);
-                }
-              }}
-              disabled={!isActive || !s.ip}
-              className="text-overlay0 hover:text-blue transition-colors p-1 disabled:opacity-40 disabled:cursor-not-allowed"
-              title={isActive && s.ip ? `SSH to ${s.ip}` : "Server is not active"}
-            >
-              <Terminal size={13} />
-            </button>
-          );
-
           const renderActionsMenu = (s: AdminHetznerServer, isActive: boolean, isRenaming: boolean) => {
             const rebootState = admin.hetzner.reboot[s.id];
             const rebooting = !!rebootState && !rebootState.done && !rebootState.error;
@@ -386,7 +364,6 @@ export function HetznerPanel({ monitor }: { monitor: VpsMonitorState }) {
 
                         <div className="flex items-center gap-2 mt-3 pt-2 border-t border-overlay0/10">
                           <div className="flex-1" />
-                          {renderSshButton(s, isActive)}
                           {canManage && renderActionsMenu(s, isActive, isRenaming)}
                         </div>
                       </>
