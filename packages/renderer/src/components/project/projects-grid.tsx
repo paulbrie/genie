@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useSubject, useDeepSubject } from "subjecto/react";
-import { Search, Users } from "lucide-react";
+import { LayoutGrid, List, Search, Users } from "lucide-react";
 import { $auth, $projects } from "@/store/subjects";
 import { $projectsPaged } from "@/store/subjects/vps";
 import { $orgSettings } from "@/store/subjects/org-settings";
@@ -18,12 +18,24 @@ import { ViewHeader } from "@/components/ui/view-header";
 import { useNavigate } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 
+type ProjectsViewMode = "cards" | "list";
+const VIEW_STORAGE_KEY = "projects-view-mode";
+
 export function ProjectsGrid() {
   const [projects] = useSubject($projects);
   const [paged] = useSubject($projectsPaged);
   const [auth] = useSubject($auth);
   const [orgMine] = useDeepSubject($orgSettings, "mine");
   const { navigateToProject } = useNavigate();
+
+  const [view, setView] = useState<ProjectsViewMode>(() => {
+    if (typeof window === "undefined") return "cards";
+    return localStorage.getItem(VIEW_STORAGE_KEY) === "list" ? "list" : "cards";
+  });
+  const switchView = (next: ProjectsViewMode) => {
+    setView(next);
+    if (typeof window !== "undefined") localStorage.setItem(VIEW_STORAGE_KEY, next);
+  };
 
   // Creating a project is owner-level: system admins/superadmins, or anyone who
   // owns/admins an org (the project lands in one of their teams). Plain members
@@ -48,11 +60,43 @@ export function ProjectsGrid() {
       <ViewHeader
         title="Projects"
         actions={
-          canCreate ? (
-            <Button size="sm" variant="primary" onClick={() => openAddProjectForm()}>
-              + Add Project
-            </Button>
-          ) : undefined
+          <>
+            <div className="inline-flex rounded-md border border-surface1 overflow-hidden">
+              <button
+                type="button"
+                title="Card view"
+                aria-pressed={view === "cards"}
+                onClick={() => switchView("cards")}
+                className={cn(
+                  "flex items-center justify-center px-2 py-1 text-md cursor-pointer transition-colors",
+                  view === "cards"
+                    ? "bg-mauve text-background"
+                    : "bg-surface0 text-overlay0 hover:bg-surface1"
+                )}
+              >
+                <LayoutGrid size={14} />
+              </button>
+              <button
+                type="button"
+                title="List view"
+                aria-pressed={view === "list"}
+                onClick={() => switchView("list")}
+                className={cn(
+                  "flex items-center justify-center px-2 py-1 text-md cursor-pointer transition-colors border-l border-surface1",
+                  view === "list"
+                    ? "bg-mauve text-background"
+                    : "bg-surface0 text-overlay0 hover:bg-surface1"
+                )}
+              >
+                <List size={14} />
+              </button>
+            </div>
+            {canCreate && (
+              <Button size="sm" variant="primary" onClick={() => openAddProjectForm()}>
+                + Add Project
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -87,7 +131,7 @@ export function ProjectsGrid() {
               <div className="flex flex-col items-center justify-center h-full text-overlay0 text-base gap-2">
                 No projects match your filter.
               </div>
-            ) : (
+            ) : view === "cards" ? (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
                 {paged.list.map((project) => (
                   <button
@@ -119,6 +163,37 @@ export function ProjectsGrid() {
                         {project.vpsInstances?.length ? `${project.vpsInstances.length} instance(s)` : "No VPS"}
                       </span>
                     </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col rounded-lg border border-surface0 overflow-hidden">
+                {paged.list.map((project, idx) => (
+                  <button
+                    key={project.id}
+                    onClick={() => navigateToProject(project.id)}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2 text-left transition-colors cursor-pointer",
+                      "bg-mantle hover:bg-surface0/50",
+                      idx > 0 && "border-t border-surface0"
+                    )}
+                  >
+                    <span className="text-base font-semibold text-text truncate flex-1 min-w-0">
+                      {project.name}
+                    </span>
+                    {project.teamName ? (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-mauve/15 text-mauve text-md shrink-0">
+                        <Users size={12} />
+                        {project.teamName}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-surface0 text-overlay0 text-md italic shrink-0">
+                        No team
+                      </span>
+                    )}
+                    <span className="text-md text-overlay0 font-mono shrink-0 w-28 text-right">
+                      {project.vpsInstances?.length ? `${project.vpsInstances.length} instance(s)` : "No VPS"}
+                    </span>
                   </button>
                 ))}
               </div>
