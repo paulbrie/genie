@@ -3,8 +3,8 @@ import { createTazClient, defaultSshUserForVm, type TazVm } from "./tazcloud-api
 import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
 import { vpsDeploy } from "./deploy-service.js";
 import { buildUfwRules } from "./do-provision.js";
-import * as cloudVmAliases from "../cloud-vm-alias-service.js";
-import * as projectService from "../project-service.js";
+import * as cloudVmAliases from "../cloud/cloud-vm-alias-service.js";
+import * as projectService from "../projects/project-service.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

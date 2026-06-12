@@ -6,8 +6,8 @@
 // audit_log).
 
 import { and, desc, eq, gte, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { analyticsEvents, users } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { analyticsEvents, users } from "../db/schema.js";
 
 /** Look up display names for a set of user ids in one query and return a
  *  map id → name. Used to repaint analytics rows whose stored `userName`

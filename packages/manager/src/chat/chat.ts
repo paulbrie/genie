@@ -2,11 +2,11 @@ import { streamText, stepCountIs, tool, type LanguageModel, type Tool } from "ai
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createFireworks } from "@ai-sdk/fireworks";
 import { z } from "zod";
-import { getCachedProcesses, getCachedDockerInfo } from "./monitor.js";
-import { createTools, type ToolAuthContext } from "./tools/index.js";
-import { executeSshExec, executeBareTazSshExec } from "./tools/ssh-exec.js";
-import { isPrivilegedRole } from "./ws-acl.js";
-import type { DomAction, DomActionExecutor } from "./types.js";
+import { getCachedProcesses, getCachedDockerInfo } from "../logging/monitor.js";
+import { createTools, type ToolAuthContext } from "../tools/index.js";
+import { executeSshExec, executeBareTazSshExec } from "../tools/ssh-exec.js";
+import { isPrivilegedRole } from "../auth/ws-acl.js";
+import type { DomAction, DomActionExecutor } from "../types.js";
 
 /** Set by the renderer's pin selector. When present, all assistant ssh_exec
  *  calls are forced onto this VM — the LLM cannot pick a different VM, and

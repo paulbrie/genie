@@ -3,11 +3,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
 import type { WsMessage, StatsPayload } from "../types.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import * as trackerService from "../tracker-service.js";
 import * as settingsService from "../settings-service.js";
-import { setMonitoringInterval, getDockerBin } from "../monitor.js";
-import { getLogBuffer, clearLogBuffer, getErrorBuffer, clearErrorBuffer } from "../log-capture.js";
+import { setMonitoringInterval, getDockerBin } from "../logging/monitor.js";
+import { getLogBuffer, clearLogBuffer, getErrorBuffer, clearErrorBuffer } from "../logging/log-capture.js";
 import { getDb } from "../db/index.js";
 import { savedQueries, users } from "../db/schema.js";
 import {

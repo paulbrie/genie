@@ -1,7 +1,7 @@
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import { connectSsh } from "../vps/ssh-client.js";
 import { ensureTazcloudKeyOnDisk } from "../vps/tazcloud-provision.js";
-import { isPrivilegedRole, type Role } from "../ws-acl.js";
+import { isPrivilegedRole, type Role } from "../auth/ws-acl.js";
 
 const MAX_OUTPUT_BYTES = 30_000;
 const HEAD_BYTES = 8_000;

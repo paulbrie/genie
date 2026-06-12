@@ -35,7 +35,7 @@ export async function handleSecurityMessage(
       }
       const abortController = new AbortController();
       let registeredScanId: string | null = null;
-      const { runSecurityScan, saveScan } = await import("../security-service.js");
+      const { runSecurityScan, saveScan } = await import("../security/security-service.js");
       const scanResult = await runSecurityScan(target, {
         signal: abortController.signal,
         onProgress: (update) => {
@@ -74,7 +74,7 @@ export async function handleSecurityMessage(
 
     case "security:scans:list": {
       try {
-        const { listScans } = await import("../security-service.js");
+        const { listScans } = await import("../security/security-service.js");
         const scans = await listScans(userId);
         send(ws, { type: "security:scans:list", payload: { scans } });
       } catch (err: unknown) {
@@ -85,7 +85,7 @@ export async function handleSecurityMessage(
 
     case "security:scan:delete": {
       try {
-        const { deleteScan } = await import("../security-service.js");
+        const { deleteScan } = await import("../security/security-service.js");
         await deleteScan(msg.payload.scanId);
         send(ws, { type: "security:scan:deleted", payload: { scanId: msg.payload.scanId } });
       } catch (err: unknown) {

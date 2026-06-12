@@ -9,7 +9,7 @@ import type { WsMessage } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh } from "../vps/ssh-client.js";
 import { parseTableList, parseCsvResult } from "./db-handler.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 
 
 export async function handleVpsDbMessage(

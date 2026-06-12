@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
-import { dbgSsh } from "../debug-ssh-log.js";
+import { dbgSsh } from "../debug/debug-ssh-log.js";
 import { getActiveSshConnections, sshConnRegister, sshConnUnregister, sshConnMarkConnected, captureSshOpenerStack } from "./ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
 import { recordSshEvent, classifySshDisconnect } from "./ssh-events.js";

@@ -10,7 +10,7 @@ import { VPS_SSH_USERNAME } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh, pickWorkingSshUser, type SftpWriteHandle, type SshSession } from "../vps/ssh-client.js";
 import { execCached, evictSession } from "../vps/ssh-session-cache.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 
 
 interface PendingUpload {

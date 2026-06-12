@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { users } from "../db/schema.js";
-import * as chatService from "../chat-service.js";
+import * as chatService from "../chat/chat-service.js";
 import { getClaudeUserId } from "../db/seed.js";
 import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult } from "./mcp-jsonrpc.js";
 

@@ -8,7 +8,7 @@
 
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
-import * as analyticsService from "../analytics-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 import type { ClientState } from "../ws-server.js";
 
 /** UI-only events the browser is allowed to report. Anything else is dropped —

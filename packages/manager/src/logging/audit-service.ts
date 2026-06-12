@@ -1,6 +1,6 @@
 import { desc, eq, and, gte, lte, sql } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { auditLog } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { auditLog } from "../db/schema.js";
 
 /** Message types to skip logging (high-frequency or noisy) */
 const SKIP_TYPES = new Set([

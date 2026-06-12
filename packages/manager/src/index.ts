@@ -5,11 +5,11 @@ import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-se
 import { startSshEventFlusher, stopSshEventFlusher } from "./vps/ssh-events.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
-import { seedDefaultClaudePlugins } from "./claude-plugins-service.js";
-import { DEFAULT_CLAUDE_PLUGINS } from "./default-claude-plugins.js";
+import { seedDefaultClaudePlugins } from "./chat/claude-plugins-service.js";
+import { DEFAULT_CLAUDE_PLUGINS } from "./chat/default-claude-plugins.js";
 import { createServer, shutdown } from "./ws-server.js";
-import { startSlackBot, stopSlackBot } from "./slack-bot.js";
-import { startWireproxyIfConfigured, stopWireproxy } from "./wireproxy-launcher.js";
+import { startSlackBot, stopSlackBot } from "./notifications/slack-bot.js";
+import { startWireproxyIfConfigured, stopWireproxy } from "./cloud/wireproxy-launcher.js";
 
 // One-shot egress probe at boot — logs the manager's public IPv4 and IPv6 (or "n/a")
 // so you know what to put in MANAGER_PUBLIC_IP / MANAGER_PUBLIC_IP_V6 env vars.

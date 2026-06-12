@@ -16,7 +16,7 @@ import { getDb } from "../db/index.js";
 import { agentRuns } from "../db/schema.js";
 import { getAgentById } from "./registry.js";
 import { projectDockerBackend } from "./sandbox/project-docker.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import type { SandboxBackend, SandboxHandle } from "./sandbox/index.js";
 import type { AgentRunEvent, AgentSandboxConfig } from "./types.js";
 

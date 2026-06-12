@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import pidusage from "pidusage";
-import type { DockerContainerInfo, DockerInfo, MemoryInfo, ProcessInfo, StatsPayload } from "./types.js";
+import type { DockerContainerInfo, DockerInfo, MemoryInfo, ProcessInfo, StatsPayload } from "../types.js";
 
 const execFileAsync = promisify(execFile);
 

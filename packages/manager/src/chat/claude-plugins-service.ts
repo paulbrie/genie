@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { claudePlugins } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { claudePlugins } from "../db/schema.js";
 
 export interface ClaudePluginInput {
   slug: string;

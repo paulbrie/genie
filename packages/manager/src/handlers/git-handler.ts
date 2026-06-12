@@ -9,7 +9,7 @@ import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";
-import { type Role } from "../ws-acl.js";
+import { type Role } from "../auth/ws-acl.js";
 import { canAccessProject } from "./handler-auth.js";
 
 

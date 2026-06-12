@@ -1,5 +1,5 @@
 import * as settingsService from "../settings-service.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import { createDoClient } from "./do-api-client.js";
 
 /** Module-level cache of the latest DO droplet list. Periodically refreshed by

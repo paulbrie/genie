@@ -11,9 +11,9 @@
 
 import { type WebSocket } from "ws";
 import { gte, lt, asc } from "drizzle-orm";
-import type { WsMessage } from "./types.js";
-import { getDb } from "./db/index.js";
-import { serverMetricSamples } from "./db/schema.js";
+import type { WsMessage } from "../types.js";
+import { getDb } from "../db/index.js";
+import { serverMetricSamples } from "../db/schema.js";
 
 export interface ServerMetricBucket {
   /** Epoch ms at which this one-second bucket was closed. */

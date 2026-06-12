@@ -11,8 +11,8 @@ import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import * as trackerService from "../tracker-service.js";
-import * as projectService from "../project-service.js";
-import * as analyticsService from "../analytics-service.js";
+import * as projectService from "../projects/project-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 
 
 // Enforce (not just in the UI) that an issue is only assigned to someone who

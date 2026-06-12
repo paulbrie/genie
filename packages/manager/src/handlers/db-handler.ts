@@ -4,7 +4,7 @@ import path from "node:path";
 import type { WsMessage } from "../types.js";
 import * as adminService from "../admin-service.js";
 import * as backupService from "../backup-service.js";
-import { type Role } from "../ws-acl.js";
+import { type Role } from "../auth/ws-acl.js";
 import { hasRole } from "./handler-auth.js";
 
 const DB_TYPES = new Set([

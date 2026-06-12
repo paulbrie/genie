@@ -1,11 +1,11 @@
 import { type WebSocket } from "ws";
 import type { WsMessage, VpsConnectionConfig } from "../types.js";
 import { VPS_SSH_USERNAME } from "../types.js";
-import type { Role } from "../ws-acl.js";
-import { isPrivilegedRole } from "../ws-acl.js";
+import type { Role } from "../auth/ws-acl.js";
+import { isPrivilegedRole } from "../auth/ws-acl.js";
 import { canAccessProject } from "./handler-auth.js";
-import * as projectService from "../project-service.js";
-import * as analyticsService from "../analytics-service.js";
+import * as projectService from "../projects/project-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 import { connectSsh, pickWorkingSshUser } from "../vps/ssh-client.js";
 import { vpsStatus, vpsLogs, vpsStats } from "../vps/deploy-service.js";
 import { watchVpsStats, unwatchVpsStats, getCachedVpsStats } from "../vps/stats-stream.js";

@@ -1,6 +1,6 @@
 import { eq, and, or, desc, lt, inArray } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { users, conversations, conversationMembers, messages, teamMembers } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { users, conversations, conversationMembers, messages, teamMembers } from "../db/schema.js";
 import type { ChatMessage } from "./chat.js";
 
 export async function getOrCreateClaudeDm(userId: string, claudeId: string) {

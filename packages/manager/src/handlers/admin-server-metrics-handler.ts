@@ -1,9 +1,9 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
-import type { Role } from "../ws-acl.js";
+import type { Role } from "../auth/ws-acl.js";
 import { hasRole } from "./handler-auth.js";
-import { watchServerMetrics, unwatchServerMetrics, getServerMetricHistory } from "../server-metrics.js";
-import { getRequestVolumeByUser, type RequestVolumeResult } from "../analytics-service.js";
+import { watchServerMetrics, unwatchServerMetrics, getServerMetricHistory } from "../logging/server-metrics.js";
+import { getRequestVolumeByUser, type RequestVolumeResult } from "../logging/analytics-service.js";
 
 const VALID_RANGES = new Set([1, 6, 24]);
 

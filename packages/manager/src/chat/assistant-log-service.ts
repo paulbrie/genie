@@ -1,5 +1,5 @@
-import { getDb } from "./db/index.js";
-import { assistantChatLogs, chatSessionMeta } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { assistantChatLogs, chatSessionMeta } from "../db/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
 export interface SaveMessageParams {

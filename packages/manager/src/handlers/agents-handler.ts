@@ -7,7 +7,7 @@ import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as agentRegistry from "../agents/registry.js";
 import { runAgent } from "../agents/runner.js";
-import * as analyticsService from "../analytics-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 
 
 export async function handleAgentsMessage(

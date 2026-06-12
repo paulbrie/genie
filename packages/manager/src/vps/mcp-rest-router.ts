@@ -13,7 +13,7 @@ import http from "node:http";
 import { type JsonRpcRequest, jsonRpcError, respondMcp } from "./mcp-jsonrpc.js";
 import { resolveStatsToken } from "./stats-token-service.js";
 import { getCachedSession } from "./ssh-session-cache.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import { handleTrackerRequest } from "./mcp-tracker-server.js";
 import { handleSecurityMcpRequest } from "./mcp-security-server.js";
 import { handleNotifyMcpRequest } from "./mcp-notify-server.js";

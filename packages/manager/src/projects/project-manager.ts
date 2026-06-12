@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as projectService from "./project-service.js";
-import { LogBuffer } from "./log-buffer.js";
+import { LogBuffer } from "../logging/log-buffer.js";
 
 type EventCallback = (event: {
   type: string;

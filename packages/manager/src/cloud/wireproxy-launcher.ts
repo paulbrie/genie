@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { recordSshEvent } from "./vps/ssh-events.js";
+import { recordSshEvent } from "../vps/ssh-events.js";
 
 /** Render a wireproxy config from env vars. wireproxy reads a wg-quick-style
  *  ini plus a [Socks5] section it adds on top — no TUN device involved.

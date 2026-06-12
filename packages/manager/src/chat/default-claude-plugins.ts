@@ -12,7 +12,7 @@
 // BASH_HELPERS from default-recipes for the shared log/force_ipv4_dns/wait_apt
 // helpers — Taz VMs have v6-routing quirks against Cloudflare/Fastly CDNs.
 import type { ClaudePluginInput } from "./claude-plugins-service.js";
-import { BASH_HELPERS } from "./default-recipes.js";
+import { BASH_HELPERS } from "../default-recipes.js";
 
 // Plain-grep check (no jq dependency — most fresh VMs don't have jq, and the
 // old check silently fell through to NOT_INSTALLED when jq was missing). The

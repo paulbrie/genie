@@ -1,7 +1,7 @@
 import { desc } from "drizzle-orm";
 import type { MailService } from "@sendgrid/mail";
-import { getDb } from "./db/index.js";
-import { emailLogs } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { emailLogs } from "../db/schema.js";
 
 /** From-address for platform communication emails. SendGrid requires this to be
  *  a verified sender / domain. Reuses BACKUP_EMAIL (already configured for the

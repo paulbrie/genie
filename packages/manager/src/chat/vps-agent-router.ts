@@ -1,8 +1,8 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
-import * as projectService from "../project-service.js";
-import * as assistantLogService from "../assistant-log-service.js";
-import { getResumeState, saveResumeSessionId } from "../assistant-session-state-service.js";
+import * as projectService from "../projects/project-service.js";
+import * as assistantLogService from "./assistant-log-service.js";
+import { getResumeState, saveResumeSessionId } from "./assistant-session-state-service.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";
 import { remoteDir } from "../vps/deploy-service.js";
 import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";

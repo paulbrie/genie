@@ -22,7 +22,7 @@ import type { WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import { clearOutputBatch, scheduleOutputBatch } from "../ssh/session/output-batch.js";
 import { countCommandsInChunk, clearCommandTracking } from "../ssh/session/command-tracker.js";
-import * as analyticsService from "../analytics-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 
 type LocalSession = {
   pty: pty.IPty;

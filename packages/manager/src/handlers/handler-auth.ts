@@ -6,8 +6,8 @@
 // responsible for the per-resource check; these helpers keep that check in one
 // place so it can't drift between handlers.
 
-import * as projectService from "../project-service.js";
-import { isPrivilegedRole, type Role } from "../ws-acl.js";
+import * as projectService from "../projects/project-service.js";
+import { isPrivilegedRole, type Role } from "../auth/ws-acl.js";
 
 /**
  * May this caller reach `projectId`? Privileged roles (tazcloud/admin/

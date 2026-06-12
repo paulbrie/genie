@@ -17,11 +17,11 @@ import {
   executeTazGetCapabilities,
 } from "./tazcloud.js";
 import { executeDoAttachDomain, executeDoRemoveDomain } from "./do-domains.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import * as docsService from "../docs-service.js";
 import * as recipesService from "../recipes-service.js";
 import * as trackerService from "../tracker-service.js";
-import { isPrivilegedRole, type Role } from "../ws-acl.js";
+import { isPrivilegedRole, type Role } from "../auth/ws-acl.js";
 
 /** Who the assistant is acting on behalf of. Every resource-touching tool gates
  *  on this so the chat can only reach projects/servers the user is allowed to

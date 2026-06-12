@@ -7,7 +7,7 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as docsService from "../docs-service.js";
-import * as analyticsService from "../analytics-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 
 
 /** The full docs:list payload for a user: their own docs/folders plus docs and

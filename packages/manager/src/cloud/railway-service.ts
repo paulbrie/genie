@@ -1,4 +1,4 @@
-import { getGlobalRailwayToken, getGlobalRailwayProjectId } from "./settings-service.js";
+import { getGlobalRailwayToken, getGlobalRailwayProjectId } from "../settings-service.js";
 
 const RAILWAY_API = "https://backboard.railway.com/graphql/v2";
 

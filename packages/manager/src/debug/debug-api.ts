@@ -1,7 +1,7 @@
 import type http from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { verifyToken, getUserById } from "./auth.js";
-import { getErrorBuffer, getLogBuffer, LOG_CAPTURE_MAX_BUFFER } from "./log-capture.js";
+import { verifyToken, getUserById } from "../auth/auth.js";
+import { getErrorBuffer, getLogBuffer, LOG_CAPTURE_MAX_BUFFER } from "../logging/log-capture.js";
 
 export type DebugLogSource = "errors" | "manager" | "all";
 

@@ -1,18 +1,18 @@
 import { type WebSocket } from "ws";
 import { v4 as uuidv4 } from "uuid";
 import type { WsMessage, DomActionExecutor } from "../types.js";
-import { handleChat, type ChatModelId } from "../chat.js";
+import { handleChat, type ChatModelId } from "../chat/chat.js";
 import type { ToolAuthContext } from "../tools/index.js";
-import * as chatService from "../chat-service.js";
-import * as assistantLogService from "../assistant-log-service.js";
+import * as chatService from "../chat/chat-service.js";
+import * as assistantLogService from "../chat/assistant-log-service.js";
 import * as settingsService from "../settings-service.js";
-import * as projectService from "../project-service.js";
-import * as analyticsService from "../analytics-service.js";
-import { saveResumeSessionId, getResumeState } from "../assistant-session-state-service.js";
+import * as projectService from "../projects/project-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
+import { saveResumeSessionId, getResumeState } from "../chat/assistant-session-state-service.js";
 import { getClaudeUserId } from "../db/seed.js";
 import { getDb } from "../db/index.js";
 import { aiUsage } from "../db/schema.js";
-import { isAdmin } from "../auth.js";
+import { isAdmin } from "../auth/auth.js";
 import { routeChatToVpsAgent } from "../chat/vps-agent-router.js";
 import {
   type ClientState,

@@ -3,9 +3,9 @@ import { eq, ilike, or, sql } from "drizzle-orm";
 import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { users, teams, teamMembers } from "../db/schema.js";
-import { getUserById, createToken } from "../auth.js";
+import { getUserById, createToken } from "../auth/auth.js";
 import * as orgService from "../org-service.js";
-import type { Role } from "../ws-acl.js";
+import type { Role } from "../auth/ws-acl.js";
 import {
   type ClientState,
   buildAuthPayload,

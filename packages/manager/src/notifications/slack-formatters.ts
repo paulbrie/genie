@@ -1,6 +1,6 @@
 import type { KnownBlock } from "@slack/types";
-import type { VpsStats, VpsProcessInfo, VpsContainerStatus } from "./vps/deploy-service.js";
-import type { ProjectDef } from "./types.js";
+import type { VpsStats, VpsProcessInfo, VpsContainerStatus } from "../vps/deploy-service.js";
+import type { ProjectDef } from "../types.js";
 
 function bar(pct: number, len = 10): string {
   const filled = Math.round((pct / 100) * len);

@@ -1,4 +1,4 @@
-import * as securityService from "../security-service.js";
+import * as securityService from "../security/security-service.js";
 import { type JsonRpcRequest, jsonRpcResponse, jsonRpcError, isNotification, initializeResult } from "./mcp-jsonrpc.js";
 
 const TOOLS = [

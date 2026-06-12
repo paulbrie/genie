@@ -5,8 +5,8 @@
 
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
-import * as projectService from "../project-service.js";
-import { type Role } from "../ws-acl.js";
+import * as projectService from "../projects/project-service.js";
+import { type Role } from "../auth/ws-acl.js";
 import { canAccessProject } from "./handler-auth.js";
 
 

@@ -5,8 +5,8 @@ import { eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import type { WsMessage, VpsConnectionConfig } from "../types.js";
 import { VPS_SSH_USERNAME } from "../types.js";
-import * as projectService from "../project-service.js";
-import * as analyticsService from "../analytics-service.js";
+import * as projectService from "../projects/project-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 import * as settingsService from "../settings-service.js";
 import { connectSsh, isBlockedSshHost, pickWorkingSshUser } from "../vps/ssh-client.js";
 import { vpsDeploy, vpsStatus, vpsTeardown, remoteDir } from "../vps/deploy-service.js";
@@ -22,7 +22,7 @@ import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";
 import { execCached } from "../vps/ssh-session-cache.js";
 import { storeServerCredential, deleteServerCredential, ensureServerKeyOnDisk } from "../vps/server-credential-service.js";
 import { isPasteKeyEnabled } from "../vps/credential-crypto.js";
-import { notifySuperadmin } from "../email-service.js";
+import { notifySuperadmin } from "../notifications/email-service.js";
 import {
   type ClientState,
   broadcastProjectList,
@@ -143,7 +143,7 @@ export async function handleVpsLifecycleMessage(
       };
       try {
         const realCallerId = state.impersonatedBy ?? state.userId ?? null;
-        const { isAdmin } = await import("../auth.js");
+        const { isAdmin } = await import("../auth/auth.js");
         if (!realCallerId || !(await isAdmin(realCallerId))) {
           send(ws, { type: "vps:attach-existing:error", payload: { message: "Admins only" } });
           return true;

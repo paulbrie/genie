@@ -14,10 +14,10 @@
 
 import type http from "node:http";
 import { Client } from "ssh2";
-import { buildConnectOptions, dialSock } from "./vps/ssh-client.js";
-import type { SshConnectionConfig } from "./vps/ssh-client.js";
+import { buildConnectOptions, dialSock } from "../vps/ssh-client.js";
+import type { SshConnectionConfig } from "../vps/ssh-client.js";
 import { authorizeDebugAccess } from "./debug-api.js";
-import * as projectService from "./project-service.js";
+import * as projectService from "../projects/project-service.js";
 
 export interface SocksProbeSample {
   t: number;          // ms since connection ready
@@ -44,7 +44,7 @@ export async function runSocksProbe(
   conn: SshConnectionConfig,
   opts: { windowMs: number; intervalMs: number },
 ): Promise<SocksProbeResult> {
-  const { tazSocksProxy } = await import("./vps/socks-dial.js");
+  const { tazSocksProxy } = await import("../vps/socks-dial.js");
   const result: SocksProbeResult = {
     host: conn.host,
     username: conn.username,

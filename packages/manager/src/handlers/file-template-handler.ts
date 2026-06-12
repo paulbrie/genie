@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm";
 import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { fileTemplates } from "../db/schema.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 
 
 export async function handleFileTemplateMessage(

@@ -3,26 +3,26 @@ import { WebSocketServer, type WebSocket } from "ws";
 import http from "node:http";
 import type { WsMessage } from "./types.js";
 
-import * as projectService from "./project-service.js";
+import * as projectService from "./projects/project-service.js";
 import * as orgService from "./org-service.js";
-import * as projectManager from "./project-manager.js";
-import { startMonitoring, stopMonitoring } from "./monitor.js";
+import * as projectManager from "./projects/project-manager.js";
+import { startMonitoring, stopMonitoring } from "./logging/monitor.js";
 
-import { startLogCapture, getLogBuffer, getErrorBuffer } from "./log-capture.js";
+import { startLogCapture, getLogBuffer, getErrorBuffer } from "./logging/log-capture.js";
 
 import { setWsSend as setSshWsSend, closeAllSessionsForWs } from "./ssh/index.js";
 
-import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth.js";
+import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth/auth.js";
 
-import { handleDebugServerLogs } from "./debug-api.js";
+import { handleDebugServerLogs } from "./debug/debug-api.js";
 
-import { pruneStaleSessions } from "./assistant-session-state-service.js";
+import { pruneStaleSessions } from "./chat/assistant-session-state-service.js";
 
 import * as docsService from "./docs-service.js";
 import * as trackerService from "./tracker-service.js";
 import * as backupService from "./backup-service.js";
-import * as auditService from "./audit-service.js";
-import * as connectionLogService from "./connection-log-service.js";
+import * as auditService from "./logging/audit-service.js";
+import * as connectionLogService from "./logging/connection-log-service.js";
 import { getDb } from "./db/index.js";
 
 import { users } from "./db/schema.js";
@@ -53,7 +53,7 @@ import * as settingsService from "./settings-service.js";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { type Role, canSend, canReceive, getEntry, POLICY } from "./ws-acl.js";
+import { type Role, canSend, canReceive, getEntry, POLICY } from "./auth/ws-acl.js";
 
 import { handleDbMessage } from "./handlers/db-handler.js";
 
@@ -103,7 +103,7 @@ import { handleChatMessage } from "./handlers/chat-handler.js";
 
 import { handleAdminMiscMessage } from "./handlers/admin-misc-handler.js";
 import { handleAnalyticsMessage } from "./handlers/analytics-handler.js";
-import * as analyticsService from "./analytics-service.js";
+import * as analyticsService from "./logging/analytics-service.js";
 
 import { handleLocalFsMessage } from "./handlers/local-fs-handler.js";
 
@@ -111,7 +111,7 @@ import { handleMiscMessage } from "./handlers/misc-handler.js";
 
 import { handleVpsRuntimeMessage } from "./handlers/vps-runtime-handler.js";
 import { handleAdminServerMetricsMessage } from "./handlers/admin-server-metrics-handler.js";
-import { recordStatsRequest, recordWsSent, startServerMetrics, stopServerMetrics, unwatchServerMetrics } from "./server-metrics.js";
+import { recordStatsRequest, recordWsSent, startServerMetrics, stopServerMetrics, unwatchServerMetrics } from "./logging/server-metrics.js";
 
 import { handleVpsLifecycleMessage } from "./handlers/vps-lifecycle-handler.js";
 

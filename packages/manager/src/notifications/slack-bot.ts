@@ -1,8 +1,8 @@
 import { App, type SlackCommandMiddlewareArgs, type AllMiddlewareArgs } from "@slack/bolt";
-import * as projectService from "./project-service.js";
-import { vpsStats, vpsStatus, vpsLogs, vpsTeardown } from "./vps/deploy-service.js";
-import { connectSsh } from "./vps/ssh-client.js";
-import type { ProjectDef, VpsInstance } from "./types.js";
+import * as projectService from "../projects/project-service.js";
+import { vpsStats, vpsStatus, vpsLogs, vpsTeardown } from "../vps/deploy-service.js";
+import { connectSsh } from "../vps/ssh-client.js";
+import type { ProjectDef, VpsInstance } from "../types.js";
 import {
   formatStats,
   formatContainers,

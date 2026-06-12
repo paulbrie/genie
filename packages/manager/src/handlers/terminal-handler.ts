@@ -13,9 +13,9 @@ import {
 import { listSshConnections, killSshConnection, killSshConnectionsForHost, getSshConnectionInfo } from "../vps/ssh-metrics.js";
 import { listRecentSshEvents } from "../vps/ssh-events.js";
 import { evictAllSessionsForHost, evictSession, listSharedTunnels } from "../vps/ssh-session-cache.js";
-import { type Role } from "../ws-acl.js";
+import { type Role } from "../auth/ws-acl.js";
 import { canAccessProject } from "./handler-auth.js";
-import * as analyticsService from "../analytics-service.js";
+import * as analyticsService from "../logging/analytics-service.js";
 /** Handle every `ssh:*` and `terminal:*` message. Returns true if handled. */
 export async function handleTerminalMessage(
   ws: WebSocket,

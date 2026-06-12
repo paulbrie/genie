@@ -1,6 +1,6 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import { remoteDir } from "../vps/deploy-service.js";
 import { execCached } from "../vps/ssh-session-cache.js";
 import { provisionMcpRestConfig, killClaudeSessions } from "../vps/mcp-config-merge.js";

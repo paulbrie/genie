@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { cloudVmLocks } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { cloudVmLocks } from "../db/schema.js";
 
 export type CloudProvider = "digitalocean" | "tazcloud" | "hetzner";
 

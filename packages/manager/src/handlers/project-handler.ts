@@ -1,11 +1,11 @@
 import { type WebSocket } from "ws";
 import { eq } from "drizzle-orm";
 import type { WsMessage } from "../types.js";
-import * as projectService from "../project-service.js";
-import * as projectManager from "../project-manager.js";
+import * as projectService from "../projects/project-service.js";
+import * as projectManager from "../projects/project-manager.js";
 import * as orgService from "../org-service.js";
-import * as analyticsService from "../analytics-service.js";
-import { isAdmin } from "../auth.js";
+import * as analyticsService from "../logging/analytics-service.js";
+import { isAdmin } from "../auth/auth.js";
 import { getDb } from "../db/index.js";
 import { teams, teamMembers } from "../db/schema.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";

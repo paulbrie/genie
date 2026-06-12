@@ -22,7 +22,7 @@ import { SshShellSession, type SshShellOptions } from "./shell.js";
 import { sessions, sessionMeta, getSshSession } from "./registry.js";
 import { clearOutputBatch, scheduleOutputBatch } from "./output-batch.js";
 import { countCommandsInChunk, clearCommandTracking } from "./command-tracker.js";
-import * as analyticsService from "../../analytics-service.js";
+import * as analyticsService from "../../logging/analytics-service.js";
 import { scheduleShellCommand, SHELL_COMMAND_DELAY_MS, type ShellCommandCancel } from "./shell-line.js";
 import {
   createTmuxSessionName,

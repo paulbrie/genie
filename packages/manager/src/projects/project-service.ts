@@ -1,8 +1,8 @@
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { orgMembers, projectMembers, projectTeams, projects, teamMembers, teams, users } from "./db/schema.js";
-import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "./types.js";
-import { deleteInstanceToken } from "./vps/stats-token-service.js";
+import { getDb } from "../db/index.js";
+import { orgMembers, projectMembers, projectTeams, projects, teamMembers, teams, users } from "../db/schema.js";
+import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "../types.js";
+import { deleteInstanceToken } from "../vps/stats-token-service.js";
 import { v4 as uuidv4 } from "uuid";
 
 // --- Helpers ---

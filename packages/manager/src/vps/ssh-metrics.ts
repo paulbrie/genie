@@ -9,7 +9,7 @@
 // so hung exec channels can't block teardown the way end() does.
 
 import crypto from "node:crypto";
-import { dbgSsh } from "../debug-ssh-log.js";
+import { dbgSsh } from "../debug/debug-ssh-log.js";
 
 export interface SshConnectionInfo {
   id: string;

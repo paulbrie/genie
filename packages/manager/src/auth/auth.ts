@@ -3,9 +3,9 @@ import type http from "node:http";
 import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
 import { eq, isNull, and } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { users } from "./db/schema.js";
-import { acceptTeamInvite, ensureDefaultOrgFor } from "./org-service.js";
+import { getDb } from "../db/index.js";
+import { users } from "../db/schema.js";
+import { acceptTeamInvite, ensureDefaultOrgFor } from "../org-service.js";
 
 const JWT_SECRET = process.env.GENIE_JWT_SECRET || process.env.ANTHROPIC_API_KEY || "genie-secret-fallback";
 const JWT_EXPIRY = "30d";

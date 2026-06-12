@@ -1,5 +1,5 @@
-import { getDb } from "./db/index.js";
-import { assistantSessionState } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { assistantSessionState } from "../db/schema.js";
 import { eq, lt } from "drizzle-orm";
 
 export interface ResumeState {

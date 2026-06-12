@@ -2,7 +2,7 @@
 // ws-server and the handler modules under ../handlers so we don't create a
 // handler→ws-server import cycle.
 
-import * as projectService from "../project-service.js";
+import * as projectService from "../projects/project-service.js";
 import type { VpsConnectionConfig } from "../types.js";
 import { ensureServerKeyOnDisk } from "./server-credential-service.js";
 import { createTazClient } from "./tazcloud-api-client.js";

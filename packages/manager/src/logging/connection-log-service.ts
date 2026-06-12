@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import { getDb } from "./db/index.js";
-import { connectionLog } from "./db/schema.js";
+import { getDb } from "../db/index.js";
+import { connectionLog } from "../db/schema.js";
 
 export interface DisconnectRecord {
   userId: string | null;

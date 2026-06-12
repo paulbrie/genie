@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { v4 as uuidv4 } from "uuid";
-import type { ProjectDef, ProjectCommand, ProcessStatus } from "./types.js";
+import type { ProjectDef, ProjectCommand, ProcessStatus } from "../types.js";
 
 const GENIE_DIR = path.join(os.homedir(), ".genie");
 const PROJECTS_FILE = path.join(GENIE_DIR, "projects.json");

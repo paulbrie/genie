@@ -6,7 +6,7 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as recipesService from "../recipes-service.js";
-import { type Role } from "../ws-acl.js";
+import { type Role } from "../auth/ws-acl.js";
 import { hasRole } from "./handler-auth.js";
 
 
