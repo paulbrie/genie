@@ -13,14 +13,8 @@
 
 import { sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import * as schema from "../db/schema.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_FOLDER = path.resolve(__dirname, "../../drizzle");
 
 let migrated = false;
 let testClient: ReturnType<typeof postgres> | null = null;
@@ -36,7 +30,10 @@ export function isTestDbAvailable(): boolean {
 
 /** Apply migrations to the test DB (idempotent). Sets `process.env.DB` so that
  *  the production singleton in src/db/index.ts opens the test DB on first use. */
-export async function setupTestDb(): Promise<void> {
+/** Refuse to point at a DB equal to .env-loaded `DB`. The harness truncates
+ *  whatever it connects to; targeting the dev URL would wipe local data.
+ *  Called by globalSetup BEFORE setupTestDb mutates process.env.DB. */
+export function assertSafeTestDb(): void {
   const url = process.env.DB_TEST;
   if (!url) return;
   if (process.env.DB && process.env.DB === url) {
@@ -44,17 +41,42 @@ export async function setupTestDb(): Promise<void> {
       "DB_TEST must differ from DB — the harness truncates the connected database.",
     );
   }
+}
+
+export async function setupTestDb(): Promise<void> {
+  if (migrated) return;
+  const url = process.env.DB_TEST;
+  if (!url) return;
   process.env.DB = url;
 
-  if (!testClient) {
-    testClient = postgres(url, { onnotice: () => {}, max: 4 });
-    testDb = drizzle(testClient, { schema });
-  }
-  if (migrated) return;
+  testClient = postgres(url, { onnotice: () => {}, max: 4 });
+  testDb = drizzle(testClient, { schema });
 
-  await migrate(testDb!, { migrationsFolder: MIGRATIONS_FOLDER });
-  const { runBootMigrations } = await import("../db/migrate.js");
-  await runBootMigrations();
+  // The committed drizzle/ baseline migration is stale (predates teams/orgs),
+  // and `pushSchema` hits an introspection bug on empty databases. Instead
+  // we diff the CURRENT schema.ts against an empty snapshot via
+  // generateMigration, then execute the resulting SQL. Boot migrations then
+  // bring along the post-schema DDL (backfills, additional ALTERs).
+  // Skipped if the schema is already present — the migration runs once per
+  // process, but globalSetup and worker each see a fresh module state.
+  const usersExists = await testDb!.execute<{ exists: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'users'
+    ) AS exists
+  `);
+  const alreadyMigrated = Boolean((usersExists as unknown as { exists: boolean }[])[0]?.exists);
+  if (!alreadyMigrated) {
+    const { generateDrizzleJson, generateMigration } = await import("drizzle-kit/api");
+    const empty = generateDrizzleJson({});
+    const target = generateDrizzleJson(schema);
+    const statements = await generateMigration(empty, target);
+    for (const stmt of statements) {
+      if (stmt.trim()) await testDb!.execute(sql.raw(stmt));
+    }
+    const { runBootMigrations } = await import("../db/migrate.js");
+    await runBootMigrations();
+  }
   migrated = true;
 }
 
