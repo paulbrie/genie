@@ -25,25 +25,58 @@ export function ChatUsersPanel() {
 // --- Global Users Panel (original behavior) ---
 
 function GlobalUsersPanel({ users }: { users: ChatUser[] }) {
-  const sorted = [...users].sort((a, b) => {
-    if (a.online !== b.online) return a.online ? -1 : 1;
-    if (a.isAgent !== b.isAgent) return a.isAgent ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
+  const [filter, setFilter] = useState("");
+
+  const sorted = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return [...users]
+      .filter((u) => (q ? u.name.toLowerCase().includes(q) : true))
+      .sort((a, b) => {
+        if (a.online !== b.online) return a.online ? -1 : 1;
+        if (a.isAgent !== b.isAgent) return a.isAgent ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [users, filter]);
 
   return (
-    <div className="w-[180px] shrink-0 border-l border-surface0 flex flex-col">
-      <div className="px-3 py-2 border-b border-surface0">
+    // min-h-0 down the flex column so the list actually scrolls instead of
+    // growing the panel past the viewport.
+    <div className="w-[180px] shrink-0 border-l border-surface0 flex flex-col min-h-0">
+      <div className="px-3 py-2 border-b border-surface0 shrink-0">
         <h2 className="text-md font-semibold uppercase tracking-wide text-subtext0">
           Users
         </h2>
       </div>
-      <div className="flex-1 overflow-y-auto scrollbar-thin px-2 py-2 flex flex-col gap-0.5">
+      <div className="px-2 pt-2 shrink-0">
+        <div className="flex items-center gap-1 bg-surface0 rounded-md px-2 py-1">
+          <Search size={10} className="text-overlay0 shrink-0" />
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by name…"
+            className="flex-1 min-w-0 bg-transparent border-none text-md text-text placeholder:text-overlay0 outline-none"
+          />
+          {filter && (
+            <button
+              onClick={() => setFilter("")}
+              title="Clear"
+              className="p-0 bg-transparent border-none cursor-pointer text-overlay0 hover:text-text"
+            >
+              <X size={10} />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-2 py-2 flex flex-col gap-0.5">
         {sorted.map((user) => (
           <UserRow key={user.id} user={user} />
         ))}
         {users.length === 0 && (
           <p className="text-md text-overlay0 px-2 py-4 text-center">No users yet</p>
+        )}
+        {users.length > 0 && sorted.length === 0 && (
+          <p className="text-md text-overlay0 px-2 py-4 text-center">No matches</p>
         )}
       </div>
     </div>

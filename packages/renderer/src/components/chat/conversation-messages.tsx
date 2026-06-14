@@ -34,16 +34,43 @@ export function ConversationMessages() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const prevMessageCountRef = useRef(0);
+  const prevConvIdRef = useRef<string | null>(null);
+  // Set when the conversation switches; the jump is deferred until this
+  // conversation's messages actually render (they load async after selection).
+  const pendingJumpRef = useRef(false);
 
   // Auto-scroll to bottom only for new messages (not when loading older)
   useEffect(() => {
     const prevCount = prevMessageCountRef.current;
     const newCount = messages.length;
     prevMessageCountRef.current = newCount;
+
+    if (prevConvIdRef.current !== activeConversationId) {
+      prevConvIdRef.current = activeConversationId;
+      pendingJumpRef.current = true;
+    }
+
+    // Conversation just selected/switched: snap straight to the bottom with no
+    // scroll animation. Keep snapping across renders until the messages have
+    // arrived (async load), then clear the flag.
+    if (pendingJumpRef.current) {
+      const snap = () => {
+        const c = scrollContainerRef.current;
+        if (c) c.scrollTop = c.scrollHeight;
+      };
+      snap();
+      if (newCount > 0) {
+        // One more after layout settles (avatars/markdown can change height).
+        requestAnimationFrame(snap);
+        pendingJumpRef.current = false;
+      }
+      return;
+    }
+
     // If messages were prepended (older loaded), restore scroll position instead
     if (newCount > prevCount && prevCount > 0 && loadingOlder) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent, toolUses]);
+  }, [messages, streamingContent, toolUses, activeConversationId]);
 
   // Preserve scroll position when older messages are prepended
   useEffect(() => {
