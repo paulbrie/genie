@@ -19,6 +19,7 @@ import { handlers as orgSettingsHandlers } from "./org-settings";
 import { handlers as sshHandlers } from "./ssh";
 import { handlers as agentsHandlers } from "./agents";
 import { handlers as serverMetricsHandlers } from "./server-metrics";
+import { handlers as knowledgeHandlers } from "./knowledge";
 import type { HandlerMap } from "./types";
 
 const handlers: HandlerMap = Object.assign(
@@ -44,6 +45,7 @@ const handlers: HandlerMap = Object.assign(
   sshHandlers,
   agentsHandlers,
   serverMetricsHandlers,
+  knowledgeHandlers,
 );
 
 export function handleWsMessage(msg: { type: string; payload: any }): void {

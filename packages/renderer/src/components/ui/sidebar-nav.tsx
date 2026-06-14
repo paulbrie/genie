@@ -1,7 +1,7 @@
 "use client";
 
 import { useSubject } from "subjecto/react";
-import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, ChefHat, HelpCircle, Boxes, Clock, Cloud, Bot } from "lucide-react";
+import { LayoutGrid, FolderKanban, Activity, Container, FileText, ScrollText, MessageCircle, SquareKanban, Settings, Database, Network, Users, Shield, ChefHat, HelpCircle, Boxes, Clock, Cloud, Bot, BookOpen } from "lucide-react";
 import type { DockerInfo, NavKey } from "@/store/types";
 import { $activeNav, $auth, $docker, $presenceSessions } from "@/store/subjects";
 import { cn } from "@/lib/utils";
@@ -16,6 +16,7 @@ const baseNavItems: { key: NavKey; label: string; icon: typeof LayoutGrid }[] = 
 
   { key: "docker", label: "Docker", icon: Container },
   { key: "docs", label: "Docs", icon: FileText },
+  { key: "knowledge", label: "Concepts", icon: BookOpen },
   { key: "logs", label: "Logs", icon: ScrollText },
   { key: "chat", label: "Team chat", icon: MessageCircle },
   { key: "history", label: "History", icon: Clock },
@@ -46,8 +47,14 @@ export function SidebarNav() {
   // cloud-focused tazcloud role and for admins. Mirror this in routes.ts.
   const standardUserKeys = new Set<NavKey>(["projects", "agents", "tracker", "chat", "history", "settings"]);
   const tazcloudKeys = new Set<NavKey>([...standardUserKeys, "clouds"]);
+  const isSuperadmin = role === "superadmin";
   const items = isAdmin
-    ? baseNavItems.filter((item) => !adminBarKeys.has(item.key))
+    ? baseNavItems.filter(
+        (item) =>
+          !adminBarKeys.has(item.key) &&
+          // "Concepts" (the Genie-internals knowledge bundle) is superadmin-only.
+          (item.key !== "knowledge" || isSuperadmin),
+      )
     : isTazcloud
       ? [
           ...baseNavItems.filter((item) => tazcloudKeys.has(item.key)),

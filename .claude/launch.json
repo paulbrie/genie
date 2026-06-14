@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "manager",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:manager"],
+      "port": 9876,
+      "autoPort": false
+    },
+    {
+      "name": "renderer",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:renderer"],
+      "port": 3000,
+      "autoPort": false
+    }
+  ]
+}

@@ -22,3 +22,4 @@ export * from "./ssh";
 export * from "./vm-connection";
 export * from "./agents";
 export * from "./server-metrics";
+export * from "./knowledge";

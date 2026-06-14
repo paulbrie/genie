@@ -12,6 +12,7 @@ import { DockerPanel } from "@/components/project/docker-panel";
 import { DocsPanel } from "@/components/project/docs-panel";
 import { LogsPanel } from "@/components/ui/logs-panel";
 import { SettingsPanel } from "@/components/ui/settings-panel";
+import { KnowledgePanel } from "@/components/knowledge/knowledge-panel";
 import { ChatView } from "@/components/chat/chat-view";
 import { ChatNotificationToasts } from "@/components/chat/chat-notification-toasts";
 import { ManageVmWindows } from "@/components/tazcloud/manage-vm-popup";
@@ -185,6 +186,10 @@ function MainPanel({ activeTab, settingsTab, settingsOrgId }: { activeTab?: Proj
 
   if (activeNav === "docs") {
     return <DocsPanel />;
+  }
+
+  if (activeNav === "knowledge") {
+    return <KnowledgePanel />;
   }
 
   if (activeNav === "logs") {

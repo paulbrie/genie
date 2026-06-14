@@ -135,6 +135,9 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
 
   // Superadmin-only namespace.
   recipes: { send: "superadmin", receive: "superadmin" },
+  // Read-only conceptual docs about how Genie is built, served from the repo's
+  // `knowledge/` folder. Superadmin-only (mirrors the "Concepts" nav gate).
+  knowledge: { send: "superadmin", receive: "superadmin" },
   // Same model as recipes: catalog mutations are superadmin-only (install
   // scripts run as root on every VM); reads are widened below.
   "claude-plugins": { send: "superadmin", receive: "superadmin" },

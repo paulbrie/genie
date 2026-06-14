@@ -5,6 +5,7 @@ import { startVpsMetricFlusher, stopVpsMetricFlusher } from "./vps/vps-metric-se
 import { startSshEventFlusher, stopSshEventFlusher } from "./vps/ssh-events.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
+import { seedKnowledgeFromDisk } from "./knowledge-service.js";
 import { seedDefaultClaudePlugins } from "./chat/claude-plugins-service.js";
 import { DEFAULT_CLAUDE_PLUGINS } from "./chat/default-claude-plugins.js";
 import { createServer, shutdown } from "./ws-server.js";
@@ -73,6 +74,12 @@ try {
   console.log(`[claude-plugins] Seeded ${DEFAULT_CLAUDE_PLUGINS.length} built-in plugins (inserted=${inserted}, updated=${updated}).`);
 } catch (err) {
   console.error("[claude-plugins] Seed failed:", err);
+}
+try {
+  const inserted = await seedKnowledgeFromDisk();
+  console.log(`[knowledge] Seeded knowledge bundle from disk (inserted=${inserted}).`);
+} catch (err) {
+  console.error("[knowledge] Seed failed:", err);
 }
 const wss = await createServer();
 

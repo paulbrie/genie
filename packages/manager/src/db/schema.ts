@@ -160,6 +160,23 @@ export const recipes = pgTable("recipes", {
   index("idx_recipes_slug").on(table.slug),
 ]);
 
+/** Conceptual documentation about how Genie itself is built — the "Concepts"
+ *  superadmin nav. Seeded once from the repo `knowledge/` folder on first boot,
+ *  then edited in-place from the UI (DB is the source of truth thereafter).
+ *  `path` is the forward-slash tree path (e.g. "recipes/recipe.md") and doubles
+ *  as the stable id used by intra-bundle markdown links. */
+export const knowledgeDocs = pgTable("knowledge_docs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  path: text("path").notNull().unique(),
+  title: text("title").notNull(),
+  content: text("content").default("").notNull(),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_knowledge_docs_path").on(table.path),
+]);
+
 /** Official Claude Code plugins surfaced in the per-VM Manager popup's
  *  "Claude Plugins" tab. Same lifecycle as `recipes`: built-ins seeded from
  *  `default-claude-plugins.ts` on boot; superadmins extend/edit the catalog at

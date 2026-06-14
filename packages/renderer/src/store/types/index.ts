@@ -8,3 +8,4 @@ export * from "./docs";
 export * from "./recipes";
 export * from "./claude-plugins";
 export * from "./agents";
+export * from "./knowledge";

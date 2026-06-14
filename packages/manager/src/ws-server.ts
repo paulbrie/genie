@@ -69,6 +69,7 @@ import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
 import { handleSecurityMessage, abortAllSecurityScans } from "./handlers/security-handler.js";
 
 import { handleRecipesMessage } from "./handlers/recipes-handler.js";
+import { handleKnowledgeMessage } from "./handlers/knowledge-handler.js";
 
 import { handleClaudePluginsMessage } from "./handlers/claude-plugins-handler.js";
 
@@ -1015,6 +1016,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleVpsDbMessage(ws, msg, send, userId)) return;
   if (await handleSecurityMessage(ws, msg, send, userId)) return;
   if (await handleRecipesMessage(ws, msg, send, userId, broadcast, state.role)) return;
+  if (await handleKnowledgeMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleClaudePluginsMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleAgentsMessage(ws, msg, send, userId, broadcast)) return;
   if (await handleFileTemplateMessage(ws, msg, send, userId)) return;
