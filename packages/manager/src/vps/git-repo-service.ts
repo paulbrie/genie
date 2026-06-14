@@ -11,6 +11,32 @@ import { encryptPrivateKey, decryptPrivateKey } from "./credential-crypto.js";
 
 export type GitProvider = "github" | "gitlab" | "other";
 
+/** Split any credentials embedded in an `https://user:token@host/...` (or
+ *  `https://token@host/...`) URL out of the URL. Returns the credential-free URL
+ *  and the extracted token (password if present, else the userinfo). This keeps
+ *  secrets out of the stored/displayed `repoUrl` and lets the token be encrypted
+ *  at rest like any other. A URL without credentials is returned unchanged with
+ *  a null token. */
+export function splitRepoUrlCredentials(rawUrl: string): { cleanUrl: string; embeddedToken: string | null } {
+  try {
+    const u = new URL(rawUrl);
+    if (!u.username && !u.password) return { cleanUrl: rawUrl, embeddedToken: null };
+    const embedded = u.password || u.username;
+    u.username = "";
+    u.password = "";
+    // URL() percent-encodes userinfo on read; decode so we store the raw token.
+    let token: string | null = null;
+    try {
+      token = embedded ? decodeURIComponent(embedded) : null;
+    } catch {
+      token = embedded || null;
+    }
+    return { cleanUrl: u.toString(), embeddedToken: token };
+  } catch {
+    return { cleanUrl: rawUrl, embeddedToken: null };
+  }
+}
+
 export interface VpsGitRepoPublic {
   id: string;
   projectId: string;
@@ -102,14 +128,19 @@ export async function add(input: {
   autoSave?: boolean;
   createdBy: string;
 }): Promise<VpsGitRepoPublic> {
-  const enc = input.token ? encryptPrivateKey(input.token) : null;
+  // An explicit token wins; otherwise adopt one embedded in the URL. Either way
+  // the stored repoUrl is stripped of credentials so secrets never land in the
+  // DB column or the UI.
+  const { cleanUrl, embeddedToken } = splitRepoUrlCredentials(input.repoUrl);
+  const effectiveToken = input.token?.trim() ? input.token.trim() : embeddedToken;
+  const enc = effectiveToken ? encryptPrivateKey(effectiveToken) : null;
   const db = getDb();
   const [row] = await db
     .insert(vpsGitRepos)
     .values({
       projectId: input.projectId,
       instanceId: input.instanceId,
-      repoUrl: input.repoUrl,
+      repoUrl: cleanUrl,
       repoPath: input.repoPath,
       provider: input.provider ?? "github",
       ciphertext: enc?.ciphertext ?? null,
@@ -137,18 +168,26 @@ export async function update(
 ): Promise<VpsGitRepoPublic | null> {
   const db = getDb();
   const updates: Record<string, unknown> = { updatedAt: new Date() };
-  if (patch.repoUrl !== undefined) updates.repoUrl = patch.repoUrl;
+  let embeddedToken: string | null = null;
+  if (patch.repoUrl !== undefined) {
+    const split = splitRepoUrlCredentials(patch.repoUrl);
+    updates.repoUrl = split.cleanUrl;
+    embeddedToken = split.embeddedToken;
+  }
   if (patch.repoPath !== undefined) updates.repoPath = patch.repoPath;
   if (patch.provider !== undefined) updates.provider = patch.provider;
   if (patch.autoSave !== undefined) updates.autoSave = patch.autoSave;
-  if (patch.token !== undefined) {
-    if (patch.token === null) {
+  // Explicit token (incl. null to clear) wins; otherwise adopt one extracted
+  // from a newly-provided URL.
+  const tokenToStore = patch.token !== undefined ? patch.token : embeddedToken ?? undefined;
+  if (tokenToStore !== undefined) {
+    if (tokenToStore === null) {
       updates.ciphertext = null;
       updates.iv = null;
       updates.authTag = null;
       updates.salt = null;
     } else {
-      const enc = encryptPrivateKey(patch.token);
+      const enc = encryptPrivateKey(tokenToStore);
       updates.ciphertext = enc.ciphertext;
       updates.iv = enc.iv;
       updates.authTag = enc.authTag;
@@ -163,4 +202,38 @@ export async function remove(id: string): Promise<boolean> {
   const db = getDb();
   const deleted = await db.delete(vpsGitRepos).where(eq(vpsGitRepos.id, id)).returning({ id: vpsGitRepos.id });
   return deleted.length > 0;
+}
+
+/** One-time boot repair: earlier registrations (and the detected-repo adopt
+ *  flow) could persist a token embedded in `repoUrl` in plaintext, leaving the
+ *  encrypted token unset (so `hasToken` was false and auto-save was blocked).
+ *  Strip credentials from every affected row's URL and, when no encrypted token
+ *  exists yet, adopt the embedded one. Idempotent. Returns the rows fixed. */
+export async function sanitizeEmbeddedCredentials(): Promise<number> {
+  const db = getDb();
+  const rows = await db.select().from(vpsGitRepos);
+  let fixed = 0;
+  for (const row of rows) {
+    const { cleanUrl, embeddedToken } = splitRepoUrlCredentials(row.repoUrl);
+    if (cleanUrl === row.repoUrl) continue; // no embedded credentials
+    const updates: Record<string, unknown> = { repoUrl: cleanUrl, updatedAt: new Date() };
+    if (embeddedToken && !row.ciphertext) {
+      try {
+        const enc = encryptPrivateKey(embeddedToken);
+        updates.ciphertext = enc.ciphertext;
+        updates.iv = enc.iv;
+        updates.authTag = enc.authTag;
+        updates.salt = enc.salt;
+      } catch (err) {
+        // Encryption unavailable (GENIE_SECRET not configured). Skip this row so
+        // the embedded token survives for a clean migration once the secret is
+        // set, rather than stripping it from the URL and losing it.
+        console.warn(`[vps-git] Cannot migrate token for repo ${row.id} — set GENIE_SECRET to enable encrypted storage. Skipping.`, err instanceof Error ? err.message : err);
+        continue;
+      }
+    }
+    await db.update(vpsGitRepos).set(updates).where(eq(vpsGitRepos.id, row.id));
+    fixed += 1;
+  }
+  return fixed;
 }

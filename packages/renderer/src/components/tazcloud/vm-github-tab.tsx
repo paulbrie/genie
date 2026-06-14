@@ -153,7 +153,7 @@ export function VmGithubTab({ projectId, instanceId }: VmGithubTabProps) {
           </div>
           <button
             onClick={() => setShowAdd(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue text-base border-none cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-mauve text-background hover:bg-lavender border-none cursor-pointer"
           >
             <Plus size={14} /> Register this repo
           </button>
@@ -174,7 +174,7 @@ export function VmGithubTab({ projectId, instanceId }: VmGithubTabProps) {
             <button
               onClick={onInit}
               disabled={busyId !== null}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue text-base border-none cursor-pointer disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-mauve text-background hover:bg-lavender border-none cursor-pointer disabled:opacity-50"
             >
               {busyId === "__init__" ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}
               Init {DEFAULT_PATH}
@@ -302,6 +302,13 @@ function RepoRow({ repo, busy, selected, onSelect, onToggleAutoSave, onRemove }:
           </button>
         </div>
       </div>
+      {repo.autoSave && (
+        <div className="text-overlay0 text-base leading-relaxed border-t border-surface0 pt-2">
+          A timer on the VM commits all changes in <code className="text-overlay1">{repo.repoPath}</code> and
+          pushes them to the remote once an hour (author “Genie”). Uses the stored token; nothing is
+          committed when there are no changes.
+        </div>
+      )}
     </div>
   );
 }
@@ -391,7 +398,7 @@ function AddRepoForm({ projectId, instanceId, initialRepoUrl = "", initialRepoPa
         <button
           onClick={onSubmit}
           disabled={saving || !repoUrl.trim()}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue text-base border-none cursor-pointer disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-mauve text-background hover:bg-lavender border-none cursor-pointer disabled:opacity-50"
         >
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
           Add

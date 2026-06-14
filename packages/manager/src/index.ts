@@ -6,6 +6,7 @@ import { startSshEventFlusher, stopSshEventFlusher } from "./vps/ssh-events.js";
 import { seedDefaultRecipes } from "./recipes-service.js";
 import { DEFAULT_RECIPES } from "./default-recipes.js";
 import { seedKnowledgeFromDisk } from "./knowledge-service.js";
+import { sanitizeEmbeddedCredentials } from "./vps/git-repo-service.js";
 import { seedDefaultClaudePlugins } from "./chat/claude-plugins-service.js";
 import { DEFAULT_CLAUDE_PLUGINS } from "./chat/default-claude-plugins.js";
 import { createServer, shutdown } from "./ws-server.js";
@@ -80,6 +81,12 @@ try {
   console.log(`[knowledge] Seeded knowledge bundle from disk (inserted=${inserted}).`);
 } catch (err) {
   console.error("[knowledge] Seed failed:", err);
+}
+try {
+  const fixed = await sanitizeEmbeddedCredentials();
+  if (fixed > 0) console.log(`[vps-git] Sanitized ${fixed} repo URL(s) with embedded credentials.`);
+} catch (err) {
+  console.error("[vps-git] Credential sanitize failed:", err);
 }
 const wss = await createServer();
 
