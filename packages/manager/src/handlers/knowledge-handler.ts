@@ -69,6 +69,17 @@ export async function handleKnowledgeMessage(
       return true;
     }
 
+    case "knowledge:export": {
+      const reqId = msg.payload?.reqId;
+      try {
+        const { written, dir } = await knowledgeService.exportKnowledgeToDisk();
+        send(ws, { type: "knowledge:export", payload: { written, dir, reqId } });
+      } catch (err: unknown) {
+        send(ws, { type: "knowledge:export", payload: { error: errMsg(err), reqId } });
+      }
+      return true;
+    }
+
     default:
       return false;
   }

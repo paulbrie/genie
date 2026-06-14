@@ -22,7 +22,9 @@
     "start": "concurrently \"npm run start:manager\" \"npm run start:renderer\"",
     "start:manager": "node packages/manager/dist/index.js",
     "start:renderer": "cd packages/renderer && next start",
-    "manager": "npx tsx packages/manager/src/index.ts"
+    "manager": "npx tsx packages/manager/src/index.ts",
+    "knowledge:export": "npx tsx packages/manager/src/scripts/export-knowledge.ts",
+    "knowledge:import": "npx tsx packages/manager/src/scripts/import-knowledge.ts"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

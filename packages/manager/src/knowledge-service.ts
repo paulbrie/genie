@@ -1,7 +1,11 @@
 // Knowledge bundle ("Concepts" nav): conceptual docs about how Genie itself is
-// built. The DB (`knowledge_docs`) is the source of truth — superadmins edit
-// entries from the UI. On first boot the table is seeded from the repo
-// `knowledge/` folder; thereafter the folder is ignored (edits live in the DB).
+// built. The DB (`knowledge_docs`) is the runtime source of truth — superadmins
+// edit entries from the UI. The repo `knowledge/` folder is the file-authoring
+// surface, synced both ways on demand (never auto-seeded on boot):
+//   • export (DB → disk, `npm run knowledge:export`) so file-only readers like
+//     CLAUDE.md / Claude Code can see current Concepts;
+//   • import (disk → DB, `npm run knowledge:import`) so edits made in the files
+//     (e.g. by Claude Code) are pushed into the DB and show up in the UI.
 
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -28,6 +32,21 @@ function extractTitle(markdown: string): string | null {
   return match ? match[1].trim() : null;
 }
 
+/** `title:` from a leading `---` YAML frontmatter block, or null. */
+function frontmatterTitle(markdown: string): string | null {
+  const fm = markdown.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) return null;
+  const t = fm[1].match(/^title:\s*(.+?)\s*$/m);
+  return t ? t[1].trim().replace(/^["']|["']$/g, "") : null;
+}
+
+/** Best display title for a doc: frontmatter `title:`, else the first `#`
+ *  heading, else the file basename. Shared by create/update/import so the tree
+ *  label is consistent however a doc enters the DB. */
+function deriveTitle(content: string, docPath: string): string {
+  return (frontmatterTitle(content) ?? extractTitle(content) ?? path.basename(docPath)).trim() || "Untitled";
+}
+
 /** Normalize a user-supplied path: trim, strip leading slashes, collapse to
  *  forward slashes. Throws if empty or escaping the tree via "..". */
 function normalizePath(raw: string): string {
@@ -46,7 +65,7 @@ export async function listKnowledge() {
 
 export async function createKnowledge(input: KnowledgeInput, userId: string | null) {
   const p = normalizePath(input.path);
-  const title = (input.title?.trim() || extractTitle(input.content) || path.basename(p)).trim();
+  const title = input.title?.trim() || deriveTitle(input.content, p);
   const db = getDb();
   const [row] = await db.insert(knowledgeDocs).values({
     path: p,
@@ -67,8 +86,7 @@ export async function updateKnowledge(id: string, input: Partial<KnowledgeInput>
   if (input.title !== undefined && input.title.trim()) {
     patch.title = input.title.trim();
   } else if (input.content !== undefined) {
-    const derived = extractTitle(input.content);
-    patch.title = (derived || path.basename((patch.path as string) ?? "")).trim() || "Untitled";
+    patch.title = deriveTitle(input.content, (patch.path as string) ?? "");
   }
   const [row] = await db.update(knowledgeDocs).set(patch).where(eq(knowledgeDocs.id, id)).returning();
   return row ?? null;
@@ -79,7 +97,7 @@ export async function deleteKnowledge(id: string) {
   await db.delete(knowledgeDocs).where(eq(knowledgeDocs.id, id));
 }
 
-// --- One-time seed from disk ----------------------------------------------
+// --- Import (disk → DB) ----------------------------------------------------
 
 /** Recursively collect `.md` files under `dir`, returning paths relative to root. */
 async function collectMarkdown(dir: string, root: string): Promise<string[]> {
@@ -102,22 +120,41 @@ async function collectMarkdown(dir: string, root: string): Promise<string[]> {
   return out;
 }
 
-/** Insert any `knowledge/` markdown files whose path isn't already in the DB.
- *  Idempotent and non-destructive: existing rows (incl. UI edits) are left
- *  untouched. Returns the number of rows inserted. */
-export async function seedKnowledgeFromDisk(): Promise<number> {
-  const relPaths = await collectMarkdown(KNOWLEDGE_DIR, KNOWLEDGE_DIR);
-  if (relPaths.length === 0) return 0;
+/** Push every `knowledge/*.md` file into the DB, upserting by `path` (content +
+ *  title updated for existing rows, new files inserted). This is the file →
+ *  DB authoring path: edit the markdown, then run `npm run knowledge:import`.
+ *  Non-destructive: a DB row whose file was deleted is left intact (remove it
+ *  from the UI). Returns counts + the dir. */
+export async function importKnowledgeFromDisk(): Promise<{ upserted: number; dir: string }> {
+  const rels = (await collectMarkdown(KNOWLEDGE_DIR, KNOWLEDGE_DIR)).sort((a, b) => a.localeCompare(b));
   const db = getDb();
-  let inserted = 0;
-  for (const rel of relPaths.sort((a, b) => a.localeCompare(b))) {
+  let upserted = 0;
+  for (const rel of rels) {
     const content = await fsp.readFile(path.join(KNOWLEDGE_DIR, rel), "utf8");
-    const title = extractTitle(content) ?? path.basename(rel);
-    const result = await db.insert(knowledgeDocs)
+    const title = deriveTitle(content, rel);
+    await db.insert(knowledgeDocs)
       .values({ path: rel, title, content })
-      .onConflictDoNothing({ target: knowledgeDocs.path })
-      .returning({ id: knowledgeDocs.id });
-    inserted += result.length;
+      .onConflictDoUpdate({ target: knowledgeDocs.path, set: { title, content, updatedAt: new Date() } });
+    upserted += 1;
   }
-  return inserted;
+  return { upserted, dir: KNOWLEDGE_DIR };
+}
+
+// --- Export mirror (DB → disk) --------------------------------------------
+
+/** Write every DB knowledge doc back out to the `knowledge/` folder so the
+ *  version-controlled bundle mirrors the live (UI-edited) source of truth — the
+ *  bridge that lets file-only readers (CLAUDE.md / Claude Code) see current
+ *  Concepts. Non-destructive: updates/creates files but does not prune ones
+ *  whose DB row was deleted (delete those by hand). Returns counts + the dir. */
+export async function exportKnowledgeToDisk(): Promise<{ written: number; dir: string }> {
+  const docs = await listKnowledge();
+  let written = 0;
+  for (const doc of docs) {
+    const dest = path.join(KNOWLEDGE_DIR, doc.path);
+    await fsp.mkdir(path.dirname(dest), { recursive: true });
+    await fsp.writeFile(dest, doc.content, "utf8");
+    written += 1;
+  }
+  return { written, dir: KNOWLEDGE_DIR };
 }

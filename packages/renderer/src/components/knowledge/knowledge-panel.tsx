@@ -5,7 +5,8 @@ import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { BookOpen, FileText, RefreshCw, Plus, Pencil, Trash2, Save, X } from "lucide-react";
+import { BookOpen, FileText, RefreshCw, Plus, Pencil, Trash2, Save, X, HardDriveDownload } from "lucide-react";
+import { wsRequest } from "@/lib/ws";
 import { $auth, $knowledge } from "@/store/subjects";
 import {
   loadKnowledge,
@@ -69,6 +70,66 @@ type EditorState = { mode: "new" } | { mode: "edit"; id: string };
 const inputClass =
   "w-full px-2.5 py-1.5 rounded bg-crust border border-surface0 text-text text-md outline-none focus:border-mauve";
 
+/** Split a leading `---` YAML frontmatter block from the markdown body. Returns
+ *  the parsed key/values and the remaining body. Without frontmatter, meta is
+ *  empty and body is the input unchanged. (The bundle's OKF format puts metadata
+ *  in frontmatter, which ReactMarkdown would otherwise mangle into a heading.) */
+function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
+  const m = raw.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!m) return { meta: {}, body: raw };
+  const meta: Record<string, string> = {};
+  for (const line of m[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    let val = line.slice(idx + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (key) meta[key] = val;
+  }
+  return { meta, body: raw.slice(m[0].length) };
+}
+
+/** Parse a `[a, b, c]` or `a, b, c` frontmatter list into trimmed items. */
+function parseList(val: string | undefined): string[] {
+  if (!val) return [];
+  return val.replace(/^\[|\]$/g, "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/** Rendered metadata header for a doc's frontmatter. */
+function FrontmatterHeader({ meta }: { meta: Record<string, string> }) {
+  const title = meta.title;
+  const tags = parseList(meta.tags);
+  // Show remaining scalar fields (not the ones we render specially) as a meta row.
+  const shown = new Set(["title", "description", "tags", "resource"]);
+  const extras = Object.entries(meta).filter(([k, v]) => !shown.has(k) && v);
+  if (!title && !meta.description && !tags.length && !meta.resource && !extras.length) return null;
+  return (
+    <div className="mb-4 pb-4 border-b border-surface0">
+      {title && <h1 className="text-xl font-semibold text-text m-0">{title}</h1>}
+      {meta.description && <p className="text-md text-subtext0 mt-1 mb-0">{meta.description}</p>}
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {tags.map((t) => (
+            <span key={t} className="text-xs px-1.5 py-0.5 rounded bg-surface0 text-subtext0">{t}</span>
+          ))}
+        </div>
+      )}
+      {(extras.length > 0 || meta.resource) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-overlay0">
+          {extras.map(([k, v]) => (
+            <span key={k}><span className="text-overlay0/70">{k}:</span> <span className="text-subtext0">{v}</span></span>
+          ))}
+          {meta.resource && (
+            <a href={meta.resource} target="_blank" rel="noreferrer" className="text-blue hover:underline">source ↗</a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function KnowledgePanel() {
   const knowledge = useDeepSubjectAll($knowledge);
   const { files, selectedPath, loading, loaded, error, saveError } = knowledge;
@@ -81,6 +142,8 @@ export function KnowledgePanel() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [draftPath, setDraftPath] = useState("");
   const [draftContent, setDraftContent] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
   // Path we just saved — when a matching file shows up in the list, close the editor.
   const savingPathRef = useRef<string | null>(null);
 
@@ -93,6 +156,7 @@ export function KnowledgePanel() {
     () => files.find((f) => f.path === selectedPath) ?? null,
     [files, selectedPath],
   );
+  const fm = useMemo(() => parseFrontmatter(selected?.content ?? ""), [selected]);
 
   // Close the editor once the saved doc lands in the list with matching content.
   useEffect(() => {
@@ -140,6 +204,20 @@ export function KnowledgePanel() {
     deleteKnowledge(file.id);
   }
 
+  async function doExport() {
+    setExporting(true);
+    setExportMsg(null);
+    try {
+      const res = await wsRequest<{ written?: number; error?: string }>("knowledge:export", {}, 30_000);
+      setExportMsg(res.error ? `Export failed: ${res.error}` : `Exported ${res.written ?? 0} file(s)`);
+    } catch {
+      setExportMsg("Export failed: request timed out");
+    } finally {
+      setExporting(false);
+      window.setTimeout(() => setExportMsg(null), 5000);
+    }
+  }
+
   const mdComponents = useMemo(
     () => ({
       a: ({ href, children, ...props }: { href?: string; children?: React.ReactNode }) => {
@@ -176,10 +254,28 @@ export function KnowledgePanel() {
         statusIndicator={<BookOpen size={18} className="text-mauve shrink-0" />}
         actions={
           <>
+            {exportMsg && (
+              <span className={cn("text-sm mr-1", exportMsg.startsWith("Export failed") ? "text-red" : "text-green")}>
+                {exportMsg}
+              </span>
+            )}
             <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => loadKnowledge()} disabled={loading}>
               <RefreshCw size={14} className={cn(loading && "animate-spin")} />
               Refresh
             </Button>
+            {canEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                onClick={doExport}
+                disabled={exporting}
+                title="Write all docs to the repo knowledge/ folder so they're committable"
+              >
+                <HardDriveDownload size={14} className={cn(exporting && "animate-pulse")} />
+                Export
+              </Button>
+            )}
             {canEdit && (
               <Button variant="primary" size="sm" className="gap-1.5" onClick={openNew}>
                 <Plus size={14} />
@@ -281,10 +377,13 @@ export function KnowledgePanel() {
                 )}
               </div>
               <div className="flex-1 overflow-y-auto scrollbar-thin p-5 select-text">
-                <div className="chat-markdown max-w-3xl">
+                <div className="max-w-3xl">
+                  <FrontmatterHeader meta={fm.meta} />
+                  <div className="chat-markdown">
                   <ReactMarkdown key={selected.path} remarkPlugins={[remarkGfm]} components={mdComponents}>
-                    {selected.content.replace(/ /g, " ")}
+                    {fm.body.replace(/ /g, " ")}
                   </ReactMarkdown>
+                  </div>
                 </div>
               </div>
             </>

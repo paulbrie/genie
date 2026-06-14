@@ -161,10 +161,10 @@ export const recipes = pgTable("recipes", {
 ]);
 
 /** Conceptual documentation about how Genie itself is built — the "Concepts"
- *  superadmin nav. Seeded once from the repo `knowledge/` folder on first boot,
- *  then edited in-place from the UI (DB is the source of truth thereafter).
- *  `path` is the forward-slash tree path (e.g. "recipes/recipe.md") and doubles
- *  as the stable id used by intra-bundle markdown links. */
+ *  superadmin nav. The DB is the sole source of truth (edited in-place from the
+ *  UI); the repo `knowledge/` folder is a one-way export mirror only. `path` is
+ *  the forward-slash tree path (e.g. "recipes/recipe.md") and doubles as the
+ *  stable id used by intra-bundle markdown links. */
 export const knowledgeDocs = pgTable("knowledge_docs", {
   id: uuid("id").defaultRandom().primaryKey(),
   path: text("path").notNull().unique(),
