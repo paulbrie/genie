@@ -5,3 +5,4 @@
 * **Creation**: Established the [Recipe](/recipes/recipe.md) concept document.
 * **Creation**: Added [Genie Standard Setup](/recipes/genie-standard.md) as a worked Recipe instance.
 * **Creation**: Added [Access Control Layers](/security/access-control.md) — the four-layer role-gating pattern.
+* **Creation**: Added [Agents](/agents/architecture.md) — the user-defined AI agent subsystem (sandboxed runs on a project VPS).

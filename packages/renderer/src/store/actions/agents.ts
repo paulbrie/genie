@@ -58,6 +58,12 @@ export function runAgent(agent: AgentDef, userMessage: string): string {
   return requestId;
 }
 
+/** Request cancellation of an in-flight run. The server aborts the sandbox and
+ *  reports the final `cancelled` status via `agents:run:complete`. */
+export function cancelAgentRun(requestId: string): void {
+  wsSend("agents:cancel", { requestId });
+}
+
 /** Clear a finished run from the panel (cosmetic — doesn't touch the DB). */
 export function clearAgentRun(requestId: string): void {
   delete $agents.getValue().runs[requestId];

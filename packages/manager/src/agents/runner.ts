@@ -31,6 +31,9 @@ export interface AgentRunInput {
   input?: Record<string, unknown>;
   /** User id that triggered this run; null = system / scheduler. */
   triggeredByUserId?: string | null;
+  /** Abort to cancel the run: the sandbox is stopped and the run is recorded
+   *  as `cancelled`. */
+  signal?: AbortSignal;
 }
 
 export interface AgentRunResult {
@@ -104,6 +107,23 @@ export async function runAgent(
   let readySignal: (() => void) | null = null;
   const readyPromise = new Promise<void>((resolve) => { readySignal = resolve; });
 
+  // Cancellation: abort → record `cancelled` and let `finally` stop the sandbox.
+  // `settle` doubles as the "not yet terminal" flag (finish() nulls it), so this
+  // is a no-op once the run has already finished/failed/timed out.
+  const cancel = () => {
+    if (!settle) return;
+    finalStatus = "cancelled";
+    errorMessage = "Cancelled by user";
+    onEvent({ type: "error", message: errorMessage });
+    readySignal?.();          // unblock the ready-wait if cancelling early
+    readySignal = null;
+    finish();
+  };
+  if (input.signal) {
+    if (input.signal.aborted) cancel();
+    else input.signal.addEventListener("abort", cancel, { once: true });
+  }
+
   try {
     const backend = pickBackend(agent.sandbox);
     handle = await backend.spawn({
@@ -149,12 +169,14 @@ export async function runAgent(
           }
           break;
         case "done":
+          if (!settle) break; // already terminal (e.g. cancelled)
           if (typeof msg.fullContent === "string") fullContent = msg.fullContent;
           finalStatus = "succeeded";
           onEvent({ type: "done", fullContent });
           finish();
           break;
         case "error":
+          if (!settle) break; // already terminal (e.g. cancelled)
           errorMessage = typeof msg.message === "string" ? msg.message : "Unknown agent error";
           finalStatus = "failed";
           onEvent({ type: "error", message: errorMessage });

@@ -9,6 +9,10 @@ import * as agentRegistry from "../agents/registry.js";
 import { runAgent } from "../agents/runner.js";
 import * as analyticsService from "../logging/analytics-service.js";
 
+// In-flight runs, keyed by `${userId}:${requestId}`, so an `agents:cancel` can
+// abort the matching run. Scoping the key to the user means one user can't
+// cancel another's run by guessing a requestId.
+const activeRuns = new Map<string, AbortController>();
 
 export async function handleAgentsMessage(
   ws: WebSocket,
@@ -83,6 +87,9 @@ export async function handleAgentsMessage(
         requestId?: string;
       };
       const reqId = requestId ?? agentId;
+      const runKey = `${userId}:${reqId}`;
+      const controller = new AbortController();
+      activeRuns.set(runKey, controller);
       void analyticsService.recordEvent({ userId, userName: null, event: "agent.run", props: {}, ip: null });
       try {
         const result = await runAgent(
@@ -91,6 +98,7 @@ export async function handleAgentsMessage(
             userMessage,
             context,
             triggeredByUserId: userId,
+            signal: controller.signal,
           },
           (ev) => {
             send(ws, {
@@ -111,7 +119,17 @@ export async function handleAgentsMessage(
             result: { status: "failed", output: "", error: errMsg(err), toolEvents: [] },
           },
         });
+      } finally {
+        activeRuns.delete(runKey);
       }
+      return true;
+    }
+
+    case "agents:cancel": {
+      // Abort the in-flight run for this (user, requestId). No-op if it already
+      // finished — the run's own `agents:run:complete` reports the final status.
+      const { requestId } = msg.payload as { requestId?: string };
+      if (requestId) activeRuns.get(`${userId}:${requestId}`)?.abort();
       return true;
     }
 

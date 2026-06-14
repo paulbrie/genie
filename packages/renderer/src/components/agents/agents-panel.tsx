@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Bot, Loader2, Pencil, Plus, RefreshCw, Trash2, Save, X, Play, Square } from "lucide-react";
 import { $agents, $projects } from "@/store/subjects";
 import {
+  cancelAgentRun,
   clearAgentRun,
   deleteAgent,
   loadAgents,
@@ -19,6 +20,7 @@ import {
   type AgentUpsertInput,
 } from "@/store/actions/agents";
 import type { AgentDef, AgentSandboxConfig, RunState } from "@/store/types/agents";
+import { AGENT_TEMPLATES, type AgentTemplate } from "./agent-templates";
 import type { ProjectDef } from "@/store/types";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { useSubject } from "subjecto/react";
@@ -91,27 +93,8 @@ function fromAgent(a: AgentDef): Draft {
   };
 }
 
-// TEMPORARY: Agents is parked behind a "Coming soon" placeholder while the
-// feature is reworked — need to revisit. The full implementation (list, edit
-// drawer, run streaming) is intact below and in `AgentsPanelImpl`; swap the
-// body of `AgentsPanel` back to `<AgentsPanelImpl />` to restore it.
 export function AgentsPanel() {
-  return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-5">
-        <ViewHeader title="Agents" subtitle={undefined} />
-      </div>
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="text-center max-w-sm">
-          <Bot size={40} className="mx-auto mb-4 text-overlay0" />
-          <h2 className="text-lg font-medium text-text mb-1">Coming soon…</h2>
-          <p className="text-md text-subtext0">
-            Custom AI agents are being reworked. Check back later.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+  return <AgentsPanelImpl />;
 }
 
 function AgentsPanelImpl() {
@@ -167,12 +150,7 @@ function AgentsPanelImpl() {
       <div className="px-5">
         <ViewHeader
           title="Agents"
-          subtitle={
-            <span>
-              Define your own AI agents — system prompt, model, tools, sandbox — and run
-              them on demand. Private to you; built-ins are visible to everyone.
-            </span>
-          }
+          subtitle="Define and run your own AI agents on a project's VPS — private to you."
           actions={
             <>
               <Button size="sm" onClick={loadAgents} disabled={agents.loading}>
@@ -349,6 +327,22 @@ function EditDrawer({
     });
   }
 
+  // Prefill the persona fields from a starter template, keeping the user's
+  // chosen project/instance (only the timeout comes from the template).
+  function applyTemplate(t: AgentTemplate) {
+    onChange({
+      ...draft,
+      slug: t.slug,
+      label: t.label,
+      description: t.description,
+      systemPrompt: t.systemPrompt,
+      modelId: t.modelId,
+      maxToolRounds: t.maxToolRounds,
+      tools: t.tools,
+      sandbox: { ...draft.sandbox, timeoutSec: t.timeoutSec } as AgentSandboxConfig,
+    });
+  }
+
   return (
     <div className="w-[480px] shrink-0 border-l border-surface0 bg-base flex flex-col">
       <div className="px-3 py-2 border-b border-surface0 flex items-center justify-between">
@@ -363,6 +357,30 @@ function EditDrawer({
         </div>
       </div>
       <div className="flex-1 overflow-auto px-3 py-3 space-y-4 text-md">
+        {!isEdit && (
+          <Field label="Start from a template" hint="Prefills the fields below; you still pick the project + instance.">
+            <select
+              className="w-full bg-mantle border border-surface0 rounded px-2 py-1"
+              value=""
+              onChange={(e) => {
+                const t = AGENT_TEMPLATES.find((x) => x.key === e.target.value);
+                if (t) applyTemplate(t);
+              }}
+            >
+              <option value="">Blank agent…</option>
+              <optgroup label="Read-only (safe to try)">
+                {AGENT_TEMPLATES.filter((t) => t.category === "read-only").map((t) => (
+                  <option key={t.key} value={t.key}>{t.label} — {t.description}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Writes / runs commands">
+                {AGENT_TEMPLATES.filter((t) => t.category === "mutating").map((t) => (
+                  <option key={t.key} value={t.key}>{t.label} — {t.description}</option>
+                ))}
+              </optgroup>
+            </select>
+          </Field>
+        )}
         <Field label="Slug" hint="lowercase letters, digits, dashes — stable id">
           <input
             className="w-full bg-mantle border border-surface0 rounded px-2 py-1 font-mono text-md"
@@ -545,6 +563,11 @@ function RunDrawer({ agent, onClose }: { agent: AgentDef; onClose: () => void })
           >
             <Play size={13} className="mr-1" /> {run?.status === "running" ? "Running…" : "Run"}
           </Button>
+          {run?.status === "running" && activeReqId && (
+            <Button size="sm" variant="danger" onClick={() => cancelAgentRun(activeReqId)}>
+              <Square size={13} className="mr-1" /> Stop
+            </Button>
+          )}
           {run && run.status !== "running" && (
             <Button size="sm" onClick={() => { if (activeReqId) clearAgentRun(activeReqId); setActiveReqId(null); }}>
               <Square size={13} className="mr-1" /> Clear
