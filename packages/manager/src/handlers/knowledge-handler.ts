@@ -80,6 +80,19 @@ export async function handleKnowledgeMessage(
       return true;
     }
 
+    case "knowledge:import": {
+      const reqId = msg.payload?.reqId;
+      try {
+        const { upserted, dir } = await knowledgeService.importKnowledgeFromDisk();
+        send(ws, { type: "knowledge:import", payload: { upserted, dir, reqId } });
+        // Refresh every connected superadmin's panel with the imported content.
+        broadcast({ type: "knowledge:list:stale", payload: {} });
+      } catch (err: unknown) {
+        send(ws, { type: "knowledge:import", payload: { error: errMsg(err), reqId } });
+      }
+      return true;
+    }
+
     default:
       return false;
   }

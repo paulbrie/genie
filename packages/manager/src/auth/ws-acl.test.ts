@@ -282,6 +282,65 @@ describe("ws-acl", () => {
     });
   });
 
+  describe("knowledge namespace (Concepts bundle — superadmin-only)", () => {
+    // The "Concepts" panel exposes conceptual docs about Genie's internals. The
+    // whole namespace is superadmin-only on BOTH send and receive, and must stay
+    // that way for every existing and future sub-frame (read, mutate, sync).
+    const FRAMES = [
+      "knowledge:list",
+      "knowledge:create",
+      "knowledge:update",
+      "knowledge:delete",
+      "knowledge:export",
+      "knowledge:import",
+      "knowledge:upserted",
+      "knowledge:deleted",
+      "knowledge:error",
+      "knowledge:list:stale",
+    ];
+
+    it("rejects send from every role below superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canSend("user", t)).toBe(false);
+        expect(canSend("tazcloud", t)).toBe(false);
+        expect(canSend("admin", t)).toBe(false);
+      }
+    });
+
+    it("allows send only for superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canSend("superadmin", t)).toBe(true);
+      }
+    });
+
+    it("rejects receive from every role below superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canReceive("user", t)).toBe(false);
+        expect(canReceive("tazcloud", t)).toBe(false);
+        expect(canReceive("admin", t)).toBe(false);
+      }
+    });
+
+    it("allows receive only for superadmin", () => {
+      for (const t of FRAMES) {
+        expect(canReceive("superadmin", t)).toBe(true);
+      }
+    });
+
+    it("rejects unauthenticated (null role) on every frame", () => {
+      for (const t of FRAMES) {
+        expect(canSend(null, t)).toBe(false);
+        expect(canReceive(null, t)).toBe(false);
+      }
+    });
+
+    it("a future knowledge:* sub-frame inherits the superadmin gate by prefix", () => {
+      const future = getEntry("knowledge:something-new");
+      expect(future?.send).toBe("superadmin");
+      expect(future?.receive).toBe("superadmin");
+    });
+  });
+
   describe("orgs + per-project members", () => {
     it("admin:orgs:* requires admin role to send and receive", () => {
       expect(canSend("user", "admin:orgs:list")).toBe(false);

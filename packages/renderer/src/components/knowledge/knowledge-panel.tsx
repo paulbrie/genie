@@ -5,7 +5,7 @@ import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { BookOpen, FileText, RefreshCw, Plus, Pencil, Trash2, Save, X, HardDriveDownload } from "lucide-react";
+import { BookOpen, FileText, RefreshCw, Plus, Pencil, Trash2, Save, X, HardDriveDownload, HardDriveUpload } from "lucide-react";
 import { wsRequest } from "@/lib/ws";
 import { $auth, $knowledge } from "@/store/subjects";
 import {
@@ -143,7 +143,8 @@ export function KnowledgePanel() {
   const [draftPath, setDraftPath] = useState("");
   const [draftContent, setDraftContent] = useState("");
   const [exporting, setExporting] = useState(false);
-  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   // Path we just saved — when a matching file shows up in the list, close the editor.
   const savingPathRef = useRef<string | null>(null);
 
@@ -206,15 +207,30 @@ export function KnowledgePanel() {
 
   async function doExport() {
     setExporting(true);
-    setExportMsg(null);
+    setSyncMsg(null);
     try {
       const res = await wsRequest<{ written?: number; error?: string }>("knowledge:export", {}, 30_000);
-      setExportMsg(res.error ? `Export failed: ${res.error}` : `Exported ${res.written ?? 0} file(s)`);
+      setSyncMsg(res.error ? `Export failed: ${res.error}` : `Exported ${res.written ?? 0} file(s)`);
     } catch {
-      setExportMsg("Export failed: request timed out");
+      setSyncMsg("Export failed: request timed out");
     } finally {
       setExporting(false);
-      window.setTimeout(() => setExportMsg(null), 5000);
+      window.setTimeout(() => setSyncMsg(null), 5000);
+    }
+  }
+
+  async function doImport() {
+    if (!window.confirm("Import overwrites DB docs with the contents of knowledge/*.md (upsert by path). Continue?")) return;
+    setImporting(true);
+    setSyncMsg(null);
+    try {
+      const res = await wsRequest<{ upserted?: number; error?: string }>("knowledge:import", {}, 30_000);
+      setSyncMsg(res.error ? `Import failed: ${res.error}` : `Imported ${res.upserted ?? 0} file(s)`);
+    } catch {
+      setSyncMsg("Import failed: request timed out");
+    } finally {
+      setImporting(false);
+      window.setTimeout(() => setSyncMsg(null), 5000);
     }
   }
 
@@ -254,15 +270,28 @@ export function KnowledgePanel() {
         statusIndicator={<BookOpen size={18} className="text-mauve shrink-0" />}
         actions={
           <>
-            {exportMsg && (
-              <span className={cn("text-sm mr-1", exportMsg.startsWith("Export failed") ? "text-red" : "text-green")}>
-                {exportMsg}
+            {syncMsg && (
+              <span className={cn("text-sm mr-1", syncMsg.includes("failed") ? "text-red" : "text-green")}>
+                {syncMsg}
               </span>
             )}
             <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => loadKnowledge()} disabled={loading}>
               <RefreshCw size={14} className={cn(loading && "animate-spin")} />
               Refresh
             </Button>
+            {canEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                onClick={doImport}
+                disabled={importing}
+                title="Pull docs from the repo knowledge/ folder into the DB (upsert by path)"
+              >
+                <HardDriveUpload size={14} className={cn(importing && "animate-pulse")} />
+                Import
+              </Button>
+            )}
             {canEdit && (
               <Button
                 variant="ghost"
