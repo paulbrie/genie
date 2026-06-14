@@ -33,6 +33,12 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      # The manager imports the @genie/vps-stats workspace package by its
+      # built entry ("main": "dist/index.js"). dist/ is gitignored, so without
+      # this step vitest can't resolve the import and the suite fails to load.
+      - name: Build workspace dependencies
+        run: npm run build:vps-stats
+
       - name: Run renderer vitest
         run: npm test --workspace=packages/renderer
 
