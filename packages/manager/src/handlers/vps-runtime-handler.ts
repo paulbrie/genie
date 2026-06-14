@@ -13,6 +13,7 @@ import { dropletSync, syncDropletStatuses } from "../vps/droplet-sync.js";
 import { execCached, evictSession } from "../vps/ssh-session-cache.js";
 import { sshStatsPostbackEnabled, sshStatsProbeEnabled, sshTmuxProbeEnabled } from "../vps/ssh-stats-disabled.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
+import { getVmTraffic } from "../vps/vps-traffic.js";
 import { getVpsMetricHistory, getBulkVpsMetricHistory } from "../vps/vps-metric-service.js";
 import { GENIE_STANDARD_RECIPE_SLUG, syncGenieStatsOnVm } from "../vps/ensure-vps-stats.js";
 import { pollVpsStats } from "../ssh/index.js";
@@ -595,6 +596,28 @@ export async function handleVpsRuntimeMessage(
             tmuxProbePath: "exec",
           },
         });
+      }
+      return true;
+    }
+
+    case "vps:traffic:get": {
+      const { projectId, instanceId, reqId } = msg.payload as {
+        projectId?: string;
+        instanceId?: string;
+        reqId?: string;
+      };
+      if (!projectId || !instanceId) return true;
+      const empty = { reqId, host: "", totals: { bytesIn: 0, bytesOut: 0 }, sessions: [], commands: [], events: [] };
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:traffic:get", payload: { ...empty, error: "Not authorized for this project" } });
+        return true;
+      }
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const snapshot = getVmTraffic(conn.host);
+        send(ws, { type: "vps:traffic:get", payload: { ...snapshot, reqId } });
+      } catch (err) {
+        send(ws, { type: "vps:traffic:get", payload: { ...empty, error: err instanceof Error ? err.message : "traffic failed" } });
       }
       return true;
     }

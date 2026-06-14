@@ -1,8 +1,9 @@
 /**
- * VPS stats poller — tmux session list always via SSH exec on the shared tunnel
- * (never injected into the user's live PTY).
+ * VPS stats poller — tmux session list always via SSH exec, on a dedicated
+ * probe connection (never injected into the user's live PTY, and never on the
+ * interactive shared session, so a slow/failed probe can't drop an open shell).
  */
-import { execCached } from "../../vps/ssh-session-cache.js";
+import { execProbe } from "../../vps/ssh-probe-pool.js";
 import { getVpsConnection } from "../../vps/connection-resolver.js";
 import { sshStatsProbeEnabled } from "../../vps/ssh-stats-disabled.js";
 import {
@@ -53,11 +54,11 @@ export async function pollVpsStats(
 }
 
 async function execRemote(
-  cfg: Parameters<typeof execCached>[0],
+  cfg: Parameters<typeof execProbe>[0],
   command: string,
 ): Promise<string> {
   try {
-    return await execCached(cfg, command, undefined, { timeoutMs: PROBE_TIMEOUT_MS });
+    return await execProbe(cfg, command, undefined, { timeoutMs: PROBE_TIMEOUT_MS });
   } catch (err) {
     const partial = extractProbeOutput(err);
     if (partial) return partial;
@@ -80,7 +81,7 @@ function extractProbeOutput(err: unknown): string | null {
 }
 
 async function probeTmuxViaExec(
-  sshCfg: Parameters<typeof execCached>[0],
+  sshCfg: Parameters<typeof execProbe>[0],
 ): Promise<string> {
   return execRemote(sshCfg, TMUX_PROBE_COMMAND).catch(() => "");
 }

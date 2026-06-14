@@ -6,6 +6,8 @@ import {
   type SshSession,
 } from "./ssh-client.js";
 import { sshConnRegister, sshConnUnregister } from "./ssh-metrics.js";
+import { evictProbeSessionsForHost } from "./ssh-probe-pool.js";
+import { recordCommand } from "./ssh-traffic.js";
 
 // One SSH client per (host, port, username). Manage UI pins via manageRefs;
 // interactive terminals lease PTY shell channels on the same connection.
@@ -446,6 +448,9 @@ export function evictAllSessionsForHost(host: string): void {
     if (entry.cfg.host !== host) continue;
     evictSession(entry.cfg);
   }
+  // The dedicated probe connections for this host are independent of the
+  // interactive cache — drop them here too so a host reset is complete.
+  evictProbeSessionsForHost(host);
 }
 
 export async function execCached(
@@ -457,17 +462,38 @@ export async function execCached(
   const key = keyOf(cfg);
   const entry = ensureEntry(cfg);
   entry.execInFlight = true;
+  const startedAt = Date.now();
+  let ok = false;
+  let bytesIn = 0;
   try {
     const session = await getCachedSession(cfg);
-    return await execSerialized(session, () => session.exec(command, onData, opts));
+    const out = await execSerialized(session, () => session.exec(command, onData, opts));
+    ok = true;
+    bytesIn = Buffer.byteLength(out);
+    return out;
   } catch (err) {
-    evictSession(cfg);
+    // A timed-out exec means the *command* hung, not that the connection died —
+    // ssh-client already closed that exec's own channel, and interactive PTY
+    // channels multiplexed on this same session are still healthy. Evicting here
+    // would hard-close those PTYs (e.g. an open Claude shell), so on a timeout we
+    // simply surface the error and leave the session intact.
     if (err instanceof Error && err.message.includes("timed out")) throw err;
+    // A connection-level error (socket closed, channel-open refused): the session
+    // really is dead — drop it and retry once on a fresh dial.
+    evictSession(cfg);
     const session = await getCachedSession(cfg);
-    return await execSerialized(session, () => session.exec(command, onData, opts));
+    const out = await execSerialized(session, () => session.exec(command, onData, opts));
+    ok = true;
+    bytesIn = Buffer.byteLength(out);
+    return out;
   } finally {
     const live = cache.get(key);
     if (live) live.execInFlight = false;
+    recordCommand({
+      ts: startedAt, host: cfg.host, username: cfg.username, kind: "exec",
+      command, bytesOut: Buffer.byteLength(command), bytesIn,
+      durationMs: Date.now() - startedAt, ok,
+    });
   }
 }
 
