@@ -65,8 +65,8 @@ export async function setupTestDb(): Promise<void> {
       WHERE table_schema = 'public' AND table_name = 'users'
     ) AS exists
   `);
-  const alreadyMigrated = Boolean((usersExists as unknown as { exists: boolean }[])[0]?.exists);
-  if (!alreadyMigrated) {
+  const baselineExists = Boolean((usersExists as unknown as { exists: boolean }[])[0]?.exists);
+  if (!baselineExists) {
     const { generateDrizzleJson, generateMigration } = await import("drizzle-kit/api");
     const empty = generateDrizzleJson({});
     const target = generateDrizzleJson(schema);
@@ -74,9 +74,11 @@ export async function setupTestDb(): Promise<void> {
     for (const stmt of statements) {
       if (stmt.trim()) await testDb!.execute(sql.raw(stmt));
     }
-    const { runBootMigrations } = await import("../db/migrate.js");
-    await runBootMigrations();
   }
+  // Always run boot migrations — they're idempotent (CREATE/ALTER IF NOT EXISTS)
+  // and pick up any new tables defined since the test DB was last migrated.
+  const { runBootMigrations } = await import("../db/migrate.js");
+  await runBootMigrations();
   migrated = true;
 }
 

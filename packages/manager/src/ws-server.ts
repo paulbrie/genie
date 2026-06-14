@@ -60,6 +60,7 @@ import { handleDbMessage } from "./handlers/db-handler.js";
 import { handleBackupMessage } from "./handlers/backup-handler.js";
 
 import { handleGitMessage } from "./handlers/git-handler.js";
+import { handleVpsGitReposMessage } from "./handlers/vps-git-repos-handler.js";
 
 import { handleFsMessage } from "./handlers/fs-handler.js";
 
@@ -1009,6 +1010,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleDbMessage(ws, msg, send, state.role)) return;
   if (await handleBackupMessage(ws, msg, send)) return;
   if (await handleGitMessage(ws, msg, send, userId, state.role)) return;
+  if (await handleVpsGitReposMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleFsMessage(ws, msg, send, userId)) return;
   if (await handleVpsDbMessage(ws, msg, send, userId)) return;
   if (await handleSecurityMessage(ws, msg, send, userId)) return;

@@ -868,3 +868,33 @@ export const sshEvents = pgTable("ssh_events", {
   index("idx_ssh_events_time").on(t.occurredAt),
   index("idx_ssh_events_cause").on(t.cause),
 ]);
+
+/** Per-(project, instance) registered git repos. Token is encrypted via
+ *  vps/credential-crypto.ts. Drives the Github tab and the on-VM auto-save
+ *  daemon: rows with `autoSave=true` are reconciled into a manifest the VM
+ *  reads each hour. */
+export const vpsGitRepos = pgTable(
+  "vps_git_repos",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+    instanceId: text("instance_id").notNull(),
+    repoUrl: text("repo_url").notNull(),
+    repoPath: text("repo_path").notNull(),
+    provider: text("provider", { enum: ["github", "gitlab", "other"] }).default("github").notNull(),
+    // Encrypted push token. All four columns are null when the repo is
+    // tracked read-only-via-SSH (no push). When any is set, all must be set.
+    ciphertext: text("ciphertext"),
+    iv: text("iv"),
+    authTag: text("auth_tag"),
+    salt: text("salt"),
+    autoSave: boolean("auto_save").default(false).notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_vps_git_repos_lookup").on(t.projectId, t.instanceId),
+    uniqueIndex("uniq_vps_git_repos_path").on(t.projectId, t.instanceId, t.repoPath),
+  ],
+);

@@ -36,6 +36,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "connection_log", run: migrateConnectionLog },
   { id: "projects_soft_delete", run: migrateProjectsSoftDelete },
   { id: "projects_revert_fk_cascade", run: migrateProjectsRevertFkCascade },
+  { id: "vps_git_repos", run: migrateVpsGitRepos },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -509,6 +510,30 @@ export async function migrateProjectsRevertFkCascade(): Promise<void> {
   await db.execute(sql`ALTER TABLE deploy_logs
     ADD CONSTRAINT deploy_logs_project_id_projects_id_fk
     FOREIGN KEY (project_id) REFERENCES projects(id)`);
+}
+
+/** Per-(project, instance) git repos registered via the Github tab. Token
+ *  bundle is encrypted via vps/credential-crypto.ts. Idempotent. */
+export async function migrateVpsGitRepos(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS vps_git_repos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    repo_url TEXT NOT NULL,
+    repo_path TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'github' CHECK (provider IN ('github','gitlab','other')),
+    ciphertext TEXT,
+    iv TEXT,
+    auth_tag TEXT,
+    salt TEXT,
+    auto_save BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_git_repos_lookup ON vps_git_repos(project_id, instance_id)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uniq_vps_git_repos_path ON vps_git_repos(project_id, instance_id, repo_path)`);
 }
 
 /** Base image template edit history. Idempotent. */
