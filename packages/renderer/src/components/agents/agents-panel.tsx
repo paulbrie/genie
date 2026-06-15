@@ -8,7 +8,7 @@
 // this page is available to every authenticated user (see lib/routes.ts).
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Loader2, Pencil, Plus, RefreshCw, Trash2, Save, X, Play, Square } from "lucide-react";
+import { Bot, Loader2, Pencil, Plus, RefreshCw, Trash2, Save, X, Play, Square, FolderKanban, HelpCircle } from "lucide-react";
 import { $agents, $projects } from "@/store/subjects";
 import {
   cancelAgentRun,
@@ -102,6 +102,7 @@ function AgentsPanelImpl() {
   const [projects] = useSubject($projects);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [runningAgent, setRunningAgent] = useState<AgentDef | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => { loadAgents(); }, []);
 
@@ -153,6 +154,9 @@ function AgentsPanelImpl() {
           subtitle="Define and run your own AI agents on a project's VPS — private to you."
           actions={
             <>
+              <Button size="sm" variant="ghost" onClick={() => setShowHelp(true)} title="How agents work">
+                <HelpCircle size={15} />
+              </Button>
               <Button size="sm" onClick={loadAgents} disabled={agents.loading}>
                 <RefreshCw size={14} className={cn("mr-1", agents.loading && "animate-spin")} /> Refresh
               </Button>
@@ -222,6 +226,79 @@ function AgentsPanelImpl() {
           />
         )}
       </div>
+
+      {showHelp && <AgentsHelpModal onClose={() => setShowHelp(false)} />}
+    </div>
+  );
+}
+
+// --- Help modal ---
+
+function AgentsHelpModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-crust border border-surface0 rounded-lg shadow-xl w-[560px] max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-surface0 shrink-0">
+          <h3 className="text-md font-semibold text-text flex items-center gap-2">
+            <Bot size={16} className="text-mauve" /> How agents work
+          </h3>
+          <button onClick={onClose} className="text-overlay0 hover:text-text bg-transparent border-none cursor-pointer p-1">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="overflow-y-auto scrollbar-thin px-4 py-3 text-md text-subtext0 space-y-3 leading-relaxed">
+          <p>
+            An <strong className="text-text">agent</strong> is your own AI assistant — you give it a
+            system prompt, a model, a set of tools, and a target VM. When you run it, Genie spins up a
+            <strong className="text-text"> Docker container on that project's VM</strong> (your files
+            mounted, a real shell) and the agent works inside it, streaming its progress back to you live.
+          </p>
+
+          <div>
+            <div className="text-text font-medium mb-1">1. Create one</div>
+            <p>
+              Click <strong className="text-text">New agent</strong> (or start from a <strong className="text-text">template</strong> like
+              “Test Fixer” or “Codebase Guide”). Pick a model, choose which tools it may use
+              (read/write files, search, run shell commands), and select the project + VPS where it runs.
+            </p>
+          </div>
+
+          <div>
+            <div className="text-text font-medium mb-1">2. Run it</div>
+            <p>
+              Hit <strong className="text-text">Run</strong>, type a message, and watch it stream — its
+              text plus each tool call (e.g. running a command, editing a file). Press
+              <strong className="text-text"> Stop</strong> anytime to cancel. Re-run with a new message
+              without editing the agent.
+            </p>
+          </div>
+
+          <div>
+            <div className="text-text font-medium mb-1">3. What it can do</div>
+            <p>
+              Inside its sandbox — that <strong className="text-text">Docker container on the VM</strong> — it has the
+              project's workspace mounted read-write and can read, write, search files and run shell
+              commands, but only the tools you allowed. It's scoped to that one container; it can't reach
+              other projects, the VM's host, or Genie itself.
+            </p>
+          </div>
+
+          <div className="rounded-md bg-mantle border border-surface0 p-3 text-sm text-overlay1">
+            <div className="text-subtext0 font-medium mb-1">Good to know</div>
+            <ul className="list-disc pl-4 space-y-0.5">
+              <li>Agents are <strong className="text-subtext1">private to you</strong>.</li>
+              <li>Running needs a project with a <strong className="text-subtext1">VPS instance</strong> as the target.</li>
+              <li>Scope the tools to the job — omit “write file” for read-only helpers, and keep a sane timeout so a runaway run self-stops.</li>
+            </ul>
+          </div>
+        </div>
+        <div className="px-4 py-3 border-t border-surface0 shrink-0 flex justify-end">
+          <Button size="sm" variant="primary" onClick={onClose}>Got it</Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -258,8 +335,14 @@ function AgentList({
     <div className="space-y-2">
       {agents.map((a) => {
         const sandbox = a.sandbox;
+        const proj = sandbox.kind === "project-docker"
+          ? projects.find((p) => p.id === sandbox.projectId)
+          : undefined;
+        const instName = sandbox.kind === "project-docker"
+          ? proj?.vpsInstances.find((i) => i.id === sandbox.instanceId)?.label
+          : undefined;
         const projName = sandbox.kind === "project-docker"
-          ? (projects.find((p) => p.id === sandbox.projectId)?.name ?? "(unknown project)")
+          ? (proj?.name ?? "(unknown project)")
           : `firecracker @ ${sandbox.host}`;
         return (
           <div
@@ -274,12 +357,19 @@ function AgentList({
                 {a.isBuiltin && (
                   <span className="text-xs px-1.5 py-0.5 rounded bg-surface0 text-subtext0 uppercase tracking-wide">built-in</span>
                 )}
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded bg-blue/15 text-blue inline-flex items-center gap-1"
+                  title={instName ? `${projName} · ${instName}` : projName}
+                >
+                  <FolderKanban size={11} className="shrink-0" />
+                  {projName}{instName ? ` · ${instName}` : ""}
+                </span>
               </div>
               <div className="text-sm text-subtext0 truncate">
                 {a.description || <span className="italic text-overlay0">no description</span>}
               </div>
               <div className="text-xs text-overlay0 mt-0.5">
-                {a.modelId} · {a.tools.length > 0 ? a.tools.join(", ") : "all tools"} · {projName}
+                {a.modelId} · {a.tools.length > 0 ? a.tools.join(", ") : "all tools"}
               </div>
             </div>
             <Button size="sm" variant="primary" onClick={() => onRun(a)}>

@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { batch } from "subjecto";
 import { useSubject } from "subjecto/react";
 import {
-  Activity, ArrowDownUp, Brain, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, GitBranch, KeyRound, Link2, Loader2,
+  Activity, ArrowDownUp, Bot, Brain, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, GitBranch, KeyRound, Link2, Loader2,
   Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, Puzzle, RefreshCw, ScrollText,
   Settings as SettingsIcon, Shield, Sparkles, Terminal, TriangleAlert, Trash2, X,
 } from "lucide-react";
@@ -35,6 +35,7 @@ import { DbExplorer } from "@/components/admin/db-explorer";
 import { VmClaudeLogsTab } from "./vm-claude-logs-tab";
 import { VmGithubTab } from "./vm-github-tab";
 import { VmTrafficTab } from "./vm-traffic-tab";
+import { VmAgentsTab } from "./vm-agents-tab";
 import { VmClaudeMemoryTab } from "./vm-claude-memory-tab";
 import { useAllRecipes } from "@/hooks/use-all-recipes";
 import { useDeepSubjectAll, useIsWindowFocused } from "@/lib/hooks";
@@ -821,7 +822,7 @@ function AddSshKeyForm({ exec, connectUser, host }: { exec: VmExecFn; connectUse
   );
 }
 
-type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "traffic" | "claude-logs" | "claude-memory" | "claude-plugins" | "files" | "db" | "commands" | "github";
+type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "traffic" | "agents" | "claude-logs" | "claude-memory" | "claude-plugins" | "files" | "db" | "commands" | "github";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -1043,6 +1044,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     { key: "files", label: "Files", icon: FolderTree, enabled: hasProject, reason: "Attach this VM to a project to browse files" },
     { key: "db", label: "DB", icon: DatabaseIcon, enabled: hasProject, reason: "Attach this VM to a project to browse the database" },
     { key: "github", label: "Github", icon: GitBranch, enabled: hasProject, reason: "Attach this VM to a project to register repos" },
+    { key: "agents", label: "Agents", icon: Bot, enabled: hasProject, reason: "Attach this VM to a project to see its agents" },
   ];
 
   return (
@@ -1237,6 +1239,10 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
 
       {tab === "traffic" && linked && (
         <VmTrafficTab projectId={linked.project.id} instanceId={linked.instance.id} />
+      )}
+
+      {tab === "agents" && linked && (
+        <VmAgentsTab projectId={linked.project.id} instanceId={linked.instance.id} />
       )}
     </div>
   );
