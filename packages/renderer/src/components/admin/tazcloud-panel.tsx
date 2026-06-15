@@ -133,6 +133,10 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   const role = auth.user?.role;
   const canAccess = role === "superadmin" || role === "tazcloud";
   const isSuperAdmin = role === "superadmin";
+  // The SSH registry (ssh:list) is the manager's global, cross-tenant connection
+  // pool — admin-only by ACL. tazcloud can use this panel but must NOT poll it,
+  // or every tick is rejected with an `error:forbidden`.
+  const canViewSshRegistry = role === "admin" || role === "superadmin";
 
   const baseImages = useMemo(
     () => (admin.tazcloud.capabilityImages.length > 0 ? admin.tazcloud.capabilityImages : IMAGES),
@@ -153,13 +157,15 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
     loadTazProjects();
   }, [canAccess]);
 
-  // Live SSH registry — drives per-VM tunnel icon on each card.
+  // Live SSH registry — drives per-VM tunnel icon on each card. Admin-only: the
+  // registry is the global cross-tenant SSH pool, so tazcloud doesn't poll it
+  // (the icon just won't reflect tunnel state for them).
   useEffect(() => {
-    if (!canAccess) return;
+    if (!canViewSshRegistry) return;
     loadSshSessions();
     const id = window.setInterval(() => loadSshSessions({ silent: true }), VM_HOST_SSH_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [canAccess]);
+  }, [canViewSshRegistry]);
 
   // Linked VMs: live gauges via daemon postback (useCloudsMonitor → watchVpsStats).
   // Unlinked VMs: no fleet SSH probe unless NEXT_PUBLIC_GENIE_SSH_STATS_PROBE=1.
@@ -183,7 +189,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
       loadTazSnapshots();
       loadTazProjects();
       loadTazCapabilities();
-      loadSshSessions();
+      if (canViewSshRegistry) loadSshSessions();
     }
   }, [manager.running, canAccess]);
 
