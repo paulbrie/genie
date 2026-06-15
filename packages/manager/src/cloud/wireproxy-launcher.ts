@@ -181,6 +181,24 @@ function scheduleRestart(): void {
  *  through it the moment the port is back. On a failed re-probe, back off again. */
 async function respawn(): Promise<void> {
   if (shuttingDown || !lastSpawn) return;
+  // If the SOCKS port is already held, our child can never bind — a second
+  // manager/wireproxy on this machine owns it. Respawning would just crash-loop
+  // (exit code=1 ~1/s), and waitForPort would be fooled into "healthy" by the
+  // foreign listener. Give up loudly instead. See ssh-events flooding incident.
+  if (await probePort(lastSpawn.socksHost, lastSpawn.socksPort, 600)) {
+    console.error(
+      `[wireproxy] SOCKS5 port ${lastSpawn.socksBind} is held by another process — not respawning ` +
+      `(would crash-loop). Stop the other manager instance, or set GENIE_TAZ_SOCKS_PORT to a free port.`,
+    );
+    recordSshEvent({
+      occurredAt: Date.now(),
+      host: lastSpawn.socksBind,
+      kind: "wireproxy",
+      event: "wireproxy-gaveup",
+      detail: `SOCKS port ${lastSpawn.socksBind} owned by another process — stopped respawning`,
+    });
+    return;
+  }
   spawnWireproxyProcess({ bin: lastSpawn.bin, cfgPath: lastSpawn.cfgPath });
   const ok = await waitForPort(lastSpawn.socksHost, lastSpawn.socksPort, 5_000);
   if (shuttingDown) return;
@@ -256,6 +274,19 @@ export async function startWireproxyIfConfigured(): Promise<void> {
 
   const bin = process.env.WIREPROXY_BIN || "wireproxy";
   console.log(`[wireproxy] starting: ${bin} -c ${cfgPath} → SOCKS5 ${socksBind} → ${endpoint}`);
+
+  // Fail fast if the SOCKS port is already taken — almost always a second
+  // manager instance running on this machine. Without this, we'd spawn into a
+  // doomed bind (exit code=1), be fooled "healthy" by the other process's
+  // listener, and crash-loop ~1/s (flooding the SSH-events log). Loopback port,
+  // so this only catches same-machine collisions, never prod-vs-local.
+  if (await probePort(socksHost, socksPort, 600)) {
+    throw new Error(
+      `[wireproxy] SOCKS5 port ${socksBind} is already in use — another manager/wireproxy instance ` +
+      `is likely running on this machine. Stop it, set GENIE_TAZ_SOCKS_PORT to a free port, or point ` +
+      `GENIE_TAZ_SOCKS at the existing proxy to share it.`,
+    );
+  }
 
   lastSpawn = { bin, cfgPath, socksHost, socksPort, socksBind };
   spawnWireproxyProcess({ bin, cfgPath });
