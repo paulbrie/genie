@@ -447,7 +447,7 @@ export interface RailwayLogEntry {
 }
 
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];
@@ -583,6 +583,28 @@ export interface AdminState {
     loading: boolean;
     logsLoading: boolean;
   };
+  sshEvents: {
+    report: SshEventsReport | null;
+    hours: number;
+    host: string;
+    loading: boolean;
+    error: string | null;
+    lastRunAt: number | null;
+  };
+}
+
+/** Structured SSH-events report. Mirrors `SshEventsReport` in ssh-events.ts. */
+export interface SshEventsReport {
+  windowHours: number;
+  host: string | null;
+  totalEvents: number;
+  disconnects: number;
+  wireproxyEvents: number;
+  byCause: { cause: string; count: number; avgLifeMs: number | null; avgIdleMs: number | null }[];
+  byHostCause: { host: string; cause: string; count: number; lastAt: string }[];
+  wireproxyLifecycle: { occurredAt: string; event: string; detail: string | null }[];
+  hotWindows: { startMs: number; drops: number; wpEvents: string[] }[];
+  unknownPct: number;
 }
 
 // --- Security Types ---

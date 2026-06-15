@@ -130,7 +130,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events"): void {
   const v = $admin.getValue();
   if (v.activeTab !== tab) track("tab.view", { scope: "admin", tab });
   v.activeTab = tab;
@@ -943,6 +943,22 @@ export function loadProdDeployments(limit = 20): void {
   const v = $admin.getValue();
   v.prodlogs.loading = true;
   wsSend("admin:prodlogs:deployments", { limit });
+}
+
+// --- SSH Events report ---
+
+export function loadSshEventsReport(opts?: { hours?: number; host?: string }): void {
+  const v = $admin.getValue();
+  batch(() => {
+    v.sshEvents.loading = true;
+    v.sshEvents.error = null;
+    if (opts?.hours !== undefined) v.sshEvents.hours = opts.hours;
+    if (opts?.host !== undefined) v.sshEvents.host = opts.host;
+  });
+  wsSend("admin:ssh-events:report", {
+    hours: v.sshEvents.hours,
+    host: v.sshEvents.host.trim() || null,
+  });
 }
 
 export function loadProdLogs(deploymentId: string, logType: "deploy" | "build" = "deploy"): void {

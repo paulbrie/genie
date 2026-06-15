@@ -172,6 +172,108 @@ export interface SshEventRow {
   detail: string | null;
 }
 
+export interface SshEventsReport {
+  windowHours: number;
+  host: string | null;
+  totalEvents: number;
+  disconnects: number;
+  wireproxyEvents: number;
+  byCause: { cause: string; count: number; avgLifeMs: number | null; avgIdleMs: number | null }[];
+  byHostCause: { host: string; cause: string; count: number; lastAt: string }[];
+  wireproxyLifecycle: { occurredAt: string; event: string; detail: string | null }[];
+  hotWindows: { startMs: number; drops: number; wpEvents: string[] }[];
+  unknownPct: number;
+}
+
+/** Build the structured "what's dropping and why" report consumed by the admin
+ *  SSH Events panel. Same bucketing logic as scripts/ssh-events-report.ts, but
+ *  callable from a WS handler. All times are returned as ISO strings (epoch ms
+ *  only for the time-bucket key, which the renderer formats locally). */
+export async function buildSshEventsReport(opts: { hours: number; host?: string | null }): Promise<SshEventsReport> {
+  const hours = Math.max(1, Math.min(24 * 7, Math.floor(opts.hours))); // clamp to 1h..7d
+  const host = opts.host?.trim() ? opts.host.trim() : null;
+  const rows = await getSshEventHistory({ hours, limit: 5000, ...(host ? { host } : {}) });
+
+  const disconnects = rows.filter((r) => r.event === "disconnect");
+  const wpEvents = rows.filter((r) => r.event !== "disconnect");
+
+  // By cause
+  const causeMap = new Map<string, { count: number; lifeSum: number; lifeN: number; idleSum: number; idleN: number }>();
+  for (const r of disconnects) {
+    const c = r.cause ?? "unknown";
+    const b = causeMap.get(c) ?? { count: 0, lifeSum: 0, lifeN: 0, idleSum: 0, idleN: 0 };
+    b.count++;
+    if (r.lifetimeMs != null) { b.lifeSum += r.lifetimeMs; b.lifeN++; }
+    if (r.lastDataAgeMs != null) { b.idleSum += r.lastDataAgeMs; b.idleN++; }
+    causeMap.set(c, b);
+  }
+  const byCause = [...causeMap.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .map(([cause, b]) => ({
+      cause,
+      count: b.count,
+      avgLifeMs: b.lifeN ? Math.round(b.lifeSum / b.lifeN) : null,
+      avgIdleMs: b.idleN ? Math.round(b.idleSum / b.idleN) : null,
+    }));
+
+  // By host × cause (top 20)
+  const hostCauseMap = new Map<string, { host: string; cause: string; count: number; lastAt: string }>();
+  for (const r of disconnects) {
+    const k = `${r.host}\t${r.cause ?? "unknown"}`;
+    const b = hostCauseMap.get(k) ?? { host: r.host, cause: r.cause ?? "unknown", count: 0, lastAt: r.occurredAt };
+    b.count++;
+    if (r.occurredAt > b.lastAt) b.lastAt = r.occurredAt;
+    hostCauseMap.set(k, b);
+  }
+  const byHostCause = [...hostCauseMap.values()].sort((a, b) => b.count - a.count).slice(0, 20);
+
+  // Wireproxy lifecycle (most recent first, capped)
+  const wireproxyLifecycle = wpEvents.slice(0, 30).map((r) => ({
+    occurredAt: r.occurredAt,
+    event: r.event,
+    detail: r.detail,
+  }));
+
+  // Hot 5-min windows: cross-reference disconnect bursts with wireproxy events
+  // landing in the same bucket. A drop wave that lines up against a
+  // wireproxy-exit is the single most diagnostic thing we can show.
+  const BUCKET_MS = 5 * 60_000;
+  const buckets = new Map<number, { drops: number; wpEvents: string[] }>();
+  for (const r of disconnects) {
+    const k = Math.floor(new Date(r.occurredAt).getTime() / BUCKET_MS);
+    const b = buckets.get(k) ?? { drops: 0, wpEvents: [] };
+    b.drops++;
+    buckets.set(k, b);
+  }
+  for (const r of wpEvents) {
+    const k = Math.floor(new Date(r.occurredAt).getTime() / BUCKET_MS);
+    const b = buckets.get(k) ?? { drops: 0, wpEvents: [] };
+    b.wpEvents.push(r.event);
+    buckets.set(k, b);
+  }
+  const hotWindows = [...buckets.entries()]
+    .filter(([, v]) => v.drops >= 10)
+    .sort((a, b) => b[1].drops - a[1].drops)
+    .slice(0, 10)
+    .map(([k, v]) => ({ startMs: k * BUCKET_MS, drops: v.drops, wpEvents: v.wpEvents }));
+
+  const unknownCount = causeMap.get("unknown")?.count ?? 0;
+  const unknownPct = disconnects.length > 0 ? Math.round((100 * unknownCount) / disconnects.length) : 0;
+
+  return {
+    windowHours: hours,
+    host,
+    totalEvents: rows.length,
+    disconnects: disconnects.length,
+    wireproxyEvents: wpEvents.length,
+    byCause,
+    byHostCause,
+    wireproxyLifecycle,
+    hotWindows,
+    unknownPct,
+  };
+}
+
 /** Post-mortem query: persisted events for a host (or all hosts) in the last
  *  `hours`, newest first. This is the "show every disconnect for host X in the
  *  last 24h" tool. */

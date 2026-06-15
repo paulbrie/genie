@@ -6,6 +6,7 @@ import { eq, desc } from "drizzle-orm";
 import type { WsMessage } from "../types.js";
 import * as railwayService from "../cloud/railway-service.js";
 import * as auditService from "../logging/audit-service.js";
+import { buildSshEventsReport } from "../vps/ssh-events.js";
 import * as emailService from "../notifications/email-service.js";
 import * as settingsService from "../settings-service.js";
 import { getDb } from "../db/index.js";
@@ -54,6 +55,17 @@ export async function handleAdminMiscMessage(
         send(ws, { type: "admin:prodlogs:logs", payload: { deploymentId, logType, logs } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "admin:ssh-events:report": {
+      try {
+        const { hours, host } = (msg.payload ?? {}) as { hours?: number; host?: string | null };
+        const report = await buildSshEventsReport({ hours: hours ?? 24, host: host ?? null });
+        send(ws, { type: "admin:ssh-events:report", payload: { report } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:ssh-events:report", payload: { report: null, error: (err instanceof Error ? err.message : String(err)) } });
       }
       return true;
     }

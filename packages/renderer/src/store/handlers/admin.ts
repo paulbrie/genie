@@ -1043,4 +1043,14 @@ export const handlers: HandlerMap = {
       p.logsLoading = false;
     });
   },
+
+  "admin:ssh-events:report": (payload) => {
+    batch(() => {
+      const s = $admin.getValue().sshEvents;
+      s.report = payload.report ?? null;
+      s.error = payload.error ?? null;
+      s.loading = false;
+      s.lastRunAt = payload.report ? Date.now() : s.lastRunAt;
+    });
+  },
 };
