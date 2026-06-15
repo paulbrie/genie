@@ -26,11 +26,16 @@ export async function socksDial(
   const token = socksDialStart(`${host}:${port}`);
   try {
     const { socket } = await SocksClient.createConnection({
-      proxy: { host: proxyHost, port: proxyPort, type: 5 },
+      proxy: { host: proxyHost, port: proxyPort, type: 5, ...tazSocksAuth() },
       command: "connect",
       destination: { host, port },
       timeout: timeoutMs,
     });
+    // Bastion SOCKS5 (microsocks) tuning, per Taz: disable Nagle so interactive
+    // keystrokes/PTY output aren't buffered, and enable TCP keepalive so an idle
+    // SSH session isn't silently dropped after ~60s.
+    socket.setNoDelay(true);
+    socket.setKeepAlive(true, 10_000);
     socksDialOk(token);
     socket.once("close", socksSocketClosed);
     return socket;
@@ -82,6 +87,19 @@ export const DEFAULT_TAZ_SUBNET = "10.128.0.0/16";
  *  null when unset (caller dials directly — kernel WG or non-Taz target). */
 export function tazSocksProxy(): string | null {
   return process.env.GENIE_TAZ_SOCKS || null;
+}
+
+/** SOCKS5 auth for the Taz bastion proxy (microsocks), from env. The bastion
+ *  proxy requires username/password; legacy local wireproxy did not — so this is
+ *  empty (no auth) when the vars are unset, keeping that path working. Spread
+ *  into the `socks` proxy config: `{ ...tazSocksAuth() }`. */
+export function tazSocksAuth(): { userId?: string; password?: string } {
+  const userId = process.env.GENIE_TAZ_SOCKS_USER;
+  const password = process.env.GENIE_TAZ_SOCKS_PASS;
+  return {
+    ...(userId ? { userId } : {}),
+    ...(password ? { password } : {}),
+  };
 }
 
 /** True when `host` should be routed through the Taz SOCKS proxy: the env

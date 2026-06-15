@@ -145,8 +145,9 @@ export function startSocksHeartbeat(): void {
     const start = Date.now();
     try {
       const { SocksClient } = await import("socks");
+      const { tazSocksAuth } = await import("./socks-dial.js");
       const { socket } = await SocksClient.createConnection({
-        proxy: { host: proxyHost, port: Number(proxyPortStr), type: 5 },
+        proxy: { host: proxyHost, port: Number(proxyPortStr), type: 5, ...tazSocksAuth() },
         command: "connect",
         destination: { host, port },
         timeout: 5_000,

@@ -43,18 +43,15 @@ export function imageDefaultUser(image?: string): string {
   }
 }
 
-/** SSH user the user probably wants for an interactive session. Order of
- *  inference:
- *    1. v2.0.0 vxlan-bastion VMs (`isPrivateHost`) — `genie` is the **only**
- *       user; image-default users don't exist there.
- *    2. Project-linked VMs (any provider/mode) — Genie's deploy flow creates
- *       a `genie` user.
- *    3. Otherwise — image-default user (legacy v6 bare VMs).
- *  Users can override via the dropdown if the heuristic is wrong. */
-export function defaultSshUserFor(vm: { image?: string; projectId: string | null; isPrivateHost?: boolean }): string {
-  if (vm.isPrivateHost) return "genie";
-  if (vm.projectId) return "genie";
-  return imageDefaultUser(vm.image);
+/** SSH user for an interactive/management session. Taz unified every VM onto a
+ *  single `genie` user (bastion SOCKS5 model, 2026-06) — and Genie's own deploy
+ *  flow already creates a `genie` user on each VM regardless. The old
+ *  image-default fallback (ubuntu/almalinux/…) is obsolete and was the cause of
+ *  "All configured authentication methods failed" on VMs whose stale public-IPv6
+ *  display made them look like legacy bare VMs. Users can still override via the
+ *  dropdown for a genuinely-bare VM connected before its `genie` user existed. */
+export function defaultSshUserFor(_vm: { image?: string; projectId: string | null; isPrivateHost?: boolean }): string {
+  return "genie";
 }
 
 export function defaultVmName(): string {

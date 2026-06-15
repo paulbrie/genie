@@ -11,7 +11,7 @@
 import net from "node:net";
 import os from "node:os";
 import { SocksClient } from "socks";
-import { shouldRouteViaSocks, tazSocksProxy, DEFAULT_TAZ_SUBNET } from "./socks-dial.js";
+import { shouldRouteViaSocks, tazSocksProxy, tazSocksAuth, DEFAULT_TAZ_SUBNET } from "./socks-dial.js";
 import { getSshEventHistory } from "./ssh-events.js";
 import { defaultSshUserForVm, type TazVm } from "./tazcloud-api-client.js";
 import { getWireproxyStatus } from "../cloud/wireproxy-launcher.js";
@@ -145,7 +145,7 @@ export async function probeReachability(host: string, port: number, timeoutMs = 
     const proxyPort = Number(proxyPortStr);
     try {
       const { socket } = await SocksClient.createConnection({
-        proxy: { host: proxyHost, port: proxyPort, type: 5 },
+        proxy: { host: proxyHost, port: proxyPort, type: 5, ...tazSocksAuth() },
         command: "connect",
         destination: { host, port },
         timeout: timeoutMs,
