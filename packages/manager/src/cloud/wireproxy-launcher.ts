@@ -281,3 +281,65 @@ export function stopWireproxy(): void {
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
   stopChildOnly();
 }
+
+/** Manually restart the wireproxy sidecar on its existing config. Recovery tool
+ *  for a wedged or gave-up tunnel, exposed superadmin-only in the diagnostics
+ *  panel. No-op (returns managed:false) when wireproxy isn't manager-managed —
+ *  i.e. an external/kernel WireGuard where `lastSpawn` was never set. Resets the
+ *  supervisor's shutdown latch + backoff counter so the fresh child is supervised
+ *  again. */
+export async function restartWireproxy(): Promise<{
+  ok: boolean;
+  managed: boolean;
+  listening: boolean;
+  error: string | null;
+}> {
+  if (!lastSpawn) {
+    return { ok: false, managed: false, listening: false, error: "wireproxy is not manager-managed (external or kernel WireGuard)" };
+  }
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+  stopChildOnly();
+  // Clear the latches so the relaunched child is supervised + may respawn again.
+  shuttingDown = false;
+  restartAttempts = 0;
+  spawnWireproxyProcess({ bin: lastSpawn.bin, cfgPath: lastSpawn.cfgPath });
+  const listening = await waitForPort(lastSpawn.socksHost, lastSpawn.socksPort, 5_000);
+  if (!listening) {
+    return { ok: false, managed: true, listening: false, error: earlyExit.err?.message ?? `SOCKS port ${lastSpawn.socksBind} did not come up within 5s` };
+  }
+  supervising = true;
+  console.log(`[wireproxy] manually restarted and healthy on ${lastSpawn.socksBind}.`);
+  return { ok: true, managed: true, listening: true, error: null };
+}
+
+/** Health snapshot of the wireproxy sidecar, for the admin network-diagnostics
+ *  panel. `listening` is a live probe of the SOCKS port; the rest reads the
+ *  supervisor's in-memory state. When wireproxy is managed externally
+ *  (`GENIE_TAZ_SOCKS` set before launch) `managed` is false but the bind is
+ *  still reported from the env pointer. */
+export async function getWireproxyStatus(): Promise<{
+  configured: boolean;
+  managed: boolean;
+  socksBind: string | null;
+  listening: boolean;
+  restartAttempts: number;
+  lastError: string | null;
+  gaveUp: boolean;
+}> {
+  const socksBind = lastSpawn?.socksBind ?? process.env.GENIE_TAZ_SOCKS ?? null;
+  let listening = false;
+  if (socksBind) {
+    const [h, pStr] = socksBind.split(":");
+    const p = Number(pStr);
+    if (h && Number.isFinite(p)) listening = await probePort(h, p, 800);
+  }
+  return {
+    configured: socksBind !== null,
+    managed: lastSpawn !== null,
+    socksBind,
+    listening,
+    restartAttempts,
+    lastError: earlyExit.err?.message ?? null,
+    gaveUp: restartAttempts >= WIREPROXY_MAX_RESTARTS,
+  };
+}

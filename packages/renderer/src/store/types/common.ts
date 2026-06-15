@@ -10,6 +10,10 @@ export type NavKey = "apps" | "projects" | "processes" | "docker" | "docs" | "lo
  *  / Hetzner admin panel). The URL segment after `/clouds/` is one of these literals. */
 export type CloudSubTab = "do" | "taz" | "hetzner";
 
+/** Sub-tab within the TazCloud panel (`/clouds/taz/*`): the VM inventory vs the
+ *  network-diagnostics view. The URL segment after `/clouds/taz/` is one of these. */
+export type TazCloudSubTab = "vms" | "diagnostics";
+
 export interface AppDef {
   id: string;
   name: string;

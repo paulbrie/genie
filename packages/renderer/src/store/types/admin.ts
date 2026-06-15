@@ -167,6 +167,79 @@ export interface AdminTazState {
   ingressBusy: Record<string, boolean>;
   /** Latest ingress operation error (banner-style). */
   ingressError: string | null;
+  /** Network diagnostics (Diagnostics tab). Populated by `admin:tazcloud:netdiag`. */
+  netdiag: AdminTazNetdiag;
+}
+
+/** The manager's own networking, from its vantage point — the half operators
+ *  can't normally see. Mirrors `ManagerNetEnv` in tazcloud-netdiag.ts. */
+export interface TazNetEnv {
+  ipv6Egress: boolean;
+  ipv6Addrs: string[];
+  socks: {
+    configured: boolean;
+    bind: string | null;
+    listening: boolean;
+    managed: boolean;
+    restartAttempts: number;
+    lastError: string | null;
+    gaveUp: boolean;
+  };
+  wg: { endpoint: string | null; subnet: string };
+}
+
+/** Flattened tenant access config from `GET /v1/capabilities`. */
+export interface TazNetCapabilities {
+  mode: string | null;
+  bastionIp: string | null;
+  sshViaBastion: boolean | null;
+  ingressAvailable: boolean | null;
+}
+
+/** Trimmed SSH event for the per-VM timeline. Mirrors `TazSshEvent` server-side. */
+export interface TazSshEvent {
+  occurredAt: string;
+  event: string;
+  cause: string | null;
+  detail: string | null;
+  lifetimeMs: number | null;
+}
+
+/** Per-VM diagnostic row. Mirrors `TazVmDiag` in tazcloud-netdiag.ts. */
+export interface TazVmDiag {
+  id: string;
+  name: string;
+  status: string;
+  ip: string | null;
+  ipv6: string | null;
+  sshHost: string;
+  sshPort: number;
+  sshUser: string;
+  accessMode: "legacy-v6" | "vxlan-bastion";
+  route: "direct" | "socks";
+  reachable: boolean;
+  latencyMs: number | null;
+  errorCode: string | null;
+  recentDisconnects: number;
+  /** Most recent SSH events for this host (newest first, capped). */
+  events: TazSshEvent[];
+  /** Host stored on the linked Genie project's connection, if any. */
+  persistedHost: string | null;
+  /** True when the persisted host differs from the live `ssh_host`. */
+  hostDrift: boolean;
+  verdict: string;
+}
+
+export interface AdminTazNetdiag {
+  env: TazNetEnv | null;
+  capabilities: TazNetCapabilities | null;
+  vms: TazVmDiag[];
+  loading: boolean;
+  /** Per-VM re-probe in-flight flag, keyed by vmId. */
+  probing: Record<string, boolean>;
+  error: string | null;
+  /** Epoch ms of the last completed run — drives the "last checked" label. */
+  lastRunAt: number | null;
 }
 
 export interface BaseImageConfig {

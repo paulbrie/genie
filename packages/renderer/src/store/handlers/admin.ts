@@ -11,6 +11,7 @@ import type {
   AdminUser,
   ProjectMemberInfo,
   ProjectTeamInfo,
+  TazVmDiag,
 } from "../types/admin";
 import {
   deletePendingAdminExec,
@@ -217,6 +218,35 @@ export const handlers: HandlerMap = {
     const v = $admin.getValue();
     const deletedId = payload.vmId;
     batch(() => { v.tazcloud.vms = v.tazcloud.vms.filter((vm) => vm.id !== deletedId); });
+  },
+
+  "admin:tazcloud:netdiag": (payload) => {
+    const nd = $admin.getValue().tazcloud.netdiag;
+    const capabilities = payload.capabilities
+      ? {
+          mode: payload.capabilities.vm_access?.mode ?? null,
+          bastionIp: payload.capabilities.vm_access?.bastion_ip ?? null,
+          sshViaBastion: payload.capabilities.vm_access?.ssh_via_bastion ?? null,
+          ingressAvailable: payload.capabilities.ingress?.available ?? null,
+        }
+      : nd.capabilities;
+    const incoming: TazVmDiag[] = payload.vms || [];
+    batch(() => {
+      if (payload.env) nd.env = payload.env;
+      nd.capabilities = capabilities;
+      nd.error = payload.error ?? null;
+      nd.lastRunAt = Date.now();
+      if (payload.onlyVmId) {
+        // Single-row re-probe: patch the matching row in place, leave the rest.
+        const idx = nd.vms.findIndex((x) => x.id === payload.onlyVmId);
+        if (idx >= 0 && incoming[0]) nd.vms[idx] = incoming[0];
+        nd.probing[payload.onlyVmId] = false;
+      } else {
+        nd.vms = incoming;
+        nd.loading = false;
+        nd.probing = {};
+      }
+    });
   },
 
   "admin:droplets:stats": (payload) => {

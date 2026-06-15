@@ -179,6 +179,24 @@ export function deleteAdminTazVm(vmId: string): void {
   wsSend("admin:tazcloud:delete", { vmId });
 }
 
+/** Superadmin-only: restart the manager's WireGuard sidecar (wireproxy). Bounces
+ *  every tenant's Taz access, so the UI confirms first. Resolves with the new
+ *  tunnel state. */
+export function restartBastionTunnelAsync(): Promise<{ ok: boolean; managed: boolean; listening: boolean; error: string | null }> {
+  return wsRequest("admin:tazcloud:wireproxy:restart", {}, 20_000);
+}
+
+/** Run the Taz network-diagnostics sweep. Omit `vmId` for a full run; pass a
+ *  `vmId` to re-probe a single row (drives the per-row "re-probe" button). */
+export function loadTazNetdiag(vmId?: string): void {
+  const v = $admin.getValue();
+  batch(() => {
+    if (vmId) v.tazcloud.netdiag.probing[vmId] = true;
+    else { v.tazcloud.netdiag.loading = true; v.tazcloud.netdiag.error = null; }
+  });
+  wsSend("admin:tazcloud:netdiag", vmId ? { vmId } : {});
+}
+
 export function loadAdminDropletStats(): void {
   if (!sshStatsProbeEnabled()) return;
   wsSend("admin:droplets:stats", {});

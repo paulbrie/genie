@@ -1,12 +1,14 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useParams } from "next/navigation";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as SettingsIcon, Pencil, Check, X, Lock, Unlock, Shield, Bug, Globe, Camera, Trash2, MoreVertical, Search, ExternalLink, Minus, Maximize2, Minimize2, Rocket, Unlink, Activity, Plug, Moon } from "lucide-react";
 import { $admin, $auth, $manager, $persistedTerminals, $ssh, $vpsDeploy, $windowManager } from "@/store/subjects";
-import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, VpsDeployState, VpsMonitorState } from "@/store/types";
-import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, fetchVpsStats, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazCapabilities, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
+import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, TazCloudSubTab, VpsDeployState, VpsMonitorState } from "@/store/types";
+import { buildTazCloudPath } from "@/lib/routes";
+import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, fetchVpsStats, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazCapabilities, loadTazNetdiag, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
@@ -28,6 +30,8 @@ import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmBootSource, defaultVmName, imageDefaultUser, parseVmBootSource, validateTazVmName } from "../tazcloud/helpers";
 import { TazSnapshotsSection } from "../tazcloud/taz-snapshots-section";
+import { ViewTabs } from "@/components/ui/view-tabs";
+import { TazNetDiagnostics } from "@/components/admin/tazcloud-netdiag";
 import { openManageVmWindow } from "../tazcloud/manage-vm-popup";
 import { ServerTunnelIndicator } from "../tazcloud/server-tunnel-indicator";
 import { VM_HOST_SSH_REFRESH_MS } from "../tazcloud/vm-host-connections-panel";
@@ -116,6 +120,23 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   // `${label}.${INGRESS_DOMAIN_SUFFIX}`.
   const [ingressLabel, setIngressLabel] = useState("");
   const [ingressAppPort, setIngressAppPort] = useState("3000");
+  /** Top-level view toggle: the VM inventory vs the network-diagnostics tab.
+   *  Deep-linked as `/clouds/taz/{vms,diagnostics}` — initialized from the URL
+   *  and kept in sync with browser back/forward (mirrors CloudsPanel). */
+  const router = useRouter();
+  const params = useParams();
+  const tazSubFromUrl = ((params?.slug as string[] | undefined) ?? [])[2]?.toLowerCase();
+  const [view, setView] = useState<TazCloudSubTab>(tazSubFromUrl === "diagnostics" ? "diagnostics" : "vms");
+  useEffect(() => {
+    if (tazSubFromUrl === "vms" || tazSubFromUrl === "diagnostics") {
+      setView((prev) => (prev === tazSubFromUrl ? prev : tazSubFromUrl));
+    } else {
+      // Bare /clouds/taz (or a bad sub-segment) — canonicalize so the URL always
+      // names the active tab. replace() keeps it out of the back stack.
+      setView("vms");
+      router.replace(buildTazCloudPath("vms"));
+    }
+  }, [tazSubFromUrl, router]);
 
   function startRename(vm: { id: string; name: string }) {
     setRenamingId(vm.id);
@@ -377,9 +398,34 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
     }, 4000);
   }
 
+  const viewTabs = (
+    <ViewTabs
+      tabs={[
+        { key: "vms" as const, label: "VMs" },
+        { key: "diagnostics" as const, label: "Diagnostics" },
+      ]}
+      activeTab={view}
+      onTabChange={(t) => {
+        setView(t);
+        router.push(buildTazCloudPath(t));
+        if (t === "diagnostics") loadTazNetdiag();
+      }}
+    />
+  );
+
+  if (view === "diagnostics") {
+    return (
+      <div className="px-4 py-4">
+        {viewTabs}
+        <TazNetDiagnostics />
+      </div>
+    );
+  }
+
   return (
     <div className="px-4 py-4">
-      <div className="flex items-center gap-2 mb-3">
+      {viewTabs}
+      <div className="flex items-center gap-2 mb-3 mt-3">
         <Cloud size={16} className="text-blue" />
         <span className="text-md font-medium text-subtext0">VMs</span>
         <span className="text-md text-overlay0 font-mono">{vms.length}</span>

@@ -115,6 +115,9 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // The Clouds panel uses admin:droplets:*, admin:tazcloud:* and admin:hetzner:* — exposed to tazcloud.
   "admin:droplets": { send: "tazcloud", receive: "tazcloud" },
   "admin:tazcloud": { send: "tazcloud", receive: "tazcloud" },
+  // Restarting the manager's shared WireGuard sidecar bounces every tenant's Taz
+  // access at once — superadmin-only (overrides the broader admin:tazcloud rule).
+  "admin:tazcloud:wireproxy": { send: "superadmin", receive: "superadmin" },
   "admin:hetzner": { send: "tazcloud", receive: "tazcloud" },
   // Communication panel — mass-emailing the user base is superadmin-only.
   "admin:email": { send: "superadmin", receive: "superadmin" },

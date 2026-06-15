@@ -11,6 +11,8 @@ import * as cloudVmAliases from "../cloud/cloud-vm-alias-service.js";
 import * as settingsService from "../settings-service.js";
 import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk, applyTazcloudFirewallPreset, cleanupTazcloudVmReferences } from "../vps/tazcloud-provision.js";
 import { createTazClient, sshUserForImage } from "../vps/tazcloud-api-client.js";
+import { gatherManagerNetEnv, buildVmDiagnostics } from "../vps/tazcloud-netdiag.js";
+import { restartWireproxy } from "../cloud/wireproxy-launcher.js";
 import { vpsStatus, vpsStats } from "../vps/deploy-service.js";
 import type { SshConnectionConfig } from "../vps/ssh-client.js";
 import { ensureServerTunnel, releaseServerTunnel, execCached, serverTunnelKey } from "../vps/ssh-session-cache.js";
@@ -697,6 +699,53 @@ export async function handleTazcloudMessage(
       } catch (err: unknown) {
         send(ws, { type: "admin:tazcloud:project:error", payload: { message: (err instanceof Error ? err.message : String(err)) } });
       }
+      return true;
+    }
+
+    case "admin:tazcloud:netdiag": {
+      const tazToken = process.env.TAZCLOUD_API_TOKEN;
+      // env is independent of the API token — surface it even when Taz creds
+      // are missing so the manager's own egress is still inspectable.
+      const env = await gatherManagerNetEnv();
+      if (!tazToken) {
+        send(ws, { type: "admin:tazcloud:netdiag", payload: { env, capabilities: null, vms: [], error: "TAZCLOUD_API_TOKEN not configured on the manager." } });
+        return true;
+      }
+      const onlyVmId = (msg.payload as { vmId?: string } | undefined)?.vmId;
+      try {
+        const tazClient = createTazClient(tazToken);
+        const [capabilities, allVms] = await Promise.all([
+          tazClient.getCapabilities().catch(() => null),
+          tazClient.listVms(),
+        ]);
+        const aliasMap = await cloudVmAliases.getAliasMap("tazcloud", allVms.map((v) => v.id));
+        const decorated = allVms.map((v) => (aliasMap.has(v.id) ? { ...v, name: aliasMap.get(v.id)! } : v));
+        // Persisted host per VM (from the linked Genie project's connection) so
+        // the diagnostics can flag drift between the stored host and live ssh_host.
+        const persistedHosts = new Map<string, string>();
+        const projects = await projectService.getAll();
+        for (const p of projects) {
+          for (const v of p.vpsInstances) {
+            if (v.tazcloud?.vmId && v.connection?.host) persistedHosts.set(v.tazcloud.vmId, v.connection.host);
+          }
+        }
+        const vms = await buildVmDiagnostics(decorated, env, { persistedHosts, ...(onlyVmId ? { onlyVmId } : {}) });
+        send(ws, { type: "admin:tazcloud:netdiag", payload: { env, capabilities, vms, onlyVmId: onlyVmId ?? null } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:netdiag", payload: { env, capabilities: null, vms: [], onlyVmId: onlyVmId ?? null, error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "admin:tazcloud:wireproxy:restart": {
+      const reqId = (msg.payload as { reqId?: string } | undefined)?.reqId;
+      // Superadmin-only (enforced by ws-acl `admin:tazcloud:wireproxy`); double-check here.
+      if (role !== "superadmin") {
+        send(ws, { type: "admin:tazcloud:wireproxy:restarted", payload: { ok: false, managed: false, listening: false, error: "Not authorized", reqId } });
+        return true;
+      }
+      const result = await restartWireproxy();
+      send(ws, { type: "admin:tazcloud:wireproxy:restarted", payload: { ...result, reqId } });
       return true;
     }
 

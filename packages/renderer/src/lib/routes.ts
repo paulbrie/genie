@@ -1,4 +1,4 @@
-import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey } from "@/store/types";
+import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey, TazCloudSubTab } from "@/store/types";
 export type ProjectTab = "settings" | "members" | "servers";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics";
 export type SettingsTab = "general" | "deploy" | "org";
@@ -70,6 +70,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
 };
 
 const VALID_CLOUD_SUBTABS = new Set<CloudSubTab>(["do", "taz", "hetzner"]);
+const VALID_TAZ_SUBTABS = new Set<TazCloudSubTab>(["vms", "diagnostics"]);
 
 const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
   Object.entries(NAV_TO_PATH).map(([k, v]) => [v, k as NavKey])
@@ -104,6 +105,10 @@ export function buildNavPath(nav: NavKey): string {
 
 export function buildCloudPath(sub: CloudSubTab): string {
   return `/clouds/${sub}`;
+}
+
+export function buildTazCloudPath(sub: TazCloudSubTab): string {
+  return `/clouds/taz/${sub}`;
 }
 
 export function buildSettingsPath(tab: SettingsTab, orgId?: string): string {
@@ -147,6 +152,8 @@ export interface ParsedRoute {
   /** For settingsTab === "org": which org's settings to render. */
   orgId?: string;
   cloudSubTab?: CloudSubTab;
+  /** Sub-tab within the TazCloud panel — only set for `/clouds/taz/{vms,diagnostics}`. */
+  tazSubTab?: TazCloudSubTab;
   docId?: string;
 }
 
@@ -214,10 +221,16 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
     return { nav, settingsTab };
   }
 
-  // Clouds sub-routes: /clouds/do, /clouds/taz
+  // Clouds sub-routes: /clouds/do, /clouds/taz, /clouds/taz/{vms,diagnostics}
   if (nav === "clouds") {
     const seg1 = slugSegments[1]?.toLowerCase();
     const cloudSubTab = seg1 && VALID_CLOUD_SUBTABS.has(seg1 as CloudSubTab) ? (seg1 as CloudSubTab) : "do";
+    if (cloudSubTab === "taz" && slugSegments.length >= 3) {
+      const seg2 = slugSegments[2]?.toLowerCase();
+      if (VALID_TAZ_SUBTABS.has(seg2 as TazCloudSubTab)) {
+        return { nav, cloudSubTab, tazSubTab: seg2 as TazCloudSubTab };
+      }
+    }
     return { nav, cloudSubTab };
   }
 
