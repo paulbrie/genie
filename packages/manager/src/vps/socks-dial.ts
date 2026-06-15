@@ -1,5 +1,6 @@
 import { SocksClient } from "socks";
 import type { Socket } from "node:net";
+import { socksDialStart, socksDialOk, socksDialFail, socksSocketClosed } from "./socks-metrics.js";
 
 /** Open a TCP connection to (host, port) tunneled through a SOCKS5 proxy.
  *  Returns a Node Socket suitable for ssh2's `sock` connect option. The proxy
@@ -20,13 +21,23 @@ export async function socksDial(
   if (!proxyHost || !Number.isFinite(proxyPort)) {
     throw new Error(`Invalid SOCKS proxy address "${proxy}" (expected host:port)`);
   }
-  const { socket } = await SocksClient.createConnection({
-    proxy: { host: proxyHost, port: proxyPort, type: 5 },
-    command: "connect",
-    destination: { host, port },
-    timeout: timeoutMs,
-  });
-  return socket;
+  // Instrument the single SOCKS chokepoint: latency, outcome, in-flight, and
+  // open-socket count (the `close` listener is the leak detector). See socks-metrics.ts.
+  const token = socksDialStart(`${host}:${port}`);
+  try {
+    const { socket } = await SocksClient.createConnection({
+      proxy: { host: proxyHost, port: proxyPort, type: 5 },
+      command: "connect",
+      destination: { host, port },
+      timeout: timeoutMs,
+    });
+    socksDialOk(token);
+    socket.once("close", socksSocketClosed);
+    return socket;
+  } catch (err) {
+    socksDialFail(token, err);
+    throw err;
+  }
 }
 
 /** Parse a CIDR like "10.128.0.0/16" into a numeric base + mask, for cheap

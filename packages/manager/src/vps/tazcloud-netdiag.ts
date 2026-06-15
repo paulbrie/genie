@@ -15,6 +15,7 @@ import { shouldRouteViaSocks, tazSocksProxy, DEFAULT_TAZ_SUBNET } from "./socks-
 import { getSshEventHistory } from "./ssh-events.js";
 import { defaultSshUserForVm, type TazVm } from "./tazcloud-api-client.js";
 import { getWireproxyStatus } from "../cloud/wireproxy-launcher.js";
+import { getSocksMetrics, type SocksMetricsSnapshot } from "./socks-metrics.js";
 
 export interface ManagerNetEnv {
   /** True when the manager has at least one global-scope IPv6 address — i.e. it
@@ -31,6 +32,8 @@ export interface ManagerNetEnv {
     gaveUp: boolean;
   };
   wg: { endpoint: string | null; subnet: string };
+  /** Live SOCKS-layer counters (latency, in-flight, open sockets, failures). */
+  socksMetrics: SocksMetricsSnapshot;
 }
 
 export interface ReachabilityResult {
@@ -114,6 +117,7 @@ export async function gatherManagerNetEnv(): Promise<ManagerNetEnv> {
       endpoint: process.env.WG_ENDPOINT || null,
       subnet: process.env.GENIE_TAZ_SUBNET || DEFAULT_TAZ_SUBNET,
     },
+    socksMetrics: getSocksMetrics(),
   };
 }
 

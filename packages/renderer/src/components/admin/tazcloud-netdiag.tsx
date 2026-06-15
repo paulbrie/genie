@@ -197,6 +197,45 @@ export function TazNetDiagnostics() {
               )}
               <Row label="WG endpoint">{env.wg.endpoint ?? "—"}</Row>
               <Row label="Taz subnet">{env.wg.subnet}</Row>
+
+              {/* SOCKS layer (the `socks` lib chokepoint) */}
+              <div className="mt-1.5 pt-1.5 border-t border-overlay0/15 flex flex-col gap-1.5">
+                {(() => {
+                  const m = env.socksMetrics;
+                  const total = m.dialsOk + m.dialsFailed;
+                  const okPct = total > 0 ? Math.round((m.dialsOk / total) * 100) : null;
+                  // Open sockets climbing while in-flight is low is the leak signal.
+                  const leakish = m.openSockets > 8;
+                  return (
+                    <>
+                      <Row label="SOCKS dials">
+                        {m.dialsOk}✓ / {m.dialsFailed}✗{okPct != null ? ` (${okPct}% ok)` : ""}
+                      </Row>
+                      <Row label="in-flight / open">
+                        <span className="inline-flex items-center gap-1.5">
+                          <StatusDot ok={!leakish} title={leakish ? "open sockets unusually high — possible leak" : undefined} />
+                          {m.inFlight} in-flight · {m.openSockets} open{leakish ? " — possible leak" : ""}
+                        </span>
+                      </Row>
+                      <Row label="dial latency">{m.p50Ms != null ? `p50 ${m.p50Ms}ms · p95 ${m.p95Ms}ms` : "—"}</Row>
+                      {m.heartbeat && (
+                        <Row label="heartbeat">
+                          <span className="inline-flex items-center gap-1.5">
+                            <StatusDot ok={m.heartbeat.ok} />
+                            {m.heartbeat.ms != null ? `${m.heartbeat.ms}ms` : "—"}{m.heartbeat.error ? ` · ${m.heartbeat.error}` : ""}
+                          </span>
+                        </Row>
+                      )}
+                      {m.recentFailures[0] && (
+                        <Row label="last failure">
+                          <span className="text-peach">{m.recentFailures[0].code}: {m.recentFailures[0].message.slice(0, 60)}</span>
+                        </Row>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+
               {restartMsg && (
                 <div className={cn("text-xs mt-1", restartMsg.startsWith("Tunnel restarted") ? "text-green" : "text-red")}>{restartMsg}</div>
               )}

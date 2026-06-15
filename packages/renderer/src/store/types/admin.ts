@@ -186,6 +186,21 @@ export interface TazNetEnv {
     gaveUp: boolean;
   };
   wg: { endpoint: string | null; subnet: string };
+  socksMetrics: TazSocksMetrics;
+}
+
+/** Live SOCKS-layer counters. Mirrors `SocksMetricsSnapshot` server-side. */
+export interface TazSocksMetrics {
+  dialsStarted: number;
+  dialsOk: number;
+  dialsFailed: number;
+  inFlight: number;
+  openSockets: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  failuresByCode: Record<string, number>;
+  recentFailures: { at: number; dest: string; ms: number | null; code: string; message: string }[];
+  heartbeat: { at: number; ok: boolean; ms: number | null; error: string | null } | null;
 }
 
 /** Flattened tenant access config from `GET /v1/capabilities`. */

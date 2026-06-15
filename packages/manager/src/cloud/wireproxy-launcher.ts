@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { recordSshEvent } from "../vps/ssh-events.js";
+import { startSocksHeartbeat } from "../vps/socks-metrics.js";
 
 /** Render a wireproxy config from env vars. wireproxy reads a wg-quick-style
  *  ini plus a [Socks5] section it adds on top — no TUN device involved.
@@ -212,6 +213,7 @@ async function respawn(): Promise<void> {
 export async function startWireproxyIfConfigured(): Promise<void> {
   if (process.env.GENIE_TAZ_SOCKS) {
     console.log(`[wireproxy] GENIE_TAZ_SOCKS already set (${process.env.GENIE_TAZ_SOCKS}) — assuming external wireproxy.`);
+    startSocksHeartbeat();
     return;
   }
   const wgPriv = process.env.WG_PRIVATE_KEY;
@@ -274,6 +276,7 @@ export async function startWireproxyIfConfigured(): Promise<void> {
   process.env.GENIE_TAZ_SOCKS = socksBind;
   supervising = true; // from here on, an unexpected exit triggers respawn-with-backoff
   console.log(`[wireproxy] ready — Taz traffic now routes via SOCKS5 ${socksBind}.`);
+  startSocksHeartbeat();
 }
 
 export function stopWireproxy(): void {

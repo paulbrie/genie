@@ -597,6 +597,11 @@ export async function connectSsh(
       .on("error", (err) => {
         lastError = err;
         unregister();
+        // Don't leak the SOCKS socket when the handshake fails before ssh2 has
+        // fully adopted it: a half-open socket per failed attempt would pile up
+        // against wireproxy. destroy() is idempotent, so this is safe even when
+        // ssh2 also tears it down.
+        try { sock?.destroy(); } catch { /* ignore */ }
         console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
         reject(new Error(`SSH connection failed: ${err.message}`));
       })
