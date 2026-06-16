@@ -533,17 +533,28 @@ export async function getProjectTeams(projectId: string): Promise<ProjectTeamDef
   return rows;
 }
 
-/** Grant a team access to a project. No-op (returns existing) if it's already
- *  the primary owner or already granted. */
+/** Grant a team access to a project.
+ *  - If the project has no primary owning team yet, the added team is promoted
+ *    to primary (projects.teamId) and `becamePrimary` is true.
+ *  - Otherwise it's granted as a secondary (SHARED) team. No-op if it's already
+ *    the primary owner or already granted. */
 export async function addProjectTeam(
   projectId: string,
   teamId: string,
   addedBy: string | null,
-): Promise<ProjectTeamDef | null> {
+): Promise<{ becamePrimary: boolean; team: ProjectTeamDef | null }> {
   const db = getDb();
-  // Adding the primary owning team is redundant — skip.
   const [proj] = await db.select({ teamId: projects.teamId }).from(projects).where(and(eq(projects.id, projectId), notDeleted)).limit(1);
-  if (proj?.teamId === teamId) return null;
+  // Already the primary owner (or project missing) — nothing to do.
+  if (!proj || proj.teamId === teamId) return { becamePrimary: false, team: null };
+
+  // No primary team yet — this team becomes the owner instead of a secondary.
+  if (!proj.teamId) {
+    await update(projectId, { teamId });
+    // Drop any stale secondary row so it can't show as both OWNER and SHARED.
+    await db.delete(projectTeams).where(and(eq(projectTeams.projectId, projectId), eq(projectTeams.teamId, teamId)));
+    return { becamePrimary: true, team: null };
+  }
 
   await db
     .insert(projectTeams)
@@ -551,7 +562,7 @@ export async function addProjectTeam(
     .onConflictDoNothing({ target: [projectTeams.projectId, projectTeams.teamId] });
 
   const [row] = await getProjectTeams(projectId).then((rows) => rows.filter((r) => r.teamId === teamId));
-  return row ?? null;
+  return { becamePrimary: false, team: row ?? null };
 }
 
 export async function removeProjectTeam(projectId: string, teamId: string): Promise<boolean> {

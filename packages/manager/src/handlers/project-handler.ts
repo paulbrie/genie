@@ -359,8 +359,15 @@ export async function handleProjectMessage(
           send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
           return true;
         }
-        const team = await projectService.addProjectTeam(projectId, teamId, callerId);
-        send(ws, { type: "project:teams:updated", payload: { projectId, team, action: "added" } });
+        const result = await projectService.addProjectTeam(projectId, teamId, callerId);
+        if (result.becamePrimary) {
+          // The OWNER row is driven by projects.teamId/teamName — push a fresh
+          // project list so every connected client (incl. the caller's open
+          // detail) re-renders the new owner.
+          await broadcastProjectList();
+        } else {
+          send(ws, { type: "project:teams:updated", payload: { projectId, team: result.team, action: "added" } });
+        }
         // The newly-granted team's members can now see this project.
         broadcastToUsers(await projectService.getTeamMemberIds(teamId), { type: "project:list:stale", payload: {} });
       } catch (err) {
