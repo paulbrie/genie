@@ -5,7 +5,7 @@
 import { batch } from "subjecto";
 
 import { onWsClose, wsSend } from "@/lib/ws";
-import { clearTerminal, disposeTerminal, getTerminalSize } from "@/lib/terminal-bridge";
+import { disposeTerminal, getTerminalSize } from "@/lib/terminal-bridge";
 import { $vmConnections, $vpsDeploy } from "../subjects/vps";
 import type { VmConnectionState, VmTmuxSession } from "../types/vps";
 import { ensureInstanceState, watchVpsStats, unwatchVpsStats, resubscribeVpsStatsWatches, refreshVmTmuxSessions } from "./vps";
@@ -249,14 +249,16 @@ function extFromMime(mime: string): string | null {
 export function reconnectVmConnection(key: string): void {
   const c = $vmConnections.getValue().connections[key];
   if (!c) return;
-  clearTerminal(c.terminalId);
+  // Soft reconnect: keep the same terminalId and DON'T close or clear. The
+  // manager keeps the PTY alive for a grace window, so this `terminal:start`
+  // reattaches and replays missed output. If the grace window already lapsed,
+  // the manager dials fresh and signals `reattached: false` on terminal:ready,
+  // which is when the client wipes stale scrollback (see the terminal:ready
+  // handler). Either way tmux `-A` keeps Claude alive on the VM as a backstop.
   batch(() => {
-    c.status = "connecting";
+    c.status = "reconnecting";
     c.errorMessage = null;
-    c.bytesIn = 0;
-    c.bytesOut = 0;
   });
-  wsSend("terminal:close", { terminalId: c.terminalId });
   const size = getTerminalSize(c.terminalId) ?? { cols: 80, rows: 24 };
   const tmuxIntent = c.tmuxSessionName
     ? c.tmuxIntent === "new"
@@ -313,7 +315,12 @@ export function reconnectOpenVmConnections(): void {
   for (const key of Object.keys($vmConnections.getValue().connections)) {
     const c = $vmConnections.getValue().connections[key];
     if (!c || c.status === "error") continue;
-    if (c.status === "closed" || c.status === "connecting" || c.status === "connected") {
+    if (
+      c.status === "closed" ||
+      c.status === "connecting" ||
+      c.status === "reconnecting" ||
+      c.status === "connected"
+    ) {
       reconnectVmConnection(key);
     }
   }

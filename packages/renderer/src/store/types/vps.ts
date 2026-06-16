@@ -305,7 +305,7 @@ export interface VmConnectionState {
   vmLabel: string;
   /** terminalId driving the xterm in the popup. */
   terminalId: string;
-  status: "connecting" | "connected" | "error" | "closed";
+  status: "connecting" | "reconnecting" | "connected" | "error" | "closed";
   errorMessage: string | null;
   bytesIn: number;
   bytesOut: number;

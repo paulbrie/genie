@@ -20,7 +20,7 @@ import {
 import type { VmConnectionState } from "@/store/types/vps";
 import { TmuxSessionBadges } from "@/components/tazcloud/tmux-session-badges";
 import { tmuxAttachShellCommand, tmuxSwitchClientKeys } from "@/lib/tmux-shell";
-import { createTerminal, hasTerminal, reattachTerminal, setTerminalFontSize } from "@/lib/terminal-bridge";
+import { createTerminal, hasTerminal, reattachTerminal, setTerminalCursorBlink, setTerminalFontSize } from "@/lib/terminal-bridge";
 import { useWindowFontSize, WINDOW_FONT_PX } from "@/components/ui/window-font-size";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -37,6 +37,13 @@ function StatusPill({ status }: { status: VmConnectionState["status"] }) {
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow/15 text-yellow">
         <Loader2 size={9} className="animate-spin" /> Connecting
+      </span>
+    );
+  }
+  if (status === "reconnecting") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow/15 text-yellow">
+        <Loader2 size={9} className="animate-spin" /> Reconnecting…
       </span>
     );
   }
@@ -121,6 +128,12 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
   useEffect(() => {
     if (conn?.terminalId) setTerminalFontSize(conn.terminalId, WINDOW_FONT_PX[fontSize]);
   }, [fontSize, conn?.terminalId]);
+
+  // Cursor blinks only while connected — a steady cursor signals the terminal
+  // is disconnected / reconnecting (alongside the dimmed pane + status pill).
+  useEffect(() => {
+    if (conn?.terminalId) setTerminalCursorBlink(conn.terminalId, conn.status === "connected");
+  }, [conn?.status, conn?.terminalId]);
 
   // Clipboard-image paste → ship to VM → manager types the path into the PTY
   // so Claude Code (or any process at the prompt) reads it. Bound to the
@@ -251,7 +264,7 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
           pendingProbe={conn.lastTmuxAt == null && conn.status === "connected"}
           probeError={conn.statsError}
           activeSessionName={
-            conn.status === "connected" || conn.status === "connecting"
+            conn.status === "connected" || conn.status === "connecting" || conn.status === "reconnecting"
               ? conn.tmuxSessionName ?? null
               : null
           }

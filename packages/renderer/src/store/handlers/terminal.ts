@@ -12,14 +12,26 @@ import type { HandlerMap } from "./types";
 
 export const handlers: HandlerMap = {
   "terminal:ready": (payload) => {
-    const { terminalId } = payload as { terminalId: string };
+    const { terminalId, reattached, tmuxSessionName } = payload as {
+      terminalId: string;
+      reattached?: boolean;
+      tmuxSessionName?: string | null;
+    };
     const conn = findVmConnectionByTerminalId(terminalId);
     if (!conn) return;
+    // Fresh PTY (not a grace-window reattach): wipe any stale scrollback before
+    // the new session's output streams in. On a reattach we keep the scrollback
+    // — the manager replays the buffered tail right after this message.
+    if (reattached === false) clearTerminal(terminalId);
     batch(() => {
       const slot = $vmConnections.getValue().connections[conn.key];
       if (!slot) return;
       slot.status = "connected";
       slot.errorMessage = null;
+      // Persist the server-resolved tmux session name (may have been generated
+      // server-side). This is what lets a reconnect — including across a manager
+      // restart — reattach to the surviving session on the VM.
+      if (tmuxSessionName) slot.tmuxSessionName = tmuxSessionName;
       // After the first tmux launch, later reconnects should attach only.
       if (slot.tmuxIntent === "new" && slot.tmuxSessionName) {
         slot.tmuxIntent = "attach";

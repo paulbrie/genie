@@ -39,6 +39,17 @@ export type WsSendFn = (ws: WebSocket, msg: { type: string; payload: unknown }) 
 const trafficEmitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const injectCancellers = new Map<string, ShellCommandCancel>();
 
+/** Grace window: how long a PTY is kept alive after its client socket drops so a
+ *  reconnect can reattach (and replay missed output) instead of starting fresh.
+ *  Must exceed the renderer's reconnect-backoff cap (~30s, see lib/ws.ts). */
+const SESSION_GRACE_MS = 60_000;
+/** Per-terminal grace timers that dispose an orphaned session if no reattach. */
+const orphanTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Bounded tail of recent PTY output per terminal, replayed on reattach so the
+ *  user sees whatever the session produced while their socket was down. */
+const outputTail = new Map<string, Buffer>();
+const OUTPUT_TAIL_LIMIT = 256 * 1024; // ~256 KB
+
 let sendFn: WsSendFn | null = null;
 export function setWsSend(fn: WsSendFn) {
   sendFn = fn;
@@ -47,7 +58,28 @@ function send(ws: WebSocket, msg: { type: string; payload: unknown }) {
   sendFn?.(ws, msg);
 }
 
-function sendOutput(ws: WebSocket, terminalId: string, data: Buffer) {
+/** The WebSocket currently attached to a terminal (null while orphaned). Output
+ *  routes through this rather than a captured ref so a reattach to a new socket
+ *  takes effect immediately for the already-running PTY. */
+function currentWs(terminalId: string): WebSocket | null {
+  return sessionMeta.get(terminalId)?.ws ?? null;
+}
+
+function recordTail(terminalId: string, data: Buffer) {
+  const prev = outputTail.get(terminalId);
+  const next = prev ? Buffer.concat([prev, data]) : Buffer.from(data);
+  outputTail.set(
+    terminalId,
+    next.length > OUTPUT_TAIL_LIMIT ? next.subarray(next.length - OUTPUT_TAIL_LIMIT) : next,
+  );
+}
+
+// Signature matches output-batch's SendFn; the passed `ws` is ignored in favour
+// of the live socket from sessionMeta (which survives reattach).
+function sendOutput(_ws: WebSocket, terminalId: string, data: Buffer) {
+  recordTail(terminalId, data); // always buffer, even while orphaned
+  const ws = currentWs(terminalId);
+  if (!ws) return; // orphaned — buffer only, replayed on reattach
   // genie's WS is JSON-only — base64-encode binary chunks. The renderer
   // base64-decodes into a Uint8Array and feeds xterm directly.
   send(ws, {
@@ -56,20 +88,22 @@ function sendOutput(ws: WebSocket, terminalId: string, data: Buffer) {
   });
 }
 
-function scheduleTrafficEmit(terminalId: string, ws: WebSocket) {
+function scheduleTrafficEmit(terminalId: string, _ws?: WebSocket) {
   if (trafficEmitTimers.has(terminalId)) return;
   trafficEmitTimers.set(
     terminalId,
     setTimeout(() => {
       trafficEmitTimers.delete(terminalId);
-      emitTraffic(terminalId, ws);
+      emitTraffic(terminalId);
     }, 250),
   );
 }
 
-function emitTraffic(terminalId: string, ws: WebSocket) {
+function emitTraffic(terminalId: string) {
   const session = getSshSession(terminalId);
   if (!session) return;
+  const ws = currentWs(terminalId);
+  if (!ws) return;
   const t = session.getTraffic();
   send(ws, {
     type: "terminal:traffic",
@@ -110,6 +144,9 @@ export function closeSshSession(terminalId: string, notifyWs?: WebSocket) {
   clearInjectTimer(terminalId);
   clearTrafficEmitTimer(terminalId);
   clearOutputBatch(terminalId, sendOutput, scheduleTrafficEmit);
+  clearTimeout(orphanTimers.get(terminalId));
+  orphanTimers.delete(terminalId);
+  outputTail.delete(terminalId);
 
   sessions.get(terminalId)?.dispose();
   sessions.delete(terminalId);
@@ -121,9 +158,58 @@ export function closeSshSession(terminalId: string, notifyWs?: WebSocket) {
   }
 }
 
+/** Detach a session from its (now-dead) socket but keep the PTY alive for a
+ *  grace window. A reconnect that re-issues `terminal:start` with the same
+ *  terminalId reattaches via reattachSshSession; otherwise the timer disposes
+ *  it for real. The underlying tmux session (Claude launches with `-A`) is the
+ *  longer-lived backstop if the grace window lapses. */
+export function orphanSshSession(terminalId: string) {
+  const meta = sessionMeta.get(terminalId);
+  if (!meta) return;
+  meta.ws = null; // sendOutput now buffers instead of routing to the dead socket
+  meta.orphanedAt = Date.now();
+  clearTimeout(orphanTimers.get(terminalId));
+  orphanTimers.set(
+    terminalId,
+    setTimeout(() => {
+      console.log(`[ssh] grace expired, disposing terminal=${terminalId}`);
+      closeSshSession(terminalId);
+    }, SESSION_GRACE_MS),
+  );
+  console.log(`[ssh] orphaned terminal=${terminalId} (grace ${SESSION_GRACE_MS}ms)`);
+}
+
+/** Rebind an orphaned (or still-live) session to a new socket and replay the
+ *  buffered output tail. Returns false if no session exists for terminalId, in
+ *  which case the caller should start a fresh dial. */
+export function reattachSshSession(ws: WebSocket, terminalId: string, cols: number, rows: number): boolean {
+  const meta = sessionMeta.get(terminalId);
+  const session = sessions.get(terminalId);
+  if (!meta || !session) return false;
+
+  clearTimeout(orphanTimers.get(terminalId));
+  orphanTimers.delete(terminalId);
+  meta.ws = ws;
+  meta.orphanedAt = null;
+  session.resize(cols, rows);
+
+  send(ws, {
+    type: "terminal:ready",
+    payload: { terminalId, host: meta.host, projectId: meta.projectId, instanceId: meta.instanceId, reattached: true },
+  });
+  const tail = outputTail.get(terminalId);
+  if (tail && tail.length > 0) {
+    send(ws, { type: "terminal:output", payload: { terminalId, dataB64: tail.toString("base64") } });
+  }
+  emitTraffic(terminalId);
+  console.log(`[ssh] reattached terminal=${terminalId} (replayed ${tail?.length ?? 0}B)`);
+  return true;
+}
+
 export function closeAllSessionsForWs(ws: WebSocket) {
   for (const [terminalId, meta] of [...sessionMeta]) {
-    if (meta.ws === ws) closeSshSession(terminalId, ws);
+    // Don't kill on socket drop — keep the PTY alive so a reconnect can reattach.
+    if (meta.ws === ws) orphanSshSession(terminalId);
   }
 }
 
@@ -179,7 +265,7 @@ export async function startSshSession(
     },
     onReady: () => {
       if (!isCurrentSession(terminalId, session)) return;
-      emitTraffic(terminalId, ws);
+      emitTraffic(terminalId);
       console.log(`[ssh] ready terminal=${terminalId} ${shellOpts.username}@${host}`);
       // Push mouse + scrollback into the running tmux server via a side-channel
       // exec (NOT the PTY). Affects already-running sessions immediately — tmux
@@ -192,6 +278,16 @@ export async function startSshSession(
         'T=$(command -v tmux 2>/dev/null || true); [ -z "$T" ] && [ -e /snap/bin/tmux ] && T=/snap/bin/tmux; ' +
           '[ -n "$T" ] && { "$T" set-option -gq mouse on 2>/dev/null; "$T" set-option -gq history-limit 50000 2>/dev/null; }; true',
       ).catch(() => { /* tmux not installed / server down — handled by tmux command builders */ });
+      // Resolve the tmux session name BEFORE announcing ready so we can hand it
+      // back to the client. Critical for surviving a manager restart: the new
+      // manager process has no session state, so reattach is client-driven — the
+      // renderer re-dials with this name and `tmuxIntent: attach`. If the server
+      // generated the name (client didn't supply one) and we never told the
+      // client, that session would be unrecoverable after a restart.
+      const launchingNewTmux = tmuxIntent === "new" && !!initialCommand;
+      const resolvedTmuxName = launchingNewTmux
+        ? tmuxSessionName ?? createTmuxSessionName()
+        : tmuxSessionName ?? null;
       send(ws, {
         type: "terminal:ready",
         payload: {
@@ -201,13 +297,20 @@ export async function startSshSession(
           username: shellOpts.username,
           projectId,
           instanceId,
+          // The tmux session backing this terminal (if any). The client stores it
+          // so a later reconnect — including across a manager restart — can
+          // reattach to the surviving session instead of starting fresh.
+          tmuxSessionName: resolvedTmuxName,
+          // Fresh PTY (not a grace-window reattach) → the client wipes any stale
+          // scrollback before this session's output streams in.
+          reattached: false,
         },
       });
       if (tmuxIntent === "new" && initialCommand) {
         // The Claude button: launch `cd /opt/project && claude …` inside a fresh
         // tmux session so it survives SSH drops and is reattachable. `-A` makes a
         // re-launch with the same name reattach instead of duplicating.
-        const name = tmuxSessionName ?? createTmuxSessionName();
+        const name = resolvedTmuxName!;
         const launchClaude = () =>
           scheduleSessionCommand(terminalId, session, tmuxNewSessionWithCommandShellCommand(name, initialCommand));
         if (projectId && instanceId) {

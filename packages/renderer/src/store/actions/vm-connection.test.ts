@@ -70,8 +70,11 @@ describe("reconnectOpenVmConnections", () => {
 
     const sends = vi.mocked(wsSend).mock.calls.map((c) => c[0]);
     expect(sends.filter((t) => t === "terminal:start")).toHaveLength(2);
-    expect($vmConnections.getValue().connections["closed-one"].status).toBe("connecting");
-    expect($vmConnections.getValue().connections["live-one"].status).toBe("connecting");
+    // Soft reconnect: same terminalId, no terminal:close — the manager reattaches
+    // the surviving PTY (or dials fresh if the grace window lapsed).
+    expect(sends).not.toContain("terminal:close");
+    expect($vmConnections.getValue().connections["closed-one"].status).toBe("reconnecting");
+    expect($vmConnections.getValue().connections["live-one"].status).toBe("reconnecting");
     expect($vmConnections.getValue().connections["bad-one"].status).toBe("error");
   });
 });

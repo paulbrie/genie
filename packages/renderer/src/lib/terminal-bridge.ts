@@ -206,6 +206,15 @@ export function setTerminalFontSize(terminalId: string, fontSize: number): void 
   } catch { /* tear-down race */ }
 }
 
+/** Blink the cursor only while the session is live — a steady cursor is the
+ *  visual cue that the terminal is disconnected / reconnecting. */
+export function setTerminalCursorBlink(terminalId: string, on: boolean): void {
+  const inst = instances.get(terminalId);
+  if (!inst) return;
+  if (inst.terminal.options.cursorBlink === on) return;
+  inst.terminal.options.cursorBlink = on;
+}
+
 export function getTerminalSize(terminalId: string): { cols: number; rows: number } | null {
   const inst = instances.get(terminalId);
   if (!inst) return null;

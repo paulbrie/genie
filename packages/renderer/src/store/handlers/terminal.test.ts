@@ -20,7 +20,7 @@ vi.mock("@/lib/ws", () => ({
 
 import { handlers } from "./terminal";
 import { $vmConnections } from "../subjects/vps";
-import { writeToTerminal, refitTerminal, getTerminalSize } from "@/lib/terminal-bridge";
+import { writeToTerminal, refitTerminal, getTerminalSize, clearTerminal } from "@/lib/terminal-bridge";
 import { wsSend } from "@/lib/ws";
 import type { VmConnectionState } from "../types/vps";
 
@@ -88,11 +88,46 @@ describe("terminal:ready", () => {
     expect(slot("k1").tmuxIntent).toBe("attach");
   });
 
+  it("stores a server-resolved tmux session name and flips intent to attach", () => {
+    // Server generated the name (client launched with tmuxIntent:new, no name) —
+    // round-tripping it is what makes the session reattachable after a restart.
+    seed([makeConn({ tmuxIntent: "new", tmuxSessionName: undefined })]);
+    handlers["terminal:ready"]({ terminalId: "term-1", tmuxSessionName: "tab-123-7" });
+    expect(slot("k1").tmuxSessionName).toBe("tab-123-7");
+    expect(slot("k1").tmuxIntent).toBe("attach");
+  });
+
+  it("leaves the tmux session name untouched when the ready frame omits it", () => {
+    seed([makeConn({ tmuxSessionName: "claude-keep" })]);
+    handlers["terminal:ready"]({ terminalId: "term-1", tmuxSessionName: null });
+    expect(slot("k1").tmuxSessionName).toBe("claude-keep");
+  });
+
   it("does not send a resize when the size is unknown", () => {
     seed([makeConn({})]);
     (getTerminalSize as Mock).mockReturnValue(null);
     handlers["terminal:ready"]({ terminalId: "term-1" });
     expect(wsSend).not.toHaveBeenCalled();
+  });
+
+  it("clears the xterm on a fresh PTY (reattached: false)", () => {
+    seed([makeConn({ status: "reconnecting" })]);
+    handlers["terminal:ready"]({ terminalId: "term-1", reattached: false });
+    expect(clearTerminal).toHaveBeenCalledWith("term-1");
+    expect(slot("k1").status).toBe("connected");
+  });
+
+  it("keeps the scrollback on a grace-window reattach (reattached: true)", () => {
+    seed([makeConn({ status: "reconnecting" })]);
+    handlers["terminal:ready"]({ terminalId: "term-1", reattached: true });
+    expect(clearTerminal).not.toHaveBeenCalled();
+    expect(slot("k1").status).toBe("connected");
+  });
+
+  it("keeps the scrollback when no reattached flag is present (initial open)", () => {
+    seed([makeConn({})]);
+    handlers["terminal:ready"]({ terminalId: "term-1" });
+    expect(clearTerminal).not.toHaveBeenCalled();
   });
 });
 

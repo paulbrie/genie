@@ -2,6 +2,7 @@ import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import {
   startSshSession,
+  reattachSshSession,
   closeSshSession,
   handleTerminalData,
   handleTerminalResize,
@@ -89,6 +90,20 @@ export async function handleTerminalMessage(
       };
       if (!terminalId) {
         send(ws, { type: "terminal:error", payload: { terminalId: null, message: "terminalId is required" } });
+        return true;
+      }
+      // Reconnect fast-path: if the PTY is still alive (within its grace window
+      // after a socket drop), rebind to this socket and replay the missed output
+      // instead of redialing. Authorization was enforced when it first opened.
+      if (reattachSshSession(ws, terminalId, cols ?? 80, rows ?? 24)) {
+        void analyticsService.recordEvent({
+          userId,
+          userName: null,
+          event: "terminal.reattach",
+          projectId: projectId ?? null,
+          props: { kind: payloadKind ?? "shell" },
+          ip: null,
+        });
         return true;
       }
       try {

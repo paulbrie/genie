@@ -14,11 +14,17 @@ export const sessionMeta = new Map<
     projectId: string | null;
     instanceId: string | null;
     host: string;
-    ws: WebSocket;
+    /** The WebSocket currently receiving this terminal's output. `null` while
+     *  the session is *orphaned* — the client socket dropped but the PTY is kept
+     *  alive during the grace window so a reconnect can reattach. Output is
+     *  buffered (see `outputTail`) and replayed on reattach. */
+    ws: WebSocket | null;
     /** Terminal flavour, for analytics: "claude" for a Claude Code session,
      *  "shell" for a plain SSH shell. Authoritative value comes from the
      *  client's terminal:start payload (so reattaches stay correctly tagged). */
     kind: "claude" | "shell";
+    /** Set when the session was orphaned (socket dropped); cleared on reattach. */
+    orphanedAt?: number | null;
   }
 >();
 

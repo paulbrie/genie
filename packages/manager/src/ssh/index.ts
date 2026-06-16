@@ -12,6 +12,7 @@ export { SshShellSession } from "./session/shell.js";
 export {
   setWsSend,
   startSshSession,
+  reattachSshSession,
   closeSshSession,
   closeAllSessionsForWs,
   handleTerminalData,
