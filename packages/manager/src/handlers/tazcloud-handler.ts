@@ -31,6 +31,27 @@ import {
 /** Track active TazCloud deploy AbortControllers by projectId. */
 const activeTazAbortControllers = new Map<string, AbortController>();
 
+/** Mirror a VM's TazCloud ingress (custom domain) onto its linked Genie project
+ *  instance, so the project server card can show the domain without a live Taz
+ *  API call. Pass `null` to clear. Broadcasts the project list only when the
+ *  stored value actually changed. */
+async function syncTazIngressToInstance(
+  vmId: string,
+  ingress: { domain: string; url?: string } | null,
+): Promise<void> {
+  const nextDomain = ingress?.domain || undefined;
+  const nextUrl = ingress ? (ingress.url || `https://${ingress.domain}`) : undefined;
+  const projects = await projectService.getAll();
+  for (const p of projects) {
+    const inst = p.vpsInstances.find((v) => v.tazcloud?.vmId === vmId);
+    if (!inst) continue;
+    if (inst.domain === nextDomain && inst.domainUrl === nextUrl) return; // no change
+    await projectService.updateVpsInstance(p.id, inst.id, { domain: nextDomain, domainUrl: nextUrl });
+    await broadcastProjectList();
+    return;
+  }
+}
+
 /** Coalesce concurrent `admin:tazcloud:stats` requests into one probe round. */
 let tazcloudStatsInflight: Promise<{ stats: Record<string, unknown>; errors: Record<string, string> }> | null = null;
 
@@ -226,13 +247,24 @@ export async function handleTazcloudMessage(
         const decoratedVms = vms.map((v) => aliasMap.has(v.id) ? { ...v, name: aliasMap.get(v.id)! } : v);
         const projects = await projectService.getAll();
         const projectMap: Record<string, { projectId: string; projectName: string }> = {};
+        // Live ingress per VM, so we can backfill domains onto already-linked
+        // instances (existing ingresses registered before persistence existed).
+        const ingressByVm = new Map(vms.map((v) => [v.id, v.ingress]));
+        let domainsChanged = false;
         for (const p of projects) {
           for (const v of p.vpsInstances) {
-            if (v.tazcloud?.vmId) {
-              projectMap[v.tazcloud.vmId] = { projectId: p.id, projectName: p.name };
+            if (!v.tazcloud?.vmId) continue;
+            projectMap[v.tazcloud.vmId] = { projectId: p.id, projectName: p.name };
+            const ing = ingressByVm.get(v.tazcloud.vmId);
+            const nextDomain = ing?.domain || undefined;
+            const nextUrl = ing ? (ing.url || `https://${ing.domain}`) : undefined;
+            if (v.domain !== nextDomain || v.domainUrl !== nextUrl) {
+              await projectService.updateVpsInstance(p.id, v.id, { domain: nextDomain, domainUrl: nextUrl });
+              domainsChanged = true;
             }
           }
         }
+        if (domainsChanged) await broadcastProjectList();
         send(ws, { type: "admin:tazcloud:list", payload: { vms: decoratedVms, projectMap } });
       } catch (err: unknown) {
         send(ws, { type: "admin:tazcloud:list", payload: { vms: [], error: (err instanceof Error ? err.message : String(err)) } });
@@ -619,6 +651,7 @@ export async function handleTazcloudMessage(
           app_port: appPort,
         });
         send(ws, { type: "admin:tazcloud:ingress:registered", payload: { vmId, ingress } });
+        await syncTazIngressToInstance(vmId, { domain: ingress.domain, url: ingress.url });
         broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
       } catch (err: unknown) {
         send(ws, {
@@ -641,6 +674,7 @@ export async function handleTazcloudMessage(
         const tazClient = createTazClient(tazToken);
         await tazClient.removeIngress(vmId);
         send(ws, { type: "admin:tazcloud:ingress:removed", payload: { vmId } });
+        await syncTazIngressToInstance(vmId, null);
         broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
       } catch (err: unknown) {
         send(ws, {

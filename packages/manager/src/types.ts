@@ -90,6 +90,11 @@ export interface VpsInstance {
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;
+  /** Custom domain attached to this server, mirrored from the provider so the
+   *  project card shows it without a live provider call (DO: Namecheap+Caddy;
+   *  Taz: ingress). Absent until a domain is attached. */
+  domain?: string;
+  domainUrl?: string;
   /** Present for a generic "bring-your-own" SSH server (neither digitalocean
    *  nor tazcloud). `genie-key` reuses the shared Genie keypair (the user
    *  authorized its public key on the box); `stored-key` references an

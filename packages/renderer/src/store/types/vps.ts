@@ -107,6 +107,11 @@ export interface VpsInstance {
   deployFailed?: boolean;
   deployError?: string;
   hibernate?: VpsHibernateInfo;
+  /** Custom domain attached to this server (DO: Namecheap+Caddy; Taz: ingress).
+   *  Mirrored from the provider so the server card can show it without a live
+   *  provider call. Absent until a domain is attached. */
+  domain?: string;
+  domainUrl?: string;
   /** Present for a generic "bring-your-own" SSH server (neither cloud block).
    *  `genie-key` = the user authorized Genie's public key on the box;
    *  `stored-key` = an encrypted key row, materialized on the manager. */

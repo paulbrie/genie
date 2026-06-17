@@ -216,6 +216,7 @@ function ProjectServerCard({
       {showResourceBlock && (
         <CloudVmResourceBlock
           host={host}
+          domain={instance.domain ? { name: instance.domain, url: instance.domainUrl } : null}
           isPrivateHost={isPrivateHostAddress(host)}
           stats={stats ? vpsStatsToBarStats(stats) : null}
           statsLoading={!stats && !statsError && !isFailed}
