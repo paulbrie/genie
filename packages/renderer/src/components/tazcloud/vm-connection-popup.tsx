@@ -108,7 +108,7 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
     (conn?.initialCommand?.includes("claude") ?? false) ||
     (conn?.tmuxSessionName?.startsWith("claude-") ?? false);
   const terminalRef = useRef<HTMLDivElement | null>(null);
-  const [pasteNotice, setPasteNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [pasteNotice, setPasteNotice] = useState<{ kind: "pending" | "ok" | "error"; text: string } | null>(null);
   const [fontSize] = useWindowFontSize();
   const fontSizeRef = useRef(fontSize);
   fontSizeRef.current = fontSize;
@@ -159,7 +159,7 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         if (!blob) continue;
         e.preventDefault();
         e.stopPropagation();
-        setPasteNotice({ kind: "ok", text: "Uploading image…" });
+        setPasteNotice({ kind: "pending", text: `Uploading ${blob.name || "image"}…` });
         void pasteVmImage(connectionKey, blob).catch((err) => {
           setPasteNotice({ kind: "error", text: err instanceof Error ? err.message : "Paste failed" });
         });
@@ -189,7 +189,11 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
 
   useEffect(() => {
     if (!pasteNotice) return;
-    const t = window.setTimeout(() => setPasteNotice(null), 3000);
+    // Keep the in-progress notice up until the result replaces it (uploads over
+    // the bastion SFTP path can take a while); only auto-clear the final ok/error.
+    // A 30s safety net clears a stuck "pending" if the result event never lands.
+    const ms = pasteNotice.kind === "pending" ? 30_000 : 3_000;
+    const t = window.setTimeout(() => setPasteNotice(null), ms);
     return () => window.clearTimeout(t);
   }, [pasteNotice]);
 
@@ -308,17 +312,23 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         </div>
       )}
 
-      {/* Paste-image status — auto-clears after 3s */}
+      {/* Paste-image status — "uploading" stays until the result; ok/error clear after 3s. */}
       {pasteNotice && (
         <div
           className={cn(
             "flex items-center gap-1.5 px-3 py-1 text-[11px] border-b shrink-0",
             pasteNotice.kind === "ok"
               ? "text-mauve bg-mauve/10 border-mauve/30"
-              : "text-red bg-red/10 border-red/30",
+              : pasteNotice.kind === "error"
+                ? "text-red bg-red/10 border-red/30"
+                : "text-blue bg-blue/10 border-blue/30",
           )}
         >
-          <ImageIcon size={11} className="shrink-0" />
+          {pasteNotice.kind === "pending"
+            ? <Loader2 size={11} className="shrink-0 animate-spin" />
+            : pasteNotice.kind === "ok"
+              ? <Check size={11} className="shrink-0" />
+              : <ImageIcon size={11} className="shrink-0" />}
           <span className="truncate font-mono">{pasteNotice.text}</span>
         </div>
       )}
