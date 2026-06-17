@@ -3,7 +3,6 @@ builder = "nixpacks"
 
 [build.nixpacks]
 # python3, gcc, gnumake are required for node-pty native compilation (used by the terminal feature).
-# wireproxy is a userspace WireGuard binary — see nixpacks.toml for the rationale.
-pkgs = ["nodejs_22", "python3", "gcc", "gnumake", "wireproxy"]
+pkgs = ["nodejs_22", "python3", "gcc", "gnumake"]
 installCmd = "npm install"
 buildCmd = "npm run build"
