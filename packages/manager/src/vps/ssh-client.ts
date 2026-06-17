@@ -602,8 +602,10 @@ export async function connectSsh(
         // against wireproxy. destroy() is idempotent, so this is safe even when
         // ssh2 also tears it down.
         try { sock?.destroy(); } catch { /* ignore */ }
-        console.error(`[ssh] Connection to ${config.host}:${config.port} failed:`, err.message);
-        reject(new Error(`SSH connection failed: ${err.message}`));
+        console.error(`[ssh] Connection to ${config.username}@${config.host}:${config.port} failed:`, err.message);
+        // Include the login user — for "All authentication methods failed" this
+        // tells you immediately which user/key was rejected (e.g. genie vs ubuntu).
+        reject(new Error(`SSH connection failed (${config.username}@${config.host}): ${err.message}`));
       })
       .connect(buildConnectOptions(config, { sock, timeoutMs: timeout }));
   });
