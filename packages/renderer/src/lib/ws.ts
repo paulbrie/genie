@@ -20,8 +20,8 @@ let wsUrlOverride: string | null = null;
 // frames, hence app-level.)
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let lastPongAt = 0;
-const HEARTBEAT_MS = 25_000;
-const HEARTBEAT_TIMEOUT_MS = 70_000; // ~3 missed pongs before we give up
+const HEARTBEAT_MS = 20_000;
+const HEARTBEAT_TIMEOUT_MS = 45_000; // ~2 missed pongs — detect a half-open socket close to the server's ≤60s reap
 
 // When the current socket opened — lets onclose report how long it survived, so
 // we can tell "drops right after an idle gap" (edge timeout) from "drops mid-use".
@@ -34,7 +34,10 @@ let wsOpenedAt = 0;
 // curve. Attempt resets to 0 on a successful onopen.
 let reconnectAttempt = 0;
 const RECONNECT_BASE_MS = 1000;
-const RECONNECT_CAP_MS = 30_000;
+// Cap kept low so recovery after a transient blip is fast (a regained network
+// shouldn't wait up to 30s for the next try). The online/visibility wake below
+// short-circuits the backoff entirely on focus/network-return.
+const RECONNECT_CAP_MS = 12_000;
 function computeReconnectDelay(attempt: number): number {
   const ceiling = Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * Math.pow(2, attempt));
   return Math.round(ceiling * (0.5 + Math.random() * 0.5));
@@ -175,8 +178,29 @@ export function setStoredToken(token: string | null) {
   }
 }
 
+// Reconnect immediately when the network returns or the tab is refocused,
+// instead of waiting out the backoff timer. Most real drops (laptop sleep,
+// backgrounded tab, Wi-Fi blip) resolve the moment the user comes back — this
+// makes recovery feel instant rather than up to RECONNECT_CAP_MS later.
+let wakeListenersRegistered = false;
+function registerWakeListeners(): void {
+  if (wakeListenersRegistered || typeof window === "undefined") return;
+  wakeListenersRegistered = true;
+  const wake = () => {
+    if (!managerRunning) return;            // intentional disconnect — don't fight it
+    if (ws && ws.readyState <= 1) return;   // already open/connecting
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    reconnectAttempt = 0;                   // a regained network deserves an un-backed-off try
+    console.log("[ws] network/visibility regained — reconnecting now");
+    connectWs();
+  };
+  window.addEventListener("online", wake);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) wake(); });
+}
+
 export function connectWs(): void {
   if (typeof window === "undefined") return;
+  registerWakeListeners();
   if (tryDevLoginRedirect()) return;
   if (ws && ws.readyState <= 1) return;
 
