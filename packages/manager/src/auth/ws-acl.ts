@@ -99,6 +99,10 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // Cloud namespaces — tazcloud role can also access these.
   do: { send: "tazcloud", receive: "tazcloud" },
   tazcloud: { send: "tazcloud", receive: "tazcloud" },
+  // Read-only, project-scoped: any project member may ask to refresh their VM's
+  // ingress domain (handler enforces userCanSeeProject). Overrides the broader
+  // tazcloud rule so plain owners/members can trigger it from the server card.
+  "tazcloud:domain": { send: "user", receive: "user" },
   hetzner: { send: "tazcloud", receive: "tazcloud" },
 
   // Admin namespaces.

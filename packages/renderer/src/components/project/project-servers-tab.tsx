@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Cloud, Loader2, MoreVertical, Server, Terminal, Trash2, Unlink } from "lucide-react";
+import { wsSend } from "@/lib/ws";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -107,6 +108,11 @@ export function ProjectServersTab({ project, vpsDeploy, canManage }: ProjectServ
   );
 }
 
+// Instances we've already asked the server to refresh the Taz ingress domain
+// for this session — so a genuinely domain-less VM doesn't re-fetch on every
+// card remount. Module-scoped (survives unmount); cleared on full reload.
+const tazDomainRefreshed = new Set<string>();
+
 interface ProjectServerCardProps {
   project: ProjectDef;
   instance: VpsInstance;
@@ -136,6 +142,17 @@ function ProjectServerCard({
   const isHibernated = !!instance.hibernate;
 
   const tazVmId = instance.tazcloud?.vmId;
+
+  // Lazily pull the Taz ingress domain onto this instance when the card shows a
+  // Taz VM with no domain yet — once per instance per session. Avoids a polling
+  // interval: the sync only happens while someone is actually looking at the card.
+  useEffect(() => {
+    if (tazVmId && !instance.domain && !tazDomainRefreshed.has(instance.id)) {
+      tazDomainRefreshed.add(instance.id);
+      wsSend("tazcloud:domain:refresh", { projectId: project.id, instanceId: instance.id });
+    }
+  }, [tazVmId, instance.domain, instance.id, project.id]);
+
   const doDropletId = instance.digitalocean?.dropletId;
   const hzServerId = instance.hetzner?.serverId;
   const isSsh = !!instance.ssh;
