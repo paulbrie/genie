@@ -1180,7 +1180,9 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
           )}
 
           {tab === "ports" && (
-            <AdminSystemPanel exec={exec} view="ports" deferRefreshMs={5000} />
+            // Panel only mounts when the Ports tab is open, so check immediately
+            // (no defer) — the SSH tunnel is already up by the time you get here.
+            <AdminSystemPanel exec={exec} view="ports" />
           )}
 
           {tab === "processes" && (
