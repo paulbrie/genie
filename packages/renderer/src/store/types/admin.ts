@@ -447,7 +447,7 @@ export interface RailwayLogEntry {
 }
 
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events" | "connections";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];
@@ -591,6 +591,35 @@ export interface AdminState {
     error: string | null;
     lastRunAt: number | null;
   };
+  /** Browser↔manager WebSocket disconnect log (the `connection_log` table). */
+  connections: {
+    rows: ConnectionLogRow[];
+    hours: number;
+    /** Optional close-code filter (e.g. 1006). null = all. */
+    closeCode: number | null;
+    loading: boolean;
+    error: string | null;
+    lastRunAt: number | null;
+  };
+}
+
+/** One WS disconnect row. Mirrors a `connection_log` row (dates arrive as ISO). */
+export interface ConnectionLogRow {
+  id: string;
+  userId: string | null;
+  userName: string | null;
+  clientType: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  railwayRequestId: string | null;
+  connectedAt: string;
+  closedAt: string;
+  durationSec: number | null;
+  closeCode: number | null;
+  closeDescription: string | null;
+  closeHint: string | null;
+  closeReason: string | null;
+  aliveLastPing: boolean | null;
 }
 
 /** Structured SSH-events report. Mirrors `SshEventsReport` in ssh-events.ts. */

@@ -1053,4 +1053,14 @@ export const handlers: HandlerMap = {
       s.lastRunAt = payload.report ? Date.now() : s.lastRunAt;
     });
   },
+
+  "admin:connections:list": (payload) => {
+    batch(() => {
+      const s = $admin.getValue().connections;
+      s.rows = payload.rows ?? [];
+      s.error = payload.error ?? null;
+      s.loading = false;
+      s.lastRunAt = Date.now();
+    });
+  },
 };

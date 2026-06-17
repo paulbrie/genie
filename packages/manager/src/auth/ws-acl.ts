@@ -123,6 +123,8 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   "admin:email": { send: "superadmin", receive: "superadmin" },
   // Live server throughput dashboard (stats-req/sec, ws-msgs/sec) — superadmin-only.
   "admin:server-metrics": { send: "superadmin", receive: "superadmin" },
+  // WS disconnect forensics carry cross-tenant IPs / user-agents — superadmin-only.
+  "admin:connections": { send: "superadmin", receive: "superadmin" },
   db: { send: "admin", receive: "admin" },
   security: { send: "admin", receive: "admin" },
   docker: { send: "admin", receive: "admin" },

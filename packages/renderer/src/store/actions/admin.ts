@@ -130,7 +130,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events" | "connections"): void {
   const v = $admin.getValue();
   if (v.activeTab !== tab) track("tab.view", { scope: "admin", tab });
   v.activeTab = tab;
@@ -958,6 +958,20 @@ export function loadSshEventsReport(opts?: { hours?: number; host?: string }): v
   wsSend("admin:ssh-events:report", {
     hours: v.sshEvents.hours,
     host: v.sshEvents.host.trim() || null,
+  });
+}
+
+export function loadConnectionLogs(opts?: { hours?: number; closeCode?: number | null }): void {
+  const v = $admin.getValue();
+  batch(() => {
+    v.connections.loading = true;
+    v.connections.error = null;
+    if (opts?.hours !== undefined) v.connections.hours = opts.hours;
+    if (opts?.closeCode !== undefined) v.connections.closeCode = opts.closeCode;
+  });
+  wsSend("admin:connections:list", {
+    hours: v.connections.hours,
+    closeCode: v.connections.closeCode,
   });
 }
 

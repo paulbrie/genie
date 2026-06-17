@@ -14,7 +14,7 @@ import {
 import type { AdminBaseImageState, AdminColumnInfo, AdminState, AdminTeam, AdminTeamMember, AdminUser, AiSettings, AiSubTab, AiUsageRow, AuditLogEntry, BaseImageConfig, BaseImageTemplate, DropletsSubTab, RailwayDeployment, RailwayLogEntry, TemplateHistoryEntry } from "@/store/types";
 import { $admin, $auth, $doSnapshots, $doSnapshotsLoading } from "@/store/subjects";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, downloadDb, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAdminUsersPaged, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshEventsReport, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAdminUsersPage, setAdminUsersPageSize, setAdminUsersSearch, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser, loadEmailLogs, loadAnalyticsSummary } from "@/store/actions";
+import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, downloadDb, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAdminUsersPaged, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadConnectionLogs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshEventsReport, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAdminUsersPage, setAdminUsersPageSize, setAdminUsersSearch, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser, loadEmailLogs, loadAnalyticsSummary } from "@/store/actions";
 import { OrgsPanel } from "@/components/admin/admin-orgs-panel";
 import { InviteUserDialog } from "@/components/admin/admin-invite-user-dialog";
 import { AiCostsPanel } from "./admin-ai";
@@ -23,6 +23,7 @@ import { UserDrawer, TeamsPanel } from "./admin-users";
 import { SnapshotsSubTab } from "./admin-images";
 import { AuditPanel, ProdLogsPanel } from "./admin-logs";
 import { SshEventsPanel } from "./admin-ssh-events";
+import { ConnectionsPanel } from "./admin-connections";
 import { AdminAnalytics } from "./admin-analytics";
 import { CommunicationPanel } from "./admin-communication";
 import { useSubject } from "subjecto/react";
@@ -222,6 +223,7 @@ export function AdminPanel() {
             { key: "audit" as const, label: "Audit" },
             { key: "prodlogs" as const, label: "Prod Logs" },
             { key: "ssh-events" as const, label: "SSH Events" },
+            ...(isSuperadmin ? [{ key: "connections" as const, label: "Connections" }] : []),
           ]}
           activeTab={activeTab}
           onTabChange={(tab) => {
@@ -237,6 +239,7 @@ export function AdminPanel() {
             else if (tab === "audit") { setAdminTab("audit"); loadAuditLogs(); router.push(buildAdminPath("audit")); }
             else if (tab === "prodlogs") { setAdminTab("prodlogs"); loadProdDeployments(); router.push(buildAdminPath("prodlogs")); }
             else if (tab === "ssh-events") { setAdminTab("ssh-events"); loadSshEventsReport(); router.push(buildAdminPath("ssh-events")); }
+            else if (tab === "connections") { setAdminTab("connections"); loadConnectionLogs(); router.push(buildAdminPath("connections")); }
           }}
         />
       </div>
@@ -1290,6 +1293,9 @@ export function AdminPanel() {
       ) : activeTab === "ssh-events" ? (
         /* ===== SSH EVENTS TAB ===== */
         <SshEventsPanel sshEvents={admin.sshEvents} />
+      ) : activeTab === "connections" ? (
+        /* ===== CONNECTIONS (WS disconnect log) TAB ===== */
+        <ConnectionsPanel connections={admin.connections} />
       ) : null}
 
       {/* User edit drawer */}

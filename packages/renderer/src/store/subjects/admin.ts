@@ -25,6 +25,7 @@ export const $admin = new DeepSubject<AdminState>({
   analytics: { summary: null, days: 30, loading: false, filterUserId: null, filterProjectId: null },
   prodlogs: { deployments: [], logs: [], selectedDeploymentId: null, logType: "deploy", loading: false, logsLoading: false },
   sshEvents: { report: null, hours: 24, host: "", loading: false, error: null, lastRunAt: null },
+  connections: { rows: [], hours: 24, closeCode: null, loading: false, error: null, lastRunAt: null },
   ai: { subTab: "costs", costs: [], loading: false, error: null, settings: { defaultModel: "claude-sonnet", maxToolRounds: 10 }, settingsLoading: false },
 });
 

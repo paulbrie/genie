@@ -7,6 +7,7 @@ import type { WsMessage } from "../types.js";
 import * as railwayService from "../cloud/railway-service.js";
 import * as auditService from "../logging/audit-service.js";
 import { buildSshEventsReport } from "../vps/ssh-events.js";
+import * as connectionLogService from "../logging/connection-log-service.js";
 import * as emailService from "../notifications/email-service.js";
 import * as settingsService from "../settings-service.js";
 import { getDb } from "../db/index.js";
@@ -66,6 +67,21 @@ export async function handleAdminMiscMessage(
         send(ws, { type: "admin:ssh-events:report", payload: { report } });
       } catch (err: unknown) {
         send(ws, { type: "admin:ssh-events:report", payload: { report: null, error: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "admin:connections:list": {
+      try {
+        const { hours, closeCode, limit } = (msg.payload ?? {}) as { hours?: number; closeCode?: number | null; limit?: number };
+        const rows = await connectionLogService.getConnectionLogs({
+          from: new Date(Date.now() - (hours ?? 24) * 3_600_000),
+          ...(closeCode != null ? { closeCode } : {}),
+          limit: limit ?? 200,
+        });
+        send(ws, { type: "admin:connections:list", payload: { rows } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:connections:list", payload: { rows: [], error: (err instanceof Error ? err.message : String(err)) } });
       }
       return true;
     }
