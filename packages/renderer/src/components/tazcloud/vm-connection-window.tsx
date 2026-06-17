@@ -19,6 +19,7 @@ import {
   openProjectVmConnection,
   openWindow,
   registerWindow,
+  restoreWindow,
   updateWindowPosition,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
@@ -43,6 +44,29 @@ export function openVmConnectionWindow(args: {
   tmuxIntent?: "new" | "attach";
   tmuxSessionName?: string;
 }): void {
+  // Dedupe by (VM + named tmux session): attaching a session that already has a
+  // window — open or minimized — should bring that window to front, not open a
+  // second client onto the same tmux session. Only named-session attaches dedupe;
+  // a fresh "new" session / plain shell (no tmuxSessionName) always opens its own.
+  if (args.tmuxSessionName) {
+    const wm = $windowManager.getValue();
+    const conns = $vmConnections.getValue().connections;
+    for (const [k, c] of Object.entries(conns)) {
+      if (
+        c.host === args.host &&
+        c.username === args.username &&
+        c.tmuxSessionName === args.tmuxSessionName
+      ) {
+        const wid = VM_CONN_WINDOW_PREFIX + k;
+        const win = wm.windows[wid];
+        if (win && win.status !== "closed") {
+          restoreWindow(wid); // un-minimize if needed + raise
+          focusWindow(wid);
+          return;
+        }
+      }
+    }
+  }
   const key = openProjectVmConnection(args);
   const wid = VM_CONN_WINDOW_PREFIX + key;
   registerWindow(wid, `SSH ${args.username}@${args.vmLabel}`, "terminal");
