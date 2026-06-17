@@ -661,7 +661,7 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
   const adminIngressUrl = adminVm?.ingress?.url ?? null;
   const adminIsPrivateHost = adminVm?.isPrivateHost === true;
 
-  let projInst: { label: string; ipv6: string; image?: string; projectId: string } | null = null;
+  let projInst: { label: string; ipv6: string; image?: string; projectId: string; domain?: string; domainUrl?: string } | null = null;
   if (!adminVm) {
     for (const p of projects) {
       const inst = p.vpsInstances.find((i) => i.tazcloud?.vmId === vmId);
@@ -671,6 +671,8 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
           ipv6: inst.tazcloud.ipv6 || inst.connection.host,
           image: inst.tazcloud.image,
           projectId: p.id,
+          domain: inst.domain,
+          domainUrl: inst.domainUrl,
         };
         break;
       }
@@ -680,6 +682,8 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
   const projIpv6 = projInst?.ipv6 ?? "";
   const projImage = projInst?.image;
   const projProjectId = projInst?.projectId ?? null;
+  const projDomain = projInst?.domain ?? null;
+  const projDomainUrl = projInst?.domainUrl ?? null;
 
   // Generic ("ssh") bring-your-own server. openManageVmWindow is reused for
   // these, so the window is keyed by the *instance* id — match on that, not a
@@ -717,14 +721,17 @@ function ManageVmWindowInstance({ windowId }: { windowId: string }) {
       };
     }
     if (projInst) {
-      return { id: vmId, name: projLabel, host: projIpv6, image: projImage, projectId: projProjectId, provider: "tazcloud" };
+      return {
+        id: vmId, name: projLabel, host: projIpv6, image: projImage, projectId: projProjectId, provider: "tazcloud",
+        ingress: projDomain ? { domain: projDomain, url: projDomainUrl ?? undefined } : null,
+      };
     }
     if (sshInst) {
       return { id: vmId, name: sshLabel, host: sshHost, projectId: sshProjectId, provider: "ssh", instanceId: sshInstanceId, connection: { username: sshUsername, privateKeyPath: sshKeyPath } };
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vmId, !!adminVm, adminName, adminIpv6, adminImage, adminProjectId, adminIngressDomain, adminIngressUrl, adminIsPrivateHost, !!projInst, projLabel, projIpv6, projImage, projProjectId, !!sshInst, sshLabel, sshHost, sshProjectId, sshInstanceId, sshUsername, sshKeyPath]);
+  }, [vmId, !!adminVm, adminName, adminIpv6, adminImage, adminProjectId, adminIngressDomain, adminIngressUrl, adminIsPrivateHost, !!projInst, projLabel, projIpv6, projImage, projProjectId, projDomain, projDomainUrl, !!sshInst, sshLabel, sshHost, sshProjectId, sshInstanceId, sshUsername, sshKeyPath]);
 
   // Defensive cache: if `vm` momentarily resolves to null (e.g. while the admin
   // VM list is being refreshed after a stale broadcast on navigation), keep the
