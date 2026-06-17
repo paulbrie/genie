@@ -113,6 +113,9 @@ export function ProjectsGrid() {
             <div className="relative max-w-sm flex-1">
               <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-overlay0 pointer-events-none" />
               <input
+                // Focus on mount so you can filter immediately when landing on
+                // /projects (the panel mounts fresh each time the nav switches).
+                autoFocus
                 className="w-full bg-surface0 border border-surface1 rounded pl-8 pr-3 py-1.5 text-md text-text outline-none transition-colors focus:border-blue"
                 placeholder="Filter projects by name…"
                 value={paged.search}
