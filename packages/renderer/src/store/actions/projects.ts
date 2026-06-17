@@ -1,4 +1,5 @@
 import { wsSend } from "@/lib/ws";
+import { debounce } from "@/lib/debounce";
 import { $activeNav } from "../subjects/common";
 import {
   $commandRunOutputs,
@@ -57,10 +58,15 @@ export function loadProjectsPaged(): void {
   wsSend("project:list:paged", { page: v.page, pageSize: v.pageSize, search: v.search });
 }
 
+// Debounce the server query so typing in the filter doesn't fire a
+// project:list:paged per keystroke; the input itself stays instant (state below
+// updates synchronously).
+const debouncedLoadProjectsPaged = debounce(() => loadProjectsPaged(), 300);
+
 export function setProjectsSearch(search: string): void {
   const v = $projectsPaged.getValue();
   $projectsPaged.next({ ...v, search, page: 1 });
-  loadProjectsPaged();
+  debouncedLoadProjectsPaged();
 }
 
 export function setProjectsPage(page: number): void {

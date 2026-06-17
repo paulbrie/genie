@@ -2,6 +2,7 @@ import { batch } from "subjecto";
 import { sshStatsProbeEnabled } from "@/lib/ssh-stats-enabled";
 import { track } from "@/lib/analytics";
 import { wsRequest, wsSend, onWsClose } from "@/lib/ws";
+import { debounce } from "@/lib/debounce";
 import { $admin } from "../subjects/admin";
 import type {
   AdminUser,
@@ -750,11 +751,15 @@ export function loadAdminUsersPaged(): void {
   wsSend("admin:users:list:paged", { page: u.page, pageSize: u.pageSize, search: u.search });
 }
 
+// Debounce the server query so typing the user search doesn't fire an
+// admin:users:list:paged per keystroke; the input stays instant.
+const debouncedLoadAdminUsersPaged = debounce(() => loadAdminUsersPaged(), 300);
+
 export function setAdminUsersSearch(search: string): void {
   const u = $admin.getValue().users.paged;
   u.search = search;
   u.page = 1;
-  loadAdminUsersPaged();
+  debouncedLoadAdminUsersPaged();
 }
 
 export function setAdminUsersPage(page: number): void {
