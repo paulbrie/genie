@@ -393,53 +393,87 @@ export function FileExplorer({ project, instance }: {
         let lastTickAt = startedAt;
         let lastTickBytes = 0;
         let emaSpeed = 0; // bytes/sec, exponential moving average
-        for (let c = 0; c < totalChunks; c++) {
-          if (uploadCancelRef.current) {
-            wsSend("vps:fs:upload-cancel", { uploadId, projectId: project.id, instanceId: inst.id });
-            cancelled = true;
-            break;
-          }
-          const chunk = dataBase64.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE);
-          const res = await wsRequest("vps:fs:upload", {
+        let completed = 0;
+
+        const sendChunk = (c: number) =>
+          wsRequest("vps:fs:upload", {
             uploadId,
             projectId: project.id,
             instanceId: inst.id,
             path: currentPath,
             fileName: file.name,
-            dataBase64: chunk,
+            dataBase64: dataBase64.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE),
             chunkIndex: c,
             totalChunks,
+            // Absolute byte offset of this chunk's decoded data. c*CHUNK_SIZE is a
+            // multiple of 4, so base64→bytes is exact (4 chars → 3 bytes); lets the
+            // server write positionally and accept chunks out of order (pipelined).
+            byteOffset: (c * CHUNK_SIZE) / 4 * 3,
           }, 120000);
-          if (uploadCancelRef.current) {
-            wsSend("vps:fs:upload-cancel", { uploadId, projectId: project.id, instanceId: inst.id });
-            cancelled = true;
-            break;
-          }
-          if (!res.ok) {
-            setError(`Failed to upload ${file.name}: ${res.error}`);
-            failed = true;
-            break;
-          }
-          // Approximate raw bytes done from progress fraction.
-          const bytesDone = Math.round(((c + 1) / totalChunks) * file.size);
+
+        const onChunkDone = () => {
+          completed += 1;
+          const bytesDone = Math.round((completed / totalChunks) * file.size);
           const now = performance.now();
           const dt = (now - lastTickAt) / 1000;
           if (dt > 0) {
             const instant = (bytesDone - lastTickBytes) / dt;
             emaSpeed = emaSpeed === 0 ? instant : emaSpeed * 0.6 + instant * 0.4;
+            lastTickAt = now;
+            lastTickBytes = bytesDone;
           }
-          lastTickAt = now;
-          lastTickBytes = bytesDone;
           setUploadStatus({
             fileName: file.name,
             fileIndex: i,
             fileCount: files.length,
-            percent: Math.round(((c + 1) / totalChunks) * 100),
+            percent: Math.round((completed / totalChunks) * 100),
             bytesDone,
             bytesTotal: file.size,
             speedBps: emaSpeed,
           });
+        };
+
+        // Chunk 0 first: it opens the server-side SFTP handle, so it must land
+        // before the rest can write. Then pipeline the remainder with a bounded
+        // window of concurrent workers — throughput was latency-bound at one
+        // in-flight chunk per round-trip (~300 KB/s over the bastion hop).
+        if (uploadCancelRef.current) { cancelled = true; break; }
+        const first = await sendChunk(0);
+        if (uploadCancelRef.current) {
+          wsSend("vps:fs:upload-cancel", { uploadId, projectId: project.id, instanceId: inst.id });
+          cancelled = true;
+          break;
         }
+        if (!first.ok) {
+          setError(`Failed to upload ${file.name}: ${first.error}`);
+          failed = true;
+          break;
+        }
+        onChunkDone();
+
+        const UPLOAD_WINDOW = 6;
+        let nextChunk = 1;
+        const worker = async () => {
+          while (!failed && !cancelled) {
+            if (uploadCancelRef.current) {
+              wsSend("vps:fs:upload-cancel", { uploadId, projectId: project.id, instanceId: inst.id });
+              cancelled = true;
+              return;
+            }
+            const c = nextChunk++;
+            if (c >= totalChunks) return;
+            const res = await sendChunk(c);
+            if (!res.ok) {
+              setError(`Failed to upload ${file.name}: ${res.error}`);
+              failed = true;
+              return;
+            }
+            onChunkDone();
+          }
+        };
+        await Promise.all(
+          Array.from({ length: Math.min(UPLOAD_WINDOW, Math.max(0, totalChunks - 1)) }, worker),
+        );
         if (failed || cancelled) break;
       }
       if (!failed && !cancelled) loadDirectory(currentPath);

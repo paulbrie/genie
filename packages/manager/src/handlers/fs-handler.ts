@@ -16,7 +16,12 @@ import * as projectService from "../projects/project-service.js";
 interface PendingUpload {
   session: SshSession;
   handle: SftpWriteHandle;
+  /** Running counter — fallback offset only when a chunk omits `byteOffset`
+   *  (legacy serial clients). Pipelined clients send an absolute byteOffset. */
   offset: number;
+  /** Count of chunks fully written, so we close on completion rather than on
+   *  the last *index* arriving — chunks can now land out of order. */
+  written: number;
   filePath: string;
   staleTimer: ReturnType<typeof setTimeout>;
 }
@@ -171,7 +176,7 @@ export async function handleFsMessage(
       // decoded here) with a shared uploadId. SFTP has proper flow control so chunk
       // writes ack reliably — unlike piping into `base64 -d` via execStreaming, which
       // can stall under SSH channel-window backpressure.
-      const { uploadId, projectId, instanceId, path: uploadDir, fileName, dataBase64, chunkIndex, totalChunks, reqId } = msg.payload;
+      const { uploadId, projectId, instanceId, path: uploadDir, fileName, dataBase64, chunkIndex, totalChunks, byteOffset, reqId } = msg.payload;
       try {
         if (typeof uploadId !== "string" || typeof chunkIndex !== "number" || typeof totalChunks !== "number") {
           throw new Error("upload requires uploadId, chunkIndex, totalChunks");
@@ -181,12 +186,16 @@ export async function handleFsMessage(
           const filePath = `${(uploadDir as string).replace(/\/$/, "")}/${fileName}`;
           const { session, handle } = await openSftpWriteWithUserPromotion(projectId, instanceId, filePath);
           const staleTimer = setTimeout(() => { cleanupUpload(uploadId, { deletePartial: true }).catch(() => {}); }, 10 * 60 * 1000);
-          pendingUploads.set(uploadId, { session, handle, offset: 0, filePath, staleTimer });
+          pendingUploads.set(uploadId, { session, handle, offset: 0, written: 0, filePath, staleTimer });
         }
         const pending = pendingUploads.get(uploadId);
         if (!pending) throw new Error("no pending upload for this uploadId");
 
         const buf = Buffer.from(dataBase64, "base64");
+        // Absolute file offset for this chunk. Pipelined clients send `byteOffset`
+        // so chunks can be written positionally and in any arrival order; legacy
+        // serial clients omit it and we fall back to the running counter.
+        const base = typeof byteOffset === "number" ? byteOffset : pending.offset;
         // SFTP single write is capped at the negotiated max packet (~32 KB). Fire the
         // sub-writes in parallel — SFTP allows ~64 outstanding requests, so this
         // pipelines over the SSH round-trip latency instead of paying it per packet.
@@ -194,12 +203,15 @@ export async function handleFsMessage(
         const writes: Promise<void>[] = [];
         for (let p = 0; p < buf.length; p += SFTP_WRITE) {
           const slice = buf.subarray(p, Math.min(p + SFTP_WRITE, buf.length));
-          writes.push(pending.handle.write(slice, pending.offset + p));
+          writes.push(pending.handle.write(slice, base + p));
         }
         await Promise.all(writes);
-        pending.offset += buf.length;
-
-        if (chunkIndex + 1 === totalChunks) {
+        // Track the highest end-offset (for the no-byteOffset fallback path) and
+        // close once every chunk has landed — not on the last *index*, which may
+        // arrive before earlier chunks when the client pipelines.
+        pending.offset = Math.max(pending.offset, base + buf.length);
+        pending.written += 1;
+        if (pending.written >= totalChunks) {
           await cleanupUpload(uploadId);
         }
         send(ws, { type: "vps:fs:result", payload: { ok: true, reqId } });
