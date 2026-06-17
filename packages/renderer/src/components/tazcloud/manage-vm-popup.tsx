@@ -856,30 +856,16 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
   // probe: skips the brief "Detecting SSH user…" flash on first render.
   const [resolvedUser, setResolvedUser] = useState<string | null>(() => {
     if (vm.provider === "ssh") return vm.connection?.username || "root";
-    if (!canUseAdminExec) return imageDefault;
-    if (vm.provider === "do" || vm.provider === "hetzner") return "genie";
-    if (isV2) return "genie";
-    return null;
+    // Genie-provisioned VMs all use the unified `genie` user now: Taz dropped
+    // per-image users (ubuntu/almalinux/…), DO/Hetzner ship with genie. The old
+    // "probe as the image user, fall back if genie isn't set up" dance just
+    // auth-failed as `ubuntu` on these VMs — pin genie.
+    return "genie";
   });
 
   useEffect(() => {
-    if (vm.provider === "ssh") { setResolvedUser(vm.connection?.username || "root"); return; }
-    if (!canUseAdminExec) { setResolvedUser(imageDefault); return; }
-    if (vm.provider === "do" || vm.provider === "hetzner") { setResolvedUser("genie"); return; }
-    if (isV2) { setResolvedUser("genie"); return; }
-    let cancelled = false;
-    const probe = `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys; then echo "GENIE"; else echo "DEFAULT"; fi`;
-    const t = window.setTimeout(() => {
-      adminTazcloudExec(vm.id, imageDefault, probe, vm.host).then((res) => {
-        if (cancelled) return;
-        const last = res.output.trim().split("\n").pop()?.trim();
-        setResolvedUser(last === "GENIE" ? "genie" : imageDefault);
-      }).catch(() => {
-        if (!cancelled) setResolvedUser(imageDefault);
-      });
-    }, 300);
-    return () => { cancelled = true; window.clearTimeout(t); };
-  }, [vm.id, vm.host, vm.provider, vm.connection?.username, imageDefault, canUseAdminExec, isV2]);
+    setResolvedUser(vm.provider === "ssh" ? (vm.connection?.username || "root") : "genie");
+  }, [vm.id, vm.host, vm.provider, vm.connection?.username]);
 
   const user = resolvedUser ?? imageDefault;
 
