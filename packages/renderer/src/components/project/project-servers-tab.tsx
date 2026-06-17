@@ -176,7 +176,9 @@ function ProjectServerCard({
 
   const openSshTab = () => {
     if (!host || host === "unknown") return;
-    const username = instance.tazcloud?.sshUser || instance.connection.username || "root";
+    // Taz unified every VM onto a `genie` user — default to it rather than the
+    // stored sshUser (which may be a stale image default and gets auth-rejected).
+    const username = instance.tazcloud ? "genie" : (instance.connection.username || "root");
     const port = instance.connection.port || 22;
     addSshTerminalTab({ host, username, port }, `SSH ${username}@${instance.label}`);
   };
