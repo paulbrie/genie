@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSubject } from "subjecto/react";
 import { UserCheck } from "lucide-react";
-import { $auth } from "@/store/subjects";
+import { $auth, $manager } from "@/store/subjects";
 import { loadUiState, stopImpersonating } from "@/store/actions";
 import { connectWs, setManagerRunning } from "@/lib/ws";
 import { track } from "@/lib/analytics";
@@ -44,7 +44,12 @@ export default function AppShellLayout({
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [auth.status]);
 
-  if (auth.status === "loading") {
+  // Full-screen splash only on the *initial* connect — when we've never resolved
+  // a user yet. On a later WS drop/re-auth we keep `auth.user`, so the app stays
+  // mounted and a subtle ReconnectingToast covers the gap instead of flickering
+  // the whole UI back to this splash. (The `auth:required` handler only merges
+  // `status`, so `auth.user` survives a reconnect.)
+  if (auth.status === "loading" && !auth.user) {
     return (
       <div className="flex items-center justify-center h-screen bg-background">
         <div className="flex flex-col items-center gap-3">
@@ -77,6 +82,32 @@ export default function AppShellLayout({
         <BuildLogWindow />
         <TerminalWindows />
       </div>
+      <ReconnectingToast />
+    </div>
+  );
+}
+
+/** Subtle, debounced "Reconnecting…" pill shown while the manager WebSocket is
+ *  down or the session is re-authenticating after a drop. Debounced so a quick
+ *  sub-second blip doesn't flash it; hides immediately once back. Replaces the
+ *  old full-screen splash on reconnect so the UI no longer flickers. */
+function ReconnectingToast() {
+  const [manager] = useSubject($manager);
+  const [auth] = useSubject($auth);
+  const offline = !manager.running || auth.status === "loading";
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    if (!offline) { setShow(false); return; }
+    const t = setTimeout(() => setShow(true), 700);
+    return () => clearTimeout(t);
+  }, [offline]);
+
+  if (!show) return null;
+  return (
+    <div className="fixed bottom-4 right-4 z-[200] flex items-center gap-2 px-3 py-1.5 rounded-full bg-mantle/95 border border-overlay0/30 shadow-lg text-md text-subtext0 backdrop-blur">
+      <span className="w-3 h-3 border-2 border-peach border-t-transparent rounded-full animate-spin" />
+      Reconnecting…
     </div>
   );
 }
