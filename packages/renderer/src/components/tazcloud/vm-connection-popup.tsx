@@ -101,6 +101,12 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
   const state = useDeepSubjectAll($vmConnections);
   const conn = state.connections[connectionKey];
   const isLive = conn?.status === "connected";
+  // A Claude popup runs Claude inside a `claude-*` tmux session — switching tmux
+  // sessions from inside it makes no sense, so hide the badge row there. Covers
+  // both the Claude-button launch (initialCommand) and attaching a claude-* chip.
+  const isClaudePopup =
+    (conn?.initialCommand?.includes("claude") ?? false) ||
+    (conn?.tmuxSessionName?.startsWith("claude-") ?? false);
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const [pasteNotice, setPasteNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [fontSize] = useWindowFontSize();
@@ -248,8 +254,9 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         </div>
       </div>
 
-      {/* tmux session badges — SSH probe, re-probe via refresh row */}
-      {conn.projectId && conn.instanceId && (
+      {/* tmux session badges — SSH probe, re-probe via refresh row.
+          Hidden in a Claude popup (you're already inside its tmux session). */}
+      {!isClaudePopup && conn.projectId && conn.instanceId && (
         <TmuxSessionBadges
           variant="inline"
           projectId={conn.projectId}
