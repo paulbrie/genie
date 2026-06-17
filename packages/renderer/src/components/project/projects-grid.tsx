@@ -113,7 +113,7 @@ export function ProjectsGrid() {
             <div className="relative max-w-sm flex-1">
               <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-overlay0 pointer-events-none" />
               <input
-                className="w-full bg-surface0 border border-surface1 rounded pl-8 pr-3 py-1.5 text-md text-text"
+                className="w-full bg-surface0 border border-surface1 rounded pl-8 pr-3 py-1.5 text-md text-text outline-none transition-colors focus:border-blue"
                 placeholder="Filter projects by name…"
                 value={paged.search}
                 onChange={(e) => setProjectsSearch(e.target.value)}
