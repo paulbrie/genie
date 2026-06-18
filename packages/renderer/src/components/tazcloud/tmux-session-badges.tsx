@@ -325,6 +325,15 @@ export function TmuxSessionBadges({
     });
   };
 
+  // Clicking a Claude session pill opens the Claude Chat bound to that tmux
+  // session (reattaches + replays) rather than a raw terminal attach. Falls back
+  // to a terminal attach if we can't resolve the owner/project to open a chat.
+  const openClaudeChat = (sessionName: string) => {
+    const ownerId = $auth.getValue().user?.id;
+    if (!ownerId || !projectId || !instanceId) { attach(sessionName); return; }
+    void openClaudeChatWindow({ ownerId, projectId, instanceId, label: `${vmName} · Claude`, tmuxName: sessionName });
+  };
+
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   const handleRename = useCallback((sessionName: string) => {
@@ -475,7 +484,7 @@ export function TmuxSessionBadges({
               session={s}
               isClaude={s.name.startsWith("claude")}
               isActive={activeSessions.has(s.name)}
-              onClick={() => attach(s.name)}
+              onClick={() => (s.name.startsWith("claude") ? openClaudeChat(s.name) : attach(s.name))}
               onContextMenu={(e) => openSessionMenu(e, s.name)}
               compact={variant === "inline"}
             />
