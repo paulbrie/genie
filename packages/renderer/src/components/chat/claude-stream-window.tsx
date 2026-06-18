@@ -164,7 +164,10 @@ export function ClaudeStreamWindow({
     const parts: string[] = [];
     if (text) parts.push(text);
     for (const im of ready) parts.push(`[Image: ${im.remotePath}]`);
-    sendClaudeStreamMessage(claudeStreamId, parts.join("\n\n"));
+    // Keep the pasted thumbnails in the conversation (alongside the [Image: …]
+    // text Claude reads) by attaching their data URLs to the sent message.
+    const images = ready.map((im) => im.dataUrl).filter(Boolean);
+    sendClaudeStreamMessage(claudeStreamId, parts.join("\n\n"), images);
     setInput("");
     setPendingImages([]);
     ac.close();

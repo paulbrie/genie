@@ -63,13 +63,17 @@ export async function openClaudeChatWindow(args: {
   return claudeStreamId;
 }
 
-/** Send a user message (or slash command). Optimistically appends the user turn. */
-export function sendClaudeStreamMessage(claudeStreamId: string, text: string): void {
+/** Send a user message (or slash command). Optimistically appends the user turn.
+ *  `images` (pasted-image data URLs) ride on the optimistic message so the
+ *  thumbnails stay visible in the conversation — the server's user-message
+ *  replay is deduped by content, so they survive (until a full transcript
+ *  replay on reconnect, which only carries text). */
+export function sendClaudeStreamMessage(claudeStreamId: string, text: string, images?: string[]): void {
   const trimmed = text.trim();
   if (!trimmed) return;
   updateClaudeStreamSession(claudeStreamId, (s) => ({
     ...s,
-    messages: [...s.messages, { role: "user", content: trimmed }],
+    messages: [...s.messages, { role: "user", content: trimmed, ...(images && images.length ? { images } : {}) }],
     loading: true,
     statusText: "Claude is thinking...",
     connectionError: null,
