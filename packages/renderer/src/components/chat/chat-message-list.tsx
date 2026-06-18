@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Play } from "lucide-react";
+import { Play, Wrench, ChevronDown, ChevronUp } from "lucide-react";
 import type { ChatMessage, StreamingStep, ToolUse } from "@/store/types";
 import { $terminal } from "@/store/subjects";
 import { wsSend } from "@/lib/ws";
@@ -86,13 +86,53 @@ function stripImageRefs(content: string): string {
     .trim();
 }
 
+/** Beyond this many tools in a single run, collapse them behind a count pill. */
+const TOOL_GROUP_COLLAPSE_AT = 5;
+
+/** "Read 18 · Bash 3 · Grep 2" — the busiest tool names in a run, top 3. */
+function summarizeTools(tools: ToolUse[]): string {
+  const counts = new Map<string, number>();
+  for (const t of tools) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const head = sorted.slice(0, 3).map(([name, n]) => `${name} ${n}`).join(" · ");
+  return sorted.length > 3 ? `${head} +${sorted.length - 3}` : head;
+}
+
+/** A run of consecutive tool pills. Short runs render inline; long runs collapse
+ *  to one expandable count pill ("23 tool calls · Read 18 · Bash 3") so a turn
+ *  with dozens of reads doesn't flood the conversation. */
+function ToolPillGroup({ pills, tools }: { pills: React.ReactNode[]; tools: ToolUse[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (pills.length < TOOL_GROUP_COLLAPSE_AT) {
+    return <div className="flex flex-wrap gap-1.5 my-1">{pills}</div>;
+  }
+  return (
+    <div className="my-1">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="inline-flex items-center gap-1.5 bg-surface0 hover:bg-surface1 rounded-full pl-2 pr-1.5 py-0.5 text-[10px] text-subtext0 transition-colors"
+        title={expanded ? "Collapse tool calls" : "Show all tool calls"}
+      >
+        <Wrench size={10} className="shrink-0 text-overlay0" />
+        <span className="font-medium">{pills.length} tool calls</span>
+        <span className="text-overlay0">{summarizeTools(tools)}</span>
+        {expanded ? <ChevronUp size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
+      </button>
+      {expanded && <div className="flex flex-wrap gap-1.5 mt-1">{pills}</div>}
+    </div>
+  );
+}
+
 function StepBlocks({ steps }: { steps: StreamingStep[] }) {
   const out: React.ReactNode[] = [];
   let pills: React.ReactNode[] = [];
+  let tools: ToolUse[] = [];
   const flush = (key: string) => {
     if (pills.length === 0) return;
-    out.push(<div key={`pills-${key}`} className="flex flex-wrap gap-1.5 my-1">{pills}</div>);
+    out.push(<ToolPillGroup key={`pills-${key}`} pills={pills} tools={tools} />);
     pills = [];
+    tools = [];
   };
   steps.forEach((step, j) => {
     if (step.content) {
@@ -105,7 +145,10 @@ function StepBlocks({ steps }: { steps: StreamingStep[] }) {
         </div>,
       );
     }
-    if (step.toolUse) pills.push(<ToolPill key={`t${j}`} tool={step.toolUse} />);
+    if (step.toolUse) {
+      pills.push(<ToolPill key={`t${j}`} tool={step.toolUse} />);
+      tools.push(step.toolUse);
+    }
   });
   flush("end");
   return <>{out}</>;
