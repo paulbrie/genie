@@ -18,8 +18,8 @@ export async function fetchServerMetricsHistory(hours: number): Promise<ServerMe
   return res.rows ?? [];
 }
 
-/** Fetch per-user request volume (Claude popup + Genie Chat + Terminal) for a
- *  trailing window. Pass a userId to get that user's per-surface breakdown. */
+/** Fetch per-user request volume (Assistant + VM Claude + Genie Chat + Terminal)
+ *  for a trailing window. Pass a userId to get that user's per-surface breakdown. */
 export async function fetchRequestsByUser(hours: number, userId?: string | null): Promise<RequestVolumeResult> {
   const res = await wsRequest<{ result?: RequestVolumeResult }>(
     "admin:server-metrics:requests-by-user",

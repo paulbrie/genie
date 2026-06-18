@@ -214,15 +214,17 @@ export async function getAnalyticsSummary(from: Date, filters: AnalyticsFilters 
   };
 }
 
-/** The three user-initiated "request" surfaces the Server dashboard stacks by
- *  user: Claude popup (assistant.message), Genie Chat (chat.message), and the
- *  Terminal (terminal.command_sent). These are exactly the inbound submits we
- *  already record as analytics events — no new instrumentation needed. */
-const REQUEST_EVENTS = ["assistant.message", "chat.message", "terminal.command_sent"] as const;
+/** The user-initiated "request" surfaces the Server dashboard stacks by user:
+ *  the floating assistant (assistant.message), the durable per-VM Claude window
+ *  (claude_stream.message), Genie Chat (chat.message), and the Terminal
+ *  (terminal.command_sent) — exactly the inbound submits we record as analytics
+ *  events. */
+const REQUEST_EVENTS = ["assistant.message", "claude_stream.message", "chat.message", "terminal.command_sent"] as const;
 
 /** Friendly per-surface labels used when the chart is filtered to one user. */
 const SURFACE_LABELS: Record<string, string> = {
-  "assistant.message": "Claude popup",
+  "assistant.message": "Assistant",
+  "claude_stream.message": "VM Claude",
   "chat.message": "Genie Chat",
   "terminal.command_sent": "Terminal",
 };

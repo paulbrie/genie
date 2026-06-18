@@ -176,7 +176,14 @@ export async function handleClaudeStreamMessage(
 
     case "claude:stream:input": {
       const { claudeStreamId, text } = msg.payload as { claudeStreamId?: string; text?: string };
-      if (claudeStreamId && typeof text === "string" && text.length > 0) sendClaudeStreamInput(claudeStreamId, text);
+      if (claudeStreamId && typeof text === "string" && text.length > 0) {
+        sendClaudeStreamInput(claudeStreamId, text);
+        // Count this submit toward the Server dashboard's "Requests by user" — the
+        // durable per-VM Claude window is its own request surface, distinct from
+        // the floating assistant's assistant.message. (projectId is omitted here;
+        // the session holds it server-side, and the by-user view doesn't need it.)
+        void analyticsService.recordEvent({ userId, userName: null, event: "claude_stream.message", props: {}, ip: null });
+      }
       return true;
     }
 

@@ -398,7 +398,7 @@ function RequestsByUserSection({
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-sm font-medium text-subtext0">
           Requests by user · last {rangeLabel}
-          <span className="text-overlay0 font-normal"> · Claude popup + Genie Chat + Terminal</span>
+          <span className="text-overlay0 font-normal"> · Assistant + VM Claude + Genie Chat + Terminal</span>
         </h2>
         <div className="w-64">
           <FilterableSelect
