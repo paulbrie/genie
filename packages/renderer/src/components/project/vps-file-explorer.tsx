@@ -353,7 +353,7 @@ export function FileExplorer({ project, instance }: {
     }
   }, [project.id, inst.id]);
 
-  const handleUpload = useCallback(async (files: FileList) => {
+  const handleUpload = useCallback(async (files: File[]) => {
     if (!inst || files.length === 0) return;
     uploadCancelRef.current = false;
     setUploading(true);
@@ -591,7 +591,11 @@ export function FileExplorer({ project, instance }: {
             tabIndex={-1}
             aria-hidden="true"
             onChange={(e) => {
-              if (e.target.files) handleUpload(e.target.files);
+              // Snapshot to a real array BEFORE the value reset below — resetting
+              // the input empties the live FileList that the async handleUpload
+              // iterates across its per-file awaits, which would otherwise drop
+              // every file after the first.
+              if (e.target.files?.length) handleUpload(Array.from(e.target.files));
               e.target.value = "";
             }}
           />
