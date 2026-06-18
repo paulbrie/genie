@@ -26,6 +26,18 @@ const PLAN_DIRECTIVE =
   "Do NOT modify files, write code, or run any mutating commands — read-only investigation only. " +
   "End with the plan and wait for my approval before making changes.";
 
+/** Context-window size (tokens) for the running model. Current Claude models are
+ *  200k unless the 1M-context beta is active; default to 200k. */
+function contextWindowFor(model: string): number {
+  return /\[1m\]|-1m\b/i.test(model) ? 1_000_000 : 200_000;
+}
+
+/** "47.2k" / "1.2k" / "920" — compact token count. */
+function fmtTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return String(n);
+}
+
 /** Compact "3m ago" / "2d ago" stamp for the session picker. */
 function relTime(ms: number): string {
   const s = Math.max(0, (Date.now() - ms) / 1000);
@@ -244,6 +256,20 @@ export function ClaudeStreamWindow({
     ac.onKeyDown(e);
   }, [ac, session?.loading, claudeStreamId]);
 
+  // Current context occupancy ≈ the most recent turn's prompt + output tokens
+  // (the conversation so far). Updates each completed turn.
+  const ctxTokens = useMemo(() => {
+    const msgs = session?.messages ?? [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const u = msgs[i]?.usage;
+      if (u && (u.inputTokens > 0 || u.outputTokens > 0)) return u.inputTokens + u.outputTokens;
+    }
+    return 0;
+  }, [session?.messages]);
+  const ctxWindow = contextWindowFor(session?.claudeInfo?.model ?? "");
+  const ctxPct = ctxWindow > 0 ? Math.min(1, ctxTokens / ctxWindow) : 0;
+  const ctxColor = ctxPct < 0.6 ? "bg-green" : ctxPct < 0.85 ? "bg-yellow" : "bg-red";
+
   if (!session) return null;
 
   const containerStyle: React.CSSProperties = maximized
@@ -411,9 +437,22 @@ export function ClaudeStreamWindow({
             )}
           </div>
 
-          {session.loading && (
-            <span className="ml-auto text-[10px] text-overlay0/60 tabular-nums">Esc to stop</span>
-          )}
+          <div className="ml-auto flex items-center gap-2">
+            {session.loading && (
+              <span className="text-[10px] text-overlay0/60 tabular-nums">Esc to stop</span>
+            )}
+            {ctxTokens > 0 && (
+              <div
+                className="flex items-center gap-1.5"
+                title={`Context used: ${ctxTokens.toLocaleString()} / ${ctxWindow.toLocaleString()} tokens (${Math.round(ctxPct * 100)}%)`}
+              >
+                <span className="text-[10px] text-overlay0/70 tabular-nums">{fmtTokens(ctxTokens)} / {fmtTokens(ctxWindow)}</span>
+                <div className="w-12 h-1 rounded-full bg-surface1 overflow-hidden">
+                  <div className={`h-full ${ctxColor} transition-all`} style={{ width: `${Math.max(2, ctxPct * 100)}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
