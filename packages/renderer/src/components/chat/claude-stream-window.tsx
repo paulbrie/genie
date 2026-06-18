@@ -120,6 +120,7 @@ export function ClaudeStreamWindow({
   const [minimized, setMinimized] = useState(false);
   const [fontSize] = useWindowFontSize();
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const ac = useChatAutocomplete({
     value: input,
@@ -142,13 +143,21 @@ export function ClaudeStreamWindow({
 
   // Auto-scroll to the latest message / streaming token. A bulk load (the first
   // render, or a server replay/resume that drops in many messages at once) jumps
-  // straight to the end with no animation; incremental updates scroll smoothly.
+  // straight to the end by setting scrollTop directly — no animation, and a rAF
+  // re-pins after late layout (markdown/images). Incremental updates (a new turn,
+  // streaming tokens) scroll smoothly.
   const prevMsgLen = useRef(0);
   useEffect(() => {
     const len = session?.messages.length ?? 0;
     const bulk = prevMsgLen.current === 0 || len - prevMsgLen.current > 1;
     prevMsgLen.current = len;
-    endRef.current?.scrollIntoView({ behavior: bulk ? "auto" : "smooth", block: "end" });
+    if (bulk) {
+      const pin = () => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; };
+      pin();
+      requestAnimationFrame(pin);
+    } else {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
   }, [session?.messages, session?.streamingContent, session?.streamingSteps, session?.loading]);
 
   // Open toward the right and cascade per window, so it doesn't land dead-center
@@ -325,6 +334,7 @@ export function ClaudeStreamWindow({
 
       {/* Messages */}
       <div
+        ref={scrollRef}
         className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2 scrollbar-thin min-h-0"
         role="log"
         aria-live="polite"
