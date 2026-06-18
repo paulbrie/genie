@@ -1,15 +1,11 @@
 import { $claudeStream } from "../subjects/claude-stream";
 import { emptyClaudeStreamSession, type ClaudeStreamSession, type ClaudeSessionSummary } from "../types/claude-stream";
-import { chatStreamIdForTmux } from "@/lib/claude-session-id";
+import { chatStreamIdForTmux, claudeChatStreamId } from "@/lib/claude-session-id";
 import { wsSend, wsRequest } from "@/lib/ws";
 
-/** A fresh, unique chat-session tmux name — each "open chat" spawns a new session
- *  + popup (mirrors the terminal's freshClaudeTmuxName). The `claude-chat-` prefix
- *  makes the tmux badge read as Claude (logo + orange). Right-clicking an existing
- *  one reattaches to it instead (it passes its own name). */
-function freshGchatTmuxName(): string {
-  return `claude-chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-}
+// Bumped each time a chat is (re)opened so the windows container can bring an
+// already-mounted window to the front (re-clicking the "Claude" button).
+let focusNonce = 0;
 
 /** Mutate a single session in the map (no-op if it's gone). */
 export function updateClaudeStreamSession(
@@ -61,9 +57,23 @@ export async function openClaudeChatWindow(args: {
   /** Resume a prior on-disk Claude session into this window. */
   resumeSessionId?: string;
 }): Promise<string> {
-  const tmuxName = args.tmuxName ?? freshGchatTmuxName();
-  const claudeStreamId = await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, tmuxName);
-  openClaudeStream({ claudeStreamId, projectId: args.projectId, instanceId: args.instanceId, label: args.label, tmuxName, resumeSessionId: args.resumeSessionId });
+  // Derive a STABLE id so repeated opens reuse (and re-focus) one window instead
+  // of spawning a duplicate that --resumes the same session — the bug where every
+  // click of the "Claude" button stacked an identical popup:
+  //   - explicit tmuxName (a gchat-* badge)   → per-session window;
+  //   - resumeSessionId (the Sessions picker) → one window per resumed session;
+  //   - otherwise (the Manage "Claude" button) → the VM's single default chat.
+  // tmuxName stays undefined for the latter two so the manager derives a stable
+  // tmux name from the (stable) claudeStreamId.
+  const claudeStreamId = args.tmuxName
+    ? await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, args.tmuxName)
+    : args.resumeSessionId
+      ? await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, `resume-${args.resumeSessionId}`)
+      : await claudeChatStreamId(args.ownerId, args.projectId, args.instanceId);
+  openClaudeStream({ claudeStreamId, projectId: args.projectId, instanceId: args.instanceId, label: args.label, tmuxName: args.tmuxName, resumeSessionId: args.resumeSessionId });
+  // Bring the (possibly already-open) window to the front.
+  const s = $claudeStream.getValue();
+  $claudeStream.next({ ...s, focusRequest: { claudeStreamId, nonce: ++focusNonce } });
   return claudeStreamId;
 }
 

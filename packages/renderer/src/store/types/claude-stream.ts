@@ -40,6 +40,10 @@ export interface ClaudeStreamSession {
 
 export interface ClaudeStreamState {
   sessions: Record<string, ClaudeStreamSession>;
+  /** Set when the user (re)opens a chat so the windows container can bring that
+   *  window to the front even if it was already mounted. The nonce lets the same
+   *  id be re-focused on repeat clicks. */
+  focusRequest?: { claudeStreamId: string; nonce: number };
 }
 
 /** A prior on-disk Claude session (from `~/.claude/projects/<cwd>/*.jsonl`),

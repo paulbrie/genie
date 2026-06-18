@@ -75,6 +75,14 @@ export function ClaudeStreamWindows() {
   const [state] = useSubject($claudeStream);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const ids = Object.keys(state.sessions);
+  // Re-opening a chat (e.g. clicking the Manage "Claude" button again) brings its
+  // window to the front even when it was already mounted. Keyed off the nonce so
+  // re-focusing the same id fires.
+  const focusReq = state.focusRequest;
+  useEffect(() => {
+    if (focusReq && state.sessions[focusReq.claudeStreamId]) setFocusedId(focusReq.claudeStreamId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusReq?.nonce]);
   return (
     <>
       {ids.map((id, i) => (
