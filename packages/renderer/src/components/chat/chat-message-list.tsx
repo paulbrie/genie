@@ -74,6 +74,13 @@ export const assistantMarkdownComponents = {
 /** Render a turn's steps: markdown content as blocks, and runs of consecutive
  *  tool calls grouped into a single inline (flex-wrap) row of pills — so
  *  back-to-back tool uses sit side by side instead of stacking one per line. */
+/** Hide the `[Image: /tmp/…]` markers we append to the message text for Claude
+ *  — the pasted thumbnails already render above the bubble, so the raw path is
+ *  noise in the UI. */
+function stripImageRefs(content: string): string {
+  return content.replace(/\n*\[Image:[^\]]*\]/g, "").trim();
+}
+
 function StepBlocks({ steps }: { steps: StreamingStep[] }) {
   const out: React.ReactNode[] = [];
   let pills: React.ReactNode[] = [];
@@ -146,9 +153,9 @@ export function ChatMessageList({
                   ))}
                 </div>
               )}
-              {msg.content && (
+              {stripImageRefs(msg.content) && (
                 <div className="px-2.5 py-1.5 rounded-lg text-md break-words chat-message-content bg-surface0 text-text rounded-br-sm whitespace-pre-wrap">
-                  {msg.content}
+                  {stripImageRefs(msg.content)}
                 </div>
               )}
             </div>
