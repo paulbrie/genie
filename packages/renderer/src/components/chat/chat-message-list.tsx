@@ -71,6 +71,34 @@ export const assistantMarkdownComponents = {
   p: (props: React.HTMLAttributes<HTMLParagraphElement>) => <p className="my-1.5 first:mt-0 last:mb-0 leading-snug" {...props} />,
 };
 
+/** Render a turn's steps: markdown content as blocks, and runs of consecutive
+ *  tool calls grouped into a single inline (flex-wrap) row of pills — so
+ *  back-to-back tool uses sit side by side instead of stacking one per line. */
+function StepBlocks({ steps }: { steps: StreamingStep[] }) {
+  const out: React.ReactNode[] = [];
+  let pills: React.ReactNode[] = [];
+  const flush = (key: string) => {
+    if (pills.length === 0) return;
+    out.push(<div key={`pills-${key}`} className="flex flex-wrap gap-1.5 my-1">{pills}</div>);
+    pills = [];
+  };
+  steps.forEach((step, j) => {
+    if (step.content) {
+      flush(`c${j}`);
+      out.push(
+        <div key={`c${j}`} className="chat-markdown select-text cursor-text">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
+            {step.content}
+          </ReactMarkdown>
+        </div>,
+      );
+    }
+    if (step.toolUse) pills.push(<ToolPill key={`t${j}`} tool={step.toolUse} />);
+  });
+  flush("end");
+  return <>{out}</>;
+}
+
 export interface ChatMessageListProps {
   messages: ChatMessage[];
   streamingContent: string;
@@ -128,22 +156,7 @@ export function ChatMessageList({
             <ChatErrorBubble content={msg.content} onRetry={onRetry} />
           ) : msg.steps ? (
             <div className={cn("max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text text-text rounded-bl-sm")}>
-              {msg.steps.map((step, j) => (
-                <div key={j}>
-                  {step.content && (
-                    <div className="chat-markdown select-text cursor-text">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
-                        {step.content}
-                      </ReactMarkdown>
-                    </div>
-                  )}
-                  {step.toolUse && (
-                    <div className="my-1">
-                      <ToolPill tool={step.toolUse} />
-                    </div>
-                  )}
-                </div>
-              ))}
+              <StepBlocks steps={msg.steps} />
             </div>
           ) : (
             <>
@@ -171,22 +184,7 @@ export function ChatMessageList({
       {loading && (streamingSteps.length > 0 || streamingContent) && (
         <div className="flex flex-col items-start">
           <div className="max-w-[90%] px-2.5 py-1.5 rounded-lg text-md text-text rounded-bl-sm select-text cursor-text">
-            {streamingSteps.map((step, i) => (
-              <div key={i}>
-                {step.content && (
-                  <div className="chat-markdown select-text cursor-text">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
-                      {step.content}
-                    </ReactMarkdown>
-                  </div>
-                )}
-                {step.toolUse && (
-                  <div className="my-1">
-                    <ToolPill tool={step.toolUse} />
-                  </div>
-                )}
-              </div>
-            ))}
+            <StepBlocks steps={streamingSteps} />
             {streamingContent && (
               <div className="chat-markdown select-text cursor-text">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
