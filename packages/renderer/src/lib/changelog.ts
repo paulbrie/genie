@@ -24,6 +24,18 @@ export interface ChangelogEntry {
 /** Latest entry first. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2026-06-18",
+    date: "June 18, 2026",
+    title: "Claude Chat upgrades",
+    items: [
+      "Plan mode: toggle it on and Claude researches and proposes a plan before changing anything.",
+      "Sessions: reopen and continue any previous Claude session — the full conversation loads back in.",
+      "Live token usage, cost, thinking time, and a meter for how much of the context window you've used.",
+      "Long runs of tool calls collapse into a single expandable pill instead of a long list.",
+      "Click a Claude session pill to open it as a chat — Enter sends, Esc stops.",
+    ],
+  },
+  {
     version: "2026-05-25",
     date: "May 25, 2026",
     title: "Topology + What's New",
