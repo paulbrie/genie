@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Square, Send, X, Minus, Maximize2, Minimize2, Loader2 } from "lucide-react";
+import { Square, X, Minus, Maximize2, Minimize2, Loader2 } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
 import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage } from "@/store/actions/claude-stream";
 import { ClaudeLogo } from "@/components/project/project-detail";
@@ -170,6 +170,17 @@ export function ClaudeStreamWindow({
     ac.close();
   }, [input, pendingImages, claudeStreamId, ac]);
 
+  // Enter sends (AutoTextarea onSubmit); Esc stops a running generation — but let
+  // the autocomplete swallow Esc first (to close its dropdown).
+  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape" && !ac.open && session?.loading) {
+      e.preventDefault();
+      stopClaudeStream(claudeStreamId);
+      return;
+    }
+    ac.onKeyDown(e);
+  }, [ac, session?.loading, claudeStreamId]);
+
   if (!session) return null;
 
   const containerStyle: React.CSSProperties = maximized
@@ -277,7 +288,7 @@ export function ClaudeStreamWindow({
             ref={taRef}
             value={input}
             onChange={ac.onChange}
-            onKeyDown={ac.onKeyDown}
+            onKeyDown={onKeyDown}
             onSubmit={handleSend}
             onPaste={handlePaste}
             placeholder="Message Claude — type / for commands, @ for files, paste an image…"
@@ -285,24 +296,15 @@ export function ClaudeStreamWindow({
             className="w-full bg-surface0 border border-surface1 rounded-md px-2.5 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-peach"
           />
         </div>
-        {session.loading ? (
+        {/* No send button — Enter sends. While generating, a Stop button (and Esc) interrupts. */}
+        {session.loading && (
           <button
             onClick={() => stopClaudeStream(claudeStreamId)}
             className="p-1.5 rounded-md bg-red text-background hover:bg-red/80 transition-colors shrink-0"
-            title="Stop generating"
+            title="Stop generating (Esc)"
             aria-label="Stop generating"
           >
             <Square size={12} />
-          </button>
-        ) : (
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() && !pendingImages.some((im) => im.remotePath)}
-            className="p-1.5 rounded-md bg-peach text-background hover:bg-peach/80 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Send"
-            aria-label="Send message"
-          >
-            <Send size={12} />
           </button>
         )}
         </div>
