@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Square, X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check } from "lucide-react";
+import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
 import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow } from "@/store/actions/claude-stream";
 import { $auth } from "@/store/subjects";
@@ -363,17 +363,7 @@ export function ClaudeStreamWindow({
             className="w-full bg-surface0 border border-surface1 rounded-md px-2.5 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-peach"
           />
         </div>
-        {/* No send button — Enter sends. While generating, a Stop button (and Esc) interrupts. */}
-        {session.loading && (
-          <button
-            onClick={() => stopClaudeStream(claudeStreamId)}
-            className="p-1.5 rounded-md bg-red text-background hover:bg-red/80 transition-colors shrink-0"
-            title="Stop generating (Esc)"
-            aria-label="Stop generating"
-          >
-            <Square size={12} />
-          </button>
-        )}
+        {/* No send/stop buttons — Enter sends, Esc stops a running generation. */}
         </div>
 
         {/* Controls: plan-mode toggle + prior-session picker */}
@@ -420,6 +410,10 @@ export function ClaudeStreamWindow({
               </>
             )}
           </div>
+
+          {session.loading && (
+            <span className="ml-auto text-[10px] text-overlay0/60 tabular-nums">Esc to stop</span>
+          )}
         </div>
       </div>
 

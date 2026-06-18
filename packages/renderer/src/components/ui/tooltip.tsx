@@ -17,7 +17,10 @@ const TooltipContent = React.forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        "z-[100000] max-w-[280px] rounded-md bg-crust border border-surface0 px-2.5 py-1.5 text-base text-text shadow-lg shadow-black/50",
+        // Above the floating chat windows (z ~2,000,000) and context menus
+        // (~2,000,000,001) so a tool pill's hover detail is never hidden behind
+        // the popup it lives in.
+        "z-[2000000050] max-w-[280px] rounded-md bg-crust border border-surface0 px-2.5 py-1.5 text-base text-text shadow-lg shadow-black/50",
         "animate-in fade-in-0 zoom-in-95",
         className
       )}
