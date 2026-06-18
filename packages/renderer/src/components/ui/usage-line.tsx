@@ -16,8 +16,10 @@ export function formatDuration(ms: number): string {
 }
 
 /** Per-turn footer: model · tokens in/out · cost · thinking time. Every field is
- *  optional — renders nothing when there's nothing to show. */
-export function UsageLine({ usage, thinkingMs }: { usage?: ChatMessageUsage; thinkingMs?: number }) {
+ *  optional — renders nothing when there's nothing to show. `showCost` is false
+ *  when the run is on a CLI subscription, where the reported cost is a would-be
+ *  figure, not actual spend. */
+export function UsageLine({ usage, thinkingMs, showCost = true }: { usage?: ChatMessageUsage; thinkingMs?: number; showCost?: boolean }) {
   const hasUsage = !!usage && (usage.inputTokens > 0 || usage.outputTokens > 0);
   const hasTime = typeof thinkingMs === "number" && thinkingMs > 0;
   if (!hasUsage && !hasTime) return null;
@@ -32,7 +34,7 @@ export function UsageLine({ usage, thinkingMs }: { usage?: ChatMessageUsage; thi
             </>
           )}
           <span>{usage!.inputTokens.toLocaleString()} in / {usage!.outputTokens.toLocaleString()} out</span>
-          {usage!.cost > 0 && (
+          {showCost && usage!.cost > 0 && (
             <>
               <span className="text-overlay0/40">|</span>
               <span>{formatCost(usage!.cost)}</span>

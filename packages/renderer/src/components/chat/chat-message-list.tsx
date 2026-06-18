@@ -166,6 +166,9 @@ export interface ChatMessageListProps {
   onRetry?: () => void;
   /** Rendered when there are no messages and nothing is streaming. */
   emptyState?: React.ReactNode;
+  /** Show per-turn cost in the footer. False on CLI-subscription sessions, where
+   *  the reported cost isn't actual spend. Defaults to true. */
+  showCost?: boolean;
 }
 
 /** Shared conversation renderer for the Genie Assistant and the durable
@@ -183,6 +186,7 @@ export function ChatMessageList({
   toolRoundsUsed = 0,
   onRetry,
   emptyState,
+  showCost = true,
 }: ChatMessageListProps) {
   // Continuous elapsed timer for the in-flight turn — starts when `loading`
   // flips true and ticks until it clears, so the count survives the
@@ -246,7 +250,7 @@ export function ChatMessageList({
             </>
           )}
           {msg.role === "assistant" && (msg.usage || msg.thinkingMs) && (
-            <UsageLine usage={msg.usage} thinkingMs={msg.thinkingMs} />
+            <UsageLine usage={msg.usage} thinkingMs={msg.thinkingMs} showCost={showCost} />
           )}
         </div>
       ))}

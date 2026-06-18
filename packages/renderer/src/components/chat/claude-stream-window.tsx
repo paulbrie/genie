@@ -342,6 +342,9 @@ export function ClaudeStreamWindow({
         style={{ zoom: WINDOW_FONT_SCALE[fontSize] } as React.CSSProperties}
       >
         <ChatMessageList
+          // Cost is real spend only on the API-key fallback; on the VM's CLI
+          // subscription the reported figure is a would-be cost, so hide it.
+          showCost={session.claudeInfo?.plan === "API Key"}
           messages={session.messages}
           streamingContent={session.streamingContent}
           streamingSteps={session.streamingSteps}
