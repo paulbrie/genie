@@ -456,13 +456,13 @@ function ClaudeManageButton({
   return (
     <div className="relative flex items-stretch" ref={menuRef}>
       <button
-        onClick={openClaude}
+        onClick={openChat}
         disabled={!enabled}
         className={cn(
           "flex items-center gap-1.5 pl-2 pr-2 py-0.5 rounded-l-md border border-peach/30 text-md text-peach outline-none transition-colors",
           enabled ? "hover:bg-peach/10" : "opacity-40 cursor-not-allowed",
         )}
-        title={reason ?? `Launch Claude in a tmux session (survives SSH drops, reattach from the tmux row) — ${sshUser}@${vm.host}`}
+        title={reason ?? `Open Claude Chat for ${vm.name} (use the menu for a terminal session)`}
       >
         <ClaudeLogo size={11} />
         Claude
@@ -485,22 +485,22 @@ function ClaudeManageButton({
       {menuOpen && enabled && (
         <div className="absolute top-full right-0 mt-1 bg-mantle border border-surface0 rounded-lg shadow-lg shadow-black/40 py-1 min-w-[160px] z-50 overflow-hidden">
           <button
+            onClick={() => { openChat(); setMenuOpen(false); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-peach hover:bg-surface0 outline-none transition-colors text-left"
+            style={{ fontSize: 12 }}
+          >
+            <ClaudeLogo size={12} />
+            <span className="flex-1">Claude Chat</span>
+            <span className="text-overlay0" style={{ fontSize: 10 }}>default</span>
+            <span className="px-1 py-px rounded bg-mauve/15 text-mauve" style={{ fontSize: 9 }}>beta</span>
+          </button>
+          <button
             onClick={() => { openClaude(); setMenuOpen(false); }}
             className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 outline-none transition-colors text-left"
             style={{ fontSize: 12 }}
           >
             <Terminal size={12} className="text-peach shrink-0" />
             <span className="flex-1">Terminal</span>
-            <span className="text-overlay0" style={{ fontSize: 10 }}>default</span>
-          </button>
-          <button
-            onClick={() => { openChat(); setMenuOpen(false); }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 outline-none transition-colors text-left"
-            style={{ fontSize: 12 }}
-          >
-            <Bot size={12} className="text-mauve shrink-0" />
-            <span className="flex-1">Chat</span>
-            <span className="px-1 py-px rounded bg-mauve/15 text-mauve" style={{ fontSize: 9 }}>beta</span>
           </button>
         </div>
       )}
