@@ -36,6 +36,8 @@ jq -r '.[].path' "$MANIFEST" | while IFS= read -r REPO; do
     git -c user.email=autosave@genie -c user.name=Genie commit -m "Auto-save $TS" --quiet || continue
     if git remote | head -1 | grep -q .; then
       git push --quiet 2>&1 || true
+    else
+      echo "[$TS] $REPO: committed but NO git remote configured — skipping push"
     fi
   fi
 done

@@ -46,6 +46,36 @@ async function runOnVm(
   }
 }
 
+/** Point the VM repo's `origin` at the linked URL (idempotent). Only touches an
+ *  existing work tree — never inits — so a clone-pending/missing repo is left to
+ *  the explicit init/clone actions. Without this, the auto-save daemon commits
+ *  but silently skips `git push` (no remote), so commits pile up unpushed. */
+async function wireRemoteOnVm(s: SshSession, repoPath: string, repoUrl: string): Promise<void> {
+  const q = shellQuote(repoPath);
+  const url = shellQuote(repoUrl);
+  await s.exec(
+    `cd ${q} 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ` +
+      `(git remote set-url origin ${url} 2>/dev/null || git remote add origin ${url}) || true`,
+    undefined,
+    { timeoutMs: 20_000 },
+  );
+}
+
+/** Bring the VM in line with a repo row: wire `origin` to the linked URL and
+ *  reconcile the auto-save daemon from the DB — both in one SSH session.
+ *  syncAutoSaveOnVm is unconditional so enabling AND disabling auto-save both
+ *  take effect (it adds/removes the repo from the on-VM manifest). */
+async function reconcileVmForRepo(
+  projectId: string,
+  instanceId: string,
+  row: gitRepoService.VpsGitRepoPublic,
+): Promise<void> {
+  await runOnVm(projectId, instanceId, async (s) => {
+    if (row.repoUrl) await wireRemoteOnVm(s, row.repoPath, row.repoUrl);
+    await syncAutoSaveOnVm(s, projectId, instanceId);
+  });
+}
+
 export async function handleVpsGitReposMessage(
   ws: WebSocket,
   msg: WsMessage,
@@ -95,9 +125,10 @@ export async function handleVpsGitReposMessage(
         const row = await gitRepoService.add({
           projectId, instanceId, repoUrl, repoPath, provider, token, autoSave, createdBy: userId,
         });
-        if (row.autoSave) {
-          await runOnVm(projectId, instanceId, (s) => syncAutoSaveOnVm(s, projectId, instanceId));
-        }
+        // Wire `origin` on the box (and provision auto-save if enabled) so the
+        // hourly daemon can actually push — linking a URL alone used to leave the
+        // VM clone remote-less.
+        await reconcileVmForRepo(projectId, instanceId, row);
         reply("vps:git:repos:upserted", { repo: row });
         broadcastStale();
         return true;
@@ -113,7 +144,7 @@ export async function handleVpsGitReposMessage(
         // Reconcile whenever the patch could have changed daemon state:
         // autoSave flips, token changes, repo path changes.
         if (patch && ("autoSave" in patch || "token" in patch || "repoPath" in patch || "repoUrl" in patch)) {
-          await runOnVm(projectId, instanceId, (s) => syncAutoSaveOnVm(s, projectId, instanceId));
+          await reconcileVmForRepo(projectId, instanceId, row);
         }
         reply("vps:git:repos:upserted", { repo: row });
         broadcastStale();
@@ -134,7 +165,9 @@ export async function handleVpsGitReposMessage(
         const { id, enabled } = msg.payload as { id: string; enabled: boolean };
         const row = await gitRepoService.update(id, { autoSave: enabled });
         if (!row) throw new Error("Repo not found");
-        await runOnVm(projectId, instanceId, (s) => syncAutoSaveOnVm(s, projectId, instanceId));
+        // Ensure origin is wired too, so enabling auto-save actually results in
+        // pushes (not just local commits).
+        await reconcileVmForRepo(projectId, instanceId, row);
         reply("vps:git:repos:upserted", { repo: row });
         broadcastStale();
         return true;
