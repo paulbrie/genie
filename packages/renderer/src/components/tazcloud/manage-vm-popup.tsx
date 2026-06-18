@@ -331,12 +331,12 @@ function SyncStatsAgentButton({ projectId, instanceId }: { projectId: string; in
  *  without an SSH session — runs on the manager's dedicated probe connection. */
 function SshStartupsButton({ projectId, instanceId }: { projectId: string; instanceId: string }) {
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ maxStartups: string | null; dropsLastHour: number; established: number; preauth: number; error?: string } | null>(null);
+  const [result, setResult] = useState<{ maxStartups: string | null; dropsLastHour: number; established: number; preauth: number; journalOk?: boolean; error?: string } | null>(null);
 
   const run = async () => {
     setLoading(true);
     try {
-      const r = await wsRequest<{ maxStartups: string | null; dropsLastHour: number; established: number; preauth: number; error?: string }>(
+      const r = await wsRequest<{ maxStartups: string | null; dropsLastHour: number; established: number; preauth: number; journalOk?: boolean; error?: string }>(
         "vps:ssh-startups:probe", { projectId, instanceId }, 20_000,
       );
       setResult(r);
@@ -347,14 +347,19 @@ function SshStartupsButton({ projectId, instanceId }: { projectId: string; insta
     }
   };
 
+  // The journal must be readable for the drop count to mean anything — otherwise
+  // "0 drop/h" is "couldn't tell", not "none".
+  const journalUnreadable = !!result && !result.error && result.journalOk === false;
   const saturated = !!result && !result.error && result.dropsLastHour > 0;
   const label = loading
     ? "Checking SSH…"
     : result?.error
       ? "SSH check failed"
-      : result
-        ? `MaxStartups ${result.maxStartups ?? "?"} · ${result.dropsLastHour} drop/h · ${result.preauth} in-flight`
-        : "Check SSH startups";
+      : journalUnreadable
+        ? `MaxStartups ${result!.maxStartups ?? "?"} · drops unknown`
+        : result
+          ? `MaxStartups ${result.maxStartups ?? "?"} · ${result.dropsLastHour} drop/h · ${result.preauth} in-flight`
+          : "Check SSH startups";
 
   return (
     <button
@@ -365,7 +370,7 @@ function SshStartupsButton({ projectId, instanceId }: { projectId: string; insta
         "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-60 disabled:cursor-wait",
         result?.error
           ? "border-red/30 text-red hover:bg-red/10"
-          : saturated
+          : saturated || journalUnreadable
             ? "border-peach/40 text-peach hover:bg-peach/10"
             : result
               ? "border-green/30 text-green hover:bg-green/10"
@@ -373,7 +378,9 @@ function SshStartupsButton({ projectId, instanceId }: { projectId: string; insta
       )}
       title={
         result && !result.error
-          ? `MaxStartups ${result.maxStartups ?? "?"} (start:rate:full) · ${result.dropsLastHour} dropped in the last hour · ${result.established} established on :22 · ${result.preauth} handshakes in flight`
+          ? journalUnreadable
+            ? `MaxStartups ${result.maxStartups ?? "?"} — journal not readable, so drop count is unavailable. ${result.established} established on :22 · ${result.preauth} handshakes in flight`
+            : `MaxStartups ${result.maxStartups ?? "?"} (start:rate:full) · ${result.dropsLastHour} dropped in the last hour · ${result.established} established on :22 (incl. Genie's own tunnels) · ${result.preauth} handshakes in flight (point-in-time — drops/h is the reliable signal)`
           : "Read this VM's sshd MaxStartups, drops in the last hour, and in-flight handshakes"
       }
     >

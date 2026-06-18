@@ -147,16 +147,21 @@ async function readMaxStartupsConfig(): Promise<string | null> {
 }
 
 /** Count "past MaxStartups" connection-drop log lines in the journal window
- *  `(sinceSec, untilSec]`. Bounded to the interval so the journal scan stays
- *  cheap. Returns 0 on the first tick (no baseline) or if journalctl is
- *  unavailable. The unit is `ssh` on Debian/Ubuntu and `sshd` elsewhere — match
- *  both. */
+ *  `(sinceSec, untilSec]`. Bounded to the interval so the scan stays cheap.
+ *  Returns 0 on the first tick (no baseline) or if journalctl is unavailable.
+ *
+ *  Deliberately NOT scoped to `-u ssh`/`-u sshd`: depending on the distro sshd
+ *  runs as `ssh.service`, `sshd.service`, or socket-activated per-connection
+ *  `ssh@.service` units, so a unit filter silently under-counts (a false zero).
+ *  `past MaxStartups` is an unmistakable sshd string, so a journal-wide grep is
+ *  both safe (no false positives) and robust across all those modes. The daemon
+ *  runs as root, so it can read the whole journal. */
 async function readMaxStartupsDrops(sinceSec: number | null, untilSec: number): Promise<number> {
   if (sinceSec == null) return 0;
   try {
     const { stdout } = await execFileAsync(
       "journalctl",
-      ["-u", "ssh", "-u", "sshd", "--since", `@${sinceSec}`, "--until", `@${untilSec}`, "-g", "past MaxStartups", "-o", "cat", "--no-pager"],
+      ["--since", `@${sinceSec}`, "--until", `@${untilSec}`, "-g", "past MaxStartups", "-o", "cat", "--no-pager"],
       { maxBuffer: 256 * 1024 },
     );
     return stdout.split("\n").filter((l) => l.includes("MaxStartups")).length;

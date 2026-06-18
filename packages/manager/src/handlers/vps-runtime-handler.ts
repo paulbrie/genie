@@ -102,9 +102,14 @@ export async function handleVpsRuntimeMessage(
       try {
         const conn = await getVpsConnection(projectId, instanceId);
         const shellOpts = { host: conn.host, port: conn.port ?? 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
+        // Count drops journal-wide (NOT scoped to -u ssh/sshd): sshd may run as
+        // ssh.service, sshd.service, or socket-activated ssh@.service, so a unit
+        // filter would silently under-count. "past MaxStartups" is unmistakably
+        // sshd. JOURNAL_OK lets the UI tell a true zero from "couldn't read".
         const script = [
           `echo "MAXSTARTUPS=$(sudo sshd -T 2>/dev/null | awk '/^maxstartups/{print $2}')"`,
-          `echo "DROPS_1H=$(sudo journalctl -u ssh -u sshd --since '-1h' -g 'past MaxStartups' -o cat --no-pager 2>/dev/null | grep -c MaxStartups)"`,
+          `echo "JOURNAL_OK=$(sudo journalctl -n0 --no-pager >/dev/null 2>&1 && echo 1 || echo 0)"`,
+          `echo "DROPS_1H=$(sudo journalctl --since '-1h' -g 'past MaxStartups' -o cat --no-pager 2>/dev/null | grep -c 'past MaxStartups')"`,
           `echo "ESTABLISHED=$(ss -tnH state established '( sport = :22 )' 2>/dev/null | wc -l)"`,
           `echo "PREAUTH=$(ps -eo cmd= 2>/dev/null | grep -E 'sshd(-session)?: \\[(accepted|net)\\]|sshd: unknown' | grep -vc grep)"`,
         ].join("; ");
@@ -116,6 +121,7 @@ export async function handleVpsRuntimeMessage(
           dropsLastHour: parseInt(get("DROPS_1H"), 10) || 0,
           established: parseInt(get("ESTABLISHED"), 10) || 0,
           preauth: parseInt(get("PREAUTH"), 10) || 0,
+          journalOk: get("JOURNAL_OK") === "1",
         } });
       } catch (err: unknown) {
         send(ws, { type: "vps:ssh-startups:result", payload: { projectId, instanceId, reqId, error: err instanceof Error ? err.message : "probe failed" } });
