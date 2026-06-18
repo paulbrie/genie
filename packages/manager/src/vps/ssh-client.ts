@@ -8,6 +8,7 @@ import { dbgSsh } from "../debug/debug-ssh-log.js";
 import { getActiveSshConnections, sshConnRegister, sshConnUnregister, sshConnMarkConnected, captureSshOpenerStack } from "./ssh-metrics.js";
 import { shouldRouteViaSocks, socksDial, tazSocksProxy } from "./socks-dial.js";
 import { recordSshEvent, classifySshDisconnect } from "./ssh-events.js";
+import { withHandshakeGate } from "./ssh-handshake-gate.js";
 
 /** Reject obvious SSRF / internal targets when a user connects an arbitrary SSH
  *  host. Blocks loopback, link-local, and cloud metadata addresses. Not a full
@@ -507,7 +508,29 @@ export function buildConnectOptions(
   };
 }
 
+export interface ConnectSshOpts {
+  timeoutMs?: number;
+  /** Clear cached session slot when this connection closes. */
+  onSessionClosed?: () => void;
+  /** Extra handshake attempts on a banner-less reset (MaxStartups). Defaults to
+   *  the gate's HANDSHAKE_RETRIES; pass 0 for fast-fail callers (probing which
+   *  user/key works, liveness loops that own their own retry). */
+  retries?: number;
+}
+
+/** Open one SSH connection, throttled by the per-host handshake gate so a burst
+ *  of concurrent dials to the same VM can't trip its sshd MaxStartups (see
+ *  ssh-handshake-gate.ts). All callers funnel through here, so the cap is global
+ *  per target host. */
 export async function connectSsh(
+  config: SshConnectionConfig,
+  opts?: ConnectSshOpts,
+): Promise<SshSession> {
+  const gateKey = `${config.host}:${config.port}`; // MaxStartups is per target sshd
+  return withHandshakeGate(gateKey, () => dialOnce(config, opts), { retries: opts?.retries });
+}
+
+async function dialOnce(
   config: SshConnectionConfig,
   opts?: { timeoutMs?: number; /** Clear cached session slot when this connection closes. */ onSessionClosed?: () => void },
 ): Promise<SshSession> {

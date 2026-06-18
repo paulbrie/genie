@@ -250,6 +250,12 @@ async function onTailDropped(id: string): Promise<void> {
   if (!st || st.closing || st.tail === null) return;
   st.tail = null;
   console.warn(`[claude-stream:${id}] tail dropped, reconnecting (from line ${st.linesConsumed + 1})`);
+  // Brief jittered backoff before re-dialing. A flapping link (or a burst of
+  // tail drops across sessions sharing a VM) would otherwise re-dial in lockstep
+  // and hammer the VM's sshd MaxStartups. connectSsh's gate caps concurrency too,
+  // but spacing the retry avoids a tight reconnect loop on a persistently bad link.
+  await new Promise((r) => setTimeout(r, 300 + Math.floor(Math.random() * 500)));
+  if (st.closing || streams.get(id) !== st) return; // closed/replaced during the backoff
   try {
     st.conn = await connectSsh(st.shellOpts, { timeoutMs: 30_000 });
     await startTail(st, id, st.linesConsumed + 1);
