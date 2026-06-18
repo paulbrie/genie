@@ -223,7 +223,7 @@ function TmuxPill({
             ? "border-2 border-peach bg-peach/35 text-peach font-semibold shadow-sm shadow-peach/25"
             : "border-2 border-green bg-green/20 text-green font-semibold shadow-sm shadow-green/20"
           : isClaude
-            ? "border border-transparent bg-peach/15 text-peach hover:bg-peach/25"
+            ? "border border-peach/40 bg-peach/15 text-peach hover:bg-peach/25 hover:border-peach/60"
             : "border border-transparent bg-surface0 text-overlay1 hover:text-text hover:bg-surface1",
         !isActive && session.attached && "ring-1 ring-overlay0/40",
       )}
