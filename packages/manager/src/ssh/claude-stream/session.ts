@@ -448,6 +448,29 @@ export function sendClaudeStreamInput(id: string, text: string): void {
     });
 }
 
+/** Run a one-off shell command on the session's VM (the chat's `!cmd` bang mode)
+ *  in the project dir, capturing combined stdout+stderr and the exit code. Output
+ *  is truncated to keep the round-trip small. Non-interactive (no PTY). */
+export async function runClaudeStreamBash(id: string, command: string, dest: string): Promise<{ output: string; exitCode: number }> {
+  const st = streams.get(id);
+  if (!st) throw new Error("Claude session is not running");
+  const marker = "__GENIE_RC__:";
+  // Run in a brace group so multi-word/compound commands work; append the exit
+  // code via a marker (the overall line still exits 0, so exec won't throw).
+  const full = `cd ${shellSingleQuote(dest)} 2>/dev/null; { ${command}\n; } 2>&1; printf '\\n${marker}%s' "$?"`;
+  const raw = await st.conn.exec(full, undefined, { timeoutMs: 30_000 });
+  let output = raw;
+  let exitCode = 0;
+  const idx = raw.lastIndexOf(marker);
+  if (idx >= 0) {
+    exitCode = parseInt(raw.slice(idx + marker.length).trim(), 10) || 0;
+    output = raw.slice(0, idx);
+  }
+  output = output.replace(/\n+$/, "");
+  if (output.length > 12_000) output = output.slice(0, 12_000) + "\n…(truncated)";
+  return { output, exitCode };
+}
+
 /** Write a (pasted) file to the VM over the session's SSH connection. Returns the
  *  remote path so the caller can reference it in a chat message. */
 export async function writeClaudeStreamFile(id: string, remotePath: string, data: Buffer): Promise<void> {

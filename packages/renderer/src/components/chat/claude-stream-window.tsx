@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
-import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow } from "@/store/actions/claude-stream";
+import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow, runClaudeStreamBash } from "@/store/actions/claude-stream";
 import { $auth } from "@/store/subjects";
 import type { ClaudeSessionSummary } from "@/store/types/claude-stream";
 import { ClaudeLogo } from "@/components/project/project-detail";
@@ -218,6 +218,18 @@ export function ClaudeStreamWindow({
     const text = input.trim();
     const ready = pendingImages.filter((im) => im.remotePath);
     if (!text && ready.length === 0) return;
+    // Bang mode: `!cmd` runs a shell command on the VM and shows the output here,
+    // bypassing Claude entirely.
+    if (text.startsWith("!")) {
+      const command = text.slice(1).trim();
+      if (command) {
+        void runClaudeStreamBash(claudeStreamId, command);
+        setInput("");
+        setPendingImages([]);
+        ac.close();
+      }
+      return;
+    }
     const parts: string[] = [];
     if (text) parts.push(text);
     for (const im of ready) parts.push(`[Image: ${im.remotePath}]`);
@@ -406,7 +418,7 @@ export function ClaudeStreamWindow({
             onKeyDown={onKeyDown}
             onSubmit={handleSend}
             onPaste={handlePaste}
-            placeholder="Message Claude — type / for commands, @ for files, paste an image…"
+            placeholder="Message Claude — / commands, @ files, !cmd to run a shell command…"
             aria-label="Message to Claude"
             className="w-full bg-surface0 border border-surface1 rounded-md px-2.5 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-peach"
           />

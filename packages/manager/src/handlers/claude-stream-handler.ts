@@ -10,6 +10,7 @@ import {
   startClaudeStream,
   reattachClaudeStream,
   sendClaudeStreamInput,
+  runClaudeStreamBash,
   stopClaudeStream,
   resizeClaudeStream,
   detachClaudeStream,
@@ -236,6 +237,29 @@ export async function handleClaudeStreamMessage(
         send(ws, { type: "claude:stream:sessions", payload: { claudeStreamId, sessions, reqId } });
       } catch (err) {
         send(ws, { type: "claude:stream:sessions", payload: { claudeStreamId, sessions: [], error: err instanceof Error ? err.message : "Failed to list sessions", reqId } });
+      }
+      return true;
+    }
+
+    case "claude:stream:bash": {
+      // Bang mode: run a shell command on the VM and return its output to the
+      // popup, bypassing Claude entirely.
+      const { claudeStreamId, projectId, command, reqId } = msg.payload as {
+        claudeStreamId?: string; projectId?: string; command?: string; reqId?: string;
+      };
+      if (!claudeStreamId || !projectId || !command) {
+        send(ws, { type: "claude:stream:bash:result", payload: { output: "claudeStreamId, projectId and command are required", exitCode: 1, reqId } });
+        return true;
+      }
+      if (!(await canAccessProject(userId, role, projectId))) {
+        send(ws, { type: "claude:stream:bash:result", payload: { output: "Not authorized for this project", exitCode: 1, reqId } });
+        return true;
+      }
+      try {
+        const res = await runClaudeStreamBash(claudeStreamId, command, remoteDir(projectId));
+        send(ws, { type: "claude:stream:bash:result", payload: { ...res, reqId } });
+      } catch (err) {
+        send(ws, { type: "claude:stream:bash:result", payload: { output: err instanceof Error ? err.message : "Command failed", exitCode: 1, reqId } });
       }
       return true;
     }

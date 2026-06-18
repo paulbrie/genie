@@ -105,6 +105,42 @@ export function sendClaudeStreamMessage(claudeStreamId: string, text: string, im
   wsSend("claude:stream:input", { claudeStreamId, text: trimmed });
 }
 
+/** Bang mode: run a shell command on the VM and show its output in the popup,
+ *  bypassing Claude. Appends the command (as the user's turn) and the result
+ *  (a fenced `console` block so it renders monospace without a Run button). */
+export async function runClaudeStreamBash(claudeStreamId: string, command: string): Promise<void> {
+  const session = $claudeStream.getValue().sessions[claudeStreamId];
+  if (!session) return;
+  updateClaudeStreamSession(claudeStreamId, (s) => ({
+    ...s,
+    messages: [...s.messages, { role: "user", content: `! ${command}` }],
+    loading: true,
+    statusText: "Running command…",
+  }));
+  try {
+    const res = await wsRequest<{ output?: string; exitCode?: number }>(
+      "claude:stream:bash",
+      { claudeStreamId, projectId: session.projectId, instanceId: session.instanceId, command },
+      35_000,
+    );
+    const body = (res.output ?? "").replace(/```/g, "ʼʼʼ") || "(no output)";
+    const rc = res.exitCode ? `\n[exit ${res.exitCode}]` : "";
+    updateClaudeStreamSession(claudeStreamId, (s) => ({
+      ...s,
+      messages: [...s.messages, { role: "assistant", content: `\`\`\`console\n$ ${command}\n${body}${rc}\n\`\`\`` }],
+      loading: false,
+      statusText: "",
+    }));
+  } catch {
+    updateClaudeStreamSession(claudeStreamId, (s) => ({
+      ...s,
+      messages: [...s.messages, { role: "assistant", content: "Command failed (timed out or no connection).", isError: true }],
+      loading: false,
+      statusText: "",
+    }));
+  }
+}
+
 /** Upload a pasted clipboard image to the VM; returns its remote path (or null
  *  on failure) so the caller can reference it in the next chat message. */
 export async function pasteClaudeStreamImage(
