@@ -60,6 +60,8 @@ export const handlers: HandlerMap = {
         content: steps.map((st) => st.content).join(""),
         steps: steps.length > 0 ? steps : undefined,
         toolUses,
+        usage: payload.usage,
+        thinkingMs: payload.thinkingMs,
       };
       // Skip an entirely empty turn (e.g. a slash command with no output).
       const messages = (message.content || toolUses) ? [...s.messages, message] : s.messages;

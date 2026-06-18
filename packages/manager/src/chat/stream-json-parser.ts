@@ -25,7 +25,18 @@ export interface StreamJsonEvent {
   model?: string;
   claude_code_version?: string;
   result?: string;
+  duration_ms?: number;
+  total_cost_usd?: number;
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
   [key: string]: unknown;
+}
+
+/** Token/cost/timing summary from a turn's `result` event. */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  durationMs: number;
 }
 
 /** Normalized events the parser produces, independent of any WS namespace. */
@@ -38,8 +49,9 @@ export type ParsedStreamEvent =
    *  user's prompts when replaying the captured output on reattach). */
   | { kind: "user"; text: string }
   /** One assistant turn finished. `result` is the final text when no streamed
-   *  tokens preceded it (rare; matches the one-shot router's fallback). */
-  | { kind: "turn-done"; result?: string };
+   *  tokens preceded it (rare; matches the one-shot router's fallback).
+   *  `usage` carries the turn's token/cost/timing summary when present. */
+  | { kind: "turn-done"; result?: string; usage?: TurnUsage };
 
 export interface StreamJsonParserOptions {
   /** Optional debug logger; called once per parsed event with a short summary. */
@@ -148,9 +160,19 @@ export class StreamJsonParser {
         this.emit({ kind: "claude-info", model: event.model || "", version: event.claude_code_version || "" });
         break;
 
-      case "result":
-        this.emit({ kind: "turn-done", result: event.result });
+      case "result": {
+        const u = event.usage;
+        const usage: TurnUsage | undefined = (u || typeof event.duration_ms === "number" || typeof event.total_cost_usd === "number")
+          ? {
+              inputTokens: (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+              outputTokens: u?.output_tokens ?? 0,
+              costUsd: event.total_cost_usd ?? 0,
+              durationMs: event.duration_ms ?? 0,
+            }
+          : undefined;
+        this.emit({ kind: "turn-done", result: event.result, usage });
         break;
+      }
 
       // Control acks / SSE bookkeeping — nothing to surface.
       case "control_response":

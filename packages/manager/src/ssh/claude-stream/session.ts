@@ -28,10 +28,30 @@ export interface StreamStep {
   content: string;
   toolUse?: { name: string; input: Record<string, unknown>; result: string };
 }
+export interface StreamMessageUsage {
+  inputTokens: number;
+  outputTokens: number;
+  modelId: string;
+  modelLabel: string;
+  cost: number;
+}
 export interface StreamMessage {
   role: "user" | "assistant";
   content: string;
   steps?: StreamStep[];
+  /** Token/cost summary for an assistant turn (carried into replay). */
+  usage?: StreamMessageUsage;
+  /** Wall-clock the assistant spent on this turn, in ms. */
+  thinkingMs?: number;
+}
+
+/** "claude-opus-4-8..." → "Opus 4.8" for the usage footer. */
+function shortModelLabel(model: string): string {
+  if (!model) return "Claude";
+  const m = model.toLowerCase();
+  const fam = m.includes("opus") ? "Opus" : m.includes("sonnet") ? "Sonnet" : m.includes("haiku") ? "Haiku" : "Claude";
+  const ver = model.match(/\d+(?:[-.]\d+)?/)?.[0]?.replace(/-/g, ".");
+  return ver ? `${fam} ${ver}` : fam;
 }
 export interface ClaudeInfo {
   model: string;
@@ -107,14 +127,14 @@ function snapshot(st: StreamState) {
   };
 }
 
-function finalizeAssistantTurn(st: StreamState) {
+function finalizeAssistantTurn(st: StreamState, usage?: StreamMessageUsage, thinkingMs?: number) {
   if (st.currentStepContent) {
     st.streamingSteps.push({ content: st.currentStepContent });
     st.currentStepContent = "";
   }
   if (st.streamingSteps.length > 0) {
     const content = st.streamingSteps.map((s) => s.content).join("");
-    st.messages.push({ role: "assistant", content, steps: st.streamingSteps });
+    st.messages.push({ role: "assistant", content, steps: st.streamingSteps, ...(usage ? { usage } : {}), ...(thinkingMs ? { thinkingMs } : {}) });
     if (st.messages.length > MAX_MESSAGES) st.messages.splice(0, st.messages.length - MAX_MESSAGES);
   }
   st.streamingSteps = [];
@@ -164,11 +184,22 @@ function makeParser(id: string): StreamJsonParser {
           persistSessionId(st);
         }
         break;
-      case "turn-done":
-        finalizeAssistantTurn(st);
+      case "turn-done": {
+        const usage: StreamMessageUsage | undefined = event.usage
+          ? {
+              inputTokens: event.usage.inputTokens,
+              outputTokens: event.usage.outputTokens,
+              cost: event.usage.costUsd,
+              modelId: st.claudeInfo?.model || "",
+              modelLabel: shortModelLabel(st.claudeInfo?.model || ""),
+            }
+          : undefined;
+        const thinkingMs = event.usage?.durationMs || undefined;
+        finalizeAssistantTurn(st, usage, thinkingMs);
         emit(id, "claude:stream:status", { status: "" });
-        emit(id, "claude:stream:done", {});
+        emit(id, "claude:stream:done", { ...(usage ? { usage } : {}), ...(thinkingMs ? { thinkingMs } : {}) });
         break;
+      }
     }
   }, { log: (line) => console.log(`[claude-stream:${id}] ${line}`) });
 }

@@ -41,6 +41,9 @@ export interface ChatMessage {
   toolUses?: ToolUse[];
   steps?: StreamingStep[];
   usage?: ChatMessageUsage;
+  /** Wall-clock the assistant spent on this turn (manager-reported `duration_ms`
+   *  from the stream-json `result` event). Shown in the message footer. */
+  thinkingMs?: number;
   /** Pasted/attached images as data URLs ("data:image/png;base64,..."). Only
    *  set on user messages — the manager forwards these to the model and they're
    *  rendered inline above the user's text bubble. */

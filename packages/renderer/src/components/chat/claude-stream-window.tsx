@@ -42,6 +42,8 @@ type PendingImage = {
   remotePath: string | null;
   uploading: boolean;
   error: boolean;
+  /** Briefly true while the remove animation plays before it's dropped. */
+  removing?: boolean;
 };
 
 /** Floating, draggable chat window backed by a durable stream-json Claude
@@ -177,7 +179,9 @@ export function ClaudeStreamWindow({
   }, [claudeStreamId]);
 
   const removeImage = useCallback((id: string) => {
-    setPendingImages((prev) => prev.filter((im) => im.id !== id));
+    // Play a quick shrink-out, then drop it from the list.
+    setPendingImages((prev) => prev.map((im) => (im.id === id ? { ...im, removing: true } : im)));
+    setTimeout(() => setPendingImages((prev) => prev.filter((im) => im.id !== id)), 160);
   }, []);
 
   const handleSend = useCallback(() => {
@@ -318,19 +322,23 @@ export function ClaudeStreamWindow({
             {pendingImages.map((im) => (
               <div
                 key={im.id}
-                className={`relative w-12 h-12 rounded border overflow-hidden bg-surface0 ${im.error ? "border-red/70" : "border-surface1"}`}
+                className={`group relative w-12 h-12 transition-all duration-150 ease-out ${im.removing ? "scale-75 opacity-0" : "scale-100 opacity-100"}`}
                 title={im.error ? "Upload failed" : im.remotePath || "Uploading…"}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={im.dataUrl} alt="pasted" className="w-full h-full object-cover" />
-                {im.uploading && (
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/40">
-                    <Loader2 size={14} className="text-peach animate-spin" />
-                  </span>
-                )}
+                <div className={`relative w-full h-full rounded border overflow-hidden bg-surface0 ${im.error ? "border-red/70" : "border-surface1"}`}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={im.dataUrl} alt="pasted" className="w-full h-full object-cover" />
+                  {im.uploading && (
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/40">
+                      <Loader2 size={14} className="text-peach animate-spin" />
+                    </span>
+                  )}
+                </div>
+                {/* Delete sits OUTSIDE the clipped thumbnail (so the corner never
+                    covers it) and only fades in on hover. */}
                 <button
                   onClick={() => removeImage(im.id)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-red text-white hover:bg-red/80 border border-mantle shadow-sm transition-colors"
+                  className={`absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-red text-white hover:bg-red/80 border border-mantle shadow-sm transition-opacity ${im.error ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"}`}
                   title="Remove image"
                   aria-label="Remove image"
                 >

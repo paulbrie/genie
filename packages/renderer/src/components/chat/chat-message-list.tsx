@@ -1,6 +1,7 @@
 "use client";
 
 import type React from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -11,7 +12,7 @@ import { wsSend } from "@/lib/ws";
 import { cn } from "@/lib/utils";
 import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
-import { UsageLine } from "@/components/ui/usage-line";
+import { UsageLine, formatDuration } from "@/components/ui/usage-line";
 import { ChatErrorBubble } from "@/components/chat/chat-error-bubble";
 
 // --- Runnable code blocks ---
@@ -140,6 +141,20 @@ export function ChatMessageList({
   onRetry,
   emptyState,
 }: ChatMessageListProps) {
+  // Continuous elapsed timer for the in-flight turn — starts when `loading`
+  // flips true and ticks until it clears, so the count survives the
+  // thinking → streaming → tool-use transitions without resetting.
+  const startedRef = useRef<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  useEffect(() => {
+    if (!loading) { startedRef.current = null; setElapsedMs(0); return; }
+    if (startedRef.current == null) startedRef.current = Date.now();
+    const tick = () => setElapsedMs(Date.now() - (startedRef.current ?? Date.now()));
+    tick();
+    const t = setInterval(tick, 200);
+    return () => clearInterval(t);
+  }, [loading]);
+
   return (
     <>
       {messages.length === 0 && !streamingContent && !loading && emptyState && (
@@ -187,7 +202,9 @@ export function ChatMessageList({
               </div>
             </>
           )}
-          {msg.role === "assistant" && msg.usage && <UsageLine usage={msg.usage} />}
+          {msg.role === "assistant" && (msg.usage || msg.thinkingMs) && (
+            <UsageLine usage={msg.usage} thinkingMs={msg.thinkingMs} />
+          )}
         </div>
       ))}
 
@@ -204,6 +221,9 @@ export function ChatMessageList({
               </div>
             )}
             <span className="inline-block w-1.5 h-3 bg-text/50 ml-0.5 animate-pulse align-text-bottom" />
+            {elapsedMs > 0 && (
+              <span className="ml-2 text-[10px] text-overlay0/60 tabular-nums align-text-bottom">{formatDuration(elapsedMs)}</span>
+            )}
           </div>
         </div>
       )}
@@ -215,6 +235,9 @@ export function ChatMessageList({
             <span>
               {statusText || (toolUses.length > 0 ? getToolStatusText(toolUses[toolUses.length - 1]) : "Thinking...")}
             </span>
+            {elapsedMs > 0 && (
+              <span className="text-[11px] text-overlay0/70 tabular-nums">{formatDuration(elapsedMs)}</span>
+            )}
             {maxToolRounds > 0 && toolRoundsUsed > 0 && (
               <span className="text-[11px] text-overlay0 ml-1">
                 {toolRoundsUsed}/{maxToolRounds} tools
