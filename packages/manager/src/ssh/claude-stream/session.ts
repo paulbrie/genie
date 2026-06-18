@@ -234,6 +234,77 @@ async function onTailDropped(id: string): Promise<void> {
   }
 }
 
+/** Node script (run on the VM) that converts a Claude session transcript
+ *  (`<dir>/<sessionId>.jsonl`) into our chat message shape: an array of
+ *  `{ role, content, steps? }` where assistant steps carry text + tool calls
+ *  (results matched from the following tool_result lines). Prints JSON. */
+const RESUME_TRANSCRIPT_NODE_SCRIPT = String.raw`
+const fs = require("fs"), path = require("path");
+const dir = process.argv[2], sid = process.argv[3];
+let lines = [];
+try { lines = fs.readFileSync(path.join(dir, sid + ".jsonl"), "utf8").split("\n"); } catch (e) { process.stdout.write("[]"); return; }
+const parsed = [];
+const results = {};
+for (const line of lines) {
+  if (!line.trim()) continue;
+  let o; try { o = JSON.parse(line); } catch (e) { continue; }
+  parsed.push(o);
+  if (o.type === "user" && o.message && Array.isArray(o.message.content)) {
+    for (const b of o.message.content) {
+      if (b && b.type === "tool_result" && b.tool_use_id) {
+        let txt = "";
+        if (typeof b.content === "string") txt = b.content;
+        else if (Array.isArray(b.content)) txt = b.content.map((x) => (x && x.type === "text" ? x.text : "")).join("");
+        results[b.tool_use_id] = String(txt || "").slice(0, 800);
+      }
+    }
+  }
+}
+const messages = [];
+for (const o of parsed) {
+  if (o.type === "user" && o.message) {
+    const c = o.message.content;
+    if (typeof c === "string") { if (c.trim()) messages.push({ role: "user", content: c }); }
+    else if (Array.isArray(c)) {
+      const txt = c.filter((b) => b && b.type === "text").map((b) => b.text || "").join("");
+      if (txt.trim()) messages.push({ role: "user", content: txt });
+    }
+  } else if (o.type === "assistant" && o.message && Array.isArray(o.message.content)) {
+    const steps = []; let buf = "";
+    for (const b of o.message.content) {
+      if (b.type === "text") buf += b.text || "";
+      else if (b.type === "tool_use") { steps.push({ content: buf, toolUse: { name: b.name || "tool", input: b.input || {}, result: results[b.id] || "" } }); buf = ""; }
+    }
+    if (buf) steps.push({ content: buf });
+    if (steps.length) messages.push({ role: "assistant", content: steps.map((s) => s.content).join(""), steps });
+  }
+}
+const MAX = 200;
+process.stdout.write(JSON.stringify(messages.length > MAX ? messages.slice(messages.length - MAX) : messages));
+`;
+
+/** Seed an opening (resumed) window with the prior session's transcript so the
+ *  conversation is visible — `--resume` gives Claude the context but doesn't
+ *  re-stream the old turns. Best-effort: on any failure the window just opens
+ *  empty (Claude still has the context). */
+async function seedResumedTranscript(st: StreamState, id: string, dest: string, sessionId: string): Promise<void> {
+  try {
+    const encoded = dest.replace(/[^a-zA-Z0-9]/g, "-");
+    const scriptPath = `/tmp/_genie_resume_parse.js`;
+    await st.conn.exec(`cat > ${scriptPath} << 'GENIEEOF'\n${RESUME_TRANSCRIPT_NODE_SCRIPT}\nGENIEEOF`);
+    const out = await st.conn.exec(`node ${scriptPath} "$HOME/.claude/projects/${encoded}" ${shellSingleQuote(sessionId)} 2>/dev/null || echo "[]"`);
+    let parsed: StreamMessage[] = [];
+    try { parsed = JSON.parse(out.trim() || "[]"); } catch { parsed = []; }
+    if (Array.isArray(parsed) && parsed.length) {
+      st.messages = parsed.slice(-MAX_MESSAGES);
+      emit(id, "claude:stream:replay", { ...snapshot(st) });
+      console.log(`[claude-stream:${id}] seeded ${st.messages.length} messages from resumed session ${sessionId}`);
+    }
+  } catch (err) {
+    console.warn(`[claude-stream:${id}] resume transcript seed failed:`, err instanceof Error ? err.message : String(err));
+  }
+}
+
 export interface StartClaudeStreamParams {
   claudeStreamId: string;
   shellOpts: SshConnectionConfig;
@@ -332,6 +403,14 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
 
   emit(id, "claude:stream:ready", { reattached, tmuxName });
   emit(id, "claude:stream:claude-info", { ...params.claudeInfo });
+
+  // Resuming a prior session: --resume restores Claude's context but doesn't
+  // re-stream the old turns, so seed the window from the transcript on disk.
+  // (The resumed session writes new turns to a fresh transcript, so there's no
+  // overlap with what the OUT tail picks up below.)
+  if (params.resumeSessionId && !reattached) {
+    await seedResumedTranscript(st, id, params.dest, params.resumeSessionId);
+  }
 
   await startTail(st, id, 1);
 }
