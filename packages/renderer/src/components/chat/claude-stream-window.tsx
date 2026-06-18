@@ -140,9 +140,15 @@ export function ClaudeStreamWindow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claudeStreamId]);
 
-  // Auto-scroll to the latest message / streaming token.
+  // Auto-scroll to the latest message / streaming token. A bulk load (the first
+  // render, or a server replay/resume that drops in many messages at once) jumps
+  // straight to the end with no animation; incremental updates scroll smoothly.
+  const prevMsgLen = useRef(0);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const len = session?.messages.length ?? 0;
+    const bulk = prevMsgLen.current === 0 || len - prevMsgLen.current > 1;
+    prevMsgLen.current = len;
+    endRef.current?.scrollIntoView({ behavior: bulk ? "auto" : "smooth", block: "end" });
   }, [session?.messages, session?.streamingContent, session?.streamingSteps, session?.loading]);
 
   // Open toward the right and cascade per window, so it doesn't land dead-center
