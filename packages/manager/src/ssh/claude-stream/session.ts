@@ -260,14 +260,15 @@ for (const line of lines) {
     }
   }
 }
+const NOISE = /^\s*<(local-command-caveat|command-name|command-message|command-args|local-command-stdout|command-contents)\b/;
 const messages = [];
 for (const o of parsed) {
   if (o.type === "user" && o.message) {
     const c = o.message.content;
-    if (typeof c === "string") { if (c.trim()) messages.push({ role: "user", content: c }); }
+    if (typeof c === "string") { if (c.trim() && !NOISE.test(c)) messages.push({ role: "user", content: c }); }
     else if (Array.isArray(c)) {
       const txt = c.filter((b) => b && b.type === "text").map((b) => b.text || "").join("");
-      if (txt.trim()) messages.push({ role: "user", content: txt });
+      if (txt.trim() && !NOISE.test(txt)) messages.push({ role: "user", content: txt });
     }
   } else if (o.type === "assistant" && o.message && Array.isArray(o.message.content)) {
     const steps = []; let buf = "";

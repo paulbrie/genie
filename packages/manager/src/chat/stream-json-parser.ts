@@ -58,6 +58,14 @@ export interface StreamJsonParserOptions {
   log?: (line: string) => void;
 }
 
+/** Claude Code injects bookkeeping messages when a slash command runs
+ *  (`<local-command-caveat>`, `<command-name>/clear…`, `<local-command-stdout>`).
+ *  They're protocol noise, not conversation. */
+const LOCAL_COMMAND_RE = /^\s*<(local-command-caveat|command-name|command-message|command-args|local-command-stdout|command-contents)\b/;
+export function isLocalCommandNoise(text: string): boolean {
+  return LOCAL_COMMAND_RE.test(text);
+}
+
 export class StreamJsonParser {
   private buffer = "";
   private currentToolName = "";
@@ -151,7 +159,9 @@ export class StreamJsonParser {
           : Array.isArray(content)
             ? content.filter((b) => b.type === "text").map((b) => b.text || "").join("")
             : "";
-        if (text) this.emit({ kind: "user", text });
+        // Skip Claude Code's slash-command bookkeeping (`<local-command-caveat>`,
+        // `<command-name>…`, `<local-command-stdout>`) — protocol noise, not a turn.
+        if (text && !isLocalCommandNoise(text)) this.emit({ kind: "user", text });
         break;
       }
 

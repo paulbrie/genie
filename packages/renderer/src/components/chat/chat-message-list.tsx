@@ -21,6 +21,14 @@ function escapeRe(s: string): string {
 }
 const SHELL_CTX_RE = new RegExp(`^${escapeRe(SHELL_CONTEXT_OPEN)}[\\s\\S]*?${escapeRe(SHELL_CONTEXT_CLOSE)}\\n*`);
 
+/** Claude Code injects bookkeeping messages when a slash command runs
+ *  (`<local-command-caveat>`, `<command-name>/clear…`, `<local-command-stdout>`).
+ *  They're protocol noise, not conversation — hide them. */
+const LOCAL_COMMAND_RE = /^\s*<(local-command-caveat|command-name|command-message|command-args|local-command-stdout|command-contents)\b/;
+function isLocalCommandNoise(content: string): boolean {
+  return LOCAL_COMMAND_RE.test(content);
+}
+
 // --- Runnable code blocks ---
 
 /** When a fenced code block in an assistant message is shell-flavored (or
@@ -209,13 +217,15 @@ export function ChatMessageList({
     return () => clearInterval(t);
   }, [loading]);
 
+  const visibleMessages = messages.filter((m) => !isLocalCommandNoise(m.content));
+
   return (
     <>
-      {messages.length === 0 && !streamingContent && !loading && emptyState && (
+      {visibleMessages.length === 0 && !streamingContent && !loading && emptyState && (
         <div className="flex-1 flex items-center justify-center py-8">{emptyState}</div>
       )}
 
-      {messages.map((msg: ChatMessage, i: number) => (
+      {visibleMessages.map((msg: ChatMessage, i: number) => (
         <div key={`${msg.role}-${i}-${msg.content.slice(0, 24)}`} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
           {msg.role === "user" ? (
             <div className="max-w-[90%] flex flex-col items-end gap-1">
