@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check } from "lucide-react";
+import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check, Terminal } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
 import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow, runClaudeStreamBash } from "@/store/actions/claude-stream";
 import { $auth } from "@/store/subjects";
@@ -470,6 +470,15 @@ export function ClaudeStreamWindow({
               </>
             )}
           </div>
+
+          {session.pendingBashContext && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] text-peach/80"
+              title="Output from your !commands will be sent to Claude as context with your next message"
+            >
+              <Terminal size={10} /> shell context attached
+            </span>
+          )}
 
           <div className="ml-auto flex items-center gap-2">
             {session.loading && (

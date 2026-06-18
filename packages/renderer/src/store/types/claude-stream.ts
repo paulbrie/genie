@@ -33,6 +33,9 @@ export interface ClaudeStreamSession {
   connectionError: string | null;
   /** True while the WS is reconnecting with a turn in flight. */
   reconnecting: boolean;
+  /** Buffered `!cmd` bang-mode output not yet handed to Claude — prepended
+   *  (invisibly) to the next real message so the model gets it as context. */
+  pendingBashContext?: string;
 }
 
 export interface ClaudeStreamState {

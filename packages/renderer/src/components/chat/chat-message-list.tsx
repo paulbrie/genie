@@ -14,6 +14,12 @@ import { markdownComponents } from "@/components/ui/markdown-link";
 import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
 import { UsageLine, formatDuration } from "@/components/ui/usage-line";
 import { ChatErrorBubble } from "@/components/chat/chat-error-bubble";
+import { SHELL_CONTEXT_OPEN, SHELL_CONTEXT_CLOSE } from "@/store/actions/claude-stream";
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+const SHELL_CTX_RE = new RegExp(`^${escapeRe(SHELL_CONTEXT_OPEN)}[\\s\\S]*?${escapeRe(SHELL_CONTEXT_CLOSE)}\\n*`);
 
 // --- Runnable code blocks ---
 
@@ -81,6 +87,7 @@ export const assistantMarkdownComponents = {
  *  the user's bubble shows only what they typed, even after a transcript replay. */
 function stripImageRefs(content: string): string {
   return content
+    .replace(SHELL_CTX_RE, "")
     .replace(/^\[Plan mode\][^\n]*\n+/, "")
     .replace(/\n*\[Image:[^\]]*\]/g, "")
     .trim();

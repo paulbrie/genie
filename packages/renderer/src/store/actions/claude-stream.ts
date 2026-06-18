@@ -89,20 +89,32 @@ export async function listClaudeSessions(claudeStreamId: string): Promise<Claude
  *  thumbnails stay visible in the conversation — the server's user-message
  *  replay is deduped by content, so they survive (until a full transcript
  *  replay on reconnect, which only carries text). */
+/** Wrappers around buffered bang-mode output so it reads as context to Claude and
+ *  can be stripped from the displayed bubble on transcript replay. Kept in sync
+ *  with the strip in chat-message-list.tsx. */
+export const SHELL_CONTEXT_OPEN = "[Shell commands I ran in the project, for context:]";
+export const SHELL_CONTEXT_CLOSE = "[End shell context]";
+
 export function sendClaudeStreamMessage(claudeStreamId: string, text: string, images?: string[], displayText?: string): void {
   const trimmed = text.trim();
   if (!trimmed) return;
   // `displayText` lets callers send Claude a richer wire payload (e.g. a plan-mode
   // directive prefix) while showing only the user's own words in the bubble.
   const shown = (displayText ?? text).trim();
+  // Prepend any buffered bang-mode (`!cmd`) output so Claude sees it as context —
+  // invisible in the bubble (shown stays clean), then cleared.
+  const session = $claudeStream.getValue().sessions[claudeStreamId];
+  const bashCtx = session?.pendingBashContext;
+  const wire = bashCtx ? `${SHELL_CONTEXT_OPEN}\n${bashCtx}\n${SHELL_CONTEXT_CLOSE}\n\n${trimmed}` : trimmed;
   updateClaudeStreamSession(claudeStreamId, (s) => ({
     ...s,
     messages: [...s.messages, { role: "user", content: shown, ...(images && images.length ? { images } : {}) }],
     loading: true,
     statusText: "Claude is thinking...",
     connectionError: null,
+    pendingBashContext: undefined,
   }));
-  wsSend("claude:stream:input", { claudeStreamId, text: trimmed });
+  wsSend("claude:stream:input", { claudeStreamId, text: wire });
 }
 
 /** Bang mode: run a shell command on the VM and show its output in the popup,
@@ -125,9 +137,13 @@ export async function runClaudeStreamBash(claudeStreamId: string, command: strin
     );
     const body = (res.output ?? "").replace(/```/g, "ʼʼʼ") || "(no output)";
     const rc = res.exitCode ? `\n[exit ${res.exitCode}]` : "";
+    // Buffer the raw command + output so the next message to Claude carries it as
+    // context (TUI `!` behaviour).
+    const block = `$ ${command}\n${res.output || "(no output)"}${res.exitCode ? `\n[exit ${res.exitCode}]` : ""}`;
     updateClaudeStreamSession(claudeStreamId, (s) => ({
       ...s,
       messages: [...s.messages, { role: "assistant", content: `\`\`\`console\n$ ${command}\n${body}${rc}\n\`\`\`` }],
+      pendingBashContext: (s.pendingBashContext ? `${s.pendingBashContext}\n\n` : "") + block,
       loading: false,
       statusText: "",
     }));
