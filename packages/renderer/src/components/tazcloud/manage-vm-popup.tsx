@@ -325,6 +325,64 @@ function SyncStatsAgentButton({ projectId, instanceId }: { projectId: string; in
   );
 }
 
+/** One-shot SSH MaxStartups diagnostic for this VM: reads the configured
+ *  MaxStartups, how many connections sshd dropped in the last hour, and how many
+ *  handshakes are in flight right now. Answers "is this VM's sshd saturated?"
+ *  without an SSH session — runs on the manager's dedicated probe connection. */
+function SshStartupsButton({ projectId, instanceId }: { projectId: string; instanceId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ maxStartups: string | null; dropsLastHour: number; established: number; preauth: number; error?: string } | null>(null);
+
+  const run = async () => {
+    setLoading(true);
+    try {
+      const r = await wsRequest<{ maxStartups: string | null; dropsLastHour: number; established: number; preauth: number; error?: string }>(
+        "vps:ssh-startups:probe", { projectId, instanceId }, 20_000,
+      );
+      setResult(r);
+    } catch {
+      setResult({ maxStartups: null, dropsLastHour: 0, established: 0, preauth: 0, error: "probe failed" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saturated = !!result && !result.error && result.dropsLastHour > 0;
+  const label = loading
+    ? "Checking SSH…"
+    : result?.error
+      ? "SSH check failed"
+      : result
+        ? `MaxStartups ${result.maxStartups ?? "?"} · ${result.dropsLastHour} drop/h · ${result.preauth} in-flight`
+        : "Check SSH startups";
+
+  return (
+    <button
+      type="button"
+      onClick={run}
+      disabled={loading}
+      className={cn(
+        "flex items-center gap-1.5 px-2 py-0.5 rounded border text-md transition-colors disabled:opacity-60 disabled:cursor-wait",
+        result?.error
+          ? "border-red/30 text-red hover:bg-red/10"
+          : saturated
+            ? "border-peach/40 text-peach hover:bg-peach/10"
+            : result
+              ? "border-green/30 text-green hover:bg-green/10"
+              : "border-overlay0/30 text-overlay1 hover:bg-surface0",
+      )}
+      title={
+        result && !result.error
+          ? `MaxStartups ${result.maxStartups ?? "?"} (start:rate:full) · ${result.dropsLastHour} dropped in the last hour · ${result.established} established on :22 · ${result.preauth} handshakes in flight`
+          : "Read this VM's sshd MaxStartups, drops in the last hour, and in-flight handshakes"
+      }
+    >
+      {loading ? <Loader2 size={11} className="animate-spin shrink-0" /> : <Activity size={11} className="shrink-0" />}
+      {label}
+    </button>
+  );
+}
+
 /** Writes the genie-* MCP REST entries into the VM's /opt/project/.mcp.json so
  *  Claude on the VM can use genie-tracker/security/notify/storage. Project-linked
  *  only (the MCP bearer token is per project+instance). Re-launch Claude after. */
@@ -1169,6 +1227,12 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
                   )}
                   {linked && (
                     <InstallMcpsButton
+                      projectId={linked.project.id}
+                      instanceId={linked.instance.id}
+                    />
+                  )}
+                  {linked && (
+                    <SshStartupsButton
                       projectId={linked.project.id}
                       instanceId={linked.instance.id}
                     />

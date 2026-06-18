@@ -785,6 +785,24 @@ export const vpsMetricSamples = pgTable("vps_metric_samples", {
   index("idx_vps_metric_samples_sampled_at").on(t.sampledAt),
 ]);
 
+/** Discrete SSH MaxStartups drop events — written only when a stats sample
+ *  reports drops>0 (rare), so this table stays tiny and is the queryable source
+ *  for the fleet-wide "how often is sshd refusing connections" trace. Kept
+ *  separate from vps_metric_samples so it never touches the hot metrics insert. */
+export const sshMaxStartupsEvents = pgTable("ssh_maxstartups_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  instanceId: text("instance_id").notNull(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  /** Connections dropped in the reporting interval. */
+  drops: integer("drops").notNull(),
+  /** The VM's configured MaxStartups at the time (e.g. "10:30:100"), if known. */
+  maxStartups: text("max_startups"),
+}, (t) => [
+  index("idx_ssh_maxstartups_events_occurred_at").on(t.occurredAt),
+  index("idx_ssh_maxstartups_events_lookup").on(t.projectId, t.instanceId, t.occurredAt),
+]);
+
 /** Per-minute roll-ups of manager-process throughput for the superadmin Server
  *  dashboard's 6h/24h ranges. Each row aggregates `windowSec` seconds of the
  *  in-memory live buffer. Counts are totals over the window; the UI divides by

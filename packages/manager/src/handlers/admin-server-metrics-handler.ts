@@ -4,6 +4,7 @@ import type { Role } from "../auth/ws-acl.js";
 import { hasRole } from "./handler-auth.js";
 import { watchServerMetrics, unwatchServerMetrics, getServerMetricHistory } from "../logging/server-metrics.js";
 import { getRequestVolumeByUser, type RequestVolumeResult } from "../logging/analytics-service.js";
+import { listSshMaxStartupsEvents } from "../vps/ssh-maxstartups-service.js";
 
 const VALID_RANGES = new Set([1, 6, 24]);
 
@@ -59,6 +60,19 @@ export async function handleAdminServerMetricsMessage(
         { userId },
       );
       send(ws, { type: "admin:server-metrics:requests-by-user", payload: { reqId, result } });
+      return true;
+    }
+    // Fleet-wide SSH MaxStartups drop events (request/response via reqId). Each
+    // row is an interval where a VM's sshd refused unauthenticated connections.
+    case "admin:ssh-startups:list": {
+      const reqId = msg.payload?.reqId;
+      if (!hasRole(role, "superadmin")) {
+        send(ws, { type: "admin:ssh-startups:list", payload: { reqId, hours: 0, events: [] } });
+        return true;
+      }
+      const hours = VALID_RANGES.has(msg.payload?.hours) ? msg.payload.hours : 24;
+      const events = await listSshMaxStartupsEvents(hours);
+      send(ws, { type: "admin:ssh-startups:list", payload: { reqId, hours, events } });
       return true;
     }
     default:

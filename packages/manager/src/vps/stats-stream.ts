@@ -1,6 +1,7 @@
 import { type WebSocket, WebSocket as Ws } from "ws";
 import type { VpsStatsPayload } from "@genie/vps-stats";
 import { enqueueVpsMetricSample, getLatestVpsMetricSamples } from "./vps-metric-service.js";
+import { recordSshMaxStartupsEvent } from "./ssh-maxstartups-service.js";
 
 export const STATS_STALE_MS = 15_000;
 
@@ -60,6 +61,21 @@ export function ingestVpsStats(
   setCache(key, stats);
   enqueueVpsMetricSample(projectId, instanceId, ts, stats);
   notifyWatchers(key, projectId, instanceId, stats, send);
+
+  // sshd refused unauthenticated connections this interval (MaxStartups). Rare,
+  // so log it tagged for the fleet-wide trace in the Logs panel and persist a
+  // discrete event row (decoupled from the metrics insert above). See
+  // ssh-handshake-gate.ts for the app-side throttle that keeps this near zero.
+  const drops = stats.sshMaxStartupsDrops ?? 0;
+  if (drops > 0) {
+    console.warn(
+      `[ssh-maxstartups] ${projectId}/${instanceId} dropped ${drops} SSH connection(s) ` +
+      `(MaxStartups ${stats.sshMaxStartups ?? "?"}) — sshd is refusing connections under load`,
+    );
+    void recordSshMaxStartupsEvent({
+      projectId, instanceId, occurredAt: new Date(ts), drops, maxStartups: stats.sshMaxStartups ?? null,
+    });
+  }
 }
 
 /**

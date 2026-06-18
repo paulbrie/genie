@@ -11,6 +11,7 @@ import { vpsStatus, vpsLogs, vpsStats } from "../vps/deploy-service.js";
 import { watchVpsStats, unwatchVpsStats, getCachedVpsStats } from "../vps/stats-stream.js";
 import { dropletSync, syncDropletStatuses } from "../vps/droplet-sync.js";
 import { execCached, evictSession } from "../vps/ssh-session-cache.js";
+import { execProbe } from "../vps/ssh-probe-pool.js";
 import { sshStatsPostbackEnabled, sshStatsProbeEnabled, sshTmuxProbeEnabled } from "../vps/ssh-stats-disabled.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { getVmTraffic } from "../vps/vps-traffic.js";
@@ -83,6 +84,41 @@ export async function handleVpsRuntimeMessage(
         send(ws, { type: "vps:stats:result", payload: { projectId, instanceId, stats } });
       } catch (err: unknown) {
         send(ws, { type: "vps:stats:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    case "vps:ssh-startups:probe": {
+      // On-demand diagnostic for the Manage popup: read this VM's sshd
+      // MaxStartups config, how many connections it dropped in the last hour, and
+      // how many handshakes are in flight right now. Runs on the dedicated probe
+      // connection (never the interactive session). Needs sudo for sshd -T /
+      // journalctl — the genie user has passwordless sudo (recipe-provisioned).
+      const { projectId, instanceId, reqId } = msg.payload as { projectId: string; instanceId: string; reqId?: string };
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "vps:ssh-startups:result", payload: { projectId, instanceId, reqId, error: "Not authorized for this project" } });
+        return true;
+      }
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const shellOpts = { host: conn.host, port: conn.port ?? 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
+        const script = [
+          `echo "MAXSTARTUPS=$(sudo sshd -T 2>/dev/null | awk '/^maxstartups/{print $2}')"`,
+          `echo "DROPS_1H=$(sudo journalctl -u ssh -u sshd --since '-1h' -g 'past MaxStartups' -o cat --no-pager 2>/dev/null | grep -c MaxStartups)"`,
+          `echo "ESTABLISHED=$(ss -tnH state established '( sport = :22 )' 2>/dev/null | wc -l)"`,
+          `echo "PREAUTH=$(ps -eo cmd= 2>/dev/null | grep -E 'sshd(-session)?: \\[(accepted|net)\\]|sshd: unknown' | grep -vc grep)"`,
+        ].join("; ");
+        const out = await execProbe(shellOpts, script, undefined, { timeoutMs: 15_000 });
+        const get = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() ?? "";
+        send(ws, { type: "vps:ssh-startups:result", payload: {
+          projectId, instanceId, reqId,
+          maxStartups: get("MAXSTARTUPS") || null,
+          dropsLastHour: parseInt(get("DROPS_1H"), 10) || 0,
+          established: parseInt(get("ESTABLISHED"), 10) || 0,
+          preauth: parseInt(get("PREAUTH"), 10) || 0,
+        } });
+      } catch (err: unknown) {
+        send(ws, { type: "vps:ssh-startups:result", payload: { projectId, instanceId, reqId, error: err instanceof Error ? err.message : "probe failed" } });
       }
       return true;
     }

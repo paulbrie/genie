@@ -131,7 +131,7 @@ export function toggleAdminSqlPanel(): void {
   v.sqlOpen = !v.sqlOpen;
 }
 
-export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events" | "connections"): void {
+export function setAdminTab(tab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events" | "connections" | "ssh-startups"): void {
   const v = $admin.getValue();
   if (v.activeTab !== tab) track("tab.view", { scope: "admin", tab });
   v.activeTab = tab;

@@ -124,6 +124,47 @@ async function readProcessesAndPorts(): Promise<{
   };
 }
 
+// sshd's MaxStartups rarely changes, so read it once and cache. `undefined` =
+// not yet attempted; `null` = read failed (not root / sshd not found).
+let cachedMaxStartups: string | null | undefined;
+
+/** Read the effective `MaxStartups` from `sshd -T` (authoritative — includes the
+ *  built-in default). Best-effort; needs root, which the stats daemon has. */
+async function readMaxStartupsConfig(): Promise<string | null> {
+  if (cachedMaxStartups !== undefined) return cachedMaxStartups;
+  for (const bin of ["/usr/sbin/sshd", "sshd"]) {
+    try {
+      const { stdout } = await execFileAsync(bin, ["-T"], { maxBuffer: 256 * 1024 });
+      const line = stdout.split("\n").find((l) => l.toLowerCase().startsWith("maxstartups"));
+      cachedMaxStartups = line ? (line.trim().split(/\s+/)[1] ?? null) : null;
+      return cachedMaxStartups;
+    } catch {
+      // try next candidate
+    }
+  }
+  cachedMaxStartups = null;
+  return cachedMaxStartups;
+}
+
+/** Count "past MaxStartups" connection-drop log lines in the journal window
+ *  `(sinceSec, untilSec]`. Bounded to the interval so the journal scan stays
+ *  cheap. Returns 0 on the first tick (no baseline) or if journalctl is
+ *  unavailable. The unit is `ssh` on Debian/Ubuntu and `sshd` elsewhere — match
+ *  both. */
+async function readMaxStartupsDrops(sinceSec: number | null, untilSec: number): Promise<number> {
+  if (sinceSec == null) return 0;
+  try {
+    const { stdout } = await execFileAsync(
+      "journalctl",
+      ["-u", "ssh", "-u", "sshd", "--since", `@${sinceSec}`, "--until", `@${untilSec}`, "-g", "past MaxStartups", "-o", "cat", "--no-pager"],
+      { maxBuffer: 256 * 1024 },
+    );
+    return stdout.split("\n").filter((l) => l.includes("MaxStartups")).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Count interactive SSH login sessions via `who` (one line per pty login).
  *  Counts only login shells — the manager's non-pty exec/tunnel SSH channels
  *  don't create utmp entries, so this reflects open terminals, not every
@@ -142,11 +183,16 @@ export interface CollectStatsOptions {
   prevCpu?: { total: number; idle: number } | null;
   /** Wait 1s and read a second CPU sample when no prevCpu is available. */
   warmCpu?: boolean;
+  /** Epoch seconds of the previous sample, so MaxStartups drops are counted for
+   *  exactly the interval since then (null on the first tick → reports 0). */
+  prevDropCheckSec?: number | null;
 }
 
 export async function collectStats(opts: CollectStatsOptions = {}): Promise<{
   stats: VpsStatsPayload;
   cpuSample: { total: number; idle: number };
+  /** Pass back as `prevDropCheckSec` next tick to bound the drops window. */
+  dropCheckSec: number;
 }> {
   let prev = opts.prevCpu ?? null;
   if (!prev && opts.warmCpu !== false) {
@@ -165,6 +211,12 @@ export async function collectStats(opts: CollectStatsOptions = {}): Promise<{
   const { diskUsedBytes, diskTotalBytes, diskPercent } = await readDisk();
   const { processes, openPorts, externalPorts } = await readProcessesAndPorts();
   const sshSessions = await readSshSessions();
+  // Bound the drops window to [prev, now] so the next tick starts exactly here.
+  const dropCheckSec = Math.floor(Date.now() / 1000);
+  const [sshMaxStartups, sshMaxStartupsDrops] = await Promise.all([
+    readMaxStartupsConfig(),
+    readMaxStartupsDrops(opts.prevDropCheckSec ?? null, dropCheckSec),
+  ]);
 
   return {
     stats: {
@@ -179,7 +231,10 @@ export async function collectStats(opts: CollectStatsOptions = {}): Promise<{
       openPorts,
       externalPorts,
       sshSessions,
+      sshMaxStartups,
+      sshMaxStartupsDrops,
     },
     cpuSample,
+    dropCheckSec,
   };
 }

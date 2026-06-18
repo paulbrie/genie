@@ -97,16 +97,19 @@ async function main(): Promise<void> {
   }
 
   let prevCpu: { total: number; idle: number } | null = null;
+  let prevDropCheckSec: number | null = null;
   let first = true;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const { stats, cpuSample } = await collectStats({
+    const { stats, cpuSample, dropCheckSec } = await collectStats({
       prevCpu: prevCpu,
       warmCpu: first,
+      prevDropCheckSec,
     });
     first = false;
     prevCpu = cpuSample;
+    prevDropCheckSec = dropCheckSec;
 
     const msg: StatsOutboundMessage = { type: "stats", ts: Date.now(), stats };
     emit(msg, outputPath);

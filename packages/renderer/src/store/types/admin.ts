@@ -447,7 +447,7 @@ export interface RailwayLogEntry {
 }
 
 export interface AdminState {
-  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events" | "connections";
+  activeTab: "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events" | "connections" | "ssh-startups";
   dropletsSubTab: DropletsSubTab;
   ai: AdminAiState;
   tables: { name: string; rowCount: number }[];

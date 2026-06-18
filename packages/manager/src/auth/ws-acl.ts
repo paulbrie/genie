@@ -133,6 +133,9 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   "admin:server-metrics": { send: "superadmin", receive: "superadmin" },
   // WS disconnect forensics carry cross-tenant IPs / user-agents — superadmin-only.
   "admin:connections": { send: "superadmin", receive: "superadmin" },
+  // Fleet-wide SSH MaxStartups drop events carry cross-tenant project names —
+  // superadmin-only (the per-VM popup probe rides the project-scoped vps:* path).
+  "admin:ssh-startups": { send: "superadmin", receive: "superadmin" },
   db: { send: "admin", receive: "admin" },
   security: { send: "admin", receive: "admin" },
   docker: { send: "admin", receive: "admin" },

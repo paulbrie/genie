@@ -24,6 +24,7 @@ import { SnapshotsSubTab } from "./admin-images";
 import { AuditPanel, ProdLogsPanel } from "./admin-logs";
 import { SshEventsPanel } from "./admin-ssh-events";
 import { ConnectionsPanel } from "./admin-connections";
+import { SshStartupsPanel } from "./admin-ssh-startups";
 import { AdminAnalytics } from "./admin-analytics";
 import { CommunicationPanel } from "./admin-communication";
 import { useSubject } from "subjecto/react";
@@ -224,6 +225,7 @@ export function AdminPanel() {
             { key: "prodlogs" as const, label: "Prod Logs" },
             { key: "ssh-events" as const, label: "SSH Events" },
             ...(isSuperadmin ? [{ key: "connections" as const, label: "Connections" }] : []),
+            ...(isSuperadmin ? [{ key: "ssh-startups" as const, label: "SSH Startups" }] : []),
           ]}
           activeTab={activeTab}
           onTabChange={(tab) => {
@@ -240,6 +242,7 @@ export function AdminPanel() {
             else if (tab === "prodlogs") { setAdminTab("prodlogs"); loadProdDeployments(); router.push(buildAdminPath("prodlogs")); }
             else if (tab === "ssh-events") { setAdminTab("ssh-events"); loadSshEventsReport(); router.push(buildAdminPath("ssh-events")); }
             else if (tab === "connections") { setAdminTab("connections"); loadConnectionLogs(); router.push(buildAdminPath("connections")); }
+            else if (tab === "ssh-startups") { setAdminTab("ssh-startups"); router.push(buildAdminPath("ssh-startups")); }
           }}
         />
       </div>
@@ -1296,6 +1299,9 @@ export function AdminPanel() {
       ) : activeTab === "connections" ? (
         /* ===== CONNECTIONS (WS disconnect log) TAB ===== */
         <ConnectionsPanel connections={admin.connections} />
+      ) : activeTab === "ssh-startups" ? (
+        /* ===== SSH MAXSTARTUPS DROPS (fleet trace) TAB ===== */
+        <SshStartupsPanel />
       ) : null}
 
       {/* User edit drawer */}
