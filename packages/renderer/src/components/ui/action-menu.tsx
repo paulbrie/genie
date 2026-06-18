@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { LucideIcon } from "lucide-react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -152,12 +153,22 @@ export function ContextActionMenu({
     el.style.top = `${top}px`;
   }, [x, y, children]);
 
-  return (
+  // Portal to <body> so `position: fixed` is viewport-relative. The draggable
+  // popups set `will-change: transform`, which makes them a containing block for
+  // fixed descendants — rendering the menu in-tree offsets it by the popup's
+  // position (the "far from the pill" bug). High z-index keeps it above windows.
+  return createPortal(
     <>
-      <ActionMenuBackdrop onClose={blockClose ? () => {} : onClose} />
-      <ActionMenuPanel ref={ref} className="fixed" style={{ left: x, top: y }}>
+      <div
+        className="fixed inset-0"
+        style={{ zIndex: 2_000_000_000 }}
+        onClick={blockClose ? undefined : onClose}
+        aria-hidden
+      />
+      <ActionMenuPanel ref={ref} className="fixed" style={{ left: x, top: y, zIndex: 2_000_000_001 }}>
         {children}
       </ActionMenuPanel>
-    </>
+    </>,
+    document.body,
   );
 }
