@@ -1,11 +1,19 @@
 import { $claudeStream } from "../subjects/claude-stream";
 import { emptyClaudeStreamSession, type ClaudeStreamSession, type ClaudeSessionSummary } from "../types/claude-stream";
-import { chatStreamIdForTmux, claudeChatStreamId } from "@/lib/claude-session-id";
+import { chatStreamIdForTmux } from "@/lib/claude-session-id";
 import { wsSend, wsRequest } from "@/lib/ws";
 
-// Bumped each time a chat is (re)opened so the windows container can bring an
-// already-mounted window to the front (re-clicking the "Claude" button).
+// Bumped each time a chat is (re)opened so the windows container can bring the
+// just-opened window to the front.
 let focusNonce = 0;
+
+/** A unique tmux/session name per "new chat" so the Claude button spins up a
+ *  fresh, independent session + window every click (the `claude-chat-` prefix
+ *  makes the tmux badge render as Claude). Reattaching a specific session passes
+ *  its own name instead. */
+function freshGchatTmuxName(): string {
+  return `claude-chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
 
 /** Mutate a single session in the map (no-op if it's gone). */
 export function updateClaudeStreamSession(
@@ -30,8 +38,12 @@ export function openClaudeStream(args: {
   tmuxName?: string;
   /** Resume a prior on-disk Claude session (`--resume <id>`) on first launch. */
   resumeSessionId?: string;
+  /** Start a blank session — the manager skips resuming the surface's last
+   *  on-disk session (so a "new chat" doesn't replay an old conversation). Only
+   *  meaningful on the first start; ignored on reattach. */
+  fresh?: boolean;
 }): void {
-  const { claudeStreamId, projectId, instanceId, label, tmuxName, resumeSessionId } = args;
+  const { claudeStreamId, projectId, instanceId, label, tmuxName, resumeSessionId, fresh } = args;
   const state = $claudeStream.getValue();
   if (!state.sessions[claudeStreamId]) {
     $claudeStream.next({
@@ -41,12 +53,14 @@ export function openClaudeStream(args: {
       },
     });
   }
-  wsSend("claude:stream:start", { claudeStreamId, projectId, instanceId, tmuxName, resumeSessionId });
+  wsSend("claude:stream:start", { claudeStreamId, projectId, instanceId, tmuxName, resumeSessionId, fresh });
 }
 
-/** Open a chat-mode Claude window. Each tmux session gets its own popup: pass
- *  `tmuxName` to bind to a specific gchat-* session (reattach + replay its
- *  content); omit it for the VM's default chat (Manage popup's "Chat" button).
+/** Open a chat-mode Claude window. Each open gets its own popup + session:
+ *   - explicit tmuxName (a gchat-* badge)   → reattach that session;
+ *   - resumeSessionId (the Sessions picker) → one window per resumed session;
+ *   - otherwise (the Manage "Claude" button) → a brand-new BLANK chat — a fresh
+ *     unique session every click, NOT resuming the VM's last conversation.
  *  Returns the popup's claudeStreamId. */
 export async function openClaudeChatWindow(args: {
   ownerId: string;
@@ -57,20 +71,15 @@ export async function openClaudeChatWindow(args: {
   /** Resume a prior on-disk Claude session into this window. */
   resumeSessionId?: string;
 }): Promise<string> {
-  // Derive a STABLE id so repeated opens reuse (and re-focus) one window instead
-  // of spawning a duplicate that --resumes the same session — the bug where every
-  // click of the "Claude" button stacked an identical popup:
-  //   - explicit tmuxName (a gchat-* badge)   → per-session window;
-  //   - resumeSessionId (the Sessions picker) → one window per resumed session;
-  //   - otherwise (the Manage "Claude" button) → the VM's single default chat.
-  // tmuxName stays undefined for the latter two so the manager derives a stable
-  // tmux name from the (stable) claudeStreamId.
-  const claudeStreamId = args.tmuxName
-    ? await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, args.tmuxName)
-    : args.resumeSessionId
-      ? await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, `resume-${args.resumeSessionId}`)
-      : await claudeChatStreamId(args.ownerId, args.projectId, args.instanceId);
-  openClaudeStream({ claudeStreamId, projectId: args.projectId, instanceId: args.instanceId, label: args.label, tmuxName: args.tmuxName, resumeSessionId: args.resumeSessionId });
+  // A "new chat" (no tmuxName, no resume) gets a fresh unique tmux name so every
+  // click is an independent, blank session + window. `fresh` tells the manager
+  // not to resume the surface's last on-disk session.
+  const fresh = !args.tmuxName && !args.resumeSessionId;
+  const tmuxName = args.tmuxName ?? (fresh ? freshGchatTmuxName() : undefined);
+  // Unique id per open: a fresh tmux name, the picked session, or the bound name.
+  const idSeed = tmuxName ?? `resume-${args.resumeSessionId}`;
+  const claudeStreamId = await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, idSeed);
+  openClaudeStream({ claudeStreamId, projectId: args.projectId, instanceId: args.instanceId, label: args.label, tmuxName, resumeSessionId: args.resumeSessionId, fresh });
   // Bring the (possibly already-open) window to the front.
   const s = $claudeStream.getValue();
   $claudeStream.next({ ...s, focusRequest: { claudeStreamId, nonce: ++focusNonce } });

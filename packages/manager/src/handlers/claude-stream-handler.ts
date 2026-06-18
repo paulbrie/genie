@@ -87,8 +87,8 @@ export async function handleClaudeStreamMessage(
 ): Promise<boolean> {
   switch (msg.type) {
     case "claude:stream:start": {
-      const { claudeStreamId, projectId, instanceId, tmuxName: boundTmuxName, resumeSessionId: requestedResumeId } = msg.payload as {
-        claudeStreamId?: string; projectId?: string; instanceId?: string; tmuxName?: string; resumeSessionId?: string;
+      const { claudeStreamId, projectId, instanceId, tmuxName: boundTmuxName, resumeSessionId: requestedResumeId, fresh } = msg.payload as {
+        claudeStreamId?: string; projectId?: string; instanceId?: string; tmuxName?: string; resumeSessionId?: string; fresh?: boolean;
       };
       if (!claudeStreamId || !projectId || !instanceId) {
         send(ws, { type: "claude:stream:error", payload: { claudeStreamId: claudeStreamId ?? null, message: "claudeStreamId, projectId and instanceId are required" } });
@@ -137,12 +137,16 @@ export async function handleClaudeStreamMessage(
         // Resume prior on-disk history for this chat surface (separate key from
         // the floating assistant so the two don't hijack each other's session).
         const sessionKey = `${projectId}:${instanceId}:chat`;
-        const resumeState = await getResumeState(sessionKey);
-        // An explicit resume id from the client (the "Sessions" picker) wins over
-        // the chat surface's last-on-disk session.
-        const resumeSessionId = (requestedResumeId && /^[a-zA-Z0-9_-]+$/.test(requestedResumeId))
-          ? requestedResumeId
-          : (resumeState?.sessionId ?? null);
+        // `fresh` (the "New chat" / Claude button) → start a blank session: don't
+        // resume the surface's last on-disk session, which would otherwise make
+        // every new window replay the same conversation. An explicit resume id
+        // (the "Sessions" picker) still wins; otherwise fall back to last-on-disk.
+        const resumeState = fresh ? null : await getResumeState(sessionKey);
+        const resumeSessionId = fresh
+          ? null
+          : ((requestedResumeId && /^[a-zA-Z0-9_-]+$/.test(requestedResumeId))
+            ? requestedResumeId
+            : (resumeState?.sessionId ?? null));
         const context = buildStreamContext(conn.host, agentMd);
 
         const claudeInfo = {
