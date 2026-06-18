@@ -89,6 +89,32 @@
   pointer-events: none;
 }
 
+/* "Claude is thinking" cue for the durable chat popups: gently breathe the
+   peach border + a soft outer glow so an in-progress turn is obvious at a
+   glance, without a distracting spinner-style border. Animates the element's
+   own border/box-shadow (not an outset pseudo-element) so it survives the
+   window's overflow:hidden and keeps the existing drop shadow. */
+@keyframes claude-thinking {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--color-peach) 40%, transparent);
+    box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5);
+  }
+  50% {
+    border-color: var(--color-peach);
+    box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5),
+                0 0 14px 0 color-mix(in srgb, var(--color-peach) 45%, transparent);
+  }
+}
+.claude-thinking {
+  animation: claude-thinking 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .claude-thinking {
+    animation: none;
+    border-color: var(--color-peach);
+  }
+}
+
 body {
   font-family: var(--font-sans);
   font-size: 13px;

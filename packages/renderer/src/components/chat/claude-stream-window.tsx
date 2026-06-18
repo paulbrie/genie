@@ -324,7 +324,7 @@ export function ClaudeStreamWindow({
   return createPortal(
     <div
       ref={elRef}
-      className={`fixed bg-mantle shadow-2xl shadow-black/50 flex flex-col ${maximized ? "rounded-none" : "rounded-xl"} overflow-hidden border ${focused ? "border-peach/70" : "border-peach/30"}`}
+      className={`fixed bg-mantle shadow-2xl shadow-black/50 flex flex-col ${maximized ? "rounded-none" : "rounded-xl"} overflow-hidden border ${focused ? "border-peach/70" : "border-peach/30"} ${session.loading ? "claude-thinking" : ""}`}
       style={containerStyle}
       onPointerDown={() => onFocus(claudeStreamId)}
     >
