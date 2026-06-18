@@ -230,11 +230,6 @@ function TmuxPill({
     >
       {isClaude ? <ClaudeLogo size={compact ? 9 : 10} /> : <Terminal size={compact ? 9 : 10} className="shrink-0" />}
       <span className={compact ? "max-w-[5rem] truncate" : undefined}>{session.name}</span>
-      {session.windows != null && (
-        <span className="text-overlay0" title={`${session.windows} tmux window${session.windows === 1 ? "" : "s"}`}>
-          {session.windows}w
-        </span>
-      )}
     </button>
   );
 }
