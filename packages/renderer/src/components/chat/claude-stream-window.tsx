@@ -141,17 +141,20 @@ export function ClaudeStreamWindow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claudeStreamId]);
 
-  // Auto-scroll to the latest message / streaming token. A bulk load (the first
-  // render, or a server replay/resume that drops in many messages at once) jumps
-  // straight to the end by setting scrollTop directly — no animation, and a rAF
-  // re-pins after late layout (markdown/images). Incremental updates (a new turn,
-  // streaming tokens) scroll smoothly.
+  // Auto-scroll to the latest message / streaming token. The initial load —
+  // whether one bulk replay or an incremental tail that drips messages in
+  // one-by-one — jumps straight to the end (scrollTop, no animation): we treat
+  // any update in the first ~2s after the window opens, and any multi-message
+  // jump, as a non-animated pin. Only genuine live updates (you chatting after
+  // the conversation has settled) scroll smoothly.
   const prevMsgLen = useRef(0);
+  const openedAt = useRef(Date.now());
   useEffect(() => {
     const len = session?.messages.length ?? 0;
     const bulk = prevMsgLen.current === 0 || len - prevMsgLen.current > 1;
     prevMsgLen.current = len;
-    if (bulk) {
+    const settling = Date.now() - openedAt.current < 2000;
+    if (bulk || settling) {
       const pin = () => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; };
       pin();
       requestAnimationFrame(pin);
