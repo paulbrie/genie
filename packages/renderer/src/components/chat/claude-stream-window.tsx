@@ -374,7 +374,7 @@ export function ClaudeStreamWindow({
             title={planMode ? "Plan mode on — Claude researches and proposes a plan instead of making changes" : "Switch to plan mode — Claude proposes a plan before changing anything"}
             aria-pressed={planMode}
           >
-            <ClipboardList size={11} /> Plan {planMode && <Check size={11} />}
+            <ClipboardList size={11} /> Plan mode {planMode && <Check size={11} />}
           </button>
 
           <div className="relative">
