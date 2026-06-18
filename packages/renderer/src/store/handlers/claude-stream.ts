@@ -1,7 +1,7 @@
 import type { HandlerMap } from "./types";
 import type { StreamingStep, ToolUse } from "../types/chat";
-import { updateClaudeStreamSession, handleClaudeStreamWsDisconnect, handleClaudeStreamWsReconnect } from "../actions/claude-stream";
-import { onWsClose, onWsOpen } from "@/lib/ws";
+import { updateClaudeStreamSession, handleClaudeStreamWsDisconnect } from "../actions/claude-stream";
+import { onWsClose } from "@/lib/ws";
 
 // Handlers for the durable chat-mode Claude session. Each event carries a
 // `claudeStreamId`; logic mirrors store/handlers/chat.ts but is scoped to one
@@ -123,4 +123,6 @@ export const handlers: HandlerMap = {
 };
 
 onWsClose(() => handleClaudeStreamWsDisconnect());
-onWsOpen(() => handleClaudeStreamWsReconnect());
+// The reconnect re-attach (re-issuing claude:stream:start) is fired from the
+// auth:success handler, not onWsOpen — a cold reattach needs the manager to have
+// re-confirmed our userId (canAccessProject) before the message arrives.

@@ -20,8 +20,19 @@ vi.mock("../actions/vm-connection", () => ({
   reconnectOpenVmConnections: vi.fn(),
 }));
 
+// Reconnect re-attach is fired from auth:success (not raw socket-open) so the
+// manager has re-confirmed our userId first. Mock both so we can assert the wiring.
+vi.mock("../actions/chat", () => ({
+  resumeChatTurnOnReconnect: vi.fn(),
+}));
+vi.mock("../actions/claude-stream", () => ({
+  handleClaudeStreamWsReconnect: vi.fn(),
+}));
+
 import { reconnectOpenVmConnections } from "../actions/vm-connection";
 import { broadcastWindows } from "../actions/window-manager";
+import { resumeChatTurnOnReconnect } from "../actions/chat";
+import { handleClaudeStreamWsReconnect } from "../actions/claude-stream";
 
 import { handlers } from "./auth";
 import { $auth } from "../subjects/auth";
@@ -71,6 +82,15 @@ describe("auth:success", () => {
     expect(setStoredToken).toHaveBeenCalledWith("jwt-abc");
     expect(broadcastWindows).toHaveBeenCalled();
     expect(reconnectOpenVmConnections).toHaveBeenCalled();
+  });
+
+  it("triggers the durable reconnect re-attach (claude stream + chat resume)", () => {
+    // These re-issue claude:stream:start / chat:resume now that the manager has
+    // re-confirmed our identity — firing them pre-auth on socket-open would race
+    // the ACL and be dropped.
+    handlers["auth:success"]({ token: "jwt", user: sampleUser });
+    expect(handleClaudeStreamWsReconnect).toHaveBeenCalledTimes(1);
+    expect(resumeChatTurnOnReconnect).toHaveBeenCalledTimes(1);
   });
 
   it("propagates impersonatedBy when present", () => {

@@ -1,8 +1,8 @@
 import { $chat } from "../subjects/chat";
-import type { ChatMessageUsage, ToolUse } from "../types/chat";
+import type { ChatMessageUsage, StreamingStep, ToolUse } from "../types/chat";
 import type { HandlerMap } from "./types";
-import { onWsClose, onWsOpen } from "@/lib/ws";
-import { handleChatWsDisconnect, handleChatWsReconnect } from "../actions/chat";
+import { onWsClose } from "@/lib/ws";
+import { handleChatWsDisconnect, handleChatResumeGone, clearChatDegradeTimer } from "../actions/chat";
 
 // --- Chat (1-on-1 AI) messages ---
 
@@ -85,6 +85,7 @@ export const handlers: HandlerMap = {
   },
 
   "chat:done": (payload) => {
+    clearChatDegradeTimer();
     const c = $chat.getValue();
     const steps = [...c.streamingSteps];
     if (c.streamingContent) {
@@ -107,10 +108,13 @@ export const handlers: HandlerMap = {
       loading: false,
       statusText: "",
       toolRoundsUsed: 0,
+      reconnecting: false,
+      activeTurnId: null,
     });
   },
 
   "chat:error": (payload) => {
+    clearChatDegradeTimer();
     const c = $chat.getValue();
     $chat.next({
       ...c,
@@ -125,7 +129,38 @@ export const handlers: HandlerMap = {
       loading: false,
       statusText: "",
       toolRoundsUsed: 0,
+      reconnecting: false,
+      activeTurnId: null,
     });
+  },
+
+  // Reconnect catch-up: the manager replays the buffered turn's streaming state
+  // (mirrors `claude:stream:replay`). REPLACES the live streaming state so the
+  // re-fed history isn't duplicated; committed messages are untouched. If the
+  // turn already finished while we were away, a `chat:done`/`chat:error` follows.
+  "chat:replay": (payload) => {
+    clearChatDegradeTimer();
+    const c = $chat.getValue();
+    const streaming = (payload.streaming || {}) as {
+      loading?: boolean; partialContent?: string; steps?: StreamingStep[]; toolRoundsUsed?: number;
+    };
+    const steps: StreamingStep[] = streaming.steps || [];
+    $chat.next({
+      ...c,
+      streamingContent: streaming.partialContent || "",
+      streamingSteps: steps,
+      toolUses: steps.filter((st) => st.toolUse).map((st) => st.toolUse as ToolUse),
+      loading: !!streaming.loading,
+      statusText: streaming.loading ? c.statusText : "",
+      toolRoundsUsed: typeof streaming.toolRoundsUsed === "number" ? streaming.toolRoundsUsed : c.toolRoundsUsed,
+      maxToolRounds: typeof payload.maxToolRounds === "number" ? payload.maxToolRounds : c.maxToolRounds,
+      reconnecting: false,
+      connectionError: null,
+    });
+  },
+
+  "chat:resume:gone": () => {
+    handleChatResumeGone();
   },
 
   "chat:status": (payload) => {
@@ -204,6 +239,7 @@ onWsClose((reason) => {
   handleChatWsDisconnect(reason);
 });
 
-onWsOpen(() => {
-  handleChatWsReconnect();
-});
+// Note: the reconnect *resume* (chat:resume) is fired from the auth:success
+// handler — not onWsOpen — so the manager has re-confirmed our userId before the
+// message arrives (otherwise the ACL drops it as a pre-auth send). See
+// resumeChatTurnOnReconnect.

@@ -33,7 +33,12 @@ export interface StreamJsonEvent {
 
 /** Token/cost/timing summary from a turn's `result` event. */
 export interface TurnUsage {
+  /** Total prompt size: fresh input + cache reads + cache writes. */
   inputTokens: number;
+  /** Portion of `inputTokens` served from the prompt cache (already-seen
+   *  system prompt / files). `inputTokens - cachedInputTokens` is what the turn
+   *  processed fresh — the meaningful "new" figure for the footer. */
+  cachedInputTokens: number;
   outputTokens: number;
   costUsd: number;
   durationMs: number;
@@ -175,6 +180,7 @@ export class StreamJsonParser {
         const usage: TurnUsage | undefined = (u || typeof event.duration_ms === "number" || typeof event.total_cost_usd === "number")
           ? {
               inputTokens: (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+              cachedInputTokens: u?.cache_read_input_tokens ?? 0,
               outputTokens: u?.output_tokens ?? 0,
               costUsd: event.total_cost_usd ?? 0,
               durationMs: event.duration_ms ?? 0,

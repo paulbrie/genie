@@ -42,6 +42,7 @@ const FRESH_CHAT: ChatState = {
   toolRoundsUsed: 0, claudeInfo: null,
   sessions: [], sessionsLoading: false, activeSessionId: null,
   resumedFrom: null, connectionError: null, reconnecting: false, lastSendMeta: null,
+  activeTurnId: null,
 };
 
 beforeEach(() => {

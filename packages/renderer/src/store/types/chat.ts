@@ -28,7 +28,12 @@ export interface StreamingStep {
 }
 
 export interface ChatMessageUsage {
+  /** Total prompt size processed this turn (fresh input + cached context). */
   inputTokens: number;
+  /** Cache-read portion of `inputTokens`. When present, the footer shows
+   *  `inputTokens` as the context size and `inputTokens - cachedInputTokens` as
+   *  the new tokens this turn. */
+  cachedInputTokens?: number;
   outputTokens: number;
   modelId: string;
   modelLabel: string;
@@ -112,6 +117,10 @@ export interface ChatState {
   reconnecting: boolean;
   /** Metadata for the most recent user turn — used to retry after errors. */
   lastSendMeta: ChatSendMeta | null;
+  /** Client-generated id for the in-flight turn. Sent with `chat:send` so a
+   *  socket drop can resume THIS exact turn on reconnect via `chat:resume`
+   *  (the manager keeps it running + buffered). Null when no turn is in flight. */
+  activeTurnId: string | null;
 }
 
 /** A VM the assistant should pin its `ssh_exec` tool calls to. Selected from

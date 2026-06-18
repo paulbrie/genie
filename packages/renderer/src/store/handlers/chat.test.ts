@@ -21,6 +21,7 @@ const FRESH: ChatState = {
   connectionError: null,
   reconnecting: false,
   lastSendMeta: null,
+  activeTurnId: null,
 };
 
 beforeEach(() => {

@@ -17,6 +17,7 @@ import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createTok
 import { handleDebugServerLogs } from "./debug/debug-api.js";
 
 import { pruneStaleSessions } from "./chat/assistant-session-state-service.js";
+import { detachDurableChatTurnsForWs } from "./chat/durable-chat-turn.js";
 
 import * as docsService from "./docs-service.js";
 import * as trackerService from "./tracker-service.js";
@@ -1439,12 +1440,16 @@ export async function createServer(): Promise<WebSocketServer> {
       unwatchVpsStatsForClient(ws);
       unwatchServerMetrics(ws);
 
-      // Abort any active chat stream for this connection
+      // Abort any active chat stream for this connection. The claude-code path
+      // (VPS agent routing) is tracked here and aborted on drop. The direct
+      // Anthropic floating-assistant path is durable instead: detach it so it
+      // keeps running and can be replayed on reconnect (grace-limited).
       const chatAbort = activeChatAbortControllers.get(ws);
       if (chatAbort) {
         chatAbort.abort();
         activeChatAbortControllers.delete(ws);
       }
+      detachDurableChatTurnsForWs(ws);
 
       // Abort any active security scans for this connection
       abortAllSecurityScans();

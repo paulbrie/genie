@@ -4,6 +4,8 @@ import { clearPendingInviteToken, getPendingInviteToken } from "@/lib/invite";
 import { $auth } from "../subjects/auth";
 import { broadcastWindows } from "../actions/window-manager";
 import { reconnectOpenVmConnections } from "../actions/vm-connection";
+import { resumeChatTurnOnReconnect } from "../actions/chat";
+import { handleClaudeStreamWsReconnect } from "../actions/claude-stream";
 import type { HandlerMap } from "./types";
 
 // --- Auth messages ---
@@ -26,6 +28,11 @@ export const handlers: HandlerMap = {
     setStoredToken(token);
     broadcastWindows();
     reconnectOpenVmConnections();
+    // Re-attach durable work now that the manager has re-confirmed our identity
+    // (firing these pre-auth on raw socket-open would race the ACL and be
+    // dropped). No-ops on a fresh login — there's nothing in flight to resume.
+    handleClaudeStreamWsReconnect();
+    resumeChatTurnOnReconnect();
     const pendingInvite = getPendingInviteToken();
     if (pendingInvite) {
       clearPendingInviteToken();

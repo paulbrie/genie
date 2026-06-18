@@ -49,6 +49,8 @@ export const MODEL_PRICING: Record<ChatModelId, { input: number; output: number 
 
 export interface ChatUsage {
   inputTokens: number;
+  /** Cache-read portion of `inputTokens` (already-cached context). */
+  cachedInputTokens: number;
   outputTokens: number;
   modelId: ChatModelId;
   modelLabel: string;
@@ -351,8 +353,9 @@ export async function handleChat(
       if (u) {
         const inputTokens = u.inputTokens ?? 0;
         const outputTokens = u.outputTokens ?? 0;
+        const cachedInputTokens = (u as { cachedInputTokens?: number }).cachedInputTokens ?? 0;
         const cost = (inputTokens * pricing.input + outputTokens * pricing.output) / 1_000_000;
-        usage = { inputTokens, outputTokens, modelId: id, modelLabel: spec.label, cost };
+        usage = { inputTokens, cachedInputTokens, outputTokens, modelId: id, modelLabel: spec.label, cost };
       }
     } catch { /* usage not available */ }
 

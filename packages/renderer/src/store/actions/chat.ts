@@ -31,7 +31,7 @@ export function setChatModel(modelId: ChatModelId): void {
       messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [],
       statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null,
       sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null,
-      connectionError: null, reconnecting: false, lastSendMeta: null,
+      connectionError: null, reconnecting: false, lastSendMeta: null, activeTurnId: null,
     });
   }
 }
@@ -48,6 +48,8 @@ export function sendChatMessage(
     ? { role: "user", content: text, images }
     : { role: "user", content: text };
   const newMessages = [...c.messages, userMsg];
+  // Stable id so a mid-turn socket drop can resume THIS turn on reconnect.
+  const turnId = crypto.randomUUID();
   $chat.next({
     ...c,
     messages: newMessages,
@@ -58,6 +60,7 @@ export function sendChatMessage(
     connectionError: null,
     reconnecting: false,
     lastSendMeta: sendMeta,
+    activeTurnId: turnId,
   });
 
   if (!isWsConnected()) {
@@ -72,6 +75,7 @@ export function sendChatMessage(
     domSnapshot,
     modelId: c.modelId,
     pinnedVm,
+    turnId,
   });
   if (!sent) {
     failChatSend(newMessages, "Could not send your message. The connection may have dropped.");
@@ -106,6 +110,7 @@ export function retryLastChatMessage(context?: string, domSnapshot?: string): vo
   const meta = c.lastSendMeta;
   const resolvedContext = context ?? meta?.context;
   const resolvedSnapshot = domSnapshot ?? meta?.domSnapshot;
+  const turnId = crypto.randomUUID();
 
   $chat.next({
     ...c,
@@ -123,6 +128,7 @@ export function retryLastChatMessage(context?: string, domSnapshot?: string): vo
       domSnapshot: resolvedSnapshot,
       images: meta?.images,
     },
+    activeTurnId: turnId,
   });
 
   if (!isWsConnected()) {
@@ -137,6 +143,7 @@ export function retryLastChatMessage(context?: string, domSnapshot?: string): vo
     domSnapshot: resolvedSnapshot,
     modelId: c.modelId,
     pinnedVm,
+    turnId,
   });
   if (!sent) {
     failChatSend(messages, "Could not send your message. The connection may have dropped.");
@@ -148,10 +155,12 @@ export function dismissChatConnectionError(): void {
 }
 
 /** Grace window after the WS dies before we degrade the streaming bubble into a
- *  hard "Connection lost" error. Set when the disconnect happens, cleared on a
- *  successful reconnect. Tuned to roughly cover Railway's networking-layer
- *  cycling — they typically settle within seconds, never minutes. */
-const RECONNECT_DEGRADE_MS = 60_000;
+ *  hard "Connection lost" error. Cleared the moment we fire a `chat:resume` on
+ *  reconnect, so it only ever fires when we truly never came back (e.g. offline,
+ *  or auth never re-confirmed). Aligned with the manager's durable-turn grace
+ *  (TURN_GRACE_MS) so the client doesn't give up while the server's buffered
+ *  turn is still resumable. */
+const RECONNECT_DEGRADE_MS = 120_000;
 let degradeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearDegradeTimer(): void {
@@ -188,15 +197,53 @@ export function handleChatWsDisconnect(reason: string): void {
   }, RECONNECT_DEGRADE_MS);
 }
 
-/** WS reconnected. Drop the "Reconnecting…" badge. The in-flight stream isn't
- *  yet resumed — that's Phase 2 — but if the user's turn happened to complete
- *  while disconnected the next `chat:token` / `chat:done` flowing in will still
- *  reach the bubble because we kept `streamingContent` intact. */
-export function handleChatWsReconnect(): void {
+/** Re-auth confirmed after a reconnect. If a turn was in flight when the socket
+ *  dropped, ask the manager to resume it: the durable turn kept running there,
+ *  so it replays one `chat:replay` snapshot (+ the terminal event if it already
+ *  finished) — no re-execution of tools, no double-billing, no stuck spinner.
+ *  Fires from the `auth:success` handler (not raw socket-open) so the server has
+ *  our userId before `chat:resume` arrives — otherwise the ACL drops it pre-auth.
+ *
+ *  The "Reconnecting…" badge stays up until the replay lands (cleared by the
+ *  `chat:replay` handler). If the buffered turn is gone the manager replies
+ *  `chat:resume:gone` → we degrade to the retry UX. If we can't even resume by id
+ *  (older send without a turnId), the degrade timer remains the fallback. */
+export function resumeChatTurnOnReconnect(): void {
+  const c = $chat.getValue();
+  if (!c.loading || !c.reconnecting) return; // no interrupted turn
+  if (!c.activeTurnId) return;                // can't resume by id — degrade timer handles it
+  clearDegradeTimer();
+  const sent = wsSend("chat:resume", { turnId: c.activeTurnId });
+  if (!sent) {
+    // Socket vanished again before we could ask — re-arm the degrade fallback.
+    handleChatWsDisconnect("Connection lost. Your message may not have completed.");
+  }
+}
+
+/** The manager has no buffered turn for our id (grace expired / unknown). Degrade
+ *  to the "Connection lost. Retry?" UX so the user isn't stuck loading. */
+export function handleChatResumeGone(): void {
   clearDegradeTimer();
   const c = $chat.getValue();
-  if (!c.reconnecting) return;
-  $chat.nextAssign({ reconnecting: false });
+  if (!c.loading) return;
+  $chat.next({
+    ...c,
+    loading: false,
+    streamingContent: "",
+    streamingSteps: [],
+    toolUses: [],
+    statusText: "",
+    toolRoundsUsed: 0,
+    reconnecting: false,
+    activeTurnId: null,
+    connectionError: "Connection lost. Your message may not have completed.",
+  });
+}
+
+/** Clear the degrade timer when a turn settles (done/error/replay-with-result),
+ *  so a stale timer can't wipe a fresh turn. */
+export function clearChatDegradeTimer(): void {
+  clearDegradeTimer();
 }
 
 /** Set or clear the assistant's pinned VM. Persisted to localStorage so the
@@ -216,16 +263,18 @@ export function stopChat(): void {
     const toolUses = c.toolUses.length > 0 ? [...c.toolUses] : undefined;
     newMessages = [...c.messages, { role: "assistant" as const, content: steps.map(st => st.content).join(""), toolUses, steps }];
   }
-  $chat.next({ ...c, messages: newMessages, streamingContent: "", streamingSteps: [], toolUses: [], loading: false, toolRoundsUsed: 0 });
+  clearDegradeTimer();
+  $chat.next({ ...c, messages: newMessages, streamingContent: "", streamingSteps: [], toolUses: [], loading: false, toolRoundsUsed: 0, reconnecting: false, activeTurnId: null });
 }
 
 export function resetChat(): void {
+  clearDegradeTimer();
   const modelId = $chat.getValue().modelId;
   $chat.next({
     messages: [], loading: false, streamingContent: "", streamingSteps: [], toolUses: [],
     statusText: "", modelId, maxToolRounds: 0, toolRoundsUsed: 0, claudeInfo: null,
     sessions: [], sessionsLoading: false, activeSessionId: null, resumedFrom: null,
-    connectionError: null, reconnecting: false, lastSendMeta: null,
+    connectionError: null, reconnecting: false, lastSendMeta: null, activeTurnId: null,
   });
 }
 
@@ -240,10 +289,11 @@ export function loadChatSession(sessionId: string): void {
 }
 
 export function newChat(): void {
+  clearDegradeTimer();
   $chat.nextAssign({
     messages: [], loading: false, streamingContent: "", streamingSteps: [],
     toolUses: [], statusText: "", activeSessionId: null, resumedFrom: null,
-    connectionError: null, reconnecting: false, lastSendMeta: null,
+    connectionError: null, reconnecting: false, lastSendMeta: null, activeTurnId: null,
   });
 }
 

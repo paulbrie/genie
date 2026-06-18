@@ -30,6 +30,8 @@ export interface StreamStep {
 }
 export interface StreamMessageUsage {
   inputTokens: number;
+  /** Cache-read portion of `inputTokens` (already-cached context). */
+  cachedInputTokens: number;
   outputTokens: number;
   modelId: string;
   modelLabel: string;
@@ -85,10 +87,24 @@ interface StreamState {
   orphanedAt: number | null;
   /** True once a deliberate close started — suppresses tail-drop re-tailing. */
   closing: boolean;
+  /** True while catching up on a cold reattach: we re-tail the surviving OUT
+   *  from line 1 to rebuild the transcript, but suppress live `emit()`s so the
+   *  client isn't flooded with (duplicate) historical token events. One
+   *  `claude:stream:replay` snapshot is sent when the catch-up reaches the live
+   *  edge. */
+  replaying: boolean;
+  /** OUT line count at reattach time — the boundary at which catch-up ends and
+   *  live emits resume. */
+  replayUntilLine: number;
 }
 
 const MAX_MESSAGES = 200;
-const GRACE_MS = 60_000;
+// Grace before an orphaned (socket-dropped) session is detached. Generous so a
+// slow reconnect under Railway edge flapping still hits the cheap in-memory
+// reattach (replay a snapshot) instead of a cold re-tail of the whole OUT file.
+// Aligned with the renderer's reconnect-degrade window + the durable chat-turn
+// grace so every reconnect timeout moves together.
+const GRACE_MS = 120_000;
 
 const streams = new Map<string, StreamState>();
 const orphanTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -99,9 +115,10 @@ export function setClaudeStreamSend(fn: ClaudeStreamSendFn) {
 }
 
 function emit(id: string, type: string, payload: Record<string, unknown>) {
-  const ws = streams.get(id)?.ws;
-  if (!ws) return; // orphaned — transcript still updates, replayed on reattach
-  sendFn?.(ws, { type, payload: { claudeStreamId: id, ...payload } });
+  const st = streams.get(id);
+  if (!st || !st.ws) return; // orphaned — transcript still updates, replayed on reattach
+  if (st.replaying) return; // catching up on a cold reattach — one snapshot is sent at the live edge
+  sendFn?.(st.ws, { type, payload: { claudeStreamId: id, ...payload } });
 }
 
 export function hasClaudeStream(id: string): boolean {
@@ -188,6 +205,7 @@ function makeParser(id: string): StreamJsonParser {
         const usage: StreamMessageUsage | undefined = event.usage
           ? {
               inputTokens: event.usage.inputTokens,
+              cachedInputTokens: event.usage.cachedInputTokens,
               outputTokens: event.usage.outputTokens,
               cost: event.usage.costUsd,
               modelId: st.claudeInfo?.model || "",
@@ -212,7 +230,14 @@ async function startTail(st: StreamState, id: string, fromLine: number): Promise
   tail.stdout.on("data", (chunk: Buffer) => {
     const str = chunk.toString();
     for (let i = 0; i < str.length; i++) if (str[i] === "\n") st.linesConsumed++;
-    st.parser.push(str);
+    st.parser.push(str); // mutates the transcript; emits are suppressed while replaying
+    // Reached the live edge of a cold-reattach catch-up: stop suppressing and
+    // hand the client one authoritative snapshot (it REPLACES its transcript,
+    // so the re-read history isn't duplicated). Lines after this emit live.
+    if (st.replaying && st.linesConsumed >= st.replayUntilLine) {
+      st.replaying = false;
+      emit(id, "claude:stream:replay", { ...snapshot(st) });
+    }
   });
   tail.stdout.on("end", () => { void onTailDropped(id); });
   tail.stdout.on("close", () => { void onTailDropped(id); });
@@ -365,6 +390,8 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
     linesConsumed: 0,
     orphanedAt: null,
     closing: false,
+    replaying: false,
+    replayUntilLine: 0,
   };
   streams.set(id, st);
 
@@ -411,6 +438,21 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
   // overlap with what the OUT tail picks up below.)
   if (params.resumeSessionId && !reattached) {
     await seedResumedTranscript(st, id, params.dest, params.resumeSessionId);
+  }
+
+  // Reattaching a surviving session: OUT already holds the whole conversation,
+  // so re-tailing it from line 1 would re-emit every historical token live and
+  // duplicate the client's transcript. Enter replay-mode — rebuild the transcript
+  // silently up to the current line count, then emit one snapshot at the edge.
+  if (reattached) {
+    st.replaying = true;
+    const wc = await conn.exec(`wc -l < ${shellSingleQuote(outPath)} 2>/dev/null || echo 0`).catch(() => "0");
+    st.replayUntilLine = parseInt(wc.trim(), 10) || 0;
+    if (st.replayUntilLine === 0) {
+      // Nothing buffered yet — go live immediately (and hand over an empty snapshot).
+      st.replaying = false;
+      emit(id, "claude:stream:replay", { ...snapshot(st) });
+    }
   }
 
   await startTail(st, id, 1);

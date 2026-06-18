@@ -15,6 +15,12 @@ import { aiUsage } from "../db/schema.js";
 import { isAdmin } from "../auth/auth.js";
 import { routeChatToVpsAgent } from "../chat/vps-agent-router.js";
 import {
+  createDurableChatTurn,
+  resumeDurableChatTurn,
+  abortDurableChatTurnForWs,
+  type DurableChatTurnHandle,
+} from "../chat/durable-chat-turn.js";
+import {
   type ClientState,
   activeChatAbortControllers,
   broadcastProjectList,
@@ -103,9 +109,14 @@ export async function handleChatMessage(
   switch (msg.type) {
     case "chat:send": {
       if (!userId) return true;
-      const { messages, context: chatContext, domSnapshot, source, modelId, pinnedVm } = msg.payload;
-      const abortController = new AbortController();
-      activeChatAbortControllers.set(ws, abortController);
+      const { messages, context: chatContext, domSnapshot, source, modelId, pinnedVm, turnId: rawTurnId } = msg.payload;
+      // Stable, client-generated id so a dropped socket can resume THIS turn on
+      // reconnect (see durable-chat-turn.ts). Older clients omit it — they still
+      // run + buffer, they just can't resume. The non-claude-code path below owns
+      // its abort via the durable turn; the claude-code path keeps using
+      // activeChatAbortControllers.
+      const turnId: string = (typeof rawTurnId === "string" && rawTurnId) ? rawTurnId : uuidv4();
+      let turn: DurableChatTurnHandle | null = null;
 
       const effectiveClientType: string = source === "chrome-extension"
         ? "chrome-extension"
@@ -147,6 +158,8 @@ export async function handleChatMessage(
 
       void (async () => {
         if (modelId === "claude-code") {
+          const abortController = new AbortController();
+          activeChatAbortControllers.set(ws, abortController);
           try {
             console.log(`[claude-code] Routing chat: contextProjectId=${contextProjectId}, enrichedContext length=${enrichedContext?.length}`);
             send(ws, { type: "chat:meta", payload: { maxToolRounds: 40 } });
@@ -188,7 +201,9 @@ export async function handleChatMessage(
         ]);
         const resolvedModelId = (modelId || dbDefaultModel || "claude-sonnet") as ChatModelId;
         const resolvedMaxToolRounds = dbMaxToolRounds ?? 10;
-        send(ws, { type: "chat:meta", payload: { maxToolRounds: resolvedMaxToolRounds } });
+        // Wrap this turn so it survives a socket drop and replays on reconnect.
+        turn = createDurableChatTurn(turnId, ws, send);
+        turn.onMeta(resolvedMaxToolRounds);
         void analyticsService.recordEvent({
           userId: state.userId, userName: state.user?.name ?? null, event: "assistant.message",
           props: { model: resolvedModelId, source: source === "chrome-extension" ? "extension" : "web" }, ip: state.ip,
@@ -209,10 +224,9 @@ export async function handleChatMessage(
 
         await handleChat(
           messages,
-          (token) => send(ws, { type: "chat:token", payload: { token } }),
+          (token) => turn!.onToken(token),
           (fullContent, usage) => {
-            activeChatAbortControllers.delete(ws);
-            send(ws, { type: "chat:done", payload: { usage } });
+            turn!.finishDone(usage ?? null);
             if (usage) {
               const projectIdMatch = chatContext?.match(/Project ID:\s*([a-f0-9-]+)/i);
               const sourcePromise = projectIdMatch
@@ -244,11 +258,10 @@ export async function handleChatMessage(
             }).catch(err => console.error("Failed to log assistant message:", err));
           },
           (message) => {
-            activeChatAbortControllers.delete(ws);
-            send(ws, { type: "chat:error", payload: { message } });
+            turn!.finishError(message);
           },
           (name, input, result, id, durationMs) => {
-            send(ws, { type: "chat:tool", payload: { id, name, input, result, durationMs } });
+            turn!.onTool(id, name, input, result, durationMs);
             collectedToolUses.push({ name, input, result });
             if (name === "write_project_file") {
               void broadcastProjectList();
@@ -256,21 +269,29 @@ export async function handleChatMessage(
           },
           enrichedContext,
           domSnapshot,
-          abortController.signal,
+          turn.abort.signal,
           domActionExecutor,
           resolvedModelId,
           resolvedMaxToolRounds,
           pinnedVm || null,
           (id, name, input) => {
-            send(ws, { type: "chat:tool:start", payload: { id, name, input } });
+            turn!.onToolStart(id, name, input);
           },
           // Scope every tool call to this caller — the assistant may only reach
           // projects/servers the user can see (privileged roles bypass).
           { userId, role: state.role },
         );
       })().catch((err) => {
-        activeChatAbortControllers.delete(ws);
-        send(ws, { type: "chat:error", payload: { message: (err instanceof Error ? err.message : String(err)) || "Chat failed" } });
+        const message = (err instanceof Error ? err.message : String(err)) || "Chat failed";
+        // If the durable turn was already created, route the failure through it
+        // (so a reconnect replays the error); otherwise it failed during setup —
+        // fall back to the direct send + abort-controller cleanup.
+        if (turn) {
+          turn.finishError(message);
+        } else {
+          activeChatAbortControllers.delete(ws);
+          send(ws, { type: "chat:error", payload: { message } });
+        }
       });
       return true;
     }
@@ -280,6 +301,20 @@ export async function handleChatMessage(
       if (controller) {
         controller.abort();
         activeChatAbortControllers.delete(ws);
+      }
+      abortDurableChatTurnForWs(ws);
+      return true;
+    }
+
+    case "chat:resume": {
+      // Reconnect: rebind an in-flight (or just-finished) turn to this socket and
+      // replay it. If the buffered turn is gone (grace expired / unknown), tell
+      // the client so it can surface a retry instead of spinning forever.
+      if (!userId) return true;
+      const { turnId } = msg.payload as { turnId?: string };
+      if (!turnId) return true;
+      if (!resumeDurableChatTurn(turnId, ws, send)) {
+        send(ws, { type: "chat:resume:gone", payload: { turnId } });
       }
       return true;
     }
