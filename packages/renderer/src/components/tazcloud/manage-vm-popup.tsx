@@ -490,9 +490,7 @@ function ClaudeManageButton({
             style={{ fontSize: 12 }}
           >
             <ClaudeLogo size={12} />
-            <span className="flex-1">Claude Chat</span>
-            <span className="text-overlay0" style={{ fontSize: 10 }}>default</span>
-            <span className="px-1 py-px rounded bg-mauve/15 text-mauve" style={{ fontSize: 9 }}>beta</span>
+            <span className="flex-1 whitespace-nowrap">Claude Chat</span>
           </button>
           <button
             onClick={() => { openClaude(); setMenuOpen(false); }}
