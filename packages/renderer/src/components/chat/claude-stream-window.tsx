@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { Square, X, Minus, Maximize2, Minimize2, Loader2 } from "lucide-react";
+import { Square, X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
-import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage } from "@/store/actions/claude-stream";
+import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow } from "@/store/actions/claude-stream";
+import { $auth } from "@/store/subjects";
+import type { ClaudeSessionSummary } from "@/store/types/claude-stream";
 import { ClaudeLogo } from "@/components/project/project-detail";
 import { AutoTextarea } from "@/components/ui/auto-textarea";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
@@ -15,6 +17,23 @@ import { useDraggable, useResizable } from "@/hooks/use-draggable";
 
 const WIN_W = 460;
 const WIN_H = 600;
+
+/** Prefixed onto each message while the plan-mode pill is active. Claude has no
+ *  runtime permission-mode toggle over stream-json, so we steer it with a strong
+ *  per-turn directive instead — research & propose, don't mutate. */
+const PLAN_DIRECTIVE =
+  "[Plan mode] Research the request below and propose a concise, step-by-step plan. " +
+  "Do NOT modify files, write code, or run any mutating commands — read-only investigation only. " +
+  "End with the plan and wait for my approval before making changes.";
+
+/** Compact "3m ago" / "2d ago" stamp for the session picker. */
+function relTime(ms: number): string {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 
 /** A clipboard image being uploaded to the VM, then attachable to a message. */
 type PendingImage = {
@@ -79,6 +98,10 @@ export function ClaudeStreamWindow({
 
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [planMode, setPlanMode] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
+  const [sessions, setSessions] = useState<ClaudeSessionSummary[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [fontSize] = useWindowFontSize();
@@ -96,7 +119,7 @@ export function ClaudeStreamWindow({
   // Also bring this window to the front and focus the input so the user can type
   // straight away.
   useEffect(() => {
-    if (session) openClaudeStream({ claudeStreamId, projectId: session.projectId, instanceId: session.instanceId, label: session.label, tmuxName: session.tmuxName });
+    if (session) openClaudeStream({ claudeStreamId, projectId: session.projectId, instanceId: session.instanceId, label: session.label, tmuxName: session.tmuxName, resumeSessionId: session.resumeSessionId });
     onFocus(claudeStreamId);
     const t = setTimeout(() => taRef.current?.focus(), 0);
     return () => clearTimeout(t);
@@ -167,11 +190,44 @@ export function ClaudeStreamWindow({
     // Keep the pasted thumbnails in the conversation (alongside the [Image: …]
     // text Claude reads) by attaching their data URLs to the sent message.
     const images = ready.map((im) => im.dataUrl).filter(Boolean);
-    sendClaudeStreamMessage(claudeStreamId, parts.join("\n\n"), images);
+    const display = parts.join("\n\n");
+    // Plan mode: prefix the directive on the wire payload only — the bubble shows
+    // just what the user typed.
+    const wire = planMode ? `${PLAN_DIRECTIVE}\n\n${display}` : display;
+    sendClaudeStreamMessage(claudeStreamId, wire, images, display);
     setInput("");
     setPendingImages([]);
     ac.close();
-  }, [input, pendingImages, claudeStreamId, ac]);
+  }, [input, pendingImages, claudeStreamId, ac, planMode]);
+
+  // Lazy-load the prior-session list when the picker opens.
+  const toggleSessions = useCallback(() => {
+    setShowSessions((open) => {
+      const next = !open;
+      if (next) {
+        setSessionsLoading(true);
+        void listClaudeSessions(claudeStreamId).then((list) => {
+          setSessions(list);
+          setSessionsLoading(false);
+        });
+      }
+      return next;
+    });
+  }, [claudeStreamId]);
+
+  const resumeSession = useCallback((s: ClaudeSessionSummary) => {
+    const ownerId = $auth.getValue().user?.id;
+    if (!ownerId || !session) return;
+    void openClaudeChatWindow({
+      ownerId,
+      projectId: session.projectId,
+      instanceId: session.instanceId,
+      label: s.title ? `Resumed · ${s.title.slice(0, 40)}` : "Resumed session",
+      resumeSessionId: s.sessionId,
+    });
+    setShowSessions(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.projectId, session?.instanceId]);
 
   // Enter sends (AutoTextarea onSubmit); Esc stops a running generation — but let
   // the autocomplete swallow Esc first (to close its dropdown).
@@ -310,6 +366,52 @@ export function ClaudeStreamWindow({
             <Square size={12} />
           </button>
         )}
+        </div>
+
+        {/* Controls: plan-mode toggle + prior-session picker */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setPlanMode((v) => !v)}
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs transition-colors ${planMode ? "bg-peach/15 border-peach/60 text-peach" : "border-surface1 text-overlay0 hover:text-text hover:border-overlay0"}`}
+            title={planMode ? "Plan mode on — Claude researches and proposes a plan instead of making changes" : "Switch to plan mode — Claude proposes a plan before changing anything"}
+            aria-pressed={planMode}
+          >
+            <ClipboardList size={11} /> Plan {planMode && <Check size={11} />}
+          </button>
+
+          <div className="relative">
+            <button
+              onClick={toggleSessions}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs text-overlay0 hover:text-text transition-colors"
+              title="Reload a previous Claude session"
+            >
+              <History size={11} /> Sessions
+            </button>
+            {showSessions && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowSessions(false)} aria-hidden />
+                <div className="absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto rounded-md border border-surface1 bg-mantle shadow-xl z-20 scrollbar-thin">
+                  {sessionsLoading ? (
+                    <div className="flex items-center gap-2 px-3 py-2 text-xs text-overlay0"><Loader2 size={12} className="animate-spin" /> Loading…</div>
+                  ) : sessions.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-overlay0">No previous sessions</div>
+                  ) : (
+                    sessions.map((s) => (
+                      <button
+                        key={s.sessionId}
+                        onClick={() => resumeSession(s)}
+                        className="w-full text-left px-3 py-1.5 hover:bg-surface0 border-b border-surface0/50 last:border-0"
+                        title={`Resume ${s.sessionId}`}
+                      >
+                        <div className="text-xs text-text truncate">{s.title || s.sessionId.slice(0, 8)}</div>
+                        <div className="text-[10px] text-overlay0">{relTime(s.mtime)} · {s.messages} msgs</div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 

@@ -14,6 +14,9 @@ export interface ClaudeStreamSession {
   instanceId: string;
   /** The specific tmux session this chat is bound to (per-session chat). */
   tmuxName?: string;
+  /** When set, the manager launches Claude with `--resume <id>` on first start
+   *  so this window reloads a prior on-disk session's context. */
+  resumeSessionId?: string;
   /** Human label for the window title (e.g. project name). */
   label: string;
   messages: ChatMessage[];
@@ -36,18 +39,32 @@ export interface ClaudeStreamState {
   sessions: Record<string, ClaudeStreamSession>;
 }
 
+/** A prior on-disk Claude session (from `~/.claude/projects/<cwd>/*.jsonl`),
+ *  surfaced in the chat window's "Sessions" picker so the user can resume one. */
+export interface ClaudeSessionSummary {
+  sessionId: string;
+  /** Epoch ms of the transcript's last write. */
+  mtime: number;
+  /** Number of transcript lines (rough message count). */
+  messages: number;
+  /** Short human label: session summary or first user message. */
+  title: string;
+}
+
 export function emptyClaudeStreamSession(
   claudeStreamId: string,
   projectId: string,
   instanceId: string,
   label: string,
   tmuxName?: string,
+  resumeSessionId?: string,
 ): ClaudeStreamSession {
   return {
     claudeStreamId,
     projectId,
     instanceId,
     tmuxName,
+    resumeSessionId,
     label,
     messages: [],
     loading: false,

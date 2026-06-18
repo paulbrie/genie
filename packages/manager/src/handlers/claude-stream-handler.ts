@@ -32,6 +32,41 @@ function chatTmuxName(claudeStreamId: string): string {
   return `claude-chat-${claudeStreamId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24)}`;
 }
 
+/** Node script (run on the VM) that lists prior Claude sessions for a project
+ *  dir: newest 25 transcripts, each with id, mtime, line count, and a short title
+ *  (the session summary, else the first user message). Prints a JSON array. */
+const LIST_SESSIONS_NODE_SCRIPT = String.raw`
+const fs = require("fs"), path = require("path");
+const dir = process.argv[2];
+let files = [];
+try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")); } catch (e) { process.stdout.write("[]"); return; }
+const items = files
+  .map((f) => { try { const st = fs.statSync(path.join(dir, f)); return { f, m: st.mtimeMs }; } catch (e) { return null; } })
+  .filter(Boolean)
+  .sort((a, b) => b.m - a.m)
+  .slice(0, 25);
+const out = items.map((it) => {
+  const sessionId = it.f.replace(/\.jsonl$/, "");
+  let firstUser = "", summary = "", count = 0;
+  let lines = [];
+  try { lines = fs.readFileSync(path.join(dir, it.f), "utf8").split("\n"); } catch (e) {}
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    count++;
+    let o; try { o = JSON.parse(line); } catch (e) { continue; }
+    if (!summary && o.type === "summary" && typeof o.summary === "string") summary = o.summary;
+    if (!firstUser && o.type === "user" && o.message) {
+      const c = o.message.content;
+      if (typeof c === "string") firstUser = c;
+      else if (Array.isArray(c)) { const t = c.find((x) => x && x.type === "text"); if (t) firstUser = t.text || ""; }
+    }
+  }
+  const title = (summary || firstUser || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  return { sessionId, mtime: Math.round(it.m), messages: count, title };
+});
+process.stdout.write(JSON.stringify(out));
+`;
+
 /** Concise system prompt describing the genie-* MCP tools available on the VM. */
 function buildStreamContext(serverIp: string, agentMd: string): string {
   let ctx = `You are operating on a cloud VM at ${serverIp}, in /opt/project.`;
@@ -51,8 +86,8 @@ export async function handleClaudeStreamMessage(
 ): Promise<boolean> {
   switch (msg.type) {
     case "claude:stream:start": {
-      const { claudeStreamId, projectId, instanceId, tmuxName: boundTmuxName } = msg.payload as {
-        claudeStreamId?: string; projectId?: string; instanceId?: string; tmuxName?: string;
+      const { claudeStreamId, projectId, instanceId, tmuxName: boundTmuxName, resumeSessionId: requestedResumeId } = msg.payload as {
+        claudeStreamId?: string; projectId?: string; instanceId?: string; tmuxName?: string; resumeSessionId?: string;
       };
       if (!claudeStreamId || !projectId || !instanceId) {
         send(ws, { type: "claude:stream:error", payload: { claudeStreamId: claudeStreamId ?? null, message: "claudeStreamId, projectId and instanceId are required" } });
@@ -102,6 +137,11 @@ export async function handleClaudeStreamMessage(
         // the floating assistant so the two don't hijack each other's session).
         const sessionKey = `${projectId}:${instanceId}:chat`;
         const resumeState = await getResumeState(sessionKey);
+        // An explicit resume id from the client (the "Sessions" picker) wins over
+        // the chat surface's last-on-disk session.
+        const resumeSessionId = (requestedResumeId && /^[a-zA-Z0-9_-]+$/.test(requestedResumeId))
+          ? requestedResumeId
+          : (resumeState?.sessionId ?? null);
         const context = buildStreamContext(conn.host, agentMd);
 
         const claudeInfo = {
@@ -119,7 +159,7 @@ export async function handleClaudeStreamMessage(
           claudeStreamId, shellOpts, projectId, instanceId, sessionKey,
           tmuxName,
           claudePath, dest, context,
-          resumeSessionId: resumeState?.sessionId ?? null,
+          resumeSessionId,
           apiKey,
           authEmail: claudeInfo.email, authPlan: claudeInfo.plan, claudeInfo,
         });
@@ -159,6 +199,43 @@ export async function handleClaudeStreamMessage(
         send(ws, { type: "claude:stream:paste-image:result", payload: { ok: true, remotePath, reqId } });
       } catch (err) {
         send(ws, { type: "claude:stream:paste-image:result", payload: { ok: false, error: err instanceof Error ? err.message : "Failed to write image to VM", reqId } });
+      }
+      return true;
+    }
+
+    case "claude:stream:list-sessions": {
+      // Enumerate prior on-disk Claude sessions for this project's cwd so the
+      // chat window's "Sessions" picker can offer to resume one. Read-only.
+      const { claudeStreamId, projectId, instanceId, reqId } = msg.payload as {
+        claudeStreamId?: string; projectId?: string; instanceId?: string; reqId?: string;
+      };
+      if (!projectId || !instanceId) {
+        send(ws, { type: "claude:stream:sessions", payload: { claudeStreamId: claudeStreamId ?? null, sessions: [], error: "projectId and instanceId are required", reqId } });
+        return true;
+      }
+      if (!(await canAccessProject(userId, role, projectId))) {
+        send(ws, { type: "claude:stream:sessions", payload: { claudeStreamId, sessions: [], error: "Not authorized for this project", reqId } });
+        return true;
+      }
+      try {
+        const conn = await getVpsConnection(projectId, instanceId);
+        const shellOpts = { host: conn.host, port: conn.port ?? 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
+        const exec: ExecFn = (cmd, opts) => execCached(shellOpts, cmd, undefined, opts);
+        const dest = remoteDir(projectId);
+        // Claude stores transcripts under ~/.claude/projects/<cwd-with-non-alnum→->/<id>.jsonl.
+        const encoded = dest.replace(/[^a-zA-Z0-9]/g, "-");
+        const scriptPath = `/tmp/genie-list-claude-sessions.js`;
+        const listScript = LIST_SESSIONS_NODE_SCRIPT;
+        await exec(`cat > ${scriptPath} << 'GENIEEOF'\n${listScript}\nGENIEEOF`, { timeoutMs: 5_000 });
+        const out = await exec(
+          `node ${scriptPath} "$HOME/.claude/projects/${encoded}" 2>/dev/null || echo "[]"`,
+          { timeoutMs: 15_000 },
+        );
+        let sessions: unknown = [];
+        try { sessions = JSON.parse(out.trim() || "[]"); } catch { sessions = []; }
+        send(ws, { type: "claude:stream:sessions", payload: { claudeStreamId, sessions, reqId } });
+      } catch (err) {
+        send(ws, { type: "claude:stream:sessions", payload: { claudeStreamId, sessions: [], error: err instanceof Error ? err.message : "Failed to list sessions", reqId } });
       }
       return true;
     }

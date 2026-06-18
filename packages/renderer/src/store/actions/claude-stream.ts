@@ -1,5 +1,5 @@
 import { $claudeStream } from "../subjects/claude-stream";
-import { emptyClaudeStreamSession, type ClaudeStreamSession } from "../types/claude-stream";
+import { emptyClaudeStreamSession, type ClaudeStreamSession, type ClaudeSessionSummary } from "../types/claude-stream";
 import { chatStreamIdForTmux } from "@/lib/claude-session-id";
 import { wsSend, wsRequest } from "@/lib/ws";
 
@@ -32,18 +32,20 @@ export function openClaudeStream(args: {
   label: string;
   /** Bind to this exact tmux session (per-session chat). */
   tmuxName?: string;
+  /** Resume a prior on-disk Claude session (`--resume <id>`) on first launch. */
+  resumeSessionId?: string;
 }): void {
-  const { claudeStreamId, projectId, instanceId, label, tmuxName } = args;
+  const { claudeStreamId, projectId, instanceId, label, tmuxName, resumeSessionId } = args;
   const state = $claudeStream.getValue();
   if (!state.sessions[claudeStreamId]) {
     $claudeStream.next({
       sessions: {
         ...state.sessions,
-        [claudeStreamId]: emptyClaudeStreamSession(claudeStreamId, projectId, instanceId, label, tmuxName),
+        [claudeStreamId]: emptyClaudeStreamSession(claudeStreamId, projectId, instanceId, label, tmuxName, resumeSessionId),
       },
     });
   }
-  wsSend("claude:stream:start", { claudeStreamId, projectId, instanceId, tmuxName });
+  wsSend("claude:stream:start", { claudeStreamId, projectId, instanceId, tmuxName, resumeSessionId });
 }
 
 /** Open a chat-mode Claude window. Each tmux session gets its own popup: pass
@@ -56,11 +58,30 @@ export async function openClaudeChatWindow(args: {
   instanceId: string;
   label: string;
   tmuxName?: string;
+  /** Resume a prior on-disk Claude session into this window. */
+  resumeSessionId?: string;
 }): Promise<string> {
   const tmuxName = args.tmuxName ?? freshGchatTmuxName();
   const claudeStreamId = await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, tmuxName);
-  openClaudeStream({ claudeStreamId, projectId: args.projectId, instanceId: args.instanceId, label: args.label, tmuxName });
+  openClaudeStream({ claudeStreamId, projectId: args.projectId, instanceId: args.instanceId, label: args.label, tmuxName, resumeSessionId: args.resumeSessionId });
   return claudeStreamId;
+}
+
+/** List prior on-disk Claude sessions for this chat's project (newest first) so
+ *  the window's "Sessions" picker can offer to resume one. */
+export async function listClaudeSessions(claudeStreamId: string): Promise<ClaudeSessionSummary[]> {
+  const session = $claudeStream.getValue().sessions[claudeStreamId];
+  if (!session) return [];
+  try {
+    const res = await wsRequest<{ sessions?: ClaudeSessionSummary[]; error?: string }>(
+      "claude:stream:list-sessions",
+      { claudeStreamId, projectId: session.projectId, instanceId: session.instanceId },
+      20_000,
+    );
+    return res.sessions ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /** Send a user message (or slash command). Optimistically appends the user turn.
@@ -68,12 +89,15 @@ export async function openClaudeChatWindow(args: {
  *  thumbnails stay visible in the conversation — the server's user-message
  *  replay is deduped by content, so they survive (until a full transcript
  *  replay on reconnect, which only carries text). */
-export function sendClaudeStreamMessage(claudeStreamId: string, text: string, images?: string[]): void {
+export function sendClaudeStreamMessage(claudeStreamId: string, text: string, images?: string[], displayText?: string): void {
   const trimmed = text.trim();
   if (!trimmed) return;
+  // `displayText` lets callers send Claude a richer wire payload (e.g. a plan-mode
+  // directive prefix) while showing only the user's own words in the bubble.
+  const shown = (displayText ?? text).trim();
   updateClaudeStreamSession(claudeStreamId, (s) => ({
     ...s,
-    messages: [...s.messages, { role: "user", content: trimmed, ...(images && images.length ? { images } : {}) }],
+    messages: [...s.messages, { role: "user", content: shown, ...(images && images.length ? { images } : {}) }],
     loading: true,
     statusText: "Claude is thinking...",
     connectionError: null,
@@ -137,6 +161,6 @@ export function handleClaudeStreamWsDisconnect(): void {
 export function handleClaudeStreamWsReconnect(): void {
   const state = $claudeStream.getValue();
   for (const s of Object.values(state.sessions)) {
-    wsSend("claude:stream:start", { claudeStreamId: s.claudeStreamId, projectId: s.projectId, instanceId: s.instanceId, tmuxName: s.tmuxName });
+    wsSend("claude:stream:start", { claudeStreamId: s.claudeStreamId, projectId: s.projectId, instanceId: s.instanceId, tmuxName: s.tmuxName, resumeSessionId: s.resumeSessionId });
   }
 }
