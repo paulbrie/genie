@@ -37,12 +37,15 @@ export const AutoTextarea = forwardRef<HTMLTextAreaElement, AutoTextareaProps>(f
   }, [value, resize]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Give the parent first dibs — it may consume the key (e.g. an open
+    // autocomplete menu accepting a suggestion on Enter/Tab). If it called
+    // preventDefault, we don't also submit.
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
     if (e.key === "Enter" && !e.shiftKey && onSubmit) {
       e.preventDefault();
       onSubmit();
-      return;
     }
-    onKeyDown?.(e);
   }
 
   return (

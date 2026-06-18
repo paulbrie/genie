@@ -66,6 +66,15 @@ describe("ws-acl", () => {
   });
 
   describe("namespace defaults", () => {
+    it("claude:stream:* is user-sendable (distinct from superadmin claude-plugins)", () => {
+      for (const t of ["claude:stream:start", "claude:stream:input", "claude:stream:close"]) {
+        expect(canSend("user", t)).toBe(true);
+        expect(canReceive("user", t)).toBe(true);
+      }
+      // The unrelated claude-plugins namespace stays superadmin-only for mutations.
+      expect(canSend("user", "claude-plugins:create")).toBe(false);
+    });
+
     it("admin namespace requires admin role to send", () => {
       expect(canSend("user", "admin:db:list-tables")).toBe(false);
       expect(canSend("tazcloud", "admin:db:list-tables")).toBe(false);

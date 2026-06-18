@@ -4,23 +4,16 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
 import { Bot, Send, Square, X, Minus, Maximize2, Minimize2, Pin, PinOff, ChevronDown, SquarePen } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import type { AuthUser, ChatMessage, FloatingWindowState, NavKey, PinnedAssistantVm, ProjectDef, StreamingStep, ToolUse } from "@/store/types";
+import type { AuthUser, ChatMessage, FloatingWindowState, NavKey, PinnedAssistantVm, ProjectDef, ToolUse } from "@/store/types";
 import { $activeNav, $admin, $auth, $chat, $fileEditor, $pinnedAssistantVm, $projects, $selectedProjectId, $terminal, $windowManager } from "@/store/subjects";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import type { AdminTazVm } from "@/store/types";
 import type { ChatModelId } from "@/store/actions";
 import { CHAT_MODELS, closeWindow, dismissChatConnectionError, focusWindow, loadAdminTazVms, minimizeWindow, newChat, openWindow, registerWindow, retryLastChatMessage, sendChatMessage, setChatModel, setPinnedAssistantVm, stopChat, updateWindowPosition, updateWindowSize } from "@/store/actions";
-import { wsSend } from "@/lib/ws";
-import { Play } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { markdownComponents } from "@/components/ui/markdown-link";
-import { ToolPill, getToolStatusText } from "@/components/ui/tool-pill";
-import { UsageLine } from "@/components/ui/usage-line";
 import { AutoTextarea } from "@/components/ui/auto-textarea";
 import { WindowFontSizeButton, useWindowFontSize, WINDOW_FONT_SCALE } from "@/components/ui/window-font-size";
-import { ChatErrorBubble } from "@/components/chat/chat-error-bubble";
+import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 
 const WINDOW_ID = "genie-assistant";
@@ -156,51 +149,6 @@ function getContextItems(): ContextItem[] {
 
   return items;
 }
-
-// --- Runnable code blocks ---
-
-/** When a fenced code block in an assistant message is shell-flavored (or
- *  unlabeled), show a hovering "Run" button that pipes it into whichever
- *  terminal tab is currently active. */
-function RunnableCode({ inline, className, children }: { inline?: boolean; className?: string; children: React.ReactNode }) {
-  const [terminal] = useSubject($terminal);
-  // ReactMarkdown passes `inline: true` for `<code>` (vs `<pre><code>`). We only
-  // augment block code blocks.
-  if (inline) {
-    return <code className={className}>{children}</code>;
-  }
-  const lang = (className || "").match(/language-(\S+)/)?.[1]?.toLowerCase() ?? "";
-  const isShell = lang === "" || lang === "bash" || lang === "sh" || lang === "shell" || lang === "zsh";
-  const text = String(children).replace(/\n$/, "");
-  const activeTab = terminal.tabs.find((t) => t.id === terminal.activeTabId);
-  const canRun = isShell && !!activeTab;
-
-  function run() {
-    if (!activeTab) return;
-    // Each line as its own write so multi-line snippets land naturally in the shell.
-    wsSend("terminal:data", { id: activeTab.id, data: text + "\n" });
-  }
-
-  return (
-    <span className="relative group block">
-      <code className={className}>{children}</code>
-      {canRun && (
-        <button
-          onClick={run}
-          className="absolute top-1 right-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue/20 text-blue text-xs opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue/30"
-          title={`Run in ${activeTab!.title}`}
-        >
-          <Play size={10} /> Run
-        </button>
-      )}
-    </span>
-  );
-}
-
-const assistantMarkdownComponents = {
-  ...markdownComponents,
-  code: RunnableCode as unknown as React.ComponentType<React.HTMLAttributes<HTMLElement> & { inline?: boolean }>,
-};
 
 // --- Pin VM picker ---
 
@@ -653,132 +601,22 @@ function FloatingChatWindow({
         aria-label="Assistant messages"
         style={{ zoom: WINDOW_FONT_SCALE[fontSize] } as React.CSSProperties}
       >
-        {chatMessages.length === 0 && !chatStreaming && !chatLoading && (
-          <div className="flex-1 flex items-center justify-center py-8">
+        <ChatMessageList
+          messages={chatMessages}
+          streamingContent={chatStreaming}
+          streamingSteps={streamingSteps}
+          toolUses={chatToolUses}
+          loading={chatLoading}
+          statusText={chatStatusText}
+          maxToolRounds={maxToolRounds}
+          toolRoundsUsed={toolRoundsUsed}
+          onRetry={handleRetry}
+          emptyState={
             <p className="text-overlay0 text-md text-center">
               Ask Genie anything — I know what you&apos;re looking at
             </p>
-          </div>
-        )}
-
-        {chatMessages.map((msg: ChatMessage, i: number) => (
-          <div key={`${msg.role}-${i}-${msg.content.slice(0, 24)}`} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
-            {msg.role === "user" ? (
-              <div className="max-w-[90%] flex flex-col items-end gap-1">
-                {msg.images && msg.images.length > 0 && (
-                  <div className="flex flex-wrap gap-1 justify-end">
-                    {msg.images.map((url, k) => (
-                      <img
-                        key={k}
-                        src={url}
-                        alt={`sent ${k + 1}`}
-                        className="max-h-48 max-w-full rounded border border-surface1"
-                      />
-                    ))}
-                  </div>
-                )}
-                {msg.content && (
-                  <div className="px-2.5 py-1.5 rounded-lg text-md break-words chat-message-content bg-surface0 text-text rounded-br-sm whitespace-pre-wrap">
-                    {msg.content}
-                  </div>
-                )}
-              </div>
-            ) : msg.isError || msg.content.startsWith("Error:") ? (
-              <ChatErrorBubble content={msg.content} onRetry={handleRetry} />
-            ) : msg.steps ? (
-              <div className={cn(
-                "max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text text-text rounded-bl-sm"
-              )}>
-                {msg.steps.map((step, j) => (
-                  <div key={j}>
-                    {step.content && (
-                      <div className="chat-markdown select-text cursor-text">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
-                          {step.content}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                    {step.toolUse && (
-                      <div className="my-1">
-                        <ToolPill tool={step.toolUse} />
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <>
-                {msg.toolUses && msg.toolUses.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mb-0.5">
-                    {msg.toolUses.map((tool, j) => (
-                      <ToolPill key={j} tool={tool} />
-                    ))}
-                  </div>
-                )}
-                <div
-                  className="max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text text-text rounded-bl-sm"
-                >
-                  <div className="chat-markdown select-text cursor-text">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
-                      {msg.content}
-                    </ReactMarkdown>
-                  </div>
-                </div>
-              </>
-            )}
-            {msg.role === "assistant" && msg.usage && (
-              <UsageLine usage={msg.usage} />
-            )}
-          </div>
-        ))}
-
-        {/* Streaming: step-by-step rendering */}
-        {chatLoading && (streamingSteps.length > 0 || chatStreaming) && (
-          <div className="flex flex-col items-start">
-            <div className="max-w-[90%] px-2.5 py-1.5 rounded-lg text-md text-text rounded-bl-sm select-text cursor-text">
-              {streamingSteps.map((step, i) => (
-                <div key={i}>
-                  {step.content && (
-                    <div className="chat-markdown select-text cursor-text">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
-                        {step.content}
-                      </ReactMarkdown>
-                    </div>
-                  )}
-                  {step.toolUse && (
-                    <div className="my-1">
-                      <ToolPill tool={step.toolUse} />
-                    </div>
-                  )}
-                </div>
-              ))}
-              {chatStreaming && (
-                <div className="chat-markdown select-text cursor-text">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
-                    {chatStreaming}
-                  </ReactMarkdown>
-                </div>
-              )}
-              <span className="inline-block w-1.5 h-3 bg-text/50 ml-0.5 animate-pulse align-text-bottom" />
-            </div>
-          </div>
-        )}
-
-        {chatLoading && !chatStreaming && streamingSteps.length === 0 && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-md text-overlay0">
-              <div className="w-3.5 h-3.5 border-2 border-mauve/40 border-t-mauve rounded-full animate-spin" />
-              <span>
-                {chatStatusText || (chatToolUses.length > 0 ? getToolStatusText(chatToolUses[chatToolUses.length - 1]) : "Thinking...")}
-              </span>
-              {maxToolRounds > 0 && toolRoundsUsed > 0 && (
-                <span className="text-[11px] text-overlay0 ml-1">
-                  {toolRoundsUsed}/{maxToolRounds} tools
-                </span>
-              )}
-            </div>
-          </div>
-        )}
+          }
+        />
 
         <div ref={chatEndRef} />
       </div>

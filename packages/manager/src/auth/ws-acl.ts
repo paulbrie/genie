@@ -80,6 +80,10 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // the admin namespace + an in-handler superadmin gate.
   analytics: { send: "user", receive: "user", scope: "self" },
   terminal: { send: "user", receive: "user", scope: "owner" },
+  // Durable streaming Claude session backing chat-mode terminals. Same scope as
+  // terminal:* — the start handler enforces canAccessProject. Distinct namespace
+  // so it isn't confused with the superadmin-only claude-plugins:* surface.
+  "claude:stream": { send: "user", receive: "user", scope: "owner" },
   "terminal-share": { send: "user", receive: "user", scope: "owner" },
   // VM connection popup stats/tmux probe responses (vps:stats:refresh → vm:conn:stats).
   vm: { send: "user", receive: "user", scope: "owner" },

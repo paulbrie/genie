@@ -1,0 +1,190 @@
+import { type WebSocket } from "ws";
+import type { WsMessage } from "../types.js";
+import { getVpsConnection } from "../vps/connection-resolver.js";
+import { remoteDir } from "../vps/deploy-service.js";
+import { execCached } from "../vps/ssh-session-cache.js";
+import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";
+import { getResumeState } from "../chat/assistant-session-state-service.js";
+import { discoverClaudePath, probeClaudeAuth, writeAllowAllSettings, type ExecFn } from "../chat/vps-claude-launch.js";
+import {
+  startClaudeStream,
+  reattachClaudeStream,
+  sendClaudeStreamInput,
+  stopClaudeStream,
+  resizeClaudeStream,
+  detachClaudeStream,
+  writeClaudeStreamFile,
+} from "../ssh/claude-stream/session.js";
+import { type Role } from "../auth/ws-acl.js";
+import { canAccessProject } from "./handler-auth.js";
+import * as analyticsService from "../logging/analytics-service.js";
+
+/** Ids with a start in flight (provisioning not yet finished). Guards against the
+ *  renderer's double `claude:stream:start` (button-click + window-mount) racing
+ *  into two parallel provision/launch passes before the session registers. */
+const startingStreams = new Set<string>();
+
+/** Deterministic tmux session name for a chat-mode Claude stream. Stable across
+ *  reconnects so `tmux new-session -A` attaches to a surviving session (e.g.
+ *  after a manager restart) instead of spawning a duplicate. Kept distinct from
+ *  the interactive terminal's tmux name so the two modes never share a process. */
+function chatTmuxName(claudeStreamId: string): string {
+  return `claude-chat-${claudeStreamId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24)}`;
+}
+
+/** Concise system prompt describing the genie-* MCP tools available on the VM. */
+function buildStreamContext(serverIp: string, agentMd: string): string {
+  let ctx = `You are operating on a cloud VM at ${serverIp}, in /opt/project.`;
+  ctx += `\nTo test the app in a browser use chrome-devtools (Puppeteer) headless; reach it at http://${serverIp}:3000 (NEVER localhost/127.0.0.1).`;
+  ctx += `\n\nYou have genie-* MCP tools: genie-tracker (issue tracker — tracker_list_issues / tracker_get_issue / tracker_update_issue / tracker_comment_on_issue; set in_progress when starting, in_review when done, never done), genie-security (security_scan / security_list_scans / security_get_scan), genie-notify (notify_send_email / notify_send_chat_message), and genie-storage (storage_screenshot / storage_upload / storage_list / storage_get_url / storage_delete).`;
+  if (agentMd) ctx += `\n\n=== Agent Memory (AGENT.md) ===\n${agentMd}`;
+  return ctx;
+}
+
+/** Handle every `claude:stream:*` message. Returns true if handled. */
+export async function handleClaudeStreamMessage(
+  ws: WebSocket,
+  msg: WsMessage,
+  send: (ws: WebSocket, message: WsMessage) => void,
+  userId: string | null,
+  role: Role | null,
+): Promise<boolean> {
+  switch (msg.type) {
+    case "claude:stream:start": {
+      const { claudeStreamId, projectId, instanceId, tmuxName: boundTmuxName } = msg.payload as {
+        claudeStreamId?: string; projectId?: string; instanceId?: string; tmuxName?: string;
+      };
+      if (!claudeStreamId || !projectId || !instanceId) {
+        send(ws, { type: "claude:stream:error", payload: { claudeStreamId: claudeStreamId ?? null, message: "claudeStreamId, projectId and instanceId are required" } });
+        return true;
+      }
+      // Reconnect fast-path: an in-memory session still alive (within its grace
+      // window) rebinds to this socket and replays the transcript.
+      if (reattachClaudeStream(ws, claudeStreamId)) {
+        void analyticsService.recordEvent({ userId, userName: null, event: "claude_stream.reattach", projectId, props: {}, ip: null });
+        return true;
+      }
+      if (startingStreams.has(claudeStreamId)) return true; // a start is already provisioning
+      if (!(await canAccessProject(userId, role, projectId))) {
+        send(ws, { type: "claude:stream:error", payload: { claudeStreamId, message: "Not authorized for this project" } });
+        return true;
+      }
+      startingStreams.add(claudeStreamId);
+      try {
+        send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status: "Connecting to VPS..." } });
+        const conn = await getVpsConnection(projectId, instanceId);
+        const shellOpts = { host: conn.host, port: conn.port ?? 22, username: conn.username, privateKeyPath: conn.privateKeyPath };
+        const dest = remoteDir(projectId);
+        const exec: ExecFn = (cmd, opts) => execCached(shellOpts, cmd, undefined, opts);
+
+        send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status: "Connecting to Claude Code..." } });
+        const [claudePath, agentMd] = await Promise.all([
+          discoverClaudePath(exec, (status) => send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status } })),
+          exec(`cat ${dest}/AGENT.md 2>/dev/null || echo ""`, { timeoutMs: 5_000 }).then((s) => s.trim()),
+        ]);
+        if (!claudePath) {
+          send(ws, { type: "claude:stream:error", payload: { claudeStreamId, message: "Could not find or install Claude Code CLI on VPS. SSH in and run: npm install -g @anthropic-ai/claude-code" } });
+          return true;
+        }
+
+        // Provision MCP REST config + allow-all permissions + probe auth (parallel
+        // with nothing that depends on it failing the launch).
+        await Promise.all([
+          provisionMcpRestConfig((cmd) => exec(cmd), dest, projectId, instanceId).catch((err) =>
+            console.warn(`[claude-stream] MCP config write failed: ${err instanceof Error ? err.message : err}`)),
+          writeAllowAllSettings(exec, dest),
+        ]);
+        const auth = await probeClaudeAuth(exec, claudePath);
+        const envApiKey = process.env.ANTHROPIC_API_KEY || "";
+        const apiKey = !auth.hasSubscription && envApiKey ? envApiKey : null;
+
+        // Resume prior on-disk history for this chat surface (separate key from
+        // the floating assistant so the two don't hijack each other's session).
+        const sessionKey = `${projectId}:${instanceId}:chat`;
+        const resumeState = await getResumeState(sessionKey);
+        const context = buildStreamContext(conn.host, agentMd);
+
+        const claudeInfo = {
+          model: "",
+          email: auth.email,
+          plan: auth.plan || (auth.hasSubscription ? "Max" : envApiKey ? "API Key" : ""),
+          version: "",
+        };
+        // Bind to the specific chat session when the renderer names one
+        // (per-session chat); else the VM's default chat session.
+        const tmuxName = boundTmuxName && /^claude-chat-[a-zA-Z0-9_-]+$/.test(boundTmuxName)
+          ? boundTmuxName
+          : chatTmuxName(claudeStreamId);
+        await startClaudeStream(ws, {
+          claudeStreamId, shellOpts, projectId, instanceId, sessionKey,
+          tmuxName,
+          claudePath, dest, context,
+          resumeSessionId: resumeState?.sessionId ?? null,
+          apiKey,
+          authEmail: claudeInfo.email, authPlan: claudeInfo.plan, claudeInfo,
+        });
+
+        void analyticsService.recordEvent({ userId, userName: null, event: "claude_stream.open", projectId, props: {}, ip: null });
+      } catch (err) {
+        send(ws, { type: "claude:stream:error", payload: { claudeStreamId, message: err instanceof Error ? err.message : "Failed to start Claude stream" } });
+      } finally {
+        startingStreams.delete(claudeStreamId);
+      }
+      return true;
+    }
+
+    case "claude:stream:input": {
+      const { claudeStreamId, text } = msg.payload as { claudeStreamId?: string; text?: string };
+      if (claudeStreamId && typeof text === "string" && text.length > 0) sendClaudeStreamInput(claudeStreamId, text);
+      return true;
+    }
+
+    case "claude:stream:paste-image": {
+      // Write a pasted clipboard image to the VM and hand the renderer back the
+      // remote path so it can reference it in the next message (Claude reads the
+      // file). Keeps the FIFO payload tiny — base64 never travels over stdin.
+      const { claudeStreamId, dataB64, ext, reqId } = msg.payload as {
+        claudeStreamId?: string; dataB64?: string; ext?: string; reqId?: string;
+      };
+      if (!claudeStreamId || !dataB64) {
+        send(ws, { type: "claude:stream:paste-image:result", payload: { ok: false, error: "claudeStreamId and dataB64 are required", reqId } });
+        return true;
+      }
+      try {
+        const bytes = Buffer.from(dataB64, "base64");
+        const safeExt = ext && /^[a-z0-9]{1,5}$/i.test(ext) ? ext.toLowerCase() : "png";
+        const rand = Math.random().toString(36).slice(2, 8);
+        const remotePath = `/tmp/genie-chat-paste-${Date.now().toString(36)}-${rand}.${safeExt}`;
+        await writeClaudeStreamFile(claudeStreamId, remotePath, bytes);
+        send(ws, { type: "claude:stream:paste-image:result", payload: { ok: true, remotePath, reqId } });
+      } catch (err) {
+        send(ws, { type: "claude:stream:paste-image:result", payload: { ok: false, error: err instanceof Error ? err.message : "Failed to write image to VM", reqId } });
+      }
+      return true;
+    }
+
+    case "claude:stream:stop": {
+      const { claudeStreamId } = msg.payload as { claudeStreamId?: string };
+      if (claudeStreamId) stopClaudeStream(claudeStreamId);
+      return true;
+    }
+
+    case "claude:stream:resize": {
+      const { claudeStreamId, cols, rows } = msg.payload as { claudeStreamId?: string; cols?: number; rows?: number };
+      if (claudeStreamId && cols && rows) resizeClaudeStream(claudeStreamId, cols, rows);
+      return true;
+    }
+
+    case "claude:stream:close": {
+      // Window close = DETACH: keep the gchat tmux session + captured output
+      // alive on the VM so reopening catches up. (Truly ending the session is
+      // done from the tmux row's Delete.)
+      const { claudeStreamId } = msg.payload as { claudeStreamId?: string };
+      if (claudeStreamId) detachClaudeStream(claudeStreamId, ws);
+      return true;
+    }
+
+    default:
+      return false;
+  }
+}

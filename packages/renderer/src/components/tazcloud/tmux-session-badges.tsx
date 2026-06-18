@@ -11,8 +11,8 @@ import {
   TmuxSessionContextMenu,
 } from "@/components/tazcloud/tmux-session-context-menu";
 import { TmuxRenameDialog } from "@/components/tazcloud/tmux-rename-dialog";
-import { killVmTmuxSession, refreshVmTmuxSessions, renameVmTmuxSession } from "@/store/actions";
-import { $projects, $vmConnections, $vpsDeploy } from "@/store/subjects";
+import { killVmTmuxSession, openClaudeChatWindow, refreshVmTmuxSessions, renameVmTmuxSession } from "@/store/actions";
+import { $auth, $projects, $vmConnections, $vpsDeploy } from "@/store/subjects";
 import type { VmConnectionState, VmTmuxSession } from "@/store/types/vps";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -220,10 +220,10 @@ function TmuxPill({
         compact ? "px-1 py-0.5 text-[10px]" : "px-1.5 py-0.5 text-[11px]",
         isActive
           ? isClaude
-            ? "border-2 border-mauve bg-mauve/35 text-mauve font-semibold shadow-sm shadow-mauve/25"
+            ? "border-2 border-peach bg-peach/35 text-peach font-semibold shadow-sm shadow-peach/25"
             : "border-2 border-green bg-green/20 text-green font-semibold shadow-sm shadow-green/20"
           : isClaude
-            ? "border border-transparent bg-mauve/15 text-mauve hover:bg-mauve/25"
+            ? "border border-transparent bg-peach/15 text-peach hover:bg-peach/25"
             : "border border-transparent bg-surface0 text-overlay1 hover:text-text hover:bg-surface1",
         !isActive && session.attached && "ring-1 ring-overlay0/40",
       )}
@@ -368,6 +368,14 @@ export function TmuxSessionBadges({
     [projectId, instanceId, onProbe],
   );
 
+  // Open the chat for THIS specific gchat session (per-session popup): bind to
+  // its tmux name so the manager reattaches + replays that session's content.
+  const handleChat = useCallback((sessionName: string) => {
+    const ownerId = $auth.getValue().user?.id;
+    if (!ownerId) return;
+    void openClaudeChatWindow({ ownerId, projectId, instanceId, label: `${sessionName} · ${vmName}`, tmuxName: sessionName });
+  }, [projectId, instanceId, vmName]);
+
   const openSessionMenu = useCallback((e: React.MouseEvent, sessionName?: string) => {
     e.preventDefault();
     e.stopPropagation();
@@ -383,7 +391,7 @@ export function TmuxSessionBadges({
       <>
         <span
           className={cn(
-            "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-mono bg-surface0/60 text-mauve",
+            "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-mono bg-surface0/60 text-peach",
             activeSessions.size > 0 && "border-2 border-green bg-green/10",
           )}
           title={compactTitle}
@@ -428,6 +436,7 @@ export function TmuxSessionBadges({
             onClose={closeContextMenu}
             onRename={handleRename}
             onDelete={handleDelete}
+            onChat={handleChat}
           />
         )}
         {renameTarget && (
@@ -494,6 +503,7 @@ export function TmuxSessionBadges({
           onClose={closeContextMenu}
           onRename={handleRename}
           onDelete={handleDelete}
+          onChat={handleChat}
         />
       )}
       {renameTarget && (

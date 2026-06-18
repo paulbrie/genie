@@ -5,6 +5,7 @@ export * from "./projects";
 export * from "./system";
 export * from "./terminal";
 export * from "./chat";
+export * from "./claude-stream";
 export * from "./conversation";
 export * from "./docs";
 export * from "./tracker";

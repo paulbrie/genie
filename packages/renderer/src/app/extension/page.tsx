@@ -25,6 +25,8 @@ import { ExtTrackerTab } from "./tabs/tracker";
 import { ExtTeamChat } from "./tabs/team-chat";
 import { FloatingTerminalWindow, TerminalListPanel, type TerminalTabDef, TERM_WIN_W, TERM_WIN_H, TERM_CASCADE } from "./tabs/terminal";
 import { claudeSessionId } from "@/lib/claude-session-id";
+import { ClaudeStreamWindows } from "@/components/chat/claude-stream-window";
+import { openClaudeChatWindow } from "@/store/actions";
 
 
 function relativeTimeAgo(iso: string): string {
@@ -47,8 +49,26 @@ function ClaudeLogo({ size = 16 }: { size?: number }) {
   );
 }
 
-function ClaudeTabButton({ icon, openClaudeTerminal }: { icon: React.ReactNode; openClaudeTerminal: (title: string, resume?: boolean) => void }) {
+type ClaudeMode = "terminal" | "chat";
+const CLAUDE_MODE_STORAGE_KEY = "genie.claude.mode";
+
+function loadClaudeMode(): ClaudeMode {
+  if (typeof window === "undefined") return "terminal";
+  return window.localStorage.getItem(CLAUDE_MODE_STORAGE_KEY) === "chat" ? "chat" : "terminal";
+}
+
+function ClaudeTabButton({
+  icon,
+  openClaudeTerminal,
+  openClaudeChat,
+}: {
+  icon: React.ReactNode;
+  openClaudeTerminal: (title: string, resume?: boolean) => void;
+  openClaudeChat: () => void;
+}) {
   const [open, setOpen] = useState(false);
+  // Remembered default for the primary click. The dropdown still offers both.
+  const [mode, setMode] = useState<ClaudeMode>(loadClaudeMode);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,12 +80,23 @@ function ClaudeTabButton({ icon, openClaudeTerminal }: { icon: React.ReactNode; 
     return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
   }, [open]);
 
+  const pickMode = (m: ClaudeMode) => {
+    setMode(m);
+    if (typeof window !== "undefined") window.localStorage.setItem(CLAUDE_MODE_STORAGE_KEY, m);
+  };
+
+  const primaryClick = () => {
+    if (mode === "chat") openClaudeChat();
+    else openClaudeTerminal("Claude");
+  };
+
   return (
     <div className="relative flex items-center" ref={ref}>
       <button
-        onClick={() => openClaudeTerminal("Claude")}
+        onClick={primaryClick}
         className="flex items-center gap-1.5 px-3 py-2 transition-colors text-overlay1 hover:text-text"
         style={{ fontSize: 13 }}
+        title={mode === "chat" ? "Open Claude as a chat" : "Open Claude in a terminal"}
       >
         {icon}
         Claude
@@ -77,9 +108,10 @@ function ClaudeTabButton({ icon, openClaudeTerminal }: { icon: React.ReactNode; 
         <ChevronDown size={10} />
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-0.5 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[130px] z-50">
+        <div className="absolute top-full left-0 mt-0.5 bg-mantle border border-surface0 rounded-lg shadow-lg py-1 min-w-[170px] z-50">
+          <div className="px-3 pt-1 pb-0.5 text-overlay0 uppercase tracking-wide" style={{ fontSize: 9 }}>Terminal</div>
           <button
-            onClick={() => { openClaudeTerminal("Claude"); setOpen(false); }}
+            onClick={() => { pickMode("terminal"); openClaudeTerminal("Claude"); setOpen(false); }}
             className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 transition-colors text-left"
             style={{ fontSize: 12 }}
           >
@@ -87,12 +119,22 @@ function ClaudeTabButton({ icon, openClaudeTerminal }: { icon: React.ReactNode; 
             New
           </button>
           <button
-            onClick={() => { openClaudeTerminal("Claude (resume)", true); setOpen(false); }}
+            onClick={() => { pickMode("terminal"); openClaudeTerminal("Claude (resume)", true); setOpen(false); }}
             className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 transition-colors text-left"
             style={{ fontSize: 12 }}
           >
             <History size={11} className="text-blue" />
             Resume
+          </button>
+          <div className="my-1 border-t border-surface0" />
+          <div className="px-3 pt-0.5 pb-0.5 text-overlay0 uppercase tracking-wide" style={{ fontSize: 9 }}>Chat (beta)</div>
+          <button
+            onClick={() => { pickMode("chat"); openClaudeChat(); setOpen(false); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 transition-colors text-left"
+            style={{ fontSize: 12 }}
+          >
+            <Bot size={11} className="text-mauve" />
+            Open chat
           </button>
         </div>
       )}
@@ -551,7 +593,7 @@ export default function ExtensionPage() {
   // time to compute the deterministic dtach session id — read it from a ref
   // updated by an effect so we don't have a forward reference at declaration
   // time.
-  const projectRef = useRef<{ id: string; vpsInstanceId: string | null } | null>(null);
+  const projectRef = useRef<{ id: string; name: string; vpsInstanceId: string | null } | null>(null);
   // Full resolved target project, mirrored into a ref so buildContext (declared
   // before `project` is derived) reads the current server at send time — including
   // a manual override that doesn't match the page URL.
@@ -642,6 +684,16 @@ export default function ExtensionPage() {
     };
     setTermTabs((prev) => [...prev.map((t) => ({ ...t, focused: false })), tab]);
   }, [termTabs, auth.user?.id, restoreTermTab, focusTermTab]);
+
+  /** Open the chat-style Claude surface for the current project VM. The window
+   *  itself is rendered by <ClaudeStreamWindows/> (subject-driven); reopening
+   *  reattaches to the same durable session. No-op without a resolved VM. */
+  const openClaudeChat = useCallback(async () => {
+    const ownerId = auth.user?.id;
+    const proj = projectRef.current;
+    if (!ownerId || !proj?.id || !proj.vpsInstanceId) return;
+    await openClaudeChatWindow({ ownerId, projectId: proj.id, instanceId: proj.vpsInstanceId, label: `${proj.name} · Claude` });
+  }, [auth.user?.id]);
 
   /** Open a shell terminal that injects a recipe command after connect. */
   const openCommandTerminal = useCallback((commandName: string, command: string) => {
@@ -944,7 +996,7 @@ export default function ExtensionPage() {
   // click time without forward-referencing it in their dependency arrays.
   useEffect(() => {
     projectRef.current = project
-      ? { id: project.id, vpsInstanceId: project.vpsInstances?.[0]?.id ?? null }
+      ? { id: project.id, name: project.name, vpsInstanceId: project.vpsInstances?.[0]?.id ?? null }
       : null;
     extProjectRef.current = project;
   }, [project]);
@@ -1113,7 +1165,7 @@ export default function ExtensionPage() {
         {TABS.map((tab) => {
           if (tab.requiresVps && !hasVps) return null;
           if (tab.action && tab.id === "claude") {
-            return <ClaudeTabButton key={tab.id} icon={tab.icon} openClaudeTerminal={openClaudeTerminal} />;
+            return <ClaudeTabButton key={tab.id} icon={tab.icon} openClaudeTerminal={openClaudeTerminal} openClaudeChat={openClaudeChat} />;
           }
           return (
             <button
@@ -1537,6 +1589,8 @@ export default function ExtensionPage() {
           zIndex={tab.windowZIndex ?? 1000}
         />
       ))}
+
+      <ClaudeStreamWindows />
 
       {/* Dev toolbar */}
       <DevToolbar />

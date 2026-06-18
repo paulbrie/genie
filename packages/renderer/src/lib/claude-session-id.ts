@@ -10,6 +10,19 @@ export async function claudeSessionId(ownerId: string, projectId: string, instan
   return uuidv5(`claude|${ownerId}|${projectId}|${instanceId}`, GENIE_CLAUDE_NS);
 }
 
+/** Deterministic id for the durable chat-mode Claude session. The `chat`
+ *  discriminator keeps it distinct from the interactive terminal's id so the two
+ *  modes back onto separate tmux sessions / claude processes for the same VM. */
+export async function claudeChatStreamId(ownerId: string, projectId: string, instanceId: string): Promise<string> {
+  return uuidv5(`claude-chat|${ownerId}|${projectId}|${instanceId}`, GENIE_CLAUDE_NS);
+}
+
+/** Per-tmux-session chat id — a distinct popup key per gchat session on a VM, so
+ *  each gchat-* session opens its own chat bound to that session. */
+export async function chatStreamIdForTmux(ownerId: string, projectId: string, instanceId: string, tmuxName: string): Promise<string> {
+  return uuidv5(`claude-chat|${ownerId}|${projectId}|${instanceId}|${tmuxName}`, GENIE_CLAUDE_NS);
+}
+
 async function uuidv5(name: string, namespace: string): Promise<string> {
   const ns = parseUuid(namespace);
   const nm = new TextEncoder().encode(name);

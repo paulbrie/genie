@@ -21,7 +21,7 @@ import {
   ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, loadRecipes,
   releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, killVmTmuxSession, loadPersistedTerminals,
   minimizeWindow, openWindow, reattachPersistedTerminal, refreshVmTmuxSessions, registerWindow, renameVmTmuxSession, syncVmStatsAgent, unwatchVpsStats,
-  updateWindowPosition, vpsExec, watchVpsStats,
+  updateWindowPosition, vpsExec, watchVpsStats, openClaudeChatWindow,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { openVmConnectionWindow } from "@/components/tazcloud/vm-connection-window";
@@ -416,6 +416,16 @@ function ClaudeManageButton({
   linked: { project: { id: string }; instance: { id: string } } | null;
 }) {
   const enabled = !!linked;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenuOpen(false); };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [menuOpen]);
   const openClaude = () => {
     if (!linked) return;
     const projectId = linked.project.id;
@@ -436,20 +446,65 @@ function ClaudeManageButton({
     window.setTimeout(() => refreshVmTmuxSessions(projectId, instanceId, { force: true }), 2500);
     window.setTimeout(() => refreshVmTmuxSessions(projectId, instanceId, { force: true }), 6000);
   };
+  const openChat = () => {
+    if (!linked) return;
+    const ownerId = $auth.getValue().user?.id;
+    if (!ownerId) return;
+    void openClaudeChatWindow({ ownerId, projectId: linked.project.id, instanceId: linked.instance.id, label: `${vm.name} · Claude` });
+  };
   const reason = enabled ? undefined : "Attach this VM to a project to enable Claude/SSH terminals";
   return (
-    <button
-      onClick={openClaude}
-      disabled={!enabled}
-      className={cn(
-        "flex items-center gap-1.5 px-2 py-0.5 rounded border border-peach/30 text-md text-peach transition-colors",
-        enabled ? "hover:bg-peach/10" : "opacity-40 cursor-not-allowed",
+    <div className="relative flex items-stretch" ref={menuRef}>
+      <button
+        onClick={openClaude}
+        disabled={!enabled}
+        className={cn(
+          "flex items-center gap-1.5 pl-2 pr-2 py-0.5 rounded-l-md border border-peach/30 text-md text-peach outline-none transition-colors",
+          enabled ? "hover:bg-peach/10" : "opacity-40 cursor-not-allowed",
+        )}
+        title={reason ?? `Launch Claude in a tmux session (survives SSH drops, reattach from the tmux row) — ${sshUser}@${vm.host}`}
+      >
+        <ClaudeLogo size={11} />
+        Claude
+      </button>
+      <button
+        onClick={() => setMenuOpen((v) => !v)}
+        disabled={!enabled}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label="Claude launch options"
+        className={cn(
+          "flex items-center px-1 py-0.5 rounded-r-md border border-l-0 border-peach/30 text-peach outline-none transition-colors",
+          enabled ? "hover:bg-peach/10" : "opacity-40 cursor-not-allowed",
+          menuOpen && "bg-peach/15",
+        )}
+        title="Open options"
+      >
+        <ChevronDown size={12} className={cn("transition-transform", menuOpen && "rotate-180")} />
+      </button>
+      {menuOpen && enabled && (
+        <div className="absolute top-full right-0 mt-1 bg-mantle border border-surface0 rounded-lg shadow-lg shadow-black/40 py-1 min-w-[160px] z-50 overflow-hidden">
+          <button
+            onClick={() => { openClaude(); setMenuOpen(false); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 outline-none transition-colors text-left"
+            style={{ fontSize: 12 }}
+          >
+            <Terminal size={12} className="text-peach shrink-0" />
+            <span className="flex-1">Terminal</span>
+            <span className="text-overlay0" style={{ fontSize: 10 }}>default</span>
+          </button>
+          <button
+            onClick={() => { openChat(); setMenuOpen(false); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 bg-transparent border-none cursor-pointer text-text hover:bg-surface0 outline-none transition-colors text-left"
+            style={{ fontSize: 12 }}
+          >
+            <Bot size={12} className="text-mauve shrink-0" />
+            <span className="flex-1">Chat</span>
+            <span className="px-1 py-px rounded bg-mauve/15 text-mauve" style={{ fontSize: 9 }}>beta</span>
+          </button>
+        </div>
       )}
-      title={reason ?? `Launch Claude in a tmux session (survives SSH drops, reattach from the tmux row) — ${sshUser}@${vm.host}`}
-    >
-      <ClaudeLogo size={11} />
-      Claude
-    </button>
+    </div>
   );
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { Pencil, Trash2 } from "lucide-react";
+import { Bot, Pencil, Trash2 } from "lucide-react";
 import {
   ActionMenuItem,
   ContextActionMenu,
@@ -11,6 +11,8 @@ export type TmuxSessionMenuHandlers = {
   onRename: (sessionName: string) => void;
   /** Kill the tmux session on the VM. Resolves when the manager round-trip finishes. */
   onDelete: (sessionName: string) => Promise<void>;
+  /** Open the project's chat-mode Claude window. Omitted → no "Chat" item. */
+  onChat?: (sessionName: string) => void;
 };
 
 interface TmuxSessionContextMenuProps extends TmuxSessionMenuHandlers {
@@ -29,6 +31,7 @@ export function TmuxSessionContextMenu({
   onClose,
   onRename,
   onDelete,
+  onChat,
   deleteConfirmMessage,
 }: TmuxSessionContextMenuProps) {
   const [deleting, setDeleting] = useState(false);
@@ -50,6 +53,15 @@ export function TmuxSessionContextMenu({
 
   return (
     <ContextActionMenu x={x} y={y} onClose={onClose} blockClose={deleting}>
+      {onChat && sessionName.startsWith("claude-chat-") && (
+        <ActionMenuItem
+          icon={Bot}
+          disabled={deleting}
+          onClick={() => { onChat(sessionName); onClose(); }}
+        >
+          Open chat (beta)
+        </ActionMenuItem>
+      )}
       <ActionMenuItem
         icon={Pencil}
         disabled={deleting}
@@ -87,6 +99,7 @@ export function TmuxCompactContextMenu({
   onClose,
   onRename,
   onDelete,
+  onChat,
 }: TmuxCompactContextMenuProps) {
   if (sessions.length === 1) {
     return (
@@ -97,6 +110,7 @@ export function TmuxCompactContextMenu({
         onClose={onClose}
         onRename={onRename}
         onDelete={onDelete}
+        onChat={onChat}
       />
     );
   }
@@ -110,6 +124,7 @@ export function TmuxCompactContextMenu({
           showDivider={i > 0}
           onRename={onRename}
           onDelete={onDelete}
+          onChat={onChat}
           onClose={onClose}
         />
       ))}
@@ -122,6 +137,7 @@ function TmuxSessionMenuSection({
   showDivider,
   onRename,
   onDelete,
+  onChat,
   onClose,
 }: {
   sessionName: string;
@@ -149,6 +165,11 @@ function TmuxSessionMenuSection({
       >
         {sessionName}
       </div>
+      {onChat && sessionName.startsWith("claude-chat-") && (
+        <ActionMenuItem icon={Bot} onClick={() => { onChat(sessionName); onClose(); }}>
+          Open chat (beta)
+        </ActionMenuItem>
+      )}
       <ActionMenuItem
         icon={Pencil}
         disabled={deleting}

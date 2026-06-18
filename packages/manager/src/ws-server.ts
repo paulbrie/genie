@@ -98,6 +98,8 @@ import { handleAdminUsersMessage } from "./handlers/admin-users-handler.js";
 import { handleTerminalMessage } from "./handlers/terminal-handler.js";
 
 import { handleLocalPtyMessage, closeAllLocalPtySessionsForWs } from "./handlers/local-pty-handler.js";
+import { handleClaudeStreamMessage } from "./handlers/claude-stream-handler.js";
+import { setClaudeStreamSend, closeAllClaudeStreamsForWs } from "./ssh/claude-stream/session.js";
 
 import { handleProjectMessage } from "./handlers/project-handler.js";
 
@@ -1031,6 +1033,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleAdminUsersMessage(ws, msg, send, state)) return;
   if (await handleLocalPtyMessage(ws, msg, send, userId)) return;
   if (await handleTerminalMessage(ws, msg, send, broadcast, userId, state.role)) return;
+  if (await handleClaudeStreamMessage(ws, msg, send, userId, state.role)) return;
   if (await handleProjectMessage(ws, msg, send, state)) return;
   if (await handleChatMessage(ws, msg, send, state)) return;
   if (await handleAdminMiscMessage(ws, msg, send, state)) return;
@@ -1094,6 +1097,7 @@ export async function createServer(): Promise<WebSocketServer> {
   // SshShellSession layer can emit terminal:* frames to the originating
   // WebSocket without re-importing ws-server internals.
   setSshWsSend((ws, message) => send(ws, message as WsMessage));
+  setClaudeStreamSend((ws, message) => send(ws, message as WsMessage));
 
   // Ensure history table + default configs/templates
   await settingsService.ensureBaseImageDefaults();
@@ -1455,6 +1459,7 @@ export async function createServer(): Promise<WebSocketServer> {
       // connections) and local PTY (manager-pty). One session per terminal,
       // no persistent reuse — closing the WS kills the dial / pty.
       closeAllSessionsForWs(ws);
+      closeAllClaudeStreamsForWs(ws);
       closeAllLocalPtySessionsForWs(ws);
       // Tab close skips React useEffect cleanup, so the renderer's paired
       // admin:server:tunnel:release never arrives. Drop every manage ref this

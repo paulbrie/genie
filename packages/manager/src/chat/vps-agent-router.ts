@@ -3,6 +3,8 @@ import type { WsMessage } from "../types.js";
 import * as projectService from "../projects/project-service.js";
 import * as assistantLogService from "./assistant-log-service.js";
 import { getResumeState, saveResumeSessionId } from "./assistant-session-state-service.js";
+import { StreamJsonParser } from "./stream-json-parser.js";
+import { discoverClaudePath, probeClaudeAuth, writeAllowAllSettings, type ExecFn } from "./vps-claude-launch.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";
 import { remoteDir } from "../vps/deploy-service.js";
 import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";
@@ -105,33 +107,11 @@ export async function routeChatToVpsAgent(
 
     send(ws, { type: "chat:status", payload: { status: "Connecting to Claude Code..." } });
 
-    const [claudePathRaw, agentMd] = await Promise.all([
-      sshSession.exec(
-        `bash -lc "which claude 2>/dev/null" || command -v claude 2>/dev/null || ` +
-        `for p in /usr/local/bin/claude /usr/bin/claude /root/.npm-global/bin/claude "$(npm bin -g 2>/dev/null)/claude"; do ` +
-        `  [ -x "$p" ] && echo "$p" && exit 0; done; echo ""`,
-        undefined, { timeoutMs: 10_000 },
-      ).then(s => s.trim()),
+    const exec: ExecFn = (cmd, opts) => sshSession.exec(cmd, undefined, opts);
+    const [claudePath, agentMd] = await Promise.all([
+      discoverClaudePath(exec, (status) => send(ws, { type: "chat:status", payload: { status } })),
       sshSession.exec(`cat ${dest}/AGENT.md 2>/dev/null || echo ""`, undefined, { timeoutMs: 5_000 }).then(s => s.trim()),
     ]);
-
-    let claudePath = claudePathRaw;
-
-    if (!claudePath) {
-      console.log(`[claude-code] claude binary not found on VPS, installing...`);
-      send(ws, { type: "chat:status", payload: { status: "Installing Claude Code CLI on VPS..." } });
-      try {
-        await sshSession.exec(`npm install -g @anthropic-ai/claude-code`, undefined, { timeoutMs: 120_000 });
-        claudePath = (await sshSession.exec(
-          `bash -lc "which claude 2>/dev/null" || command -v claude 2>/dev/null || ` +
-          `for p in /usr/local/bin/claude /usr/bin/claude "$(npm bin -g 2>/dev/null)/claude"; do ` +
-          `  [ -x "$p" ] && echo "$p" && exit 0; done; echo ""`,
-          undefined, { timeoutMs: 10_000 },
-        )).trim();
-      } catch (installErr: unknown) {
-        console.error(`[claude-code] Failed to install Claude Code CLI:`, installErr instanceof Error ? installErr.message : String(installErr));
-      }
-    }
 
     if (!claudePath) {
       console.error(`[claude-code] claude binary not found on VPS even after install attempt`);
@@ -164,38 +144,9 @@ export async function routeChatToVpsAgent(
     await sshSession.exec(`cat > /tmp/_genie_prompt << 'GENIEEOF'\n${safePrompt}\nGENIEEOF`);
     await sshSession.exec(`cat > /tmp/_genie_ctx << 'GENIEEOF'\n${safeContext}\nGENIEEOF`);
 
-    let hasSubscription = false;
-    let authEmail = "";
-    let authPlan = "";
-    try {
-      const authOut = await sshSession.exec(`${claudePath} auth status 2>&1`, undefined, { timeoutMs: 10_000 });
-      hasSubscription = authOut.includes('"loggedIn": true') || authOut.includes('"loggedIn":true');
-      try {
-        const authJson = JSON.parse(authOut.trim());
-        authEmail = authJson.email || authJson.account || "";
-        authPlan = authJson.plan || authJson.accountType || (hasSubscription ? "Max" : "");
-      } catch {
-        const emailMatch = authOut.match(/"email"\s*:\s*"([^"]+)"/);
-        if (emailMatch) authEmail = emailMatch[1];
-        if (hasSubscription && !authPlan) authPlan = "Max";
-      }
-    } catch { /* auth probe best-effort */ }
+    const { hasSubscription, email: authEmail, plan: authPlan } = await probeClaudeAuth(exec, claudePath);
 
-    const claudeSettingsDir = `${dest}/.claude`;
-    const claudeSettingsPath = `${claudeSettingsDir}/settings.local.json`;
-    try {
-      await sshSession.exec(`mkdir -p ${claudeSettingsDir}`, undefined, { timeoutMs: 5_000 });
-      const existingRaw = await sshSession.exec(`cat ${claudeSettingsPath} 2>/dev/null || echo "{}"`, undefined, { timeoutMs: 5_000 });
-      let settings: Record<string, unknown> = {};
-      try { settings = JSON.parse(existingRaw.trim()); } catch { /* keep empty */ }
-      const perms = (settings.permissions as Record<string, unknown>) || {};
-      perms.allow = ["*"];
-      settings.permissions = perms;
-      const settingsJson = JSON.stringify(settings, null, 2);
-      await sshSession.exec(`cat > ${claudeSettingsPath} << 'GENIEEOF'\n${settingsJson}\nGENIEEOF`, undefined, { timeoutMs: 5_000 });
-    } catch (err) {
-      console.error(`[claude-code] Failed to write settings.local.json:`, err instanceof Error ? err.message : String(err));
-    }
+    await writeAllowAllSettings(exec, dest);
 
     const resumeFlag = existingSessionId ? ` --resume "${existingSessionId}"` : "";
     const scriptLines = [`#!/bin/bash`];
@@ -226,113 +177,39 @@ export async function routeChatToVpsAgent(
 
     let fullContent = "";
     const toolUses: { name: string; input: unknown; result: string }[] = [];
-    let lineBuffer = "";
     let sessionId: string | null = null;
 
-    let currentToolName = "";
-    let currentToolInput = "";
-
-    function processStreamEvent(event: {
-      type?: string;
-      subtype?: string;
-      session_id?: string;
-      content_block?: { type?: string; name?: string };
-      delta?: { type?: string; text?: string; partial_json?: string };
-      message?: { content?: Array<{ type: string; text?: string; name: string; input?: unknown }> };
-      model?: string;
-      claude_code_version?: string;
-      result?: string;
-      [key: string]: unknown;
-    }) {
-      if (event.session_id) sessionId = event.session_id;
-
-      console.log(`[claude-code] event type=${event.type} subtype=${event.subtype || ""} keys=${Object.keys(event).join(",")}`);
-
-      switch (event.type) {
-        case "content_block_start":
-          if (event.content_block?.type === "tool_use") {
-            currentToolName = event.content_block.name || "";
-            currentToolInput = "";
-          }
+    const parser = new StreamJsonParser((event) => {
+      switch (event.kind) {
+        case "token":
+          fullContent += event.text;
+          send(ws, { type: "chat:token", payload: { token: event.text } });
           break;
-
-        case "content_block_delta":
-          if (event.delta?.type === "text_delta") {
-            const text = event.delta.text || "";
-            fullContent += text;
-            send(ws, { type: "chat:token", payload: { token: text } });
-          } else if (event.delta?.type === "input_json_delta") {
-            currentToolInput += event.delta.partial_json || "";
-          }
+        case "tool":
+          toolUses.push({ name: event.name, input: event.input, result: event.result });
+          send(ws, { type: "chat:tool", payload: { name: event.name, input: event.input, result: event.result } });
           break;
-
-        case "content_block_stop":
-          if (currentToolName) {
-            let parsedInput: Record<string, unknown> = {};
-            try { parsedInput = JSON.parse(currentToolInput); } catch { /* keep empty input on parse failure */ }
-            toolUses.push({ name: currentToolName, input: parsedInput, result: "" });
-            send(ws, { type: "chat:tool", payload: { name: currentToolName, input: parsedInput, result: "" } });
-            currentToolName = "";
-            currentToolInput = "";
-          }
-          break;
-
-        case "message_start":
-        case "message_delta":
-        case "message_stop":
-        case "ping":
-          break;
-
-        case "assistant":
-          if (event.message?.content) {
-            for (const block of event.message.content) {
-              if (block.type === "text" && block.text) {
-                fullContent += block.text;
-                send(ws, { type: "chat:token", payload: { token: block.text } });
-              } else if (block.type === "tool_use") {
-                toolUses.push({ name: block.name, input: block.input, result: "" });
-                send(ws, { type: "chat:tool", payload: { name: block.name, input: block.input, result: "" } });
-              }
-            }
-          }
-          break;
-
-        case "system":
-          console.log(`[claude-code] system event: ${JSON.stringify(event).slice(0, 1000)}`);
+        case "claude-info":
           send(ws, { type: "chat:claude-info", payload: {
-            model: event.model || "",
+            model: event.model,
             email: authEmail,
             plan: authPlan || (hasSubscription ? "Max" : apiKey ? "API Key" : ""),
-            version: event.claude_code_version || "",
+            version: event.version,
           }});
           break;
-
-        case "result":
-          if (event.session_id) sessionId = event.session_id;
+        case "session":
+          sessionId = event.sessionId;
+          break;
+        case "turn-done":
           if (event.result && !fullContent) fullContent = event.result;
           break;
-
-        default:
-          console.log(`[claude-code] UNHANDLED event: ${JSON.stringify(event).slice(0, 500)}`);
-          break;
       }
-    }
+    }, { log: (line) => console.log(`[claude-code] ${line}`) });
 
     channel.stdout.on("data", (chunk: Buffer) => {
       const raw = chunk.toString();
       console.log(`[claude-code:stdout] ${raw.slice(0, 500)}`);
-      lineBuffer += raw;
-      const lines = lineBuffer.split("\n");
-      lineBuffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          processStreamEvent(event);
-        } catch {
-          console.log(`[claude-code:non-json] ${line.slice(0, 300)}`);
-        }
-      }
+      parser.push(raw);
     });
 
     channel.stderr.on("data", (chunk: Buffer) => {
@@ -351,12 +228,7 @@ export async function routeChatToVpsAgent(
       const done = () => { if (!resolved) { resolved = true; resolve(); } };
       channel.stdout.on("end", () => {
         console.log(`[claude-code] stdout ended, fullContent length=${fullContent.length}, sessionId=${sessionId}`);
-        if (lineBuffer.trim()) {
-          try {
-            const event = JSON.parse(lineBuffer);
-            processStreamEvent(event);
-          } catch { /* trailing non-JSON */ }
-        }
+        parser.flush();
         done();
       });
       channel.stdout.on("close", () => {

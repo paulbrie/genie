@@ -1,6 +1,7 @@
 export * from "./auth";
 export * from "./common";
 export * from "./chat";
+export * from "./claude-stream";
 export * from "./docs";
 export * from "./vps";
 export * from "./tracker";
