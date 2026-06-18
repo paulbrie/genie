@@ -271,11 +271,11 @@ export function ClaudeStreamWindow({
                 )}
                 <button
                   onClick={() => removeImage(im.id)}
-                  className="absolute -top-1 -right-1 w-4 h-4 flex items-center justify-center rounded-full bg-surface1 text-overlay0 hover:text-red hover:bg-surface2 border border-mantle"
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-red text-white hover:bg-red/80 border border-mantle shadow-sm transition-colors"
                   title="Remove image"
                   aria-label="Remove image"
                 >
-                  <X size={9} />
+                  <X size={13} strokeWidth={2.5} />
                 </button>
               </div>
             ))}
