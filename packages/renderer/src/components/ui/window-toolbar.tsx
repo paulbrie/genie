@@ -5,6 +5,7 @@ import { Bot, StickyNote, Loader2, Rocket, Terminal, AppWindow, type LucideIcon 
 import type { FloatingWindowState } from "@/store/types";
 import { $windowManager } from "@/store/subjects";
 import { restoreWindow } from "@/store/actions";
+import { ClaudeLogo } from "@/components/project/project-detail";
 export const iconMap: Record<string, LucideIcon> = {
   bot: Bot,
   "sticky-note": StickyNote,
@@ -30,7 +31,8 @@ export function WindowToolbar() {
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface0 hover:bg-surface1 text-md text-subtext0 transition-colors"
           >
             {win.busy && <Loader2 size={13} className="text-blue animate-spin" />}
-            {!win.busy && Icon && <Icon size={13} className="text-mauve" />}
+            {!win.busy && win.icon === "claude" && <span className="text-peach flex items-center"><ClaudeLogo size={13} /></span>}
+            {!win.busy && win.icon !== "claude" && Icon && <Icon size={13} className="text-mauve" />}
             {win.title}
           </button>
         );

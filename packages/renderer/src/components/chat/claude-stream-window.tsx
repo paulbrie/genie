@@ -6,7 +6,8 @@ import { useSubject } from "subjecto/react";
 import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check, Terminal } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
 import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow, runClaudeStreamBash } from "@/store/actions/claude-stream";
-import { $auth } from "@/store/subjects";
+import { $auth, $windowManager } from "@/store/subjects";
+import { registerWindow, openWindow, minimizeWindow, closeWindow } from "@/store/actions";
 import type { ClaudeSessionSummary } from "@/store/types/claude-stream";
 import { ClaudeLogo } from "@/components/project/project-detail";
 import { AutoTextarea } from "@/components/ui/auto-textarea";
@@ -125,7 +126,11 @@ export function ClaudeStreamWindow({
   const [sessions, setSessions] = useState<ClaudeSessionSummary[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [maximized, setMaximized] = useState(false);
-  const [minimized, setMinimized] = useState(false);
+  // Minimized state lives in the shared window manager (not local) so the
+  // window shows up in the bottom minimized-row toolbar like every other popup,
+  // and can be restored from there. The chat keeps its own z-index/focus system.
+  const [windowManager] = useSubject($windowManager);
+  const minimized = windowManager.windows[claudeStreamId]?.status === "minimized";
   const [fontSize] = useWindowFontSize();
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -143,11 +148,24 @@ export function ClaudeStreamWindow({
   // straight away.
   useEffect(() => {
     if (session) openClaudeStream({ claudeStreamId, projectId: session.projectId, instanceId: session.instanceId, label: session.label, tmuxName: session.tmuxName, resumeSessionId: session.resumeSessionId });
+    // Track this window in the shared manager so it appears in the minimized row.
+    registerWindow(claudeStreamId, session?.label ?? "Claude", "claude");
+    openWindow(claudeStreamId);
     onFocus(claudeStreamId);
     const t = setTimeout(() => taRef.current?.focus(), 0);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); closeWindow(claudeStreamId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claudeStreamId]);
+
+  // Restoring from the minimized-row toolbar flips status back to "open"; bring
+  // the chat to the front (in its own z-index system) so it isn't revealed
+  // behind another popup.
+  const wasMinimized = useRef(false);
+  useEffect(() => {
+    if (wasMinimized.current && !minimized) onFocus(claudeStreamId);
+    wasMinimized.current = minimized;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minimized]);
 
   // Auto-scroll to the latest message / streaming token. The initial load —
   // whether one bulk replay or an incremental tail that drips messages in
@@ -329,7 +347,7 @@ export function ClaudeStreamWindow({
   return createPortal(
     <div
       ref={elRef}
-      className={`fixed bg-mantle shadow-2xl shadow-black/50 flex flex-col ${maximized ? "rounded-none" : "rounded-xl"} overflow-hidden border ${focused ? "border-peach/70" : "border-peach/30"} ${session.loading ? "claude-thinking" : ""}`}
+      className={`fixed bg-mantle flex flex-col ${maximized ? "rounded-none" : "rounded-xl"} overflow-hidden border shadow-2xl ${focused ? "border-peach/70 shadow-peach/20" : "border-peach/30 shadow-black/50"} ${session.loading ? "claude-thinking" : ""}`}
       style={containerStyle}
       onPointerDown={() => onFocus(claudeStreamId)}
     >
@@ -349,7 +367,7 @@ export function ClaudeStreamWindow({
           </span>
         )}
         <WindowFontSizeButton />
-        <button onClick={() => setMinimized(true)} className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors" title="Minimize">
+        <button onClick={() => minimizeWindow(claudeStreamId)} className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors" title="Minimize">
           <Minus size={12} />
         </button>
         <button onClick={() => setMaximized((v) => !v)} className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors" title={maximized ? "Restore" : "Maximize"}>
@@ -389,7 +407,10 @@ export function ClaudeStreamWindow({
       </div>
 
       {/* Input */}
-      <div className="flex flex-col gap-1.5 px-3 py-2 border-t border-surface0 shrink-0">
+      <div
+        className="flex flex-col gap-1.5 px-3 py-2 border-t border-surface0 shrink-0"
+        style={{ zoom: WINDOW_FONT_SCALE[fontSize] } as React.CSSProperties}
+      >
         {pendingImages.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {pendingImages.map((im) => (
