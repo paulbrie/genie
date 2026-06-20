@@ -63,6 +63,7 @@ try {
   console.error("[migrate] Boot migrations failed:", err);
 }
 startVpsMetricFlusher();
+startSshEventFlusher();
 try {
   const { inserted, updated } = await seedDefaultRecipes(DEFAULT_RECIPES);
   console.log(`[recipes] Seeded ${DEFAULT_RECIPES.length} built-in recipes (inserted=${inserted}, updated=${updated}).`);
