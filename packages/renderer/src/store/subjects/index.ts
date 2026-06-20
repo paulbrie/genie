@@ -11,3 +11,4 @@ export * from "./claude-plugins";
 export * from "./ssh";
 export * from "./agents";
 export * from "./knowledge";
+export * from "./review-diff";

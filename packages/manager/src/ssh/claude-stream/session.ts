@@ -534,6 +534,41 @@ export async function runClaudeStreamBash(id: string, command: string, dest: str
   return { output, exitCode };
 }
 
+/** Capture the working-tree changes in the session's project dir as a unified
+ *  diff for the review panel (diffx-style). Non-invasive: it reads `git status`
+ *  + `git diff HEAD` for tracked changes and synthesises new-file diffs for
+ *  untracked files via `git diff --no-index` (so created files show as
+ *  additions) WITHOUT touching the index/stage. Returns the porcelain status and
+ *  the concatenated diff; the renderer parses both. */
+export async function runClaudeStreamGitDiff(id: string, dest: string): Promise<{ status: string; diff: string }> {
+  const st = streams.get(id);
+  if (!st) throw new Error("Claude session is not running");
+  const marker = "__GENIE_GITDIFF_SEP__";
+  const q = shellSingleQuote(dest);
+  // 1) status (file list, incl. untracked as `??`) 2) MARKER 3) tracked diff vs
+  // HEAD 4) per-untracked-file new-file diff. `core.quotepath=false` keeps unicode
+  // paths literal; `--no-index` exits non-zero on diff so we swallow it.
+  const script =
+    `cd ${q} 2>/dev/null || { echo ${marker}; echo "__GENIE_NOPROJECT__"; exit 0; }; ` +
+    `git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo ${marker}; echo "__GENIE_NOREPO__"; exit 0; }; ` +
+    `git -c core.quotepath=false status --porcelain=v1 2>/dev/null; ` +
+    `echo ${marker}; ` +
+    `git -c core.quotepath=false --no-pager diff --no-color -M HEAD 2>/dev/null; ` +
+    `git -c core.quotepath=false ls-files --others --exclude-standard 2>/dev/null | while IFS= read -r f; do ` +
+    `[ -n "$f" ] && git -c core.quotepath=false --no-pager diff --no-color --no-index -- /dev/null "$f" 2>/dev/null; done`;
+  const raw = await st.conn.exec(script, undefined, { timeoutMs: 30_000 });
+  const idx = raw.indexOf(marker);
+  let status = "";
+  let diff = raw;
+  if (idx >= 0) {
+    status = raw.slice(0, idx).replace(/\n+$/, "");
+    diff = raw.slice(idx + marker.length).replace(/^\n+/, "");
+  }
+  const CAP = 400_000;
+  if (diff.length > CAP) diff = diff.slice(0, CAP) + "\n…(diff truncated by Genie — too large to render)";
+  return { status, diff };
+}
+
 /** Write a (pasted) file to the VM over the session's SSH connection. Returns the
  *  remote path so the caller can reference it in a chat message. */
 export async function writeClaudeStreamFile(id: string, remotePath: string, data: Buffer): Promise<void> {

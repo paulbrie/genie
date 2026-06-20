@@ -11,6 +11,7 @@ import {
   reattachClaudeStream,
   sendClaudeStreamInput,
   runClaudeStreamBash,
+  runClaudeStreamGitDiff,
   stopClaudeStream,
   resizeClaudeStream,
   detachClaudeStream,
@@ -298,6 +299,29 @@ export async function handleClaudeStreamMessage(
         send(ws, { type: "claude:stream:bash:result", payload: { ...res, reqId } });
       } catch (err) {
         send(ws, { type: "claude:stream:bash:result", payload: { output: err instanceof Error ? err.message : "Command failed", exitCode: 1, reqId } });
+      }
+      return true;
+    }
+
+    case "claude:stream:gitdiff": {
+      // Review panel: capture the working-tree changes in the project dir as a
+      // unified diff (read-only; never mutates the repo).
+      const { claudeStreamId, projectId, reqId } = msg.payload as {
+        claudeStreamId?: string; projectId?: string; reqId?: string;
+      };
+      if (!claudeStreamId || !projectId) {
+        send(ws, { type: "claude:stream:gitdiff:result", payload: { error: "claudeStreamId and projectId are required", reqId } });
+        return true;
+      }
+      if (!(await canAccessProject(userId, role, projectId))) {
+        send(ws, { type: "claude:stream:gitdiff:result", payload: { error: "Not authorized for this project", reqId } });
+        return true;
+      }
+      try {
+        const res = await runClaudeStreamGitDiff(claudeStreamId, remoteDir(projectId));
+        send(ws, { type: "claude:stream:gitdiff:result", payload: { ...res, reqId } });
+      } catch (err) {
+        send(ws, { type: "claude:stream:gitdiff:result", payload: { error: err instanceof Error ? err.message : "git diff failed", reqId } });
       }
       return true;
     }

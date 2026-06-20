@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSubject } from "subjecto/react";
-import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check, Terminal } from "lucide-react";
+import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check, Terminal, GitCompareArrows } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
+import { $reviewDiff } from "@/store/subjects/review-diff";
 import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow, runClaudeStreamBash } from "@/store/actions/claude-stream";
+import { openReviewDiff } from "@/store/actions/review-diff";
 import { $auth, $windowManager } from "@/store/subjects";
 import { registerWindow, openWindow, minimizeWindow, closeWindow } from "@/store/actions";
 import type { ClaudeSessionSummary } from "@/store/types/claude-stream";
 import { ClaudeLogo } from "@/components/project/project-detail";
 import { AutoTextarea } from "@/components/ui/auto-textarea";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
+import { formatTokens } from "@/components/ui/usage-line";
 import { ChatAutocomplete, useChatAutocomplete } from "@/components/chat/chat-autocomplete";
 import { WindowFontSizeButton, useWindowFontSize, WINDOW_FONT_SCALE } from "@/components/ui/window-font-size";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
@@ -31,12 +34,6 @@ const PLAN_DIRECTIVE =
  *  200k unless the 1M-context beta is active; default to 200k. */
 function contextWindowFor(model: string): number {
   return /\[1m\]|-1m\b/i.test(model) ? 1_000_000 : 200_000;
-}
-
-/** "47.2k" / "1.2k" / "920" — compact token count. */
-function fmtTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return String(n);
 }
 
 /** Compact "3m ago" / "2d ago" stamp for the session picker. */
@@ -128,6 +125,11 @@ export function ClaudeStreamWindow({
 }) {
   const [state] = useSubject($claudeStream);
   const session = state.sessions[claudeStreamId];
+  const [reviewState] = useSubject($reviewDiff);
+  const reviewOpenCount =
+    reviewState.open && reviewState.claudeStreamId === claudeStreamId
+      ? reviewState.comments.filter((c) => c.status === "open").length
+      : 0;
 
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
@@ -143,7 +145,6 @@ export function ClaudeStreamWindow({
   const [windowManager] = useSubject($windowManager);
   const minimized = windowManager.windows[claudeStreamId]?.status === "minimized";
   const [fontSize] = useWindowFontSize();
-  const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const ac = useChatAutocomplete({
@@ -196,7 +197,7 @@ export function ClaudeStreamWindow({
       pin();
       requestAnimationFrame(pin);
     } else {
-      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     }
   }, [session?.messages, session?.streamingContent, session?.streamingSteps, session?.loading]);
 
@@ -251,6 +252,17 @@ export function ClaudeStreamWindow({
     setTimeout(() => setPendingImages((prev) => prev.filter((im) => im.id !== id)), 160);
   }, []);
 
+  // Send one or more composed messages as a single turn: join their display text,
+  // flatten image attachments, and (in plan mode) prefix the wire directive. Used
+  // by both the immediate send and the queue flush so the wire-build lives once.
+  const flushSend = useCallback((items: { display: string; images: string[] }[]) => {
+    if (items.length === 0) return;
+    const display = items.map((m) => m.display).join("\n\n");
+    const images = items.flatMap((m) => m.images);
+    const wire = planMode ? `${PLAN_DIRECTIVE}\n\n${display}` : display;
+    sendClaudeStreamMessage(claudeStreamId, wire, images, display);
+  }, [planMode, claudeStreamId]);
+
   const handleSend = useCallback(() => {
     const text = input.trim();
     const ready = pendingImages.filter((im) => im.remotePath);
@@ -284,14 +296,11 @@ export function ClaudeStreamWindow({
       ac.close();
       return;
     }
-    // Plan mode: prefix the directive on the wire payload only — the bubble shows
-    // just what the user typed.
-    const wire = planMode ? `${PLAN_DIRECTIVE}\n\n${display}` : display;
-    sendClaudeStreamMessage(claudeStreamId, wire, images, display);
+    flushSend([{ display, images }]);
     setInput("");
     setPendingImages([]);
     ac.close();
-  }, [input, pendingImages, claudeStreamId, ac, planMode, session?.loading]);
+  }, [input, pendingImages, claudeStreamId, ac, flushSend, session?.loading]);
 
   // Flush the queue as one batched message when the turn finishes. Combining into
   // a single send (vs. firing each separately) keeps it to one turn that sees all
@@ -300,14 +309,11 @@ export function ClaudeStreamWindow({
   useEffect(() => {
     const loading = !!session?.loading;
     if (prevLoading.current && !loading && queued.length > 0) {
-      const combined = queued.map((q) => q.display).join("\n\n");
-      const images = queued.flatMap((q) => q.images);
-      const wire = planMode ? `${PLAN_DIRECTIVE}\n\n${combined}` : combined;
-      sendClaudeStreamMessage(claudeStreamId, wire, images, combined);
+      flushSend(queued);
       setQueued([]);
     }
     prevLoading.current = loading;
-  }, [session?.loading, queued, planMode, claudeStreamId]);
+  }, [session?.loading, queued, flushSend]);
 
   const removeQueued = useCallback((id: string) => {
     setQueued((q) => q.filter((m) => m.id !== id));
@@ -407,6 +413,18 @@ export function ClaudeStreamWindow({
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow animate-pulse" /> Reconnecting
           </span>
         )}
+        <button
+          onClick={() => void openReviewDiff(claudeStreamId, session.label)}
+          className="relative p-1 rounded text-overlay0 hover:text-peach hover:bg-surface0 transition-colors"
+          title="Review changes"
+        >
+          <GitCompareArrows size={13} />
+          {reviewOpenCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[13px] h-[13px] px-0.5 rounded-full bg-peach text-crust text-[9px] font-bold leading-[13px] text-center">
+              {reviewOpenCount}
+            </span>
+          )}
+        </button>
         <WindowFontSizeButton />
         <button onClick={() => minimizeWindow(claudeStreamId)} className="p-1 rounded text-overlay0 hover:text-text hover:bg-surface0 transition-colors" title="Minimize">
           <Minus size={12} />
@@ -455,7 +473,6 @@ export function ClaudeStreamWindow({
             )
           }
         />
-        <div ref={endRef} />
       </div>
 
       {/* Input */}
@@ -612,7 +629,7 @@ export function ClaudeStreamWindow({
                 className="flex items-center gap-1.5"
                 title={`Context used: ${ctxTokens.toLocaleString()} / ${ctxWindow.toLocaleString()} tokens (${Math.round(ctxPct * 100)}%)`}
               >
-                <span className="text-[10px] text-overlay0/70 tabular-nums">{fmtTokens(ctxTokens)} / {fmtTokens(ctxWindow)}</span>
+                <span className="text-[10px] text-overlay0/70 tabular-nums">{formatTokens(ctxTokens)} / {formatTokens(ctxWindow)}</span>
                 <div className="w-12 h-1 rounded-full bg-surface1 overflow-hidden">
                   <div className={`h-full ${ctxColor} transition-all`} style={{ width: `${Math.max(2, ctxPct * 100)}%` }} />
                 </div>

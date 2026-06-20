@@ -16,7 +16,7 @@ export function formatDuration(ms: number): string {
 }
 
 /** Token count → "73", "1.2k", "22.9k", "235k". */
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n < 1000) return n.toLocaleString();
   const k = n / 1000;
   return `${k >= 100 ? Math.round(k) : k.toFixed(1)}k`;

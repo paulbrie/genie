@@ -26,6 +26,7 @@ import { ExtTeamChat } from "./tabs/team-chat";
 import { FloatingTerminalWindow, TerminalListPanel, type TerminalTabDef, TERM_WIN_W, TERM_WIN_H, TERM_CASCADE } from "./tabs/terminal";
 import { claudeSessionId } from "@/lib/claude-session-id";
 import { ClaudeStreamWindows } from "@/components/chat/claude-stream-window";
+import { ReviewChangesPanel } from "@/components/chat/review-changes-panel";
 import { openClaudeChatWindow } from "@/store/actions";
 
 
@@ -1591,6 +1592,7 @@ export default function ExtensionPage() {
       ))}
 
       <ClaudeStreamWindows />
+      <ReviewChangesPanel />
 
       {/* Dev toolbar */}
       <DevToolbar />
