@@ -1,5 +1,5 @@
 import * as projectService from "../projects/project-service.js";
-import { connectSsh } from "../vps/ssh-client.js";
+import { execCached } from "../vps/ssh-session-cache.js";
 import { ensureTazcloudKeyOnDisk } from "../vps/tazcloud-provision.js";
 import { isPrivilegedRole, type Role } from "../auth/ws-acl.js";
 
@@ -51,34 +51,29 @@ export async function executeSshExec(
     return `Error: Instance "${instanceIdentifier}" not found. Available instances: ${labels}`;
   }
 
-  let session;
-  try {
-    session = await connectSsh(instance.connection, { timeoutMs: 30_000 });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return `Error: Failed to connect to "${instance.label}" (${instance.connection.host}): ${message}`;
-  }
-
   let output = "";
   try {
-    // Use ssh-client's built-in timeouts:
+    // Reuse the shared per-VM tunnel (ssh-session-cache) instead of opening and
+    // tearing down a dedicated connection per command — a fresh handshake on each
+    // ssh_exec is exactly the redundant connection churn that trips a VM's
+    // MaxStartups when a popup/terminal is already attached. execCached multiplexes
+    // this exec onto the cached session and serializes it behind other execs.
+    // Built-in timeouts still apply:
     //   timeoutMs    — hard cap on total runtime (caller-controlled, max 10 min)
     //   idleTimeoutMs — kill if no stdout/stderr for 90s. Recipe installs all
     //     emit `log`/`wait_apt` heartbeats so they reset this timer; only a
-    //     genuinely-hung command silently exceeds it, and now we surface that
-    //     fast (with partial output) instead of waiting the full timeoutMs.
-    const result = await session.exec(command, (chunk) => {
+    //     genuinely-hung command silently exceeds it, surfacing fast (with partial
+    //     output) instead of waiting the full timeoutMs.
+    const result = await execCached(instance.connection, command, (chunk) => {
       output += chunk;
     }, { timeoutMs, idleTimeoutMs: 90_000 });
-    return truncateOutput(result as string) || "(no output)";
+    return truncateOutput(result) || "(no output)";
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     if (output) {
       return truncateOutput(output) + `\n\n[Aborted: ${errMsg}]`;
     }
-    return `Error: ${errMsg}`;
-  } finally {
-    session.close();
+    return `Error: Failed to run command on "${instance.label}" (${instance.connection.host}): ${errMsg}`;
   }
 }
 
@@ -97,27 +92,23 @@ export async function executeBareTazSshExec(
   if (!tazPrivateKey) {
     return "Error: TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager — cannot ssh to a bare TazCloud VM.";
   }
-  let session;
-  try {
-    session = await connectSsh(
-      { host, port: 22, username: sshUser, privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey) },
-      { timeoutMs: 30_000 },
-    );
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return `Error: Failed to connect to ${sshUser}@${host}: ${message}`;
-  }
+  const connection = {
+    host,
+    port: 22,
+    username: sshUser,
+    privateKeyPath: ensureTazcloudKeyOnDisk(tazPrivateKey),
+  };
   let output = "";
   try {
-    const result = await session.exec(command, (chunk) => {
+    // Reuse the shared per-VM tunnel rather than a throwaway connection per
+    // command — see executeSshExec above.
+    const result = await execCached(connection, command, (chunk) => {
       output += chunk;
     }, { timeoutMs, idleTimeoutMs: 90_000 });
-    return truncateOutput(result as string) || "(no output)";
+    return truncateOutput(result) || "(no output)";
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     if (output) return truncateOutput(output) + `\n\n[Aborted: ${errMsg}]`;
-    return `Error: ${errMsg}`;
-  } finally {
-    session.close();
+    return `Error: Failed to run command on ${sshUser}@${host}: ${errMsg}`;
   }
 }

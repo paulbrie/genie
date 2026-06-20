@@ -3,9 +3,9 @@ import type { WsMessage } from "../types.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
 import { remoteDir } from "../vps/deploy-service.js";
 import { execCached } from "../vps/ssh-session-cache.js";
-import { provisionMcpRestConfig } from "../vps/mcp-config-merge.js";
+import { connectSsh } from "../vps/ssh-client.js";
 import { getResumeState } from "../chat/assistant-session-state-service.js";
-import { discoverClaudePath, probeClaudeAuth, writeAllowAllSettings, type ExecFn } from "../chat/vps-claude-launch.js";
+import { provisionClaudeOneShot, getCachedClaudeProvision, setCachedClaudeProvision, invalidateClaudeProvision, type ExecFn } from "../chat/vps-claude-launch.js";
 import {
   startClaudeStream,
   reattachClaudeStream,
@@ -106,6 +106,9 @@ export async function handleClaudeStreamMessage(
         return true;
       }
       startingStreams.add(claudeStreamId);
+      // Hoisted so the catch block can tear down the pre-dialed stream connection
+      // (assigned inside the try once shellOpts is resolved).
+      let closeStreamConn: () => void = () => {};
       try {
         send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status: "Connecting to VPS..." } });
         const conn = await getVpsConnection(projectId, instanceId);
@@ -113,24 +116,39 @@ export async function handleClaudeStreamMessage(
         const dest = remoteDir(projectId);
         const exec: ExecFn = (cmd, opts) => execCached(shellOpts, cmd, undefined, opts);
 
-        send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status: "Connecting to Claude Code..." } });
-        const [claudePath, agentMd] = await Promise.all([
-          discoverClaudePath(exec, (status) => send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status } })),
-          exec(`cat ${dest}/AGENT.md 2>/dev/null || echo ""`, { timeoutMs: 5_000 }).then((s) => s.trim()),
-        ]);
-        if (!claudePath) {
-          send(ws, { type: "claude:stream:error", payload: { claudeStreamId, message: "Could not find or install Claude Code CLI on VPS. SSH in and run: npm install -g @anthropic-ai/claude-code" } });
-          return true;
-        }
+        // Fix A: start the dedicated stream connection's SSH dial NOW, overlapping
+        // its ~1–3s handshake with the provisioning below (which only needs the
+        // cached exec session, not this one). startClaudeStream awaits it once it's
+        // ready to write the launch script. Pre-attach a catch so an early bail
+        // (no claudePath / provisioning throw) can't surface as an unhandled
+        // rejection; those paths close it explicitly.
+        const streamConnPromise = connectSsh(shellOpts, { timeoutMs: 30_000 });
+        streamConnPromise.catch(() => {});
+        closeStreamConn = () => { void streamConnPromise.then((c) => c.close()).catch(() => {}); };
 
-        // Provision MCP REST config + allow-all permissions + probe auth (parallel
-        // with nothing that depends on it failing the launch).
-        await Promise.all([
-          provisionMcpRestConfig((cmd) => exec(cmd), dest, projectId, instanceId).catch((err) =>
-            console.warn(`[claude-stream] MCP config write failed: ${err instanceof Error ? err.message : err}`)),
-          writeAllowAllSettings(exec, dest),
-        ]);
-        const auth = await probeClaudeAuth(exec, claudePath);
+        send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status: "Connecting to Claude Code..." } });
+        // Fix B: skip the per-VM provisioning dance (binary discovery, auth probe,
+        // MCP + settings writes — several serialized SSH round-trips, including a
+        // full `claude auth status` cold-start) when we've recently provisioned
+        // this VM. Cold path runs it and caches the result.
+        const provisionKey = `${projectId}:${instanceId}`;
+        let provision = getCachedClaudeProvision(provisionKey);
+        if (!provision) {
+          // Fix C: one SSH exec does binary discovery + AGENT.md + settings + MCP
+          // config + auth, instead of ~7 serialized round-trips.
+          provision = await provisionClaudeOneShot(
+            exec,
+            { dest, projectId, instanceId },
+            (status) => send(ws, { type: "claude:stream:status", payload: { claudeStreamId, status } }),
+          );
+          if (!provision) {
+            closeStreamConn();
+            send(ws, { type: "claude:stream:error", payload: { claudeStreamId, message: "Could not find or install Claude Code CLI on VPS. SSH in and run: npm install -g @anthropic-ai/claude-code" } });
+            return true;
+          }
+          setCachedClaudeProvision(provisionKey, provision);
+        }
+        const { claudePath, auth, agentMd } = provision;
         const envApiKey = process.env.ANTHROPIC_API_KEY || "";
         const apiKey = !auth.hasSubscription && envApiKey ? envApiKey : null;
 
@@ -167,10 +185,19 @@ export async function handleClaudeStreamMessage(
           resumeSessionId,
           apiKey,
           authEmail: claudeInfo.email, authPlan: claudeInfo.plan, claudeInfo,
+          connPromise: streamConnPromise,
         });
 
         void analyticsService.recordEvent({ userId, userName: null, event: "claude_stream.open", projectId, props: {}, ip: null });
       } catch (err) {
+        // Any failure before/at launch: close the pre-dialed stream connection so a
+        // failed open doesn't leak an SSH transport (orphaned sshd on the VM). Safe
+        // here — a successful launch returns without throwing, so we only reach this
+        // on failure, where tearing the connection down is the right cleanup.
+        closeStreamConn();
+        // Drop cached provisioning for this VM — the failure may stem from a stale
+        // claude path/auth, so force the next open to re-provision from scratch.
+        invalidateClaudeProvision(`${projectId}:${instanceId}`);
         send(ws, { type: "claude:stream:error", payload: { claudeStreamId, message: err instanceof Error ? err.message : "Failed to start Claude stream" } });
       } finally {
         startingStreams.delete(claudeStreamId);

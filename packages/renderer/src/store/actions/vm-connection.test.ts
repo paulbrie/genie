@@ -45,6 +45,8 @@ function seedConnection(
       stats: null,
       statsError: null,
       sshSessions: null,
+      sshEstablished: null,
+      sshClientAliveInterval: null,
       tmuxSessions: [],
       lastStatsAt: null,
       lastTmuxAt: null,

@@ -202,6 +202,44 @@ sudo chown -R genie:genie /opt/project
 log "Adding $(whoami) and genie to docker group (no-op if already there)..."
 sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
 sudo usermod -aG docker genie 2>/dev/null || true
+# Tune the SSH daemon so Genie's connection model holds regardless of the host's
+# defaults. Taz applies this fleet-wide, but DO/other base images and freshly
+# reset VMs ship OpenSSH defaults — making the recipe self-sufficient covers
+# every VM Genie touches and self-heals config drift (the stats collector reads
+# MaxStartups precisely to surface that drift).
+#   MaxStartups 200:30:500 — a web backend opens several SSH sessions at once
+#     (popup load, reconnect burst, exec fan-out); the default 10:30:100 silently
+#     resets connections past 10 in-flight, with no banner. See the Taz report.
+#   ClientAlive* — reap a client that vanished without a clean FIN (manager
+#     SIGKILL on a dev-watch restart, NAT drop) after ~90s (30s x 3), so orphaned
+#     sshd processes don't accumulate on the VM.
+# Drop-in goes first in the parse order (the Include sits at the top of the main
+# config on modern OpenSSH), so our values win over any baked-in defaults.
+log "Tuning sshd (MaxStartups + ClientAlive keepalive)..."
+sudo mkdir -p /etc/ssh/sshd_config.d
+sudo tee /etc/ssh/sshd_config.d/60-genie.conf > /dev/null << 'GENIE_SSHD_CONF'
+# Managed by Genie standard setup (default-recipes.ts) — do not edit by hand.
+MaxStartups 200:30:500
+ClientAliveInterval 30
+ClientAliveCountMax 3
+GENIE_SSHD_CONF
+# Older sshd without the drop-in Include would silently ignore the file — add the
+# Include if it's missing, then validate before reloading. If the merged config
+# fails to validate, revert our changes rather than risk locking out SSH. Reload
+# (not restart) so the live session that's running this recipe is never dropped.
+added_include=0
+if ! grep -qs 'sshd_config.d' /etc/ssh/sshd_config; then
+  echo 'Include /etc/ssh/sshd_config.d/*.conf' | sudo tee -a /etc/ssh/sshd_config > /dev/null
+  added_include=1
+fi
+if sudo sshd -t 2>/dev/null; then
+  sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
+  log "sshd tuned and reloaded."
+else
+  log "WARNING: sshd config did not validate — reverting Genie sshd drop-in, SSH left untouched."
+  sudo rm -f /etc/ssh/sshd_config.d/60-genie.conf
+  [ "$added_include" = 1 ] && sudo sed -i '\\#Include /etc/ssh/sshd_config.d/\\*.conf#d' /etc/ssh/sshd_config || true
+fi
 log "Installing genie-stats systemd service (bundle synced by Genie after this recipe)..."
 sudo mkdir -p /usr/lib/node_modules/@genie/vps-stats
 sudo tee /etc/systemd/system/genie-stats.service > /dev/null << 'GENIE_STATS_UNIT'
@@ -238,6 +276,11 @@ sudo systemctl disable --now genie-stats.service 2>/dev/null || true
 sudo rm -f /etc/systemd/system/genie-stats.service
 sudo rm -rf /etc/systemd/system/genie-stats.service.d
 sudo systemctl daemon-reload 2>/dev/null || true
+log "Removing Genie sshd tuning drop-in..."
+if [ -f /etc/ssh/sshd_config.d/60-genie.conf ]; then
+  sudo rm -f /etc/ssh/sshd_config.d/60-genie.conf
+  sudo sshd -t 2>/dev/null && (sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true)
+fi
 log "Removing Claude Code (user-facing global)..."
 sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
 rm -rf "$HOME/.claude" 2>/dev/null || true
@@ -263,7 +306,12 @@ cp /root/.ssh/authorized_keys /home/genie/.ssh/authorized_keys
 chown -R genie:genie /home/genie/.ssh
 chmod 700 /home/genie/.ssh && chmod 600 /home/genie/.ssh/authorized_keys
 mkdir -p /opt/project && chown -R genie:genie /opt/project
-usermod -aG docker genie 2>/dev/null || true`,
+usermod -aG docker genie 2>/dev/null || true
+# Tune sshd: MaxStartups for connect bursts, ClientAlive to reap orphaned sshd.
+mkdir -p /etc/ssh/sshd_config.d
+printf 'MaxStartups 200:30:500\\nClientAliveInterval 30\\nClientAliveCountMax 3\\n' > /etc/ssh/sshd_config.d/60-genie.conf
+grep -qs 'sshd_config.d' /etc/ssh/sshd_config || echo 'Include /etc/ssh/sshd_config.d/*.conf' >> /etc/ssh/sshd_config
+sshd -t && (systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true)`,
     commands: [
       { name: "Versions (all)", command: `echo "Docker:  $(docker --version 2>/dev/null || echo MISSING)"; echo "Node:    $(node --version 2>/dev/null || echo MISSING)"; echo "npm:     $(npm --version 2>/dev/null || echo MISSING)"; echo "Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"; echo "Agent:   $(command -v genie-agent 2>/dev/null || echo MISSING)"; echo "Stats:   $(systemctl is-active genie-stats 2>/dev/null || echo MISSING)"` },
       { name: "genie-stats service status", command: "systemctl status genie-stats --no-pager 2>&1 | head -15 || echo '(unit not installed)'" },

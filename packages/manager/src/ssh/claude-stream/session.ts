@@ -356,6 +356,12 @@ export interface StartClaudeStreamParams {
   authEmail: string;
   authPlan: string;
   claudeInfo: ClaudeInfo;
+  /** Optional pre-dialed connection for the durable stream. The caller starts the
+   *  dial in parallel with provisioning (it only needs shellOpts), so by the time
+   *  we get here the handshake is usually already done — shaving the second
+   *  sequential SSH dial off the open path. Falls back to dialing here if absent
+   *  or if the pre-dial rejected. */
+  connPromise?: Promise<SshSession>;
 }
 
 /** Open (or relaunch) a durable Claude stream. */
@@ -371,7 +377,15 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
   const ctxPath = `/tmp/_genie_chat_ctx_${tmuxName}`;
   const scriptPath = `/tmp/_genie_chat_run_${tmuxName}.sh`;
 
-  const conn = await connectSsh(params.shellOpts, { timeoutMs: 30_000 });
+  // Prefer the connection the caller pre-dialed in parallel with provisioning; if
+  // that dial failed, fall back to dialing fresh here so a transient pre-dial
+  // error never blocks the open.
+  let conn: SshSession;
+  try {
+    conn = params.connPromise ? await params.connPromise : await connectSsh(params.shellOpts, { timeoutMs: 30_000 });
+  } catch {
+    conn = await connectSsh(params.shellOpts, { timeoutMs: 30_000 });
+  }
 
   const st: StreamState = {
     conn,

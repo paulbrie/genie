@@ -106,8 +106,14 @@ export async function handleVpsRuntimeMessage(
         // ssh.service, sshd.service, or socket-activated ssh@.service, so a unit
         // filter would silently under-count. "past MaxStartups" is unmistakably
         // sshd. JOURNAL_OK lets the UI tell a true zero from "couldn't read".
+        // Read sshd -T once and pull both MaxStartups and the ClientAlive reaper
+        // settings from it. ClientAliveInterval 0 means sshd never probes idle
+        // clients, so a dead connection (manager SIGKILL, NAT drop) leaves an
+        // orphaned sshd lingering — the signal behind connection accumulation.
         const script = [
-          `echo "MAXSTARTUPS=$(sudo sshd -T 2>/dev/null | awk '/^maxstartups/{print $2}')"`,
+          `S="$(sudo sshd -T 2>/dev/null)"`,
+          `echo "MAXSTARTUPS=$(echo "$S" | awk '/^maxstartups/{print $2}')"`,
+          `echo "CLIENTALIVE=$(echo "$S" | awk '/^clientaliveinterval/{i=$2} /^clientalivecountmax/{c=$2} END{print i":"c}')"`,
           `echo "JOURNAL_OK=$(sudo journalctl -n0 --no-pager >/dev/null 2>&1 && echo 1 || echo 0)"`,
           `echo "DROPS_1H=$(sudo journalctl --since '-1h' -g 'past MaxStartups' -o cat --no-pager 2>/dev/null | grep -c 'past MaxStartups')"`,
           `echo "ESTABLISHED=$(ss -tnH state established '( sport = :22 )' 2>/dev/null | wc -l)"`,
@@ -115,12 +121,17 @@ export async function handleVpsRuntimeMessage(
         ].join("; ");
         const out = await execProbe(shellOpts, script, undefined, { timeoutMs: 15_000 });
         const get = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() ?? "";
+        // CLIENTALIVE is "interval:countmax" (e.g. "30:3"); ":" when sshd -T failed.
+        const [caiRaw, cacRaw] = get("CLIENTALIVE").split(":");
+        const toNum = (v: string | undefined) => (v && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
         send(ws, { type: "vps:ssh-startups:result", payload: {
           projectId, instanceId, reqId,
           maxStartups: get("MAXSTARTUPS") || null,
           dropsLastHour: parseInt(get("DROPS_1H"), 10) || 0,
           established: parseInt(get("ESTABLISHED"), 10) || 0,
           preauth: parseInt(get("PREAUTH"), 10) || 0,
+          clientAliveInterval: toNum(caiRaw),
+          clientAliveCountMax: toNum(cacRaw),
           journalOk: get("JOURNAL_OK") === "1",
         } });
       } catch (err: unknown) {

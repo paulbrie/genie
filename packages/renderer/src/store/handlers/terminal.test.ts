@@ -41,6 +41,8 @@ function makeConn(overrides: Partial<VmConnectionState>): VmConnectionState {
     stats: null,
     statsError: null,
     sshSessions: null,
+    sshEstablished: null,
+    sshClientAliveInterval: null,
     tmuxSessions: [],
     lastStatsAt: null,
     lastTmuxAt: null,

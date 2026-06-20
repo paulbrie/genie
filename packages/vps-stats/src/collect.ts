@@ -124,26 +124,57 @@ async function readProcessesAndPorts(): Promise<{
   };
 }
 
-// sshd's MaxStartups rarely changes, so read it once and cache. `undefined` =
-// not yet attempted; `null` = read failed (not root / sshd not found).
-let cachedMaxStartups: string | null | undefined;
+interface SshdConfigSnapshot {
+  maxStartups: string | null;
+  clientAliveInterval: number | null;
+  clientAliveCountMax: number | null;
+}
 
-/** Read the effective `MaxStartups` from `sshd -T` (authoritative — includes the
- *  built-in default). Best-effort; needs root, which the stats daemon has. */
-async function readMaxStartupsConfig(): Promise<string | null> {
-  if (cachedMaxStartups !== undefined) return cachedMaxStartups;
+// sshd config changes rarely, and `sshd -T` forks a process, so don't read it
+// every 5s tick. But a permanent cache would freeze a drift/fix for the daemon's
+// whole lifetime (genie-stats doesn't restart when sshd reloads), defeating the
+// point of reporting it — so cache with a coarse TTL instead.
+const SSHD_CONFIG_TTL_MS = 5 * 60_000;
+let cachedSshdConfig: SshdConfigSnapshot | null = null;
+let cachedSshdConfigAt = 0;
+
+/** Read effective sshd settings from `sshd -T` (authoritative — folds in the
+ *  built-in defaults). One fork covers MaxStartups + ClientAlive*. Best-effort;
+ *  needs root, which the stats daemon has. */
+async function readSshdConfig(): Promise<SshdConfigSnapshot> {
+  if (cachedSshdConfig && Date.now() - cachedSshdConfigAt < SSHD_CONFIG_TTL_MS) {
+    return cachedSshdConfig;
+  }
+  const empty: SshdConfigSnapshot = { maxStartups: null, clientAliveInterval: null, clientAliveCountMax: null };
   for (const bin of ["/usr/sbin/sshd", "sshd"]) {
     try {
       const { stdout } = await execFileAsync(bin, ["-T"], { maxBuffer: 256 * 1024 });
-      const line = stdout.split("\n").find((l) => l.toLowerCase().startsWith("maxstartups"));
-      cachedMaxStartups = line ? (line.trim().split(/\s+/)[1] ?? null) : null;
-      return cachedMaxStartups;
+      const valueOf = (key: string): string | null => {
+        const line = stdout.split("\n").find((l) => l.toLowerCase().startsWith(`${key} `));
+        return line ? (line.trim().split(/\s+/)[1] ?? null) : null;
+      };
+      const numOf = (key: string): number | null => {
+        const v = valueOf(key);
+        if (v == null) return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      cachedSshdConfig = {
+        maxStartups: valueOf("maxstartups"),
+        clientAliveInterval: numOf("clientaliveinterval"),
+        clientAliveCountMax: numOf("clientalivecountmax"),
+      };
+      cachedSshdConfigAt = Date.now();
+      return cachedSshdConfig;
     } catch {
       // try next candidate
     }
   }
-  cachedMaxStartups = null;
-  return cachedMaxStartups;
+  // Couldn't read sshd at all — cache the empty result under the same TTL so we
+  // don't fork a doomed `sshd -T` every tick on a VM where it isn't available.
+  cachedSshdConfig = empty;
+  cachedSshdConfigAt = Date.now();
+  return cachedSshdConfig;
 }
 
 /** Count "past MaxStartups" connection-drop log lines in the journal window
@@ -178,6 +209,28 @@ async function readSshSessions(): Promise<number> {
   try {
     const { stdout } = await execFileAsync("who", [], { maxBuffer: 64 * 1024 });
     return stdout.split("\n").filter((l) => l.trim()).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Count established TCP connections terminating on the VM's sshd (local port
+ *  22). Counts the real transport count — every manager exec/tunnel channel, not
+ *  just pty logins — so orphaned connections that `who` can't see still show up.
+ *  No `sport = :22` ss filter (its argv syntax varies across iproute2 versions);
+ *  parse `ss -Htn` and match the local-address column ending in :22 instead. */
+async function readSshEstablished(): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync("ss", ["-Htn", "state", "established"], { maxBuffer: 512 * 1024 });
+    let count = 0;
+    for (const line of stdout.split("\n")) {
+      if (!line.trim()) continue;
+      const cols = line.trim().split(/\s+/);
+      // `ss -Htn state established` omits the State column: Recv-Q Send-Q Local Peer.
+      // Local address is cols[2]; match its trailing :port so [::]:22 / IPv6 work too.
+      if (/:22$/.test(cols[2] ?? "")) count++;
+    }
+    return count;
   } catch {
     return 0;
   }
@@ -218,8 +271,9 @@ export async function collectStats(opts: CollectStatsOptions = {}): Promise<{
   const sshSessions = await readSshSessions();
   // Bound the drops window to [prev, now] so the next tick starts exactly here.
   const dropCheckSec = Math.floor(Date.now() / 1000);
-  const [sshMaxStartups, sshMaxStartupsDrops] = await Promise.all([
-    readMaxStartupsConfig(),
+  const [sshEstablished, sshdConfig, sshMaxStartupsDrops] = await Promise.all([
+    readSshEstablished(),
+    readSshdConfig(),
     readMaxStartupsDrops(opts.prevDropCheckSec ?? null, dropCheckSec),
   ]);
 
@@ -236,8 +290,11 @@ export async function collectStats(opts: CollectStatsOptions = {}): Promise<{
       openPorts,
       externalPorts,
       sshSessions,
-      sshMaxStartups,
+      sshEstablished,
+      sshMaxStartups: sshdConfig.maxStartups,
       sshMaxStartupsDrops,
+      sshClientAliveInterval: sshdConfig.clientAliveInterval,
+      sshClientAliveCountMax: sshdConfig.clientAliveCountMax,
     },
     cpuSample,
     dropCheckSec,

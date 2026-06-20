@@ -119,6 +119,12 @@ export function evictProbeSessionsForHost(host: string): void {
   }
 }
 
+/** Close every probe connection — called on manager shutdown so a dev-watch
+ *  restart doesn't leave orphaned sshd processes on the VMs. */
+export function evictAllProbeSessions(): void {
+  for (const key of [...pool.keys()]) evict(key);
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of pool) {

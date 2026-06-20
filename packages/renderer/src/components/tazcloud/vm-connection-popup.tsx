@@ -237,7 +237,16 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
         <span className="text-[10px] uppercase tracking-wide text-overlay0">SSH</span>
         <span className="text-[10px] text-overlay1">
           {conn.sshSessions && conn.sshSessions > 0 ? `${conn.sshSessions} on server` : "— on server"}
+          {typeof conn.sshEstablished === "number" ? ` · ${conn.sshEstablished} conn` : ""}
         </span>
+        {conn.sshClientAliveInterval === 0 && (
+          <span
+            className="text-[10px] text-yellow"
+            title="sshd ClientAliveInterval is 0 — idle/dead clients are never reaped, so orphaned connections can pile up. Re-run Genie Standard Setup to apply the keepalive config."
+          >
+            ⚠ no reaper
+          </span>
+        )}
         <span className="text-[11px] font-mono tabular-nums text-overlay1 ml-1">
           ↓ {formatBytes(conn.bytesOut)} · ↑ {formatBytes(conn.bytesIn)}
         </span>

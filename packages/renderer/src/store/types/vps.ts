@@ -318,6 +318,14 @@ export interface VmConnectionState {
   statsError: string | null;
   /** Interactive SSH login sessions on the VM (`who` count from the daemon). */
   sshSessions: number | null;
+  /** Established TCP connections on the VM's sshd (port 22) from the daemon.
+   *  Counts non-pty tunnel/exec channels too, so a value that keeps climbing
+   *  signals orphaned sshd accumulating. null until the first daemon sample. */
+  sshEstablished: number | null;
+  /** Effective sshd `ClientAliveInterval` (seconds) from the daemon. 0 means the
+   *  server never probes idle clients, so orphaned connections aren't reaped —
+   *  the popup flags this. null until the first sample. */
+  sshClientAliveInterval: number | null;
   tmuxSessions: VmTmuxSession[];
   lastStatsAt: number | null;
   /** Set only by the SSH tmux probe (`vm:conn:stats`), not daemon stats pushes. */

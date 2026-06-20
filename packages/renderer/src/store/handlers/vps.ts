@@ -158,6 +158,8 @@ export const handlers: HandlerMap = {
           if (slot.projectId !== projectId || slot.instanceId !== statsInstId) continue;
           slot.stats = { cpu: stats.cpuPercent, mem: stats.memPercent, disk: stats.diskPercent };
           if (typeof stats.sshSessions === "number") slot.sshSessions = stats.sshSessions;
+          if (typeof stats.sshEstablished === "number") slot.sshEstablished = stats.sshEstablished;
+          if (typeof stats.sshClientAliveInterval === "number") slot.sshClientAliveInterval = stats.sshClientAliveInterval;
           slot.statsError = null;
           slot.lastStatsAt = now;
         }

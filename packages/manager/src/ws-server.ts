@@ -48,7 +48,8 @@ import { handleMcpRestRequest, type McpRestService } from "./vps/mcp-rest-router
 
 import { type ClientType, type DomActionExecutor, type DomActionRequestContext, type StatsPayload } from "./types.js";
 
-import { getActiveTunnelCount, releaseAllManageRefsForWs } from "./vps/ssh-session-cache.js";
+import { evictAllSessions, getActiveTunnelCount, releaseAllManageRefsForWs } from "./vps/ssh-session-cache.js";
+import { evictAllProbeSessions } from "./vps/ssh-probe-pool.js";
 
 import * as settingsService from "./settings-service.js";
 import fsp from "node:fs/promises";
@@ -1524,5 +1525,14 @@ export function shutdown(wss: WebSocketServer): void {
     ws.close();
   }
   clients.clear();
+  // Explicitly tear down every pooled SSH transport (interactive + probe).
+  // ws.close() above is async and the per-ws ref release races process.exit, so
+  // without this a dev-watch restart (tsx watch SIGTERMs the manager on every
+  // file save) abandons live tunnels — orphaning sshd on the VMs and forcing a
+  // fresh handshake burst on the next boot. conn.destroy() is synchronous, so by
+  // the time shutdown() returns the FINs are on the wire. tmux sessions survive
+  // (we only detach the transport), so reconnect after restart loses no state.
+  try { evictAllSessions(); } catch { /* ignore */ }
+  try { evictAllProbeSessions(); } catch { /* ignore */ }
   wss.close();
 }
