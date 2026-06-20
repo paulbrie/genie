@@ -398,9 +398,19 @@ export function ClaudeStreamWindow({
           loading={session.loading}
           statusText={session.statusText}
           emptyState={
-            <p className="text-overlay0 text-md text-center">
-              {session.ready ? "Chat with Claude on this project — full CLI, rendered as chat." : "Connecting to Claude…"}
-            </p>
+            !session.ready ? (
+              <p className="text-overlay0 text-md text-center flex items-center justify-center gap-2">
+                <Loader2 size={13} className="animate-spin" /> Connecting to Claude…
+              </p>
+            ) : session.historyLoading ? (
+              <p className="text-overlay0 text-md text-center flex items-center justify-center gap-2">
+                <History size={13} className="animate-pulse" /> Loading history…
+              </p>
+            ) : (
+              <p className="text-overlay0 text-md text-center">
+                Chat with Claude on this project — full CLI, rendered as chat.
+              </p>
+            )
           }
         />
         <div ref={endRef} />

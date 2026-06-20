@@ -9,7 +9,17 @@ import { onWsClose } from "@/lib/ws";
 
 export const handlers: HandlerMap = {
   "claude:stream:ready": (payload) => {
-    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, ready: true, reconnecting: false, connectionError: null }));
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      ready: true,
+      reconnecting: false,
+      connectionError: null,
+      // A reattach (surviving tmux) or a resume rebuilds prior turns and delivers
+      // them in one `replay` batch shortly after this. Flag that gap so the window
+      // shows "Loading history…" instead of the blank "Chat with Claude" prompt.
+      // Skip if turns are already present (e.g. a second ready after replay).
+      historyLoading: (!!payload.reattached || !!s.resumeSessionId) && s.messages.length === 0,
+    }));
   },
 
   // A user turn rebuilt from the captured output on a cold reopen. During live
@@ -19,7 +29,7 @@ export const handlers: HandlerMap = {
     updateClaudeStreamSession(payload.claudeStreamId, (s) => {
       const last = s.messages[s.messages.length - 1];
       if (last && last.role === "user" && last.content === payload.content) return s;
-      return { ...s, messages: [...s.messages, { role: "user", content: payload.content }] };
+      return { ...s, historyLoading: false, messages: [...s.messages, { role: "user", content: payload.content }] };
     });
   },
 
@@ -29,6 +39,7 @@ export const handlers: HandlerMap = {
       streamingContent: s.streamingContent + (payload.token || ""),
       statusText: "",
       loading: true,
+      historyLoading: false,
     }));
   },
 
@@ -94,6 +105,7 @@ export const handlers: HandlerMap = {
       toolUses: [],
       loading: false,
       statusText: "",
+      historyLoading: false,
       connectionError: payload.message || "Claude stream failed",
     }));
   },
@@ -114,11 +126,12 @@ export const handlers: HandlerMap = {
       claudeInfo: payload.claudeInfo || s.claudeInfo,
       ready: true,
       reconnecting: false,
+      historyLoading: false,
     }));
   },
 
   "claude:stream:closed": (payload) => {
-    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, ready: false, loading: false, statusText: "" }));
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, ready: false, loading: false, statusText: "", historyLoading: false }));
   },
 };
 

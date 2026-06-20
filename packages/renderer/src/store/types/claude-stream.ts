@@ -29,6 +29,12 @@ export interface ClaudeStreamSession {
   claudeInfo: ClaudeInfo | null;
   /** True once the manager confirmed the session is live (claude:stream:ready). */
   ready: boolean;
+  /** True between `ready` and the history `replay` snapshot when this open is a
+   *  reattach or resume — i.e. prior turns are being rebuilt and will arrive in
+   *  one batch. Drives the "Loading history…" placeholder so the window doesn't
+   *  look blank during that gap. Always cleared by the replay (every history path
+   *  emits one, even when empty), so it can't get stuck. */
+  historyLoading: boolean;
   /** Non-null when the last turn failed or the connection dropped. */
   connectionError: string | null;
   /** True while the WS is reconnecting with a turn in flight. */
@@ -81,6 +87,7 @@ export function emptyClaudeStreamSession(
     statusText: "",
     claudeInfo: null,
     ready: false,
+    historyLoading: false,
     connectionError: null,
     reconnecting: false,
   };

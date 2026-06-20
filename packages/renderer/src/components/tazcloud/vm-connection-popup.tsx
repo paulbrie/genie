@@ -10,16 +10,11 @@ import { Check, Image as ImageIcon, Loader2, RotateCcw } from "lucide-react";
 
 import { $vmConnections } from "@/store/subjects";
 import {
-  injectVmCommand,
   pasteVmImage,
   reconnectVmConnection,
   refreshVmStats,
-  sendVmRawData,
-  setVmConnectionTmuxSession,
 } from "@/store/actions";
 import type { VmConnectionState } from "@/store/types/vps";
-import { TmuxSessionBadges } from "@/components/tazcloud/tmux-session-badges";
-import { tmuxAttachShellCommand, tmuxSwitchClientKeys } from "@/lib/tmux-shell";
 import { createTerminal, hasTerminal, reattachTerminal, setTerminalCursorBlink, setTerminalFontSize } from "@/lib/terminal-bridge";
 import { useWindowFontSize, WINDOW_FONT_PX } from "@/components/ui/window-font-size";
 import { useDeepSubjectAll } from "@/lib/hooks";
@@ -101,12 +96,6 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
   const state = useDeepSubjectAll($vmConnections);
   const conn = state.connections[connectionKey];
   const isLive = conn?.status === "connected";
-  // A Claude popup runs Claude inside a `claude-*` tmux session — switching tmux
-  // sessions from inside it makes no sense, so hide the badge row there. Covers
-  // both the Claude-button launch (initialCommand) and attaching a claude-* chip.
-  const isClaudePopup =
-    (conn?.initialCommand?.includes("claude") ?? false) ||
-    (conn?.tmuxSessionName?.startsWith("claude-") ?? false);
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const [pasteNotice, setPasteNotice] = useState<{ kind: "pending" | "ok" | "error"; text: string } | null>(null);
   const [fontSize] = useWindowFontSize();
@@ -208,26 +197,6 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
 
   if (!conn) return null;
 
-  const handleAttachTmux = (sessionName: string) => {
-    if (!isLive) return;
-    if (conn.tmuxSessionName === sessionName) return;
-    const wasAttached = conn.tmuxSessionName != null;
-    setVmConnectionTmuxSession(connectionKey, sessionName);
-    if (wasAttached) {
-      // Already inside a tmux client — switch via tmux command mode. The keys are
-      // drawn on tmux's bottom status line, never reach the running shell/Claude,
-      // and leave no trace in the scrollback. The `stty -echo` wrap can't suppress
-      // canonical-mode echo of its own line, so typing the shell command would
-      // dump the entire wrapper into whatever process is at the prompt.
-      sendVmRawData(connectionKey, tmuxSwitchClientKeys(sessionName));
-    } else {
-      // First attach from a bare shell — type `tmux attach -t …` into the PTY.
-      // Echoes one line briefly before tmux takes over the screen.
-      injectVmCommand(connectionKey, tmuxAttachShellCommand(sessionName), { silent: true });
-    }
-    window.setTimeout(() => refreshVmStats(connectionKey, { force: true }), 1500);
-  };
-
   return (
     <div className="flex flex-col h-full min-h-0 bg-crust text-text">
       {/* Header — status pills + traffic counter */}
@@ -266,31 +235,6 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
           )}
         </div>
       </div>
-
-      {/* tmux session badges — SSH probe, re-probe via refresh row.
-          Hidden in a Claude popup (you're already inside its tmux session). */}
-      {!isClaudePopup && conn.projectId && conn.instanceId && (
-        <TmuxSessionBadges
-          variant="inline"
-          projectId={conn.projectId}
-          instanceId={conn.instanceId}
-          host={conn.host}
-          sshUser={conn.username}
-          vmName={conn.vmLabel}
-          sessionsOverride={conn.tmuxSessions}
-          onAttach={handleAttachTmux}
-          onProbe={() => refreshVmStats(connectionKey, { force: true })}
-          probedAt={conn.lastTmuxAt}
-          pendingProbe={conn.lastTmuxAt == null && conn.status === "connected"}
-          probeError={conn.statsError}
-          activeSessionName={
-            conn.status === "connected" || conn.status === "connecting" || conn.status === "reconnecting"
-              ? conn.tmuxSessionName ?? null
-              : null
-          }
-          autoProbe={false}
-        />
-      )}
 
       {/* Disconnected banner — tmux may still be running on the VM */}
       {conn.status === "closed" && (

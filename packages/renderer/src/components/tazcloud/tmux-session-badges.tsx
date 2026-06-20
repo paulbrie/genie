@@ -13,6 +13,8 @@ import {
 import { TmuxRenameDialog } from "@/components/tazcloud/tmux-rename-dialog";
 import { killVmTmuxSession, openClaudeChatWindow, refreshVmTmuxSessions, renameVmTmuxSession } from "@/store/actions";
 import { $auth, $projects, $vmConnections, $vpsDeploy } from "@/store/subjects";
+import { $claudeStream } from "@/store/subjects/claude-stream";
+import { useSubject } from "subjecto/react";
 import type { VmConnectionState, VmTmuxSession } from "@/store/types/vps";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -55,15 +57,25 @@ function useActiveTmuxSessions(
   extraActive?: string | null,
 ): Set<string> {
   const vmConnections = useDeepSubjectAll($vmConnections);
+  const [claudeState] = useSubject($claudeStream);
   // Recompute every render — DeepSubject mutates nested fields in place so
   // memoizing on `connections` object identity misses status/tmuxSessionName updates.
-  return resolveActiveTmuxSessions(
+  const active = resolveActiveTmuxSessions(
     projectId,
     instanceId,
     vmConnections.connections,
     sessions,
     extraActive,
   );
+  // A Claude chat window lives in $claudeStream (not $vmConnections), so its tmux
+  // session won't show as active above. Mark any tmux session that has an open
+  // Claude popup bound to it (open or minimized) so its badge renders active.
+  for (const cs of Object.values(claudeState.sessions)) {
+    if (cs.projectId === projectId && cs.instanceId === instanceId && cs.tmuxName) {
+      active.add(cs.tmuxName);
+    }
+  }
+  return active;
 }
 
 /** Resolve project + instance for a Manage VM (same rules as ManageVmInline). */

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Crown, Plus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { FilterableSelect } from "@/components/ui/filterable-select";
 import { useDeepSubject } from "subjecto/react";
 import { $admin } from "@/store/subjects";
 import {
@@ -67,26 +68,20 @@ export function ProjectMembersTab({ project }: { project: ProjectDef }) {
 
       {canManage && adding && (
         <div className="flex items-center gap-2">
-          <select
-            className="bg-surface0 border border-surface1 rounded px-3 py-1.5 text-md text-text flex-1 max-w-md"
-            defaultValue=""
-            onChange={(e) => {
-              if (e.target.value) {
-                addProjectMember(project.id, e.target.value, "member");
-                setAdding(false);
-              }
-            }}
-            autoFocus
-          >
-            <option value="" disabled>
-              Select user...
-            </option>
-            {candidates.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name} ({u.email})
-              </option>
-            ))}
-          </select>
+          <div className="flex-1 max-w-md">
+            <FilterableSelect
+              value=""
+              placeholder="Select user…"
+              emptyText="No matching users"
+              options={candidates.map((u) => ({ value: u.id, label: `${u.name} (${u.email})` }))}
+              onChange={(userId) => {
+                if (userId) {
+                  addProjectMember(project.id, userId, "member");
+                  setAdding(false);
+                }
+              }}
+            />
+          </div>
           <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>
             <X size={14} />
           </Button>
@@ -165,26 +160,20 @@ export function ProjectMembersTab({ project }: { project: ProjectDef }) {
 
       {canManage && addingTeam && (
         <div className="flex items-center gap-2">
-          <select
-            className="bg-surface0 border border-surface1 rounded px-3 py-1.5 text-md text-text flex-1 max-w-md"
-            defaultValue=""
-            onChange={(e) => {
-              if (e.target.value) {
-                addProjectTeam(project.id, e.target.value);
-                setAddingTeam(false);
-              }
-            }}
-            autoFocus
-          >
-            <option value="" disabled>
-              Select team...
-            </option>
-            {candidateTeams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex-1 max-w-md">
+            <FilterableSelect
+              value=""
+              placeholder="Select team…"
+              emptyText="No matching teams"
+              options={candidateTeams.map((t) => ({ value: t.id, label: t.name }))}
+              onChange={(teamId) => {
+                if (teamId) {
+                  addProjectTeam(project.id, teamId);
+                  setAddingTeam(false);
+                }
+              }}
+            />
+          </div>
           <Button size="sm" variant="ghost" onClick={() => setAddingTeam(false)}>
             <X size={14} />
           </Button>
