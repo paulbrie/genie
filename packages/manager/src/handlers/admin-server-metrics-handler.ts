@@ -11,6 +11,19 @@ const VALID_RANGES = new Set([1, 6, 24]);
 /** Time-bucket width per range, sized for ~12–24 points: 1h→5m, 6h→30m, 24h→1h. */
 const BUCKET_SECONDS: Record<number, number> = { 1: 300, 6: 1800, 24: 3600 };
 
+/** "Requests by user" is sourced from analytics_events (retained ~180d), so it
+ *  supports longer windows than the throughput history (server_metric_samples,
+ *  pruned at ~25h). Bucket widths keep each window at ~12–30 points:
+ *  7d→6h, 15d→12h, 30d→1d. */
+const REQUEST_VOLUME_BUCKET_SECONDS: Record<number, number> = {
+  1: 300,
+  6: 1800,
+  24: 3600,
+  168: 21_600,
+  360: 43_200,
+  720: 86_400,
+};
+
 const EMPTY_REQUEST_VOLUME: RequestVolumeResult = { bucketSeconds: 3600, mode: "user", series: [], points: [] };
 
 /** Superadmin-only live server throughput dashboard subscription. The ACL gates
@@ -52,11 +65,12 @@ export async function handleAdminServerMetricsMessage(
         send(ws, { type: "admin:server-metrics:requests-by-user", payload: { reqId, result: EMPTY_REQUEST_VOLUME } });
         return true;
       }
-      const hours = VALID_RANGES.has(msg.payload?.hours) ? msg.payload.hours : 24;
+      const bucketSeconds = REQUEST_VOLUME_BUCKET_SECONDS[msg.payload?.hours];
+      const hours = bucketSeconds ? msg.payload.hours : 24;
       const userId = typeof msg.payload?.userId === "string" && msg.payload.userId ? msg.payload.userId : null;
       const result = await getRequestVolumeByUser(
         new Date(Date.now() - hours * 3_600_000),
-        BUCKET_SECONDS[hours] ?? 3600,
+        bucketSeconds ?? 3600,
         { userId },
       );
       send(ws, { type: "admin:server-metrics:requests-by-user", payload: { reqId, result } });

@@ -322,7 +322,7 @@ export function ServerMetricsPanel() {
           )}
         </section>
 
-        <RequestsByUserSection range={range} rangeLabel={rangeLabel} showDate={showDate} />
+        <RequestsByUserSection />
       </div>
     </div>
   );
@@ -337,23 +337,30 @@ const SERIES_COLORS = [
 const OTHER_COLOR = "#6c7086";
 const seriesColor = (key: string, i: number) => (key === "other" ? OTHER_COLOR : SERIES_COLORS[i % SERIES_COLORS.length]!);
 
+/** Selectable windows for the request-volume chart. Sourced from analytics_events
+ *  (retained ~180d), so it supports much longer windows than the throughput
+ *  charts. Hours map to the backend's REQUEST_VOLUME_BUCKET_SECONDS. */
+const RBU_RANGES = [
+  { hours: 24, label: "24h" },
+  { hours: 168, label: "7d" },
+  { hours: 360, label: "15d" },
+  { hours: 720, label: "30d" },
+] as const;
+
 /** Stacked request-volume chart sourced from analytics_events. With no user
  *  selected it stacks the top users (+ Other); with one selected it splits that
- *  user's volume by surface (Claude popup / Genie Chat / Terminal). Shares the
- *  panel's 1h/6h/24h range. */
-function RequestsByUserSection({
-  range,
-  rangeLabel,
-  showDate,
-}: {
-  range: number;
-  rangeLabel: string;
-  showDate: boolean;
-}) {
+ *  user's volume by surface (Claude popup / Genie Chat / Terminal). Carries its
+ *  own range selector (24h–30d) since analytics_events outlives the throughput
+ *  history that drives the rest of the panel. */
+function RequestsByUserSection() {
   const [usersSlice] = useDeepSubject($admin, "users");
   const [userId, setUserId] = useState("");
+  const [range, setRange] = useState<number>(168);
   const [result, setResult] = useState<RequestVolumeResult | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const rangeLabel = RBU_RANGES.find((r) => r.hours === range)?.label ?? "7d";
+  const multiDay = range > 24;
 
   useEffect(() => {
     if (usersSlice.list.length === 0) loadAdminUsers();
@@ -400,13 +407,32 @@ function RequestsByUserSection({
           Requests by user · last {rangeLabel}
           <span className="text-overlay0 font-normal"> · Assistant + VM Claude + Genie Chat + Terminal</span>
         </h2>
-        <div className="w-64">
-          <FilterableSelect
-            value={userId}
-            options={userOptions}
-            onChange={(v) => setUserId(v)}
-            placeholder="All users"
-          />
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg border border-surface0 bg-mantle p-0.5 shrink-0">
+            {RBU_RANGES.map((r) => (
+              <button
+                key={r.hours}
+                type="button"
+                onClick={() => setRange(r.hours)}
+                className={cn(
+                  "px-3 py-1 rounded-md text-sm font-medium border-none cursor-pointer transition-colors",
+                  range === r.hours
+                    ? "bg-surface0 text-text"
+                    : "bg-transparent text-overlay0 hover:text-subtext0",
+                )}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+          <div className="w-64">
+            <FilterableSelect
+              value={userId}
+              options={userOptions}
+              onChange={(v) => setUserId(v)}
+              placeholder="All users"
+            />
+          </div>
         </div>
       </div>
       {hasData ? (
@@ -420,8 +446,8 @@ function RequestsByUserSection({
                 minTickGap={24}
                 tickFormatter={(t: number) => {
                   const d = new Date(t);
-                  return showDate
-                    ? d.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit" })
+                  return multiDay
+                    ? d.toLocaleDateString([], { month: "numeric", day: "numeric" })
                     : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
                 }}
               />
