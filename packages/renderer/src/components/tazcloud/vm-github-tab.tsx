@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   GitBranch, GitCommit, GitFork, KeyRound, Loader2, Plus, RefreshCw, Trash2,
-  Download, Upload, AlertTriangle, ArrowLeftRight,
+  Download, Upload, AlertTriangle, ArrowLeftRight, Archive, FileDiff,
 } from "lucide-react";
 import { wsRequest } from "@/lib/ws";
 import { cn } from "@/lib/utils";
@@ -448,28 +448,48 @@ function parseBranches(raw: string): { names: string[]; current: string | null }
   return { names: [...new Set(names)], current };
 }
 
+/** Parse `git status --porcelain -b` into changed files (skipping the `##` header). */
+function parsePorcelain(raw: string): { code: string; path: string }[] {
+  const out: { code: string; path: string }[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line || line.startsWith("##")) continue;
+    out.push({ code: line.slice(0, 2), path: line.slice(3) });
+  }
+  return out;
+}
+
 function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanelProps) {
   const [log, setLog] = useState<string>("");
   const [branchesRaw, setBranchesRaw] = useState<string>("");
   const [status, setStatus] = useState<{ branch: string; ahead: number; behind: number } | null>(null);
+  const [files, setFiles] = useState<{ code: string; path: string }[]>([]);
+  const [lastCommit, setLastCommit] = useState<{ author: string; relative: string; subject: string } | null>(null);
   const [diskRemote, setDiskRemote] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [action, setAction] = useState<string | null>(null); // which op is running
   const [actionOut, setActionOut] = useState<string>("");
   const [checkoutTo, setCheckoutTo] = useState<string>("");
+  const [commitMsg, setCommitMsg] = useState("");
+  const [newBranch, setNewBranch] = useState("");
+  const [newBranchPush, setNewBranchPush] = useState(true);
+  const [openDiff, setOpenDiff] = useState<string | null>(null);
+  const [diffText, setDiffText] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [logRes, brRes, stRes, detRes] = await Promise.all([
+      const [logRes, brRes, stRes, lcRes, detRes] = await Promise.all([
         wsRequest<{ log?: string }>("git:log", { projectId, instanceId, folder: repo.repoPath, count: 30 }, 15_000),
         wsRequest<{ branches?: string }>("git:branches", { projectId, instanceId, folder: repo.repoPath }, 15_000),
-        wsRequest<{ branch?: string; ahead?: number; behind?: number }>("git:status", { projectId, instanceId, folder: repo.repoPath }, 15_000).catch(() => ({} as { branch?: string; ahead?: number; behind?: number })),
+        wsRequest<{ branch?: string; ahead?: number; behind?: number; porcelain?: string }>("git:status", { projectId, instanceId, folder: repo.repoPath }, 15_000).catch(() => ({} as { branch?: string; ahead?: number; behind?: number; porcelain?: string })),
+        wsRequest<{ author?: string; relative?: string; subject?: string }>("git:last-commit", { projectId, instanceId, folder: repo.repoPath }, 15_000).catch(() => ({} as { author?: string; relative?: string; subject?: string })),
         wsRequest<DetectedRepo>("vps:git:repos:detect", { projectId, instanceId, repoPath: repo.repoPath }, 30_000).catch(() => null),
       ]);
       setLog(logRes.log ?? "");
       setBranchesRaw(brRes.branches ?? "");
       setStatus(stRes.branch ? { branch: stRes.branch, ahead: stRes.ahead ?? 0, behind: stRes.behind ?? 0 } : null);
+      setFiles(parsePorcelain(stRes.porcelain ?? ""));
+      setLastCommit(lcRes.relative ? { author: lcRes.author ?? "", relative: lcRes.relative, subject: lcRes.subject ?? "" } : null);
       setDiskRemote(detRes?.remoteUrl ?? null);
     } catch {
       // wsRequest rejects on timeout — leave previous content and let the user retry.
@@ -478,11 +498,12 @@ function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanel
     }
   }, [projectId, instanceId, repo.repoPath]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { refresh(); setOpenDiff(null); }, [refresh]);
 
   const { names: branchNames, current } = parseBranches(branchesRaw);
+  const dirty = files.length > 0;
 
-  // Run a git command (pull/push/checkout) and surface its output inline.
+  // Run a git command and surface its output inline.
   const runGit = useCallback(async (label: string, type: string, payload: Record<string, unknown>, done: string) => {
     setAction(label);
     setActionOut("");
@@ -497,6 +518,56 @@ function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanel
     }
   }, [projectId, instanceId, repo.repoPath, refresh]);
 
+  // Dirty-tree guard: switching branches or pulling onto uncommitted changes can
+  // fail or clobber — confirm first.
+  const guardedRun = useCallback((label: string, type: string, payload: Record<string, unknown>, done: string) => {
+    if (dirty && !confirm("You have uncommitted changes. Continue anyway? (Consider committing or stashing first.)")) return;
+    void runGit(label, type, payload, done);
+  }, [dirty, runGit]);
+
+  // Stage everything + commit (+ push). Multi-step, so not via runGit.
+  const commit = useCallback(async (push: boolean) => {
+    const message = commitMsg.trim();
+    if (!message) return;
+    setAction(push ? "commit-push" : "commit");
+    setActionOut("");
+    try {
+      await wsRequest("git:stage", { projectId, instanceId, folder: repo.repoPath, files: ["."] }, 30_000);
+      const res = await wsRequest<{ output?: string }>("git:commit", { projectId, instanceId, folder: repo.repoPath, message }, 30_000);
+      let out = res.output ?? "committed";
+      if (push) {
+        const pr = await wsRequest<{ output?: string }>("git:push", { projectId, instanceId, folder: repo.repoPath }, 90_000);
+        out += "\n" + (pr.output ?? "pushed");
+      }
+      setActionOut(out);
+      setCommitMsg("");
+      await refresh();
+    } catch (e) {
+      setActionOut(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAction(null);
+    }
+  }, [commitMsg, projectId, instanceId, repo.repoPath, refresh]);
+
+  const createBranch = useCallback(async () => {
+    const branch = newBranch.trim();
+    if (!branch) return;
+    await runGit("newbranch", "git:checkout-b", { branch, push: newBranchPush }, "created");
+    setNewBranch("");
+  }, [newBranch, newBranchPush, runGit]);
+
+  const toggleDiff = useCallback(async (path: string) => {
+    if (openDiff === path) { setOpenDiff(null); return; }
+    setOpenDiff(path);
+    setDiffText("Loading…");
+    try {
+      const res = await wsRequest<{ diff?: string }>("git:diff", { projectId, instanceId, folder: repo.repoPath, file: path }, 20_000);
+      setDiffText(res.diff || "(no diff — file may be untracked or staged)");
+    } catch {
+      setDiffText("Failed to load diff.");
+    }
+  }, [openDiff, projectId, instanceId, repo.repoPath]);
+
   // DB vs /opt/project mismatch on the origin remote.
   const dbUrl = repo.repoUrl;
   const mismatch = !!diskRemote && normalizeRemote(diskRemote) !== normalizeRemote(dbUrl);
@@ -505,11 +576,8 @@ function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanel
     setAction(direction);
     try {
       if (direction === "disk-to-db") {
-        // Adopt the on-VM remote into the registry (update also re-wires the VM,
-        // a no-op here since disk already has it).
         await wsRequest("vps:git:repos:update", { projectId, instanceId, id: repo.id, repoUrl: diskRemote }, 60_000);
       } else {
-        // Rewrite the VM's origin to match the registered URL.
         await wsRequest("vps:git:repos:init", { projectId, instanceId, repoPath: repo.repoPath, repoUrl: dbUrl }, 60_000);
       }
       onRepoChanged();
@@ -522,6 +590,7 @@ function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanel
   }, [projectId, instanceId, repo.id, repo.repoPath, diskRemote, dbUrl, onRepoChanged, refresh]);
 
   const busy = action !== null || loading;
+  const autoSaved = lastCommit && /genie/i.test(lastCommit.author);
 
   return (
     <div className="rounded-md border border-surface0 bg-mantle p-3 flex flex-col gap-3">
@@ -545,6 +614,16 @@ function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanel
         </button>
       </div>
 
+      {/* Auto-save / last-commit line */}
+      {lastCommit && (
+        <div className="text-overlay0 text-xs flex items-center gap-1.5">
+          <GitCommit size={11} className={cn(autoSaved && repo.autoSave ? "text-green" : "text-overlay0")} />
+          {autoSaved && repo.autoSave ? "Auto-saved" : "Last commit"} {lastCommit.relative}
+          <span className="text-overlay0/70">· {lastCommit.author}</span>
+          <span className="truncate text-overlay1">— {lastCommit.subject}</span>
+        </div>
+      )}
+
       {/* DB vs /opt/project reconcile */}
       {mismatch && (
         <div className="rounded-md border border-peach/50 bg-peach/10 p-2.5 flex flex-col gap-2 text-sm">
@@ -556,27 +635,21 @@ function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanel
             <div>On VM: <code>{diskRemote}</code></div>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={() => reconcile("disk-to-db")}
-              disabled={busy}
+            <button onClick={() => reconcile("disk-to-db")} disabled={busy}
               className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
-              title="Update the registry to the URL found on the VM"
-            >
+              title="Update the registry to the URL found on the VM">
               {action === "disk-to-db" ? <Loader2 size={12} className="animate-spin" /> : <ArrowLeftRight size={12} />} Use VM’s URL
             </button>
-            <button
-              onClick={() => reconcile("db-to-disk")}
-              disabled={busy || !dbUrl}
+            <button onClick={() => reconcile("db-to-disk")} disabled={busy || !dbUrl}
               className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
-              title="Rewrite the VM's origin remote to the registered URL"
-            >
+              title="Rewrite the VM's origin remote to the registered URL">
               {action === "db-to-disk" ? <Loader2 size={12} className="animate-spin" /> : <ArrowLeftRight size={12} />} Use registry URL
             </button>
           </div>
         </div>
       )}
 
-      {/* Branch switch + pull/push */}
+      {/* Branch switch + new branch + stash + pull/push */}
       <div className="flex flex-wrap items-center gap-2">
         <select
           value={checkoutTo || current || ""}
@@ -588,30 +661,104 @@ function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanel
           {branchNames.map((b) => <option key={b} value={b}>{b}{b === current ? " (current)" : ""}</option>)}
         </select>
         <button
-          onClick={() => runGit("checkout", "git:checkout", { branch: checkoutTo || current }, "switched")}
+          onClick={() => guardedRun("checkout", "git:checkout", { branch: checkoutTo || current }, "switched")}
           disabled={busy || !checkoutTo || checkoutTo === current}
           className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
           title="Switch branch (git checkout)"
         >
           {action === "checkout" ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />} Switch
         </button>
-        <div className="flex-1" />
         <button
-          onClick={() => runGit("pull", "git:pull", {}, "pulled")}
-          disabled={busy}
+          onClick={() => runGit("stash", "git:stash", {}, "stashed")}
+          disabled={busy || !dirty}
           className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
-          title="git pull"
+          title="git stash (shelve uncommitted changes)"
         >
+          {action === "stash" ? <Loader2 size={12} className="animate-spin" /> : <Archive size={12} />} Stash
+        </button>
+        <button
+          onClick={() => runGit("stash-pop", "git:stash-pop", {}, "restored")}
+          disabled={busy}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-transparent text-overlay1 hover:text-text border-none cursor-pointer disabled:opacity-50"
+          title="git stash pop (restore the last stash)"
+        >
+          Pop
+        </button>
+        <div className="flex-1" />
+        <button onClick={() => guardedRun("pull", "git:pull", {}, "pulled")} disabled={busy}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50" title="git pull">
           {action === "pull" ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} Pull
         </button>
-        <button
-          onClick={() => runGit("push", "git:push", {}, "pushed")}
-          disabled={busy}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-mauve text-background hover:bg-lavender border-none cursor-pointer disabled:opacity-50"
-          title="git push"
-        >
+        <button onClick={() => runGit("push", "git:push", {}, "pushed")} disabled={busy}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-mauve text-background hover:bg-lavender border-none cursor-pointer disabled:opacity-50" title="git push">
           {action === "push" ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Push
         </button>
+      </div>
+
+      {/* New branch */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={newBranch}
+          onChange={(e) => setNewBranch(e.target.value)}
+          placeholder="new-branch-name"
+          className="px-2 py-1 rounded-md bg-base border border-surface0 text-text text-sm font-mono w-48"
+        />
+        <label className="flex items-center gap-1 text-xs text-overlay0 cursor-pointer">
+          <input type="checkbox" checked={newBranchPush} onChange={(e) => setNewBranchPush(e.target.checked)} /> push
+        </label>
+        <button
+          onClick={createBranch}
+          disabled={busy || !newBranch.trim()}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
+          title="Create + switch to a new branch (git checkout -b)"
+        >
+          {action === "newbranch" ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} New branch
+        </button>
+      </div>
+
+      {/* Uncommitted changes + commit */}
+      <div>
+        <div className="text-overlay0 text-sm mb-1 flex items-center gap-1">
+          <FileDiff size={12} /> Changes {dirty ? `(${files.length})` : ""}
+        </div>
+        {!dirty ? (
+          <div className="text-overlay0 text-xs">Working tree clean.</div>
+        ) : (
+          <>
+            <div className="flex flex-col gap-0.5 max-h-48 overflow-auto rounded-md bg-base p-1.5">
+              {files.map((f) => (
+                <div key={f.path}>
+                  <button
+                    onClick={() => toggleDiff(f.path)}
+                    className="w-full text-left flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-surface0 bg-transparent border-none cursor-pointer text-xs"
+                  >
+                    <span className={cn("font-mono shrink-0 w-6", /^\?\?/.test(f.code) ? "text-green" : f.code.includes("D") ? "text-red" : "text-peach")}>{f.code.trim() || "??"}</span>
+                    <span className="text-text truncate">{f.path}</span>
+                  </button>
+                  {openDiff === f.path && (
+                    <pre className="bg-mantle rounded-md p-2 text-xs whitespace-pre-wrap text-overlay1 max-h-56 overflow-auto my-1">{diffText}</pre>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 mt-1.5">
+              <input
+                value={commitMsg}
+                onChange={(e) => setCommitMsg(e.target.value)}
+                placeholder="Commit message…"
+                className="flex-1 px-2 py-1 rounded-md bg-base border border-surface0 text-text text-sm"
+              />
+              <button onClick={() => commit(false)} disabled={busy || !commitMsg.trim()}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50" title="git add -A && git commit">
+                {action === "commit" ? <Loader2 size={12} className="animate-spin" /> : <GitCommit size={12} />} Commit
+              </button>
+              <button onClick={() => commit(true)} disabled={busy || !commitMsg.trim()}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-mauve text-background hover:bg-lavender border-none cursor-pointer disabled:opacity-50" title="commit + push">
+                {action === "commit-push" ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Commit & Push
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {actionOut && (

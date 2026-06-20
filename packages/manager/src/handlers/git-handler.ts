@@ -16,8 +16,8 @@ import { canAccessProject } from "./handler-auth.js";
 const GIT_TYPES = new Set([
   "git:status", "git:log", "git:branches", "git:diff",
   "git:stage", "git:unstage", "git:commit",
-  "git:push", "git:pull", "git:checkout",
-  "git:stash", "git:stash-pop",
+  "git:push", "git:pull", "git:checkout", "git:checkout-b",
+  "git:stash", "git:stash-pop", "git:last-commit",
 ]);
 
 export async function handleGitMessage(
@@ -120,6 +120,33 @@ export async function handleGitMessage(
         const branchName = msg.payload.branch;
         result = await session.exec(`cd ${cwd} && git checkout "${branchName}" 2>&1`);
         gitReply("git:checkout:done", { projectId, folder: cwd, output: result.trim() });
+        break;
+      }
+      case "git:checkout-b": {
+        // Create + switch to a new branch; optionally push it with upstream set
+        // (`-u`), since a fresh branch has no upstream for a plain `git push`.
+        const branchName = String(msg.payload.branch || "").trim();
+        const push = !!msg.payload.push;
+        if (!/^[\w./-]+$/.test(branchName)) {
+          gitReply("git:error", { message: "Invalid branch name" });
+          break;
+        }
+        result = await session.exec(`cd ${cwd} && git checkout -b "${branchName}" 2>&1`, undefined, { timeoutMs: 30_000 });
+        if (push) {
+          result += "\n" + await session.exec(`cd ${cwd} && git push -u origin "${branchName}" 2>&1`, undefined, { timeoutMs: 60_000 });
+        }
+        gitReply("git:checkout:done", { projectId, folder: cwd, output: result.trim() });
+        break;
+      }
+      case "git:last-commit": {
+        // Newest commit's hash|author|relative-date|subject — drives the Github
+        // tab's "auto-saved <when>" line (auto-save commits are authored "Genie").
+        result = await session.exec(`cd ${cwd} && git log -1 --format='%h|%an|%ar|%s' 2>/dev/null || echo ""`);
+        const [hash, author, relative, ...rest] = result.trim().split("|");
+        gitReply("git:last-commit:result", {
+          projectId, folder: cwd,
+          hash: hash || "", author: author || "", relative: relative || "", subject: rest.join("|") || "",
+        });
         break;
       }
       case "git:stash": {
