@@ -19,6 +19,7 @@ import { ManageVmWindows } from "@/components/tazcloud/manage-vm-popup";
 import { ManageDropletWindows } from "@/components/admin/digitalocean-panel";
 import { ManageServerWindows } from "@/components/admin/hetzner-panel";
 import { VmConnectionWindows } from "@/components/tazcloud/vm-connection-window";
+import { CommandPalette } from "@/components/ui/command-palette";
 import { TrackerPanel } from "@/components/project/tracker-panel";
 import { AdminPanel } from "@/components/admin/admin-panel";
 import { CloudsPanel } from "@/components/project/clouds-panel";
@@ -295,6 +296,7 @@ export default function Home() {
       <ManageDropletWindows />
       <ManageServerWindows />
       <VmConnectionWindows />
+      <CommandPalette />
     </>
   );
 }
