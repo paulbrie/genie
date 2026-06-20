@@ -331,7 +331,7 @@ export function TmuxSessionBadges({
   const openClaudeChat = (sessionName: string) => {
     const ownerId = $auth.getValue().user?.id;
     if (!ownerId || !projectId || !instanceId) { attach(sessionName); return; }
-    void openClaudeChatWindow({ ownerId, projectId, instanceId, label: `${vmName} · Claude`, tmuxName: sessionName });
+    void openClaudeChatWindow({ ownerId, projectId, instanceId, label: vmName, tmuxName: sessionName });
   };
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);

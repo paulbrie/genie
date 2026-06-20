@@ -515,7 +515,7 @@ function ClaudeManageButton({
     if (!linked) return;
     const ownerId = $auth.getValue().user?.id;
     if (!ownerId) return;
-    void openClaudeChatWindow({ ownerId, projectId: linked.project.id, instanceId: linked.instance.id, label: `${vm.name} · Claude` });
+    void openClaudeChatWindow({ ownerId, projectId: linked.project.id, instanceId: linked.instance.id, label: vm.name });
   };
   const reason = enabled ? undefined : "Attach this VM to a project to enable Claude/SSH terminals";
   return (

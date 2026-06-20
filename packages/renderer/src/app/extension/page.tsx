@@ -692,7 +692,7 @@ export default function ExtensionPage() {
     const ownerId = auth.user?.id;
     const proj = projectRef.current;
     if (!ownerId || !proj?.id || !proj.vpsInstanceId) return;
-    await openClaudeChatWindow({ ownerId, projectId: proj.id, instanceId: proj.vpsInstanceId, label: `${proj.name} · Claude` });
+    await openClaudeChatWindow({ ownerId, projectId: proj.id, instanceId: proj.vpsInstanceId, label: proj.name });
   }, [auth.user?.id]);
 
   /** Open a shell terminal that injects a recipe command after connect. */

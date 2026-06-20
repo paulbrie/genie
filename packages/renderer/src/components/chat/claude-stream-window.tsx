@@ -319,7 +319,12 @@ export function ClaudeStreamWindow({
     containerStyle.zIndex = -1;
   }
 
-  const subtitle = session.claudeInfo?.email || session.claudeInfo?.model || "";
+  // Lead with the tmux session name (e.g. `claude-paul`) so the title maps to a
+  // visible session badge; trail with the account email/model (constant per VM,
+  // so it's the half that can truncate away). `· `-joined, blanks dropped.
+  const subtitle = [session.tmuxName, session.claudeInfo?.email || session.claudeInfo?.model]
+    .filter(Boolean)
+    .join(" · ");
 
   return createPortal(
     <div
