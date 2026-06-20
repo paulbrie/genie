@@ -48,6 +48,16 @@ function relTime(ms: number): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+/** A message the user composed while Claude was mid-turn. Held locally and flushed
+ *  as one batch when the turn finishes (see the flush effect). */
+type QueuedMessage = {
+  id: string;
+  /** What the user typed (+ any [Image: …] refs) — shown in the chip and the bubble. */
+  display: string;
+  /** Data URLs of attached images, carried into the batched send. */
+  images: string[];
+};
+
 /** A clipboard image being uploaded to the VM, then attachable to a message. */
 type PendingImage = {
   id: string;
@@ -121,6 +131,7 @@ export function ClaudeStreamWindow({
 
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
   const [planMode, setPlanMode] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [sessions, setSessions] = useState<ClaudeSessionSummary[]>([]);
@@ -263,6 +274,16 @@ export function ClaudeStreamWindow({
     // text Claude reads) by attaching their data URLs to the sent message.
     const images = ready.map((im) => im.dataUrl).filter(Boolean);
     const display = parts.join("\n\n");
+    // Claude is mid-turn — don't drop the thought; queue it. The flush effect
+    // sends the whole batch as one message the moment the turn finishes, so you
+    // can fire ideas as they come without waiting.
+    if (session?.loading) {
+      setQueued((q) => [...q, { id: crypto.randomUUID(), display, images }]);
+      setInput("");
+      setPendingImages([]);
+      ac.close();
+      return;
+    }
     // Plan mode: prefix the directive on the wire payload only — the bubble shows
     // just what the user typed.
     const wire = planMode ? `${PLAN_DIRECTIVE}\n\n${display}` : display;
@@ -270,7 +291,27 @@ export function ClaudeStreamWindow({
     setInput("");
     setPendingImages([]);
     ac.close();
-  }, [input, pendingImages, claudeStreamId, ac, planMode]);
+  }, [input, pendingImages, claudeStreamId, ac, planMode, session?.loading]);
+
+  // Flush the queue as one batched message when the turn finishes. Combining into
+  // a single send (vs. firing each separately) keeps it to one turn that sees all
+  // the queued thoughts together.
+  const prevLoading = useRef(false);
+  useEffect(() => {
+    const loading = !!session?.loading;
+    if (prevLoading.current && !loading && queued.length > 0) {
+      const combined = queued.map((q) => q.display).join("\n\n");
+      const images = queued.flatMap((q) => q.images);
+      const wire = planMode ? `${PLAN_DIRECTIVE}\n\n${combined}` : combined;
+      sendClaudeStreamMessage(claudeStreamId, wire, images, combined);
+      setQueued([]);
+    }
+    prevLoading.current = loading;
+  }, [session?.loading, queued, planMode, claudeStreamId]);
+
+  const removeQueued = useCallback((id: string) => {
+    setQueued((q) => q.filter((m) => m.id !== id));
+  }, []);
 
   // Lazy-load the prior-session list when the picker opens.
   const toggleSessions = useCallback(() => {
@@ -422,6 +463,41 @@ export function ClaudeStreamWindow({
         className="flex flex-col gap-1.5 px-3 py-2 border-t border-surface0 shrink-0"
         style={{ zoom: WINDOW_FONT_SCALE[fontSize] } as React.CSSProperties}
       >
+        {queued.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <div className="text-[10px] text-overlay0 flex items-center gap-1">
+              <Loader2 size={9} className="animate-spin text-peach" />
+              {queued.length} queued — sends when Claude finishes
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {queued.map((m, i) => (
+                <span
+                  key={m.id}
+                  className="group inline-flex items-center gap-1 max-w-[14rem] pl-1.5 pr-1 py-0.5 rounded-full border border-peach/40 bg-peach/10 text-peach text-[11px]"
+                  title={m.display}
+                >
+                  <span className="text-peach/60 tabular-nums">{i + 1}.</span>
+                  {/* Click to pull a queued item back into the input for editing. */}
+                  <button
+                    onClick={() => { setInput(m.display); removeQueued(m.id); taRef.current?.focus(); }}
+                    className="truncate bg-transparent border-none text-peach cursor-pointer p-0 hover:underline"
+                    title="Edit — moves it back to the input"
+                  >
+                    {m.display.replace(/\n+/g, " ")}
+                  </button>
+                  <button
+                    onClick={() => removeQueued(m.id)}
+                    className="shrink-0 text-peach/60 hover:text-red bg-transparent border-none cursor-pointer p-0"
+                    title="Remove from queue"
+                    aria-label="Remove from queue"
+                  >
+                    <X size={11} strokeWidth={2.5} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         {pendingImages.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {pendingImages.map((im) => (
@@ -463,7 +539,9 @@ export function ClaudeStreamWindow({
             onKeyDown={onKeyDown}
             onSubmit={handleSend}
             onPaste={handlePaste}
-            placeholder="Message Claude — / commands, @ files, !cmd to run a shell command…"
+            placeholder={session.loading
+              ? "Claude is working — Enter queues your message for when it finishes…"
+              : "Message Claude — / commands, @ files, !cmd to run a shell command…"}
             aria-label="Message to Claude"
             className="w-full bg-surface0 border border-surface1 rounded-md px-2.5 py-1.5 text-md text-text placeholder:text-overlay0 outline-none focus:border-peach"
           />
