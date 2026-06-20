@@ -438,7 +438,7 @@ function RequestsByUserSection() {
       {hasData ? (
         <div className="h-56 w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={result!.points} margin={{ top: 6, right: 8, bottom: 0, left: -16 }}>
+            <AreaChart data={result!.points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#313244" vertical={false} />
               <XAxis
                 dataKey="t"
@@ -451,7 +451,7 @@ function RequestsByUserSection() {
                     : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
                 }}
               />
-              <YAxis allowDecimals={false} tick={{ fill: "#7f849c", fontSize: 11 }} width={32} />
+              <YAxis allowDecimals={false} tick={{ fill: "#7f849c", fontSize: 11 }} width={36} />
               <Tooltip
                 contentStyle={{ background: "#181825", border: "1px solid #313244", borderRadius: 8, fontSize: 12 }}
                 labelStyle={{ color: "#cdd6f4" }}
