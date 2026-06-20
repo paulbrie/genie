@@ -45,6 +45,7 @@ export const DEFAULT_CLAUDE_PLUGINS: ClaudePluginInput[] = [
   {
     slug: "chrome-devtools-mcp",
     label: "Chrome DevTools MCP",
+    kind: "plugin",
     icon: "Chrome",
     description: "Browser automation & debugging — drive Chrome from Claude (click, evaluate, screenshot, network/console inspection, performance traces).",
     homepageUrl: "https://github.com/ChromeDevTools/chrome-devtools-mcp",
@@ -67,6 +68,7 @@ log "Done. Re-open any active Claude Code session."`,
   {
     slug: "playwright",
     label: "Playwright",
+    kind: "plugin",
     icon: "TestTube",
     description: "Cross-browser automation via Playwright — drive Chromium/Firefox/WebKit from Claude for end-to-end testing and scripted browsing. Wraps the @playwright/mcp server via Claude's plugin manifest.",
     homepageUrl: "https://github.com/microsoft/playwright-mcp",
@@ -89,6 +91,7 @@ log "Done. Re-open any active Claude Code session."`,
   {
     slug: "frontend-design",
     label: "Frontend Design",
+    kind: "skill",
     icon: "Palette",
     description: "Create distinctive, production-grade frontend interfaces with high design quality. Generates creative, polished code that avoids generic AI aesthetics — useful when building web components, pages, or apps.",
     homepageUrl: "https://github.com/anthropics/claude-code",
@@ -111,6 +114,7 @@ log "Done. Re-open any active Claude Code session."`,
   {
     slug: "superpowers",
     label: "Superpowers",
+    kind: "skill",
     icon: "Sparkles",
     description: "Agentic skills framework — composable skills for TDD, debugging, planning, and code review that auto-trigger during the development workflow. By Jesse Vincent (obra).",
     homepageUrl: "https://github.com/obra/superpowers",
@@ -132,6 +136,38 @@ log "Removing Superpowers plugin..."
 # \`-y\` skips the prune confirmation prompt (required when stdin/stdout is not a
 # TTY, which is always the case under our SSH exec).
 claude plugin uninstall superpowers@claude-plugins-official -y
+log "Done. Re-open any active Claude Code session."`,
+  },
+  {
+    slug: "diffx",
+    label: "diffx",
+    kind: "skill",
+    icon: "GitCompare",
+    description: "Semantic diff skill — installed from the community skills registry via `npx skills add wong2/diffx`, not the Claude marketplace. Lands in the project's .claude/skills so Claude can use it.",
+    homepageUrl: "https://github.com/wong2/diffx",
+    // Generic-skill check: the `skills` CLI drops the skill into .claude/skills/<name>.
+    // Not the marketplace `claude plugin list` check the plugins above use.
+    checkScript: `set +e
+if [ -d /opt/project/.claude/skills/diffx ] || [ -d "$HOME/.claude/skills/diffx" ]; then
+  echo "INSTALLED"
+else
+  echo "NOT_INSTALLED (no .claude/skills/diffx)"
+fi`,
+    installScript: `set -e
+${BASH_HELPERS}
+force_ipv4_dns
+log "Installing the diffx skill (npx skills add wong2/diffx)..."
+# Install into the project dir Claude runs in, falling back to \$HOME, so the
+# skill lands in a .claude/skills Claude Code will discover.
+cd /opt/project 2>/dev/null || cd "$HOME"
+# \`-y\` on npx auto-confirms the package fetch; stdin from /dev/null keeps the
+# skills CLI non-interactive under our TTY-less SSH exec.
+npx -y skills add wong2/diffx < /dev/null 2>&1
+log "diffx skill installed into $(pwd)/.claude/skills. Re-open any active Claude Code session for the skill to load."`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Removing the diffx skill..."
+rm -rf /opt/project/.claude/skills/diffx "$HOME/.claude/skills/diffx"
 log "Done. Re-open any active Claude Code session."`,
   },
 ];

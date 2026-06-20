@@ -13,6 +13,9 @@ export interface ClaudePlugin {
   slug: string;
   /** Display name shown on the pill. */
   label: string;
+  /** "plugin" (Claude marketplace / MCP) or "skill" (generic agent skills).
+   *  Selects whether the entry shows under the Claude Plugins or Skills tab. */
+  kind: string;
   description: string;
   /** Lucide icon component name (e.g. "Chrome", "TestTube"). Falls back to
    *  Puzzle on unknown names. */

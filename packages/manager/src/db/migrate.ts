@@ -33,6 +33,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "analytics_events", run: migrateAnalyticsEvents },
   { id: "analytics_events_project", run: migrateAnalyticsEventsProject },
   { id: "claude_plugins", run: migrateClaudePlugins },
+  { id: "claude_plugins_kind", run: migrateClaudePluginsKind },
   { id: "connection_log", run: migrateConnectionLog },
   { id: "projects_soft_delete", run: migrateProjectsSoftDelete },
   { id: "projects_revert_fk_cascade", run: migrateProjectsRevertFkCascade },
@@ -456,6 +457,15 @@ export async function migrateClaudePlugins(): Promise<void> {
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
   )`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_claude_plugins_slug ON claude_plugins(slug)`);
+}
+
+/** Discriminate marketplace plugins from generic skills so the Manage popup can
+ *  split them into "Claude Plugins" and "Skills" tabs. Separate migration id —
+ *  the `claude_plugins` migration already ran on existing DBs, so the column add
+ *  needs its own ledger entry to apply there. */
+export async function migrateClaudePluginsKind(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`ALTER TABLE claude_plugins ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'plugin' NOT NULL`);
 }
 
 /** One row per WebSocket close — written from ws-server. Lets us hand Railway

@@ -187,6 +187,10 @@ export const claudePlugins = pgTable("claude_plugins", {
   id: uuid("id").defaultRandom().primaryKey(),
   slug: text("slug").notNull().unique(),       // url-safe stable id (e.g. "chrome-devtools-mcp")
   label: text("label").notNull(),              // display name
+  /** "plugin" (Claude Code marketplace plugins / MCP servers) vs "skill" (generic
+   *  agent skills, e.g. `npx skills add …` or marketplace skills). Drives which
+   *  Manage-popup tab the entry appears under. */
+  kind: text("kind").default("plugin").notNull(),
   description: text("description").default("").notNull(),
   icon: text("icon").default("Puzzle").notNull(),  // lucide icon name
   /** Marketplace / docs URL surfaced as a "View docs" link in the panel. */

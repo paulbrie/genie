@@ -956,7 +956,7 @@ function AddSshKeyForm({ exec, connectUser, host }: { exec: VmExecFn; connectUse
   );
 }
 
-type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "traffic" | "agents" | "claude-logs" | "claude-memory" | "claude-plugins" | "files" | "db" | "commands" | "github";
+type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "traffic" | "agents" | "claude-logs" | "claude-memory" | "claude-plugins" | "skills" | "files" | "db" | "commands" | "github";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -1160,6 +1160,7 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     { key: "claude-logs", label: "Claude Logs", icon: ScrollText, enabled: true },
     { key: "claude-memory", label: "Claude Memory", icon: Brain, enabled: true },
     { key: "claude-plugins", label: "Claude Plugins", icon: Puzzle, enabled: true },
+    { key: "skills", label: "Skills", icon: Sparkles, enabled: true },
     { key: "commands", label: "Commands", icon: PlayCircle, enabled: hasProject, reason: "Attach this VM to a project to manage commands" },
     { key: "files", label: "Files", icon: FolderTree, enabled: hasProject, reason: "Attach this VM to a project to browse files" },
     { key: "db", label: "DB", icon: DatabaseIcon, enabled: hasProject, reason: "Attach this VM to a project to browse the database" },
@@ -1333,7 +1334,10 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
             <VmClaudeMemoryTab exec={exec} />
           )}
           {tab === "claude-plugins" && (
-            <ClaudePluginsPanel exec={exec} deferAutoCheckMs={2000} />
+            <ClaudePluginsPanel exec={exec} deferAutoCheckMs={2000} kind="plugin" />
+          )}
+          {tab === "skills" && (
+            <ClaudePluginsPanel exec={exec} deferAutoCheckMs={2000} kind="skill" />
           )}
         </>
       )}

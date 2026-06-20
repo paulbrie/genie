@@ -5,6 +5,8 @@ import { claudePlugins } from "../db/schema.js";
 export interface ClaudePluginInput {
   slug: string;
   label: string;
+  /** "plugin" (default) or "skill" — selects the Manage-popup tab it shows under. */
+  kind?: string;
   description?: string;
   icon?: string;
   homepageUrl?: string;
@@ -41,6 +43,7 @@ export async function createClaudePlugin(input: ClaudePluginInput, userId: strin
   const [row] = await db.insert(claudePlugins).values({
     slug: input.slug.trim(),
     label: input.label.trim(),
+    kind: input.kind || "plugin",
     description: input.description ?? "",
     icon: input.icon || "Puzzle",
     homepageUrl: input.homepageUrl ?? "",
@@ -61,6 +64,7 @@ export async function updateClaudePlugin(id: string, input: Partial<ClaudePlugin
   const patch: Record<string, any> = { updatedAt: new Date() };
   if (input.slug !== undefined) patch.slug = input.slug.trim();
   if (input.label !== undefined) patch.label = input.label.trim();
+  if (input.kind !== undefined) patch.kind = input.kind;
   if (input.description !== undefined) patch.description = input.description;
   if (input.icon !== undefined) patch.icon = input.icon;
   if (input.homepageUrl !== undefined) patch.homepageUrl = input.homepageUrl;
@@ -92,6 +96,7 @@ export async function seedDefaultClaudePlugins(defaults: ClaudePluginInput[]): P
     const values = {
       slug: p.slug.trim(),
       label: p.label.trim(),
+      kind: p.kind || "plugin",
       description: p.description ?? "",
       icon: p.icon || "Puzzle",
       homepageUrl: p.homepageUrl ?? "",
