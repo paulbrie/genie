@@ -211,6 +211,8 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   // Mutations stay superadmin via the namespace default.
   "claude-plugins:list": { send: "user", receive: "user", notes: "read-only catalog access for the Manager popup's Claude Plugins tab" },
   "claude-plugins:list:stale": { receive: "user", notes: "cache-invalidation broadcast; clients refetch claude-plugins:list" },
+  "skills:registry:search": { send: "user", receive: "user", notes: "read-only proxy of the public skills.sh registry for the Skills tab browser" },
+  "skills:registry:result": { receive: "user", notes: "skills.sh registry search/list results (correlated by reqId)" },
 
   // Per-VM exec inside the otherwise tazcloud+ admin:droplets / admin:tazcloud
   // namespaces. Lowered to "user" so a normal user can drive the Manage popup

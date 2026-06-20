@@ -296,6 +296,10 @@ export interface VmTmuxSession {
   name: string;
   windows: number | null;
   attached: boolean | null;
+  /** Active pane is running a non-shell command (build/test/editor/etc.) — drives
+   *  the badge "running" glow. null = unknown (tmux ls fallback). For claude-*
+   *  sessions the badge instead glows from the chat window's in-flight turn. */
+  running?: boolean | null;
 }
 
 export interface VmConnectionState {

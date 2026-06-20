@@ -74,6 +74,7 @@ import { handleRecipesMessage } from "./handlers/recipes-handler.js";
 import { handleKnowledgeMessage } from "./handlers/knowledge-handler.js";
 
 import { handleClaudePluginsMessage } from "./handlers/claude-plugins-handler.js";
+import { handleSkillsRegistryMessage } from "./handlers/skills-registry-handler.js";
 
 import { handleAgentsMessage } from "./handlers/agents-handler.js";
 
@@ -1022,6 +1023,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleRecipesMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleKnowledgeMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleClaudePluginsMessage(ws, msg, send, userId, broadcast, state.role)) return;
+  if (await handleSkillsRegistryMessage(ws, msg, send)) return;
   if (await handleAgentsMessage(ws, msg, send, userId, broadcast)) return;
   if (await handleFileTemplateMessage(ws, msg, send, userId)) return;
   if (await handleProjectFileMessage(ws, msg, send, userId, state.role)) return;

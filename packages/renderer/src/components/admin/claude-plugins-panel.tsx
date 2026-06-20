@@ -1,17 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Check, X, ChevronDown, Play, Square, KeyRound, Puzzle, Chrome, TestTube, Palette, Sparkles, Package, ExternalLink } from "lucide-react";
+import { Loader2, Check, X, ChevronDown, Play, Square, KeyRound, Puzzle, Chrome, TestTube, Palette, Sparkles, Package, GitCompare, Wrench, ExternalLink, Search, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { $claudePlugins } from "@/store/subjects/claude-plugins";
 import type { ClaudePlugin } from "@/store/types/claude-plugins";
 import { loadClaudePlugins } from "@/store/actions/claude-plugins";
+import { wsRequest } from "@/lib/ws";
 
 // Lucide icon names → components. Plugins use Puzzle / Chrome / TestTube /
 // Package — anything else falls back to Puzzle. Mirrors useAllRecipes' ICON_MAP.
 const ICON_MAP: Record<string, typeof Puzzle> = {
-  Puzzle, Chrome, TestTube, Palette, Sparkles, Package,
+  Puzzle, Chrome, TestTube, Palette, Sparkles, Package, GitCompare, Wrench,
 };
 
 interface PluginCommand {
@@ -132,12 +133,21 @@ function StreamingOutput({ text, running }: { text: string; running: boolean }) 
 export function ClaudePluginsPanel({
   exec,
   deferAutoCheckMs = 600,
+  kind = "plugin",
 }: {
   exec: ExecFn;
   deferAutoCheckMs?: number;
+  /** Which catalog slice to show: marketplace "plugin"s or generic "skill"s.
+   *  Same panel + install pipeline, split only by this discriminator so the
+   *  Manage popup can present two clearly-separated tabs. */
+  kind?: "plugin" | "skill";
 }) {
   const pluginsState = useDeepSubjectAll($claudePlugins);
-  const ALL_PLUGINS: PluginDef[] = (pluginsState.list ?? []).map(pluginToDef);
+  const ALL_PLUGINS: PluginDef[] = (pluginsState.list ?? [])
+    .filter((p) => (p.kind ?? "plugin") === kind)
+    .map(pluginToDef);
+  const isSkills = kind === "skill";
+  const HeaderIcon = isSkills ? Sparkles : Puzzle;
 
   const limitedExecRef = useRef<ExecFn | null>(null);
   if (!limitedExecRef.current) {
@@ -315,16 +325,22 @@ export function ClaudePluginsPanel({
     <div className="mb-3">
       <div className="flex items-center mb-2">
         <span className="text-md font-medium text-subtext0 flex items-center gap-1.5">
-          <Puzzle size={12} />
-          Claude Plugins
+          <HeaderIcon size={12} />
+          {isSkills ? "Skills" : "Claude Plugins"}
         </span>
         {pluginsState.loading && <Loader2 size={11} className="animate-spin text-overlay0 ml-2" />}
       </div>
+      <p className="text-xs text-overlay0 mb-2">
+        {isSkills
+          ? "Generic agent skills (e.g. installed via npx skills add …) — separate from Claude Code marketplace plugins."
+          : "Claude Code marketplace plugins & MCP servers. Generic skills live in the Skills tab."}
+      </p>
+      {isSkills && <SkillsBrowser exec={exec} />}
       {pluginsState.error && (
         <p className="text-xs text-red mb-2">{pluginsState.error}</p>
       )}
       {ALL_PLUGINS.length === 0 && !pluginsState.loading && !pluginsState.error && (
-        <p className="text-xs text-overlay0">No plugins in the catalog yet.</p>
+        <p className="text-xs text-overlay0">{isSkills ? "Built-in skills appear here; browse skills.sh above to add more." : "No plugins in the catalog yet."}</p>
       )}
       <div className="flex flex-wrap gap-2 mt-1">
         {ALL_PLUGINS.map((plugin) => {
@@ -486,6 +502,113 @@ export function ClaudePluginsPanel({
         onSubmit={submitSecrets}
         onCancel={cancelSecrets}
       />
+    </div>
+  );
+}
+
+interface RegistrySkill { id: string; name: string; source: string; installs: number; url: string }
+type SkillInstallState = { running: boolean; output: string; done: boolean; error: string | null };
+
+/** Browse / search the public skills.sh registry and install any entry onto this
+ *  VM via `npx skills add <id>` (the manager proxies the catalog to dodge CORS). */
+function SkillsBrowser({ exec }: { exec: ExecFn }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<RegistrySkill[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [installs, setInstalls] = useState<Record<string, SkillInstallState>>({});
+  const reqSeq = useRef(0);
+
+  // Debounced fetch — trending on empty, search once ≥2 chars typed.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length === 1) return; // wait for a real query
+    const seq = ++reqSeq.current;
+    setLoading(true);
+    const t = window.setTimeout(() => {
+      void wsRequest<{ skills?: RegistrySkill[]; error?: string }>("skills:registry:search", { q }, 12_000)
+        .then((res) => {
+          if (seq !== reqSeq.current) return; // a newer query superseded this one
+          setResults(res.skills ?? []);
+          setError(res.error ?? null);
+        })
+        .catch(() => { if (seq === reqSeq.current) setError("Couldn't reach skills.sh"); })
+        .finally(() => { if (seq === reqSeq.current) setLoading(false); });
+    }, q ? 300 : 0);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
+  async function installSkill(skill: RegistrySkill) {
+    // id is "owner/slug" from skills.sh — validate before interpolating into the shell.
+    if (!/^[\w.-]+\/[\w.-]+$/.test(skill.id)) {
+      setInstalls((s) => ({ ...s, [skill.id]: { running: false, output: "", done: false, error: "Unexpected skill id" } }));
+      return;
+    }
+    setInstalls((s) => ({ ...s, [skill.id]: { running: true, output: "", done: false, error: null } }));
+    const cmd = `cd /opt/project 2>/dev/null || cd "$HOME"; npx -y skills add ${skill.id} < /dev/null 2>&1`;
+    const onChunk = (chunk: string) =>
+      setInstalls((s) => ({ ...s, [skill.id]: { ...(s[skill.id]), running: true, done: false, error: null, output: (s[skill.id]?.output ?? "") + chunk } }));
+    const res = await exec(cmd, onChunk);
+    setInstalls((s) => ({ ...s, [skill.id]: { running: false, output: res.output, done: !res.error, error: res.error ? res.output.slice(-300) : null } }));
+  }
+
+  return (
+    <div className="mb-3 rounded-lg border border-overlay0/20 bg-mantle p-2.5">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Search size={12} className="text-overlay0 shrink-0" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Browse skills.sh — search by name…"
+          className="flex-1 bg-background border border-surface0 rounded px-2 py-1 text-md text-text placeholder:text-overlay0 outline-none focus:border-blue"
+        />
+        {loading && <Loader2 size={12} className="animate-spin text-overlay0 shrink-0" />}
+      </div>
+      {error && <p className="text-xs text-red mb-1">{error}</p>}
+      <div className="flex flex-col gap-1 max-h-64 overflow-y-auto scrollbar-thin">
+        {results.length === 0 && !loading && !error && (
+          <p className="text-xs text-overlay0 px-1 py-1">No skills found.</p>
+        )}
+        {results.map((skill) => {
+          const st = installs[skill.id];
+          return (
+            <div key={skill.id} className="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-surface0/60">
+              <div className="min-w-0 flex-1">
+                <div className="text-md text-text truncate flex items-center gap-1.5">
+                  {skill.name || skill.id}
+                  {skill.url && (
+                    <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-overlay0 hover:text-blue shrink-0" title="View on skills.sh">
+                      <ExternalLink size={10} />
+                    </a>
+                  )}
+                </div>
+                <div className="text-[10px] text-overlay0 truncate font-mono">
+                  {skill.id}{skill.installs > 0 ? ` · ${skill.installs.toLocaleString()} installs` : ""}
+                </div>
+                {st?.error && <div className="text-[10px] text-red truncate" title={st.error}>{st.error}</div>}
+              </div>
+              <button
+                type="button"
+                onClick={() => installSkill(skill)}
+                disabled={st?.running}
+                className={cn(
+                  "shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs transition-colors",
+                  st?.done ? "border-green/40 text-green"
+                    : st?.error ? "border-red/40 text-red hover:bg-red/10"
+                    : "border-overlay0/30 text-overlay1 hover:bg-surface0",
+                  st?.running && "opacity-60 cursor-wait",
+                )}
+                title={`npx skills add ${skill.id}`}
+              >
+                {st?.running ? <Loader2 size={11} className="animate-spin" />
+                  : st?.done ? <Check size={11} />
+                  : <Download size={11} />}
+                {st?.done ? "Added" : "Add"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -115,6 +115,22 @@
   }
 }
 
+/* tmux badge "running" glow — a soft pulsing halo in the session's accent so a
+   busy session reads at a glance. Two variants (claude=peach, shell=green). */
+@keyframes tmux-running-glow-peach {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-peach) 45%, transparent); }
+  50%      { box-shadow: 0 0 8px 1px color-mix(in srgb, var(--color-peach) 55%, transparent); }
+}
+@keyframes tmux-running-glow-green {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-green) 40%, transparent); }
+  50%      { box-shadow: 0 0 8px 1px color-mix(in srgb, var(--color-green) 55%, transparent); }
+}
+.tmux-running-glow-peach { animation: tmux-running-glow-peach 1.6s ease-in-out infinite; }
+.tmux-running-glow-green { animation: tmux-running-glow-green 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .tmux-running-glow-peach, .tmux-running-glow-green { animation: none; }
+}
+
 body {
   font-family: var(--font-sans);
   font-size: 13px;

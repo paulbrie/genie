@@ -78,6 +78,30 @@ function useActiveTmuxSessions(
   return active;
 }
 
+/** tmux sessions that have something actively running — the active pane runs a
+ *  non-shell command (from the probe), OR (for claude-* sessions, whose pane is
+ *  always `node`) a chat window bound to them has a turn in flight. Drives the
+ *  badge glow. */
+function useRunningTmuxSessions(
+  projectId: string,
+  instanceId: string,
+  sessions: VmTmuxSession[],
+): Set<string> {
+  const [claudeState] = useSubject($claudeStream);
+  const running = new Set<string>();
+  for (const s of sessions) {
+    // claude-* panes always show `node` (the persistent stream process), so the
+    // probe can't tell idle from busy — fall through to the chat-loading signal.
+    if (!s.name.startsWith("claude") && s.running) running.add(s.name);
+  }
+  for (const cs of Object.values(claudeState.sessions)) {
+    if (cs.projectId === projectId && cs.instanceId === instanceId && cs.tmuxName && cs.loading) {
+      running.add(cs.tmuxName);
+    }
+  }
+  return running;
+}
+
 /** Resolve project + instance for a Manage VM (same rules as ManageVmInline). */
 export function resolveManageVmLinked(
   vm: {
@@ -204,6 +228,7 @@ function TmuxPill({
   session,
   isClaude,
   isActive,
+  isRunning,
   onClick,
   onContextMenu,
   compact,
@@ -211,11 +236,13 @@ function TmuxPill({
   session: VmTmuxSession;
   isClaude: boolean;
   isActive: boolean;
+  isRunning: boolean;
   onClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   compact?: boolean;
 }) {
   const titleParts = [`tmux session "${session.name}"`];
+  if (isRunning) titleParts.push("● running");
   if (isActive) titleParts.push("connected here");
   else if (session.attached) titleParts.push("attached on server");
   titleParts.push("left-click to attach", "right-click for rename/delete");
@@ -238,8 +265,13 @@ function TmuxPill({
             ? "border border-peach/40 bg-peach/15 text-peach hover:bg-peach/25 hover:border-peach/60"
             : "border border-transparent bg-surface0 text-overlay1 hover:text-text hover:bg-surface1",
         !isActive && session.attached && "ring-1 ring-overlay0/40",
+        // Glow while something is running — pulsing ring in the session's accent.
+        isRunning && (isClaude ? "tmux-running-glow-peach" : "tmux-running-glow-green"),
       )}
     >
+      {isRunning && (
+        <span className={cn("inline-block w-1.5 h-1.5 rounded-full animate-pulse", isClaude ? "bg-peach" : "bg-green")} />
+      )}
       {isClaude ? <ClaudeLogo size={compact ? 9 : 10} /> : <Terminal size={compact ? 9 : 10} className="shrink-0" />}
       <span className={compact ? "max-w-[5rem] truncate" : undefined}>{session.name}</span>
     </button>
@@ -269,6 +301,7 @@ export function TmuxSessionBadges({
   );
   const sessions = sessionsOverride ?? probedSessions;
   const activeSessions = useActiveTmuxSessions(projectId, instanceId, sessions, activeSessionName);
+  const runningSessions = useRunningTmuxSessions(projectId, instanceId, sessions);
   const [localProbing, setLocalProbing] = useState(false);
   const [pendingExpired, setPendingExpired] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sessionName?: string } | null>(null);
@@ -509,6 +542,7 @@ export function TmuxSessionBadges({
               session={s}
               isClaude={s.name.startsWith("claude")}
               isActive={activeSessions.has(s.name)}
+              isRunning={runningSessions.has(s.name)}
               onClick={() => (s.name.startsWith("claude") ? openClaudeChat(s.name) : attach(s.name))}
               onContextMenu={(e) => openSessionMenu(e, s.name)}
               compact={variant === "inline"}
