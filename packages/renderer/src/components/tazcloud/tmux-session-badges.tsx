@@ -11,7 +11,7 @@ import {
   TmuxSessionContextMenu,
 } from "@/components/tazcloud/tmux-session-context-menu";
 import { TmuxRenameDialog } from "@/components/tazcloud/tmux-rename-dialog";
-import { killVmTmuxSession, openClaudeChatWindow, refreshVmTmuxSessions, renameVmTmuxSession } from "@/store/actions";
+import { closeClaudeStream, closeVmConnection, killVmTmuxSession, openClaudeChatWindow, refreshVmTmuxSessions, renameVmTmuxSession } from "@/store/actions";
 import { $auth, $projects, $vmConnections, $vpsDeploy } from "@/store/subjects";
 import { $claudeStream } from "@/store/subjects/claude-stream";
 import { useSubject } from "subjecto/react";
@@ -378,6 +378,19 @@ export function TmuxSessionBadges({
       if (res.error) {
         window.alert(res.output || "Delete failed");
         throw new Error(res.output || "Delete failed");
+      }
+      // Killing the session ends whatever its open popups were viewing — close
+      // them so they don't linger pointing at a dead session. Covers both the
+      // SSH terminal popups and the Claude chat windows bound to this tmux name.
+      for (const c of Object.values($vmConnections.getValue().connections)) {
+        if (c.projectId === projectId && c.instanceId === instanceId && c.tmuxSessionName === sessionName) {
+          closeVmConnection(c.key);
+        }
+      }
+      for (const cs of Object.values($claudeStream.getValue().sessions)) {
+        if (cs.projectId === projectId && cs.instanceId === instanceId && cs.tmuxName === sessionName) {
+          closeClaudeStream(cs.claudeStreamId);
+        }
       }
       if (onProbe) onProbe();
     },

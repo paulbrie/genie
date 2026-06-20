@@ -391,6 +391,7 @@ export function ClaudeStreamWindow({
           // Cost is real spend only on the API-key fallback; on the VM's CLI
           // subscription the reported figure is a would-be cost, so hide it.
           showCost={session.claudeInfo?.plan === "API Key"}
+          accent="peach"
           messages={session.messages}
           streamingContent={session.streamingContent}
           streamingSteps={session.streamingSteps}

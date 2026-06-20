@@ -21,7 +21,12 @@ export interface StreamJsonEvent {
   session_id?: string;
   content_block?: { type?: string; name?: string };
   delta?: { type?: string; text?: string; partial_json?: string };
-  message?: { content?: string | Array<{ type: string; text?: string; name: string; input?: unknown }> };
+  message?: {
+    content?: string | Array<{ type: string; text?: string; name: string; input?: unknown }>;
+    /** Per-call token usage on each `assistant` event — the snapshot for THAT
+     *  single model call. The last one in a turn is the live context occupancy. */
+    usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+  };
   model?: string;
   claude_code_version?: string;
   result?: string;
@@ -75,6 +80,12 @@ export class StreamJsonParser {
   private buffer = "";
   private currentToolName = "";
   private currentToolInput = "";
+  /** Usage of the most recent `assistant` model call in the current turn. The
+   *  turn's `result.usage` is the SUM across every internal call (each re-reads
+   *  the cached context), so it balloons past the window and is useless as a
+   *  context-occupancy figure. The last single call's prompt size IS the live
+   *  occupancy, so we capture it here and use it for the token fields. */
+  private lastAssistantUsage: StreamJsonEvent["usage"] | undefined;
 
   constructor(
     private readonly emit: (event: ParsedStreamEvent) => void,
@@ -140,6 +151,7 @@ export class StreamJsonParser {
         break;
 
       case "assistant":
+        if (event.message?.usage) this.lastAssistantUsage = event.message.usage;
         if (Array.isArray(event.message?.content)) {
           for (const block of event.message.content) {
             if (block.type === "text" && block.text) {
@@ -177,15 +189,21 @@ export class StreamJsonParser {
 
       case "result": {
         const u = event.usage;
-        const usage: TurnUsage | undefined = (u || typeof event.duration_ms === "number" || typeof event.total_cost_usd === "number")
+        // Token fields describe CONTEXT OCCUPANCY, so take them from the last
+        // model call (lastAssistantUsage) — its prompt size is the live window
+        // fill. Fall back to the result aggregate only if no per-call usage was
+        // seen. Cost/duration stay from the result (they ARE turn-cumulative).
+        const occ = this.lastAssistantUsage ?? u;
+        const usage: TurnUsage | undefined = (u || this.lastAssistantUsage || typeof event.duration_ms === "number" || typeof event.total_cost_usd === "number")
           ? {
-              inputTokens: (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
-              cachedInputTokens: u?.cache_read_input_tokens ?? 0,
-              outputTokens: u?.output_tokens ?? 0,
+              inputTokens: (occ?.input_tokens ?? 0) + (occ?.cache_read_input_tokens ?? 0) + (occ?.cache_creation_input_tokens ?? 0),
+              cachedInputTokens: occ?.cache_read_input_tokens ?? 0,
+              outputTokens: occ?.output_tokens ?? 0,
               costUsd: event.total_cost_usd ?? 0,
               durationMs: event.duration_ms ?? 0,
             }
           : undefined;
+        this.lastAssistantUsage = undefined; // reset for the next turn
         this.emit({ kind: "turn-done", result: event.result, usage });
         break;
       }

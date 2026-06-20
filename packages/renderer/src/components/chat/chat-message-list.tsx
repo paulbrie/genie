@@ -184,6 +184,9 @@ export interface ChatMessageListProps {
   /** Show per-turn cost in the footer. False on CLI-subscription sessions, where
    *  the reported cost isn't actual spend. Defaults to true. */
   showCost?: boolean;
+  /** Accent for the "thinking" spinner. "mauve" for the Genie Assistant,
+   *  "peach" for the Claude popup (matches its peach chrome). Defaults to mauve. */
+  accent?: "mauve" | "peach";
 }
 
 /** Shared conversation renderer for the Genie Assistant and the durable
@@ -202,7 +205,9 @@ export function ChatMessageList({
   onRetry,
   emptyState,
   showCost = true,
+  accent = "mauve",
 }: ChatMessageListProps) {
+  const spinnerClass = accent === "peach" ? "border-peach/40 border-t-peach" : "border-mauve/40 border-t-mauve";
   // Continuous elapsed timer for the in-flight turn — starts when `loading`
   // flips true and ticks until it clears, so the count survives the
   // thinking → streaming → tool-use transitions without resetting.
@@ -295,7 +300,7 @@ export function ChatMessageList({
       {loading && !streamingContent && streamingSteps.length === 0 && (
         <div className="flex justify-start">
           <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-md text-overlay0">
-            <div className="w-3.5 h-3.5 border-2 border-mauve/40 border-t-mauve rounded-full animate-spin" />
+            <div className={`w-3.5 h-3.5 border-2 ${spinnerClass} rounded-full animate-spin`} />
             <span>
               {statusText || (toolUses.length > 0 ? getToolStatusText(toolUses[toolUses.length - 1]) : "Thinking...")}
             </span>
