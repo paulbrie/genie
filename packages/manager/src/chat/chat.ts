@@ -24,7 +24,7 @@ export interface PinnedAssistantVm {
   sshUser?: string;
 }
 
-export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "qwen-3.6-plus";
+export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "kimi-k2.7" | "qwen-3.6-plus";
 
 export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthropic" | "fireworks" | "claude-code"; modelId: string }> = {
   "claude-code": { label: "Claude Code", provider: "claude-code", modelId: "claude-code" },
@@ -33,6 +33,7 @@ export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthro
   "deepseek-v3": { label: "DeepSeek V3", provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v3p2" },
   "deepseek-v4-pro": { label: "DeepSeek V4 Pro", provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v4-pro" },
   "kimi-k2.6": { label: "Kimi K2.6", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p6" },
+  "kimi-k2.7": { label: "Kimi K2.7 Code", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p7-code" },
   "qwen-3.6-plus": { label: "Qwen3.6 Plus", provider: "fireworks", modelId: "accounts/fireworks/models/qwen3p6-plus" },
 };
 
@@ -44,6 +45,7 @@ export const MODEL_PRICING: Record<ChatModelId, { input: number; output: number 
   "deepseek-v3": { input: 0.3, output: 0.9 },
   "deepseek-v4-pro": { input: 1.74, output: 3.48 },
   "kimi-k2.6": { input: 0.95, output: 4.0 },
+  "kimi-k2.7": { input: 0.95, output: 4.0 },
   "qwen-3.6-plus": { input: 0.5, output: 3.0 },
 };
 
