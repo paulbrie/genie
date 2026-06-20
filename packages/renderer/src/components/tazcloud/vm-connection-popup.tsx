@@ -17,6 +17,7 @@ import {
 import type { VmConnectionState } from "@/store/types/vps";
 import { createTerminal, hasTerminal, reattachTerminal, setTerminalCursorBlink, setTerminalFontSize } from "@/lib/terminal-bridge";
 import { useWindowFontSize, WINDOW_FONT_PX } from "@/components/ui/window-font-size";
+import { useLivePoll } from "@/hooks/use-live-poll";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
@@ -186,14 +187,14 @@ export function VmConnectionPopup({ connectionKey }: { connectionKey: string }) 
     return () => window.clearTimeout(t);
   }, [pasteNotice]);
 
-  // tmux sessions only come from the SSH stats probe — poll while this popup is open.
-  useEffect(() => {
-    if (!conn?.projectId || !conn.instanceId) return;
-    refreshVmStats(connectionKey);
-    const intervalMs = conn.status === "connected" ? 5_000 : 15_000;
-    const t = window.setInterval(() => refreshVmStats(connectionKey), intervalMs);
-    return () => window.clearInterval(t);
-  }, [connectionKey, conn?.projectId, conn?.instanceId, conn?.status]);
+  // tmux sessions only come from the SSH stats probe — poll while this popup is
+  // open, the tab is visible, and the user isn't idle (useLivePoll pauses the
+  // vps:stats:refresh otherwise, so an unattended popup stops probing the VM).
+  useLivePoll(
+    () => refreshVmStats(connectionKey),
+    conn?.status === "connected" ? 5_000 : 15_000,
+    { enabled: !!conn?.projectId && !!conn?.instanceId },
+  );
 
   if (!conn) return null;
 

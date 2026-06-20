@@ -17,6 +17,7 @@ import { $claudeStream } from "@/store/subjects/claude-stream";
 import { useSubject } from "subjecto/react";
 import type { VmConnectionState, VmTmuxSession } from "@/store/types/vps";
 import { useDeepSubjectAll } from "@/lib/hooks";
+import { useLivePoll } from "@/hooks/use-live-poll";
 import { cn } from "@/lib/utils";
 import type { ProjectDef } from "@/store/types";
 
@@ -189,12 +190,9 @@ export function useTmuxSessionProbe(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, instanceId]);
 
-  useEffect(() => {
-    if (!opts?.auto || !projectId || !instanceId) return;
-    const t = window.setInterval(() => probe(false), AUTO_PROBE_MS);
-    return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opts?.auto, projectId, instanceId]);
+  // Visibility/idle-aware auto-probe: pauses the vps:stats:refresh when the tab
+  // is backgrounded or the user is idle, resumes instantly on return.
+  useLivePoll(() => probe(false), AUTO_PROBE_MS, { enabled: !!(opts?.auto && projectId && instanceId) });
 
   return { probing, probe, sessions };
 }

@@ -6,6 +6,7 @@ import type { VpsStats } from "@/store/types/vps";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CircularGauge } from "@/components/ui/circular-gauge";
+import { useLivePoll } from "@/hooks/use-live-poll";
 
 type ExecFn = (
   command: string,
@@ -443,14 +444,10 @@ export function VpsResourceGauges({ exec, host, appPort = 3000, domain, isPrivat
     }
   }, [exec]);
 
-  useEffect(() => {
-    refresh();
-    const id = window.setInterval(refresh, 15_000);
-    return () => {
-      window.clearInterval(id);
-      abortRef.current?.abort();
-    };
-  }, [refresh]);
+  // Visibility/idle-aware: stops probing the VM (vps:exec) when the tab is
+  // backgrounded or the user is idle; resumes + refreshes instantly on return.
+  useLivePoll(refresh, 15_000);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return (
     <VpsResourceBar
