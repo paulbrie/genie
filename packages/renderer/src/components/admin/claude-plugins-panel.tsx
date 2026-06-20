@@ -506,11 +506,14 @@ export function ClaudePluginsPanel({
   );
 }
 
-interface RegistrySkill { id: string; name: string; source: string; installs: number; url: string }
+interface RegistrySkill { id: string; name: string; source: string; stars: number; url: string; description?: string }
 type SkillInstallState = { running: boolean; output: string; done: boolean; error: string | null };
 
-/** Browse / search the public skills.sh registry and install any entry onto this
- *  VM via `npx skills add <id>` (the manager proxies the catalog to dodge CORS). */
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** Discover skills via GitHub repo search (skills.sh's own API needs a Vercel
+ *  token, unusable server-side) and install any entry — or a directly-typed
+ *  owner/repo — onto this VM via `npx skills add <owner/repo>`. */
 function SkillsBrowser({ exec }: { exec: ExecFn }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<RegistrySkill[]>([]);
@@ -519,7 +522,7 @@ function SkillsBrowser({ exec }: { exec: ExecFn }) {
   const [installs, setInstalls] = useState<Record<string, SkillInstallState>>({});
   const reqSeq = useRef(0);
 
-  // Debounced fetch — trending on empty, search once ≥2 chars typed.
+  // Debounced fetch — curated list on empty, GitHub search once ≥2 chars typed.
   useEffect(() => {
     const q = query.trim();
     if (q.length === 1) return; // wait for a real query
@@ -532,15 +535,25 @@ function SkillsBrowser({ exec }: { exec: ExecFn }) {
           setResults(res.skills ?? []);
           setError(res.error ?? null);
         })
-        .catch(() => { if (seq === reqSeq.current) setError("Couldn't reach skills.sh"); })
+        .catch(() => { if (seq === reqSeq.current) setError("Search failed — paste an owner/repo to add directly."); })
         .finally(() => { if (seq === reqSeq.current) setLoading(false); });
-    }, q ? 300 : 0);
+    }, q ? 350 : 0);
     return () => window.clearTimeout(t);
   }, [query]);
 
+  // If the query is a literal owner/repo, offer to add it directly (always works,
+  // even when search is noisy or rate-limited).
+  const displayResults = (() => {
+    const q = query.trim();
+    if (REPO_RE.test(q) && !results.some((r) => r.id.toLowerCase() === q.toLowerCase())) {
+      return [{ id: q, name: q, source: q.split("/")[0], stars: 0, url: `https://github.com/${q}`, description: "Add this repo directly" }, ...results];
+    }
+    return results;
+  })();
+
   async function installSkill(skill: RegistrySkill) {
-    // id is "owner/slug" from skills.sh — validate before interpolating into the shell.
-    if (!/^[\w.-]+\/[\w.-]+$/.test(skill.id)) {
+    // id is "owner/repo" — validate before interpolating into the shell.
+    if (!REPO_RE.test(skill.id)) {
       setInstalls((s) => ({ ...s, [skill.id]: { running: false, output: "", done: false, error: "Unexpected skill id" } }));
       return;
     }
@@ -559,17 +572,17 @@ function SkillsBrowser({ exec }: { exec: ExecFn }) {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Browse skills.sh — search by name…"
+          placeholder="Search GitHub for skills, or paste owner/repo…"
           className="flex-1 bg-background border border-surface0 rounded px-2 py-1 text-md text-text placeholder:text-overlay0 outline-none focus:border-blue"
         />
         {loading && <Loader2 size={12} className="animate-spin text-overlay0 shrink-0" />}
       </div>
       {error && <p className="text-xs text-red mb-1">{error}</p>}
       <div className="flex flex-col gap-1 max-h-64 overflow-y-auto scrollbar-thin">
-        {results.length === 0 && !loading && !error && (
-          <p className="text-xs text-overlay0 px-1 py-1">No skills found.</p>
+        {displayResults.length === 0 && !loading && (
+          <p className="text-xs text-overlay0 px-1 py-1">Type to search, or paste an owner/repo (e.g. wong2/diffx).</p>
         )}
-        {results.map((skill) => {
+        {displayResults.map((skill) => {
           const st = installs[skill.id];
           return (
             <div key={skill.id} className="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-surface0/60">
@@ -577,13 +590,14 @@ function SkillsBrowser({ exec }: { exec: ExecFn }) {
                 <div className="text-md text-text truncate flex items-center gap-1.5">
                   {skill.name || skill.id}
                   {skill.url && (
-                    <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-overlay0 hover:text-blue shrink-0" title="View on skills.sh">
+                    <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-overlay0 hover:text-blue shrink-0" title="View on GitHub">
                       <ExternalLink size={10} />
                     </a>
                   )}
                 </div>
                 <div className="text-[10px] text-overlay0 truncate font-mono">
-                  {skill.id}{skill.installs > 0 ? ` · ${skill.installs.toLocaleString()} installs` : ""}
+                  {skill.id}{skill.stars > 0 ? ` · ★ ${skill.stars.toLocaleString()}` : ""}
+                  {skill.description ? <span className="font-sans"> — {skill.description}</span> : ""}
                 </div>
                 {st?.error && <div className="text-[10px] text-red truncate" title={st.error}>{st.error}</div>}
               </div>

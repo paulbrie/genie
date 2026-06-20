@@ -1,28 +1,32 @@
-// Proxy for the public skills.sh registry so the Skills tab can browse/search
-// the community catalog without hitting CORS from the renderer. Read-only,
-// request/response (correlated by reqId via the renderer's wsRequest). The
-// returned `id` ("owner/slug") is exactly what `npx skills add <id>` takes.
+// Skill discovery for the Skills tab. skills.sh's own API is gated behind a
+// Vercel OIDC token (401 from a server), and the `skills` CLI has no search — so
+// we discover via GitHub's public repo search instead. Either way the install
+// target is `owner/repo`, exactly what `npx skills add <id>` takes. Read-only,
+// request/response (correlated by reqId via the renderer's wsRequest).
 
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 
 export interface RegistrySkill {
-  id: string;
+  id: string;       // "owner/repo" — the `npx skills add` argument
   name: string;
-  source: string;
-  installs: number;
+  source: string;   // owner
+  stars: number;
   url: string;
+  description: string;
 }
 
-/** Pull the skills array out of skills.sh's response regardless of the wrapper
- *  key (the list endpoint paginates under one of these; search may return bare). */
-function extractSkills(json: unknown): unknown[] {
-  if (Array.isArray(json)) return json;
-  const o = json as Record<string, unknown>;
-  for (const k of ["skills", "data", "results", "items"]) {
-    if (Array.isArray(o?.[k])) return o[k] as unknown[];
-  }
-  return [];
+/** A few well-known skill collections shown before the user types anything. */
+const CURATED: RegistrySkill[] = [
+  { id: "vercel-labs/agent-skills", name: "agent-skills", source: "vercel-labs", stars: 0, url: "https://github.com/vercel-labs/agent-skills", description: "Vercel's collection of agent skills." },
+  { id: "obra/superpowers", name: "superpowers", source: "obra", stars: 0, url: "https://github.com/obra/superpowers", description: "Composable TDD/debug/plan skills." },
+  { id: "wong2/diffx", name: "diffx", source: "wong2", stars: 0, url: "https://github.com/wong2/diffx", description: "Semantic diff skill." },
+  { id: "anthropics/skills", name: "skills", source: "anthropics", stars: 0, url: "https://github.com/anthropics/skills", description: "Anthropic example skills." },
+];
+
+interface GitHubRepo {
+  full_name?: string; name?: string; html_url?: string; description?: string | null;
+  stargazers_count?: number; owner?: { login?: string };
 }
 
 export async function handleSkillsRegistryMessage(
@@ -32,26 +36,31 @@ export async function handleSkillsRegistryMessage(
 ): Promise<boolean> {
   if (msg.type !== "skills:registry:search") return false;
   const { q, reqId } = msg.payload as { q?: string; reqId?: string };
+  const query = (q ?? "").trim();
+  if (query.length < 2) {
+    send(ws, { type: "skills:registry:result", payload: { reqId, skills: CURATED } });
+    return true;
+  }
   try {
-    const query = (q ?? "").trim();
-    // ≥2 chars → search endpoint; otherwise show the trending catalog.
-    const url = query.length >= 2
-      ? `https://skills.sh/api/v1/skills/search?q=${encodeURIComponent(query)}&limit=50`
-      : `https://skills.sh/api/v1/skills?view=trending&per_page=50`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-    if (!res.ok) throw new Error(`skills.sh returned ${res.status}`);
-    const raw = extractSkills(await res.json());
-    const skills: RegistrySkill[] = raw
-      .map((s) => s as Record<string, unknown>)
-      .filter((s) => !s.isDuplicate)
-      .map((s) => ({
-        id: String(s.id ?? (s.source && s.slug ? `${s.source}/${s.slug}` : s.slug ?? "")),
-        name: String(s.name ?? s.slug ?? s.id ?? ""),
-        source: String(s.source ?? s.sourceType ?? ""),
-        installs: Number(s.installs ?? 0),
-        url: String(s.url ?? ""),
-      }))
-      .filter((s) => s.id);
+    // GitHub repo search, biased toward agent/claude skills, busiest first.
+    const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(`${query} skill agent`)}&sort=stars&order=desc&per_page=30`;
+    const res = await fetch(url, {
+      headers: { "Accept": "application/vnd.github+json", "User-Agent": "genie-manager" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.status === 403) throw new Error("GitHub search rate-limited — try again shortly, or add owner/repo directly.");
+    if (!res.ok) throw new Error(`GitHub search returned ${res.status}`);
+    const json = await res.json() as { items?: GitHubRepo[] };
+    const skills: RegistrySkill[] = (json.items ?? [])
+      .filter((r) => r.full_name)
+      .map((r) => ({
+        id: String(r.full_name),
+        name: String(r.name ?? r.full_name),
+        source: String(r.owner?.login ?? ""),
+        stars: Number(r.stargazers_count ?? 0),
+        url: String(r.html_url ?? ""),
+        description: String(r.description ?? ""),
+      }));
     send(ws, { type: "skills:registry:result", payload: { reqId, skills } });
   } catch (err) {
     send(ws, { type: "skills:registry:result", payload: { reqId, skills: [], error: err instanceof Error ? err.message : String(err) } });
