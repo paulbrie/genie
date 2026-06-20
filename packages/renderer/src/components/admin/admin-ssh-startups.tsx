@@ -1,10 +1,47 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, AlertTriangle, ShieldCheck } from "lucide-react";
+import { RefreshCw, AlertTriangle, ShieldCheck, Settings } from "lucide-react";
+import { useSubject } from "subjecto/react";
 import { wsRequest } from "@/lib/ws";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { $projects } from "@/store/subjects";
+import type { ProjectDef, VpsInstance } from "@/store/types";
+import { openManageVmWindow } from "@/components/tazcloud/manage-vm-popup";
+import { openManageDropletWindow } from "@/components/admin/digitalocean-panel";
+import { openManageServerWindow } from "@/components/admin/hetzner-panel";
+
+function findInstance(projects: ProjectDef[], projectId: string, instanceId: string): VpsInstance | null {
+  return projects.find((p) => p.id === projectId)?.vpsInstances.find((i) => i.id === instanceId) ?? null;
+}
+
+function openManageForInstance(inst: VpsInstance): void {
+  if (inst.tazcloud?.vmId) openManageVmWindow({ id: inst.tazcloud.vmId, name: inst.label });
+  else if (inst.digitalocean?.dropletId) openManageDropletWindow({ id: inst.digitalocean.dropletId, name: inst.label });
+  else if (inst.hetzner?.serverId) openManageServerWindow({ id: inst.hetzner.serverId, name: inst.label });
+  else if (inst.ssh) openManageVmWindow({ id: inst.id, name: inst.label });
+}
+
+/** Resolves the instance to its VM name and renders it as a button that opens the
+ *  Manage popup. Falls back to the truncated id when the instance isn't in the
+ *  loaded project list. */
+function VmNameButton({ projectId, instanceId }: { projectId: string; instanceId: string }) {
+  const [projects] = useSubject($projects);
+  const inst = findInstance(projects, projectId, instanceId);
+  if (!inst) return <span className="font-mono text-subtext0">{instanceId.slice(0, 12)}</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => openManageForInstance(inst)}
+      title={`Open Manage for ${inst.label}`}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-overlay0/30 text-text hover:bg-surface0 hover:border-blue transition-colors cursor-pointer bg-transparent"
+    >
+      <Settings size={11} className="text-overlay0 shrink-0" />
+      {inst.label}
+    </button>
+  );
+}
 
 interface SshStartupsEvent {
   projectId: string;
@@ -45,7 +82,7 @@ export function SshStartupsPanel() {
 
   // Per-VM rollup: how many drop intervals + total dropped connections, worst first.
   const perVm = (() => {
-    const m = new Map<string, { projectName: string | null; instanceId: string; intervals: number; totalDrops: number; maxStartups: string | null; lastAt: string }>();
+    const m = new Map<string, { projectId: string; projectName: string | null; instanceId: string; intervals: number; totalDrops: number; maxStartups: string | null; lastAt: string }>();
     for (const e of events) {
       const key = `${e.projectId}:${e.instanceId}`;
       const cur = m.get(key);
@@ -54,7 +91,7 @@ export function SshStartupsPanel() {
         cur.totalDrops += e.drops;
         if (e.occurredAt > cur.lastAt) cur.lastAt = e.occurredAt;
       } else {
-        m.set(key, { projectName: e.projectName, instanceId: e.instanceId, intervals: 1, totalDrops: e.drops, maxStartups: e.maxStartups, lastAt: e.occurredAt });
+        m.set(key, { projectId: e.projectId, projectName: e.projectName, instanceId: e.instanceId, intervals: 1, totalDrops: e.drops, maxStartups: e.maxStartups, lastAt: e.occurredAt });
       }
     }
     return [...m.values()].sort((a, b) => b.totalDrops - a.totalDrops);
@@ -118,7 +155,7 @@ export function SshStartupsPanel() {
                 {perVm.map((v) => (
                   <tr key={`${v.projectName}:${v.instanceId}`} className="border-b border-surface0/40">
                     <td className="py-1.5 px-2 text-text">{v.projectName ?? "—"}</td>
-                    <td className="py-1.5 px-2 text-subtext0 font-mono">{v.instanceId.slice(0, 12)}</td>
+                    <td className="py-1.5 px-2"><VmNameButton projectId={v.projectId} instanceId={v.instanceId} /></td>
                     <td className="py-1.5 px-2 text-subtext0 font-mono">{v.maxStartups ?? "?"}</td>
                     <td className="py-1.5 px-2 text-right text-subtext0">{v.intervals}</td>
                     <td className="py-1.5 px-2 text-right">
@@ -152,7 +189,7 @@ export function SshStartupsPanel() {
                   <tr key={i} className="border-b border-surface0/30">
                     <td className="py-1.5 px-2 text-overlay0 whitespace-nowrap">{new Date(e.occurredAt).toLocaleString()}</td>
                     <td className="py-1.5 px-2 text-text">{e.projectName ?? "—"}</td>
-                    <td className="py-1.5 px-2 text-subtext0 font-mono">{e.instanceId.slice(0, 12)}</td>
+                    <td className="py-1.5 px-2"><VmNameButton projectId={e.projectId} instanceId={e.instanceId} /></td>
                     <td className="py-1.5 px-2 text-right text-peach font-medium">{e.drops}</td>
                     <td className="py-1.5 px-2 text-subtext0 font-mono">{e.maxStartups ?? "?"}</td>
                   </tr>

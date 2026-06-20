@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   GitBranch, GitCommit, GitFork, KeyRound, Loader2, Plus, RefreshCw, Trash2,
+  Download, Upload, AlertTriangle, ArrowLeftRight,
 } from "lucide-react";
 import { wsRequest } from "@/lib/ws";
 import { cn } from "@/lib/utils";
@@ -240,6 +241,7 @@ export function VmGithubTab({ projectId, instanceId }: VmGithubTabProps) {
           projectId={projectId}
           instanceId={instanceId}
           repo={repos.find((r) => r.id === selectedId)!}
+          onRepoChanged={loadRepos}
         />
       )}
     </div>
@@ -415,22 +417,60 @@ interface BrowsePanelProps {
   projectId: string;
   instanceId: string;
   repo: VpsGitRepoPublic;
+  /** Reload the repo list after a reconcile changes the registered URL. */
+  onRepoChanged: () => void;
 }
 
-function BrowsePanel({ projectId, instanceId, repo }: BrowsePanelProps) {
+/** Strip credentials, trailing `.git`, and trailing slashes so a DB url and the
+ *  on-disk remote compare equal even when one carries an embedded token. */
+function normalizeRemote(url: string | null | undefined): string {
+  if (!url) return "";
+  return url.trim()
+    .replace(/^([a-z]+:\/\/)[^/@]+@/i, "$1") // drop user:pass@
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+/** Parse `git branch -a --format='%(refname:short) %(HEAD)'` into local branch
+ *  names + the current one. Remote-tracking refs (origin/…) are excluded. */
+function parseBranches(raw: string): { names: string[]; current: string | null } {
+  const names: string[] = [];
+  let current: string | null = null;
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    const [name, head] = t.split(/\s+/);
+    if (!name || name.startsWith("origin/") || name.startsWith("remotes/")) continue;
+    names.push(name);
+    if (head === "*") current = name;
+  }
+  return { names: [...new Set(names)], current };
+}
+
+function BrowsePanel({ projectId, instanceId, repo, onRepoChanged }: BrowsePanelProps) {
   const [log, setLog] = useState<string>("");
-  const [branches, setBranches] = useState<string>("");
+  const [branchesRaw, setBranchesRaw] = useState<string>("");
+  const [status, setStatus] = useState<{ branch: string; ahead: number; behind: number } | null>(null);
+  const [diskRemote, setDiskRemote] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [action, setAction] = useState<string | null>(null); // which op is running
+  const [actionOut, setActionOut] = useState<string>("");
+  const [checkoutTo, setCheckoutTo] = useState<string>("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [logRes, brRes] = await Promise.all([
+      const [logRes, brRes, stRes, detRes] = await Promise.all([
         wsRequest<{ log?: string }>("git:log", { projectId, instanceId, folder: repo.repoPath, count: 30 }, 15_000),
         wsRequest<{ branches?: string }>("git:branches", { projectId, instanceId, folder: repo.repoPath }, 15_000),
+        wsRequest<{ branch?: string; ahead?: number; behind?: number }>("git:status", { projectId, instanceId, folder: repo.repoPath }, 15_000).catch(() => ({} as { branch?: string; ahead?: number; behind?: number })),
+        wsRequest<DetectedRepo>("vps:git:repos:detect", { projectId, instanceId, repoPath: repo.repoPath }, 30_000).catch(() => null),
       ]);
       setLog(logRes.log ?? "");
-      setBranches(brRes.branches ?? "");
+      setBranchesRaw(brRes.branches ?? "");
+      setStatus(stRes.branch ? { branch: stRes.branch, ahead: stRes.ahead ?? 0, behind: stRes.behind ?? 0 } : null);
+      setDiskRemote(detRes?.remoteUrl ?? null);
     } catch {
       // wsRequest rejects on timeout — leave previous content and let the user retry.
     } finally {
@@ -440,11 +480,61 @@ function BrowsePanel({ projectId, instanceId, repo }: BrowsePanelProps) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  const { names: branchNames, current } = parseBranches(branchesRaw);
+
+  // Run a git command (pull/push/checkout) and surface its output inline.
+  const runGit = useCallback(async (label: string, type: string, payload: Record<string, unknown>, done: string) => {
+    setAction(label);
+    setActionOut("");
+    try {
+      const res = await wsRequest<Record<string, string>>(type, { projectId, instanceId, folder: repo.repoPath, ...payload }, 90_000);
+      setActionOut(res.output ?? done);
+      await refresh();
+    } catch (e) {
+      setActionOut(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAction(null);
+    }
+  }, [projectId, instanceId, repo.repoPath, refresh]);
+
+  // DB vs /opt/project mismatch on the origin remote.
+  const dbUrl = repo.repoUrl;
+  const mismatch = !!diskRemote && normalizeRemote(diskRemote) !== normalizeRemote(dbUrl);
+
+  const reconcile = useCallback(async (direction: "db-to-disk" | "disk-to-db") => {
+    setAction(direction);
+    try {
+      if (direction === "disk-to-db") {
+        // Adopt the on-VM remote into the registry (update also re-wires the VM,
+        // a no-op here since disk already has it).
+        await wsRequest("vps:git:repos:update", { projectId, instanceId, id: repo.id, repoUrl: diskRemote }, 60_000);
+      } else {
+        // Rewrite the VM's origin to match the registered URL.
+        await wsRequest("vps:git:repos:init", { projectId, instanceId, repoPath: repo.repoPath, repoUrl: dbUrl }, 60_000);
+      }
+      onRepoChanged();
+      await refresh();
+    } catch (e) {
+      setActionOut(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAction(null);
+    }
+  }, [projectId, instanceId, repo.id, repo.repoPath, diskRemote, dbUrl, onRepoChanged, refresh]);
+
+  const busy = action !== null || loading;
+
   return (
     <div className="rounded-md border border-surface0 bg-mantle p-3 flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <div className="text-text font-medium truncate">
+        <div className="text-text font-medium truncate flex items-center gap-2">
           Browse <code className="text-sm">{repo.repoPath}</code>
+          {status && (
+            <span className="text-overlay0 text-sm font-normal inline-flex items-center gap-1">
+              <GitBranch size={11} /> {status.branch}
+              {status.ahead > 0 && <span className="text-green">↑{status.ahead}</span>}
+              {status.behind > 0 && <span className="text-peach">↓{status.behind}</span>}
+            </span>
+          )}
         </div>
         <button
           onClick={refresh}
@@ -454,13 +544,87 @@ function BrowsePanel({ projectId, instanceId, repo }: BrowsePanelProps) {
           {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
         </button>
       </div>
+
+      {/* DB vs /opt/project reconcile */}
+      {mismatch && (
+        <div className="rounded-md border border-peach/50 bg-peach/10 p-2.5 flex flex-col gap-2 text-sm">
+          <div className="flex items-center gap-1.5 text-peach">
+            <AlertTriangle size={13} /> Registered URL doesn’t match the VM’s <code className="text-xs">origin</code>.
+          </div>
+          <div className="text-overlay1 text-xs flex flex-col gap-0.5">
+            <div>Registry: <code>{dbUrl || "(none)"}</code></div>
+            <div>On VM: <code>{diskRemote}</code></div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => reconcile("disk-to-db")}
+              disabled={busy}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
+              title="Update the registry to the URL found on the VM"
+            >
+              {action === "disk-to-db" ? <Loader2 size={12} className="animate-spin" /> : <ArrowLeftRight size={12} />} Use VM’s URL
+            </button>
+            <button
+              onClick={() => reconcile("db-to-disk")}
+              disabled={busy || !dbUrl}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
+              title="Rewrite the VM's origin remote to the registered URL"
+            >
+              {action === "db-to-disk" ? <Loader2 size={12} className="animate-spin" /> : <ArrowLeftRight size={12} />} Use registry URL
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Branch switch + pull/push */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={checkoutTo || current || ""}
+          onChange={(e) => setCheckoutTo(e.target.value)}
+          disabled={busy || branchNames.length === 0}
+          className="px-2 py-1 rounded-md bg-base border border-surface0 text-text text-sm font-mono"
+        >
+          {branchNames.length === 0 && <option value="">(no branches)</option>}
+          {branchNames.map((b) => <option key={b} value={b}>{b}{b === current ? " (current)" : ""}</option>)}
+        </select>
+        <button
+          onClick={() => runGit("checkout", "git:checkout", { branch: checkoutTo || current }, "switched")}
+          disabled={busy || !checkoutTo || checkoutTo === current}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
+          title="Switch branch (git checkout)"
+        >
+          {action === "checkout" ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />} Switch
+        </button>
+        <div className="flex-1" />
+        <button
+          onClick={() => runGit("pull", "git:pull", {}, "pulled")}
+          disabled={busy}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface0 text-text border-none cursor-pointer disabled:opacity-50"
+          title="git pull"
+        >
+          {action === "pull" ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} Pull
+        </button>
+        <button
+          onClick={() => runGit("push", "git:push", {}, "pushed")}
+          disabled={busy}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-mauve text-background hover:bg-lavender border-none cursor-pointer disabled:opacity-50"
+          title="git push"
+        >
+          {action === "push" ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Push
+        </button>
+      </div>
+
+      {actionOut && (
+        <pre className="bg-base rounded-md p-2 text-xs whitespace-pre-wrap text-overlay1 max-h-32 overflow-auto">{actionOut}</pre>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <div className="text-overlay0 text-sm mb-1 flex items-center gap-1">
             <GitBranch size={12} /> Branches
           </div>
           <pre className="bg-base rounded-md p-2 text-xs whitespace-pre-wrap text-text max-h-64 overflow-auto">
-            {branches || "—"}
+            {branchesRaw || "—"}
           </pre>
         </div>
         <div>
