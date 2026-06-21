@@ -2,57 +2,23 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { ChevronLeft, Pin, ArrowUp, Square, SquarePen } from "lucide-react";
+import { ChevronLeft, Pin, ArrowUp, Square, SquarePen, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClaudeLogo } from "@/components/mobile/claude-logo";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
-import { $auth, $chat, $pinnedAssistantVm } from "@/store/subjects";
+import { $auth, $claudeStream } from "@/store/subjects";
 import {
-  CHAT_MODELS,
-  newChat,
-  retryLastChatMessage,
-  sendChatMessage,
-  setChatModel,
-  setPinnedAssistantVm,
-  stopChat,
-  type ChatModelId,
+  closeClaudeStream,
+  openClaudeChatWindow,
+  sendClaudeStreamMessage,
+  stopClaudeStream,
 } from "@/store/actions";
 import { QUICK_REPLIES, SUGGESTED_PROMPTS, type MockServer, type MockSession } from "@/components/mobile/mock-data";
-import type { PinnedAssistantVm } from "@/store/types";
 
-/** Build the manager-side pin so the assistant's ssh_exec runs on this server. */
-function pinFor(server: MockServer): PinnedAssistantVm {
-  const provider: PinnedAssistantVm["provider"] =
-    server.provider === "digitalocean" ? "digitalocean" : server.provider === "tazcloud" ? "tazcloud" : "other";
-  return {
-    projectId: server.projectId ?? null,
-    projectName: server.project,
-    instanceId: server.id,
-    label: server.label,
-    host: server.host,
-    provider,
-  };
-}
-
-/** Lightweight context string sent with each turn (mobile has no DOM snapshot).
- *  Must carry the project id in a form the manager parses (`Project ID:` /
- *  `(id: …)`) — Claude Code routes to the VPS off the context, not the pinnedVm
- *  object, so omitting it makes the assistant report "requires a VPS instance". */
-function buildContext(server: MockServer, session?: MockSession): string {
-  const lines = ["=== Genie mobile · assistant context ==="];
-  const user = $auth.getValue().user;
-  if (user) lines.push(`User: ${user.name} (${user.email})`);
-  if (server.projectId) {
-    lines.push(`Project: ${server.project} (id: ${server.projectId})`);
-    lines.push(`Project ID: ${server.projectId}`);
-  }
-  lines.push(`Instance ID: ${server.id}`);
-  lines.push(`Server: ${server.label} (${server.host}) · project ${server.project} (${server.provider})`);
-  if (session) lines.push(`Resuming session: ${session.title}`);
-  lines.push("All ssh_exec calls run on this VM. Do not propose commands for another VM.");
-  return lines.join("\n");
-}
-
+// Mirrors the desktop's durable Claude Code session exactly: openClaudeChatWindow
+// → $claudeStream (a real `claude` process in a tmux session on the VM), rendered
+// with the shared ChatMessageList. A Claude-session tap reattaches that exact
+// tmux session; the server-level Claude button opens a fresh blank session.
 export function ClaudeScreen({
   server,
   session,
@@ -62,25 +28,46 @@ export function ClaudeScreen({
   session?: MockSession;
   onBack: () => void;
 }) {
-  const [chat] = useSubject($chat);
-  const [pin] = useSubject($pinnedAssistantVm);
+  const [state] = useSubject($claudeStream);
+  const [streamId, setStreamId] = useState<string | null>(null);
   const [input, setInput] = useState("");
 
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const currentIdRef = useRef<string | null>(null);
+  currentIdRef.current = streamId;
 
-  // Pin the assistant to this server while the screen is open.
+  // Open (or reattach) the durable Claude session for this server/tmux session.
   useEffect(() => {
-    setPinnedAssistantVm(pinFor(server));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [server.id]);
+    const ownerId = $auth.getValue().user?.id;
+    if (!ownerId || !server.projectId) return;
+    let cancelled = false;
+    openClaudeChatWindow({
+      ownerId,
+      projectId: server.projectId,
+      instanceId: server.id,
+      label: session ? session.title : server.label,
+      tmuxName: session?.kind === "claude" ? session.id : undefined,
+    }).then((id) => {
+      if (cancelled) closeClaudeStream(id);
+      else setStreamId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [server.projectId, server.id, session?.id]);
 
-  // Keep pinned to the latest message as content streams in.
+  // Detach the session when leaving the screen (the tmux session lives on).
+  useEffect(() => () => {
+    if (currentIdRef.current) closeClaudeStream(currentIdRef.current);
+  }, []);
+
+  const sess = streamId ? state.sessions[streamId] : null;
+
   useLayoutEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: chat.loading ? "auto" : "smooth" });
-  }, [chat.messages, chat.streamingContent, chat.streamingSteps, chat.loading]);
+    endRef.current?.scrollIntoView({ behavior: sess?.loading ? "auto" : "smooth" });
+  }, [sess?.messages, sess?.streamingContent, sess?.streamingSteps, sess?.loading]);
 
-  // Auto-grow the input.
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
@@ -90,15 +77,29 @@ export function ClaudeScreen({
 
   function send(text: string) {
     const t = text.trim();
-    if (!t || chat.loading) return;
+    if (!t || !streamId || !sess?.ready || sess.loading) return;
     setInput("");
-    sendChatMessage(t, buildContext(server, session));
+    sendClaudeStreamMessage(streamId, t);
   }
 
-  const busy = chat.loading;
-  const isEmpty = chat.messages.length === 0 && !chat.loading && !chat.streamingContent;
-  const pinLabel = pin?.label ?? server.label;
-  const pinHost = pin?.host ?? server.host;
+  async function newChat() {
+    const ownerId = $auth.getValue().user?.id;
+    if (!ownerId || !server.projectId) return;
+    if (currentIdRef.current) closeClaudeStream(currentIdRef.current);
+    setStreamId(null);
+    const id = await openClaudeChatWindow({
+      ownerId,
+      projectId: server.projectId,
+      instanceId: server.id,
+      label: server.label,
+    });
+    setStreamId(id);
+  }
+
+  const busy = !!sess?.loading;
+  const connecting = !sess || (!sess.ready && sess.messages.length === 0 && !sess.historyLoading);
+  const isEmpty = !!sess && sess.ready && sess.messages.length === 0 && !sess.loading && !sess.streamingContent;
+  const subtitle = sess?.claudeInfo?.model ?? "Claude Code";
 
   return (
     <div className="flex flex-col h-full">
@@ -112,64 +113,63 @@ export function ClaudeScreen({
         </span>
         <div className="flex-1 min-w-0">
           <p className="text-md font-semibold text-subtext0 leading-tight">Claude</p>
-          <p className="text-xs text-overlay0 truncate">knows what you&apos;re looking at</p>
+          <p className="text-xs text-overlay0 truncate">{subtitle}</p>
         </div>
-        <select
-          value={chat.modelId}
-          onChange={(e) => setChatModel(e.target.value as ChatModelId)}
-          className="bg-surface0 border border-surface1 rounded-full px-2 py-1 text-xs text-subtext0 outline-none focus:border-peach"
-          aria-label="Model"
-        >
-          {Object.entries(CHAT_MODELS).map(([id, label]) => (
-            <option key={id} value={id}>{label}</option>
-          ))}
-        </select>
         <button onClick={newChat} className="p-1.5 rounded-lg text-overlay0 active:bg-surface0" aria-label="New chat">
           <SquarePen size={16} />
         </button>
       </div>
 
-      {/* Pinned VM banner */}
+      {/* VM banner */}
       <div className="flex items-center gap-2 px-4 py-1.5 border-b border-peach/20 bg-peach/10 shrink-0">
         <Pin size={11} className="text-peach shrink-0" />
         <span className="text-xs text-peach font-medium truncate">
-          Commands run on <span className="font-mono">{pinLabel}</span>
+          Running on <span className="font-mono">{server.label}</span>
         </span>
-        <span className="text-2xs text-overlay0 font-mono truncate ml-auto">{pinHost}</span>
+        <span className="text-2xs text-overlay0 font-mono truncate ml-auto">{server.host}</span>
       </div>
 
       {/* Connection error */}
-      {chat.connectionError && (
-        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-red/20 bg-red/10 shrink-0 text-xs text-red">
-          <span className="flex-1 truncate">{chat.connectionError}</span>
-          <button onClick={() => retryLastChatMessage(buildContext(server, session))} className="font-medium underline">
-            Retry
-          </button>
+      {sess?.connectionError && (
+        <div className="px-4 py-1.5 border-b border-red/20 bg-red/10 shrink-0 text-xs text-red truncate">
+          {sess.connectionError}
         </div>
       )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         <div className="min-h-full flex flex-col px-4 py-3 gap-2">
-          <ChatMessageList
-            messages={chat.messages}
-            streamingContent={chat.streamingContent}
-            streamingSteps={chat.streamingSteps}
-            toolUses={chat.toolUses}
-            loading={chat.loading}
-            statusText={chat.statusText}
-            maxToolRounds={chat.maxToolRounds}
-            toolRoundsUsed={chat.toolRoundsUsed}
-            onRetry={() => retryLastChatMessage(buildContext(server, session))}
-            accent="peach"
-            emptyState={<EmptyState onPick={send} />}
-          />
+          {connecting ? (
+            <div className="flex-1 flex items-center justify-center gap-2 text-sm text-overlay0">
+              <Loader2 size={14} className="animate-spin text-peach" />
+              {sess?.reconnecting ? "Reconnecting…" : "Connecting to Claude…"}
+            </div>
+          ) : (
+            <>
+              {sess?.historyLoading && (
+                <div className="flex items-center justify-center gap-2 text-xs text-overlay0 py-2">
+                  <Loader2 size={12} className="animate-spin text-peach" /> Replaying conversation…
+                </div>
+              )}
+              <ChatMessageList
+                messages={sess?.messages ?? []}
+                streamingContent={sess?.streamingContent ?? ""}
+                streamingSteps={sess?.streamingSteps ?? []}
+                toolUses={sess?.toolUses ?? []}
+                loading={sess?.loading ?? false}
+                statusText={sess?.statusText ?? ""}
+                accent="peach"
+                showCost={false}
+                emptyState={isEmpty ? <EmptyState onPick={send} /> : undefined}
+              />
+            </>
+          )}
           <div ref={endRef} />
         </div>
       </div>
 
       {/* Quick replies */}
-      {!isEmpty && !busy && (
+      {isEmpty && (
         <div className="flex gap-2 px-4 py-2 overflow-x-auto scrollbar-thin shrink-0">
           {QUICK_REPLIES.map((q) => (
             <button
@@ -199,12 +199,13 @@ export function ClaudeScreen({
               send(input);
             }
           }}
-          placeholder="Ask or run something…"
-          className="flex-1 resize-none bg-surface0 border border-surface1 rounded-2xl px-4 py-2 text-md text-text placeholder:text-overlay0 outline-none focus:border-peach leading-relaxed"
+          placeholder={sess?.ready ? "Ask or run something…" : "Connecting…"}
+          disabled={!sess?.ready}
+          className="flex-1 resize-none bg-surface0 border border-surface1 rounded-2xl px-4 py-2 text-md text-text placeholder:text-overlay0 outline-none focus:border-peach leading-relaxed disabled:opacity-60"
         />
         {busy ? (
           <button
-            onClick={stopChat}
+            onClick={() => streamId && stopClaudeStream(streamId)}
             className="w-9 h-9 rounded-full grid place-items-center shrink-0 bg-red text-background active:scale-95 transition-transform"
             aria-label="Stop"
           >
@@ -213,10 +214,10 @@ export function ClaudeScreen({
         ) : (
           <button
             onClick={() => send(input)}
-            disabled={!input.trim()}
+            disabled={!input.trim() || !sess?.ready}
             className={cn(
               "w-9 h-9 rounded-full grid place-items-center shrink-0 transition-colors",
-              input.trim() ? "bg-peach text-background" : "bg-surface0 text-overlay0",
+              input.trim() && sess?.ready ? "bg-peach text-background" : "bg-surface0 text-overlay0",
             )}
             aria-label="Send"
           >
@@ -236,7 +237,7 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
       </div>
       <div>
         <p className="text-xl font-semibold text-text">Ask Claude anything</p>
-        <p className="text-sm text-overlay0 mt-1">It can read logs, run commands, and deploy — on your VMs.</p>
+        <p className="text-sm text-overlay0 mt-1">It can read logs, run commands, and deploy — on this VM.</p>
       </div>
       <div className="flex flex-col gap-2 w-full">
         {SUGGESTED_PROMPTS.map((p) => (
