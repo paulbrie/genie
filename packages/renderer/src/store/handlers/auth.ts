@@ -66,7 +66,16 @@ export const handlers: HandlerMap = {
 
   "auth:google:url": (payload) => {
     const { url } = payload;
-    if (typeof window !== "undefined") {
+    if (typeof window === "undefined") return;
+    // This fires async, after the auth:google:start round-trip — so it's no
+    // longer in the tap's call stack. Mobile browsers block window.open() popups
+    // opened outside a user gesture, which made the "Sign in with Google" button
+    // look dead on /mobile. Redirect the top-level page there instead; connectWs
+    // reads the ?token back off the URL on return. Desktop keeps the popup (its
+    // OAuth flow opens in an external browser window).
+    if (window.location.pathname.startsWith("/mobile")) {
+      window.location.href = url;
+    } else {
       window.open(url, "_blank", "noopener,noreferrer");
     }
   },
