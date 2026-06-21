@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { OrientationRouter } from "@/components/mobile/orientation-router";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,6 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
+        <OrientationRouter />
         <TooltipProvider delayDuration={400}>
           {children}
         </TooltipProvider>
