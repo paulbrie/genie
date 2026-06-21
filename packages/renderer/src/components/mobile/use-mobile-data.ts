@@ -94,6 +94,7 @@ function toServer(
     disk: Math.round(s?.diskPercent ?? 0),
     uptime: "—",
     projectId: project.id,
+    user: inst.connection?.username,
     services: mapServices(inst.services),
   };
 }

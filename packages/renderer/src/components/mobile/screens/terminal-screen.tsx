@@ -1,44 +1,26 @@
 "use client";
 
-import { useState } from "react";
-import { TerminalSquare, Plus, ChevronDown, ChevronLeft } from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { MockServer, MockSession, TermLine } from "@/components/mobile/mock-data";
+import { useEffect, useState } from "react";
+import { ChevronLeft } from "lucide-react";
+import { wsSend } from "@/lib/ws";
+import { useDeepSubjectAll } from "@/lib/hooks";
+import { $vmConnections } from "@/store/subjects";
+import { closeVmConnection, openProjectVmConnection } from "@/store/actions";
+import { VmConnectionPopup } from "@/components/tazcloud/vm-connection-popup";
+import type { MockServer, MockSession } from "@/components/mobile/mock-data";
 
-const TONE: Record<NonNullable<TermLine["tone"]>, string> = {
-  dim: "text-subtext0",
-  green: "text-green",
-  blue: "text-blue",
-  yellow: "text-yellow",
-  red: "text-red",
-  mauve: "text-mauve",
-};
-
-// Mobile-friendly key strip — the keys you reach for over SSH but that a phone
-// keyboard hides or makes painful.
-const KEY_STRIP = ["esc", "tab", "ctrl", "/", "-", "|", "~", "↑", "↓"];
-
-/** Opening lines for the tapped session. The live PTY isn't wired in this build
- *  (buildTerminalSshSpawnPayload is stubbed), so the body is a placeholder — but
- *  it reflects the *respective* session, not a generic one. */
-function sessionLines(host: string, session?: MockSession): TermLine[] {
-  if (!session) {
-    return [{ text: `genie@${host}:~$`, tone: "green" }];
-  }
-  if (session.kind === "tmux") {
-    return [
-      { text: `genie@${host}:~$ tmux attach -t ${session.title}`, tone: "green" },
-      { text: `[reattaching to ${session.title}]`, tone: "dim" },
-      { text: session.detail, tone: "dim" },
-      { text: "live output not yet wired on mobile", tone: "yellow" },
-    ];
-  }
-  return [
-    { text: `genie@${host}:~$ # ${session.title}`, tone: "green" },
-    { text: session.detail, tone: "dim" },
-    { text: "live output not yet wired on mobile", tone: "yellow" },
-  ];
-}
+// Keys a phone keyboard hides or makes painful — sent straight to the real PTY
+// as the same byte sequences xterm would emit.
+const KEY_STRIP: { label: string; data: string }[] = [
+  { label: "esc", data: "\x1b" },
+  { label: "tab", data: "\t" },
+  { label: "^C", data: "\x03" },
+  { label: "^D", data: "\x04" },
+  { label: "↑", data: "\x1b[A" },
+  { label: "↓", data: "\x1b[B" },
+  { label: "←", data: "\x1b[D" },
+  { label: "→", data: "\x1b[C" },
+];
 
 export function TerminalScreen({
   server,
@@ -49,85 +31,73 @@ export function TerminalScreen({
   session?: MockSession;
   onBack: () => void;
 }) {
-  const host = server?.host ?? "server";
-  const title = session?.title ?? "Terminal";
-  const tabs = session
-    ? [{ id: session.id, title: session.title, running: session.running }]
-    : [{ id: "shell", title: `ssh ${host}`, running: true }];
-  const [activeTab, setActiveTab] = useState(tabs[0].id);
-  const lines = sessionLines(host, session);
+  const [connKey, setConnKey] = useState<string | null>(null);
+
+  // Open a real VM connection — the exact mechanism the desktop uses. A tmux
+  // session reattaches its named session; the Actions SSH button opens a shell.
+  useEffect(() => {
+    if (!server?.projectId) return;
+    const key = openProjectVmConnection({
+      projectId: server.projectId,
+      instanceId: server.id,
+      host: server.host,
+      username: server.user || "genie",
+      vmLabel: session ? session.title : server.label,
+      ...(session && session.kind !== "claude"
+        ? { tmuxIntent: "attach" as const, tmuxSessionName: session.id }
+        : {}),
+    });
+    setConnKey(key);
+    return () => closeVmConnection(key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server?.projectId, server?.id, session?.id]);
+
+  const conns = useDeepSubjectAll($vmConnections);
+  const terminalId = connKey ? conns.connections[connKey]?.terminalId : null;
+
+  function sendKey(data: string) {
+    if (terminalId) wsSend("terminal:data", { terminalId, data });
+  }
 
   return (
-    <div className="flex flex-col h-full bg-mantle">
+    <div className="flex flex-col h-full bg-crust">
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-surface0 shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-surface0 shrink-0 bg-mantle">
         <button onClick={onBack} className="p-1 -ml-1 rounded-lg text-overlay0 active:bg-surface0" aria-label="Back">
           <ChevronLeft size={22} />
         </button>
-        <TerminalSquare size={16} className="text-green shrink-0" />
-        <span className="text-md font-semibold text-subtext0 truncate">{title}</span>
-        <button className="ml-auto p-1.5 rounded-lg text-overlay0 active:bg-surface0" aria-label="New session">
-          <Plus size={16} />
-        </button>
+        <span className="text-md font-semibold text-subtext0 truncate">
+          {session ? session.title : server?.label ?? "Terminal"}
+        </span>
       </div>
 
-      {/* Session tabs */}
-      <div className="flex gap-2 px-4 py-2 overflow-x-auto scrollbar-thin border-b border-surface0/60 shrink-0">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={cn(
-              "shrink-0 flex items-center gap-1.5 text-sm rounded-lg px-3 py-1.5 border transition-colors",
-              activeTab === t.id
-                ? "bg-surface0 text-text border-surface1"
-                : "bg-transparent text-overlay0 border-surface0",
-            )}
-          >
-            <span
-              className={cn(
-                "w-1.5 h-1.5 rounded-full",
-                t.running ? "bg-green tmux-running-glow-green" : "bg-overlay0",
-              )}
-            />
-            {t.title}
-          </button>
-        ))}
-      </div>
-
-      {/* Terminal body */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 font-mono text-sm leading-relaxed bg-crust">
-        {lines.map((l, i) => (
-          <div key={i} className={cn("whitespace-pre-wrap break-words", TONE[l.tone ?? "dim"])}>
-            {l.text}
+      {/* Real terminal */}
+      <div className="flex-1 min-h-0">
+        {connKey ? (
+          <VmConnectionPopup connectionKey={connKey} />
+        ) : (
+          <div className="h-full grid place-items-center text-sm text-overlay0 px-6 text-center">
+            {server?.projectId
+              ? "Connecting…"
+              : "No project instance — open a terminal from a project's server."}
           </div>
-        ))}
-        <div className="flex items-center gap-0 text-green">
-          <span>genie@{host}:~$&nbsp;</span>
-          <span className="inline-block w-2 h-4 bg-green/80 animate-pulse" />
+        )}
+      </div>
+
+      {/* Mobile key strip — writes to the live PTY */}
+      {terminalId && (
+        <div className="flex gap-1.5 px-3 py-2 overflow-x-auto scrollbar-thin border-t border-surface0 bg-mantle shrink-0">
+          {KEY_STRIP.map((k) => (
+            <button
+              key={k.label}
+              onClick={() => sendKey(k.data)}
+              className="shrink-0 min-w-9 px-2.5 py-1.5 rounded-md bg-surface0 text-subtext0 text-sm font-mono active:bg-surface1"
+            >
+              {k.label}
+            </button>
+          ))}
         </div>
-      </div>
-
-      {/* Mobile key strip */}
-      <div className="flex gap-1.5 px-3 py-2 overflow-x-auto scrollbar-thin border-t border-surface0 bg-mantle shrink-0">
-        {KEY_STRIP.map((k) => (
-          <button
-            key={k}
-            className="shrink-0 min-w-9 px-2.5 py-1.5 rounded-md bg-surface0 text-subtext0 text-sm font-mono active:bg-surface1"
-          >
-            {k}
-          </button>
-        ))}
-      </div>
-
-      {/* Input line */}
-      <div className="flex items-center gap-2 px-3 py-2.5 border-t border-surface0 bg-mantle shrink-0">
-        <ChevronDown size={14} className="text-green rotate-[-90deg] shrink-0" />
-        <input
-          placeholder="type a command…"
-          className="flex-1 bg-transparent text-md text-text placeholder:text-overlay0 outline-none font-mono"
-        />
-      </div>
+      )}
     </div>
   );
 }

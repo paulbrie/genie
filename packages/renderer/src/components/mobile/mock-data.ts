@@ -18,6 +18,8 @@ export interface MockServer {
   uptime: string;
   /** ProjectDef.id of the live instance — used to fetch real stats/sessions. */
   projectId?: string;
+  /** SSH username from the instance connection — used to open a real terminal. */
+  user?: string;
   /** Live services from the instance. */
   services?: MockService[];
 }
@@ -58,10 +60,3 @@ export const SUGGESTED_PROMPTS = [
   "Tail the error log",
   "Check disk usage across my servers",
 ];
-
-// --- Terminal screen (prototype — not yet wired to a live PTY) ---
-
-export interface TermLine {
-  text: string;
-  tone?: "dim" | "green" | "blue" | "yellow" | "red" | "mauve";
-}
