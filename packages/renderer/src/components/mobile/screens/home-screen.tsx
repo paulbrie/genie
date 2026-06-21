@@ -55,9 +55,15 @@ export function HomeScreen({ onOpenServer }: { onOpenServer: (server: MockServer
           Projects · {projects.length}
         </h2>
         <div className="flex flex-col gap-2">
-          {projects.map((p) => (
-            <ProjectGroup key={p.name} project={p} onOpenServer={onOpenServer} />
-          ))}
+          {projects.length === 0 ? (
+            <div className="bg-mantle rounded-xl px-3.5 py-6 text-center text-sm text-overlay0">
+              No projects yet.
+            </div>
+          ) : (
+            projects.map((p) => (
+              <ProjectGroup key={p.name} project={p} onOpenServer={onOpenServer} />
+            ))
+          )}
         </div>
       </section>
     </div>

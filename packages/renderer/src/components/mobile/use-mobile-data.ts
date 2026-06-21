@@ -8,7 +8,7 @@
 
 import { useEffect } from "react";
 import { useSubject } from "subjecto/react";
-import { $projectsPaged, $vpsDeploy } from "@/store/subjects";
+import { $auth, $projects, $projectsPaged, $vpsDeploy } from "@/store/subjects";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import {
   fetchVpsStats,
@@ -107,17 +107,27 @@ function rollup(instances: MockServer[]): ServerHealth {
   return "healthy";
 }
 
-/** Live projects (with their instances) for the Home screen, or mock fallback. */
+/** Live projects (with their instances) for the Home screen. Falls back to the
+ *  prototype mock ONLY in dev when there's no authenticated session — prod never
+ *  shows dummy data. */
 export function useMobileProjects(): MockProject[] {
+  const [auth] = useSubject($auth);
+  const [projects] = useSubject($projects);
   const [paged] = useSubject($projectsPaged);
   const deploy = useDeepSubjectAll($vpsDeploy);
 
+  // A mount-time request races auth and is dropped (wsSend no-ops before the
+  // socket is open); re-request whenever we (re)authenticate.
   useEffect(() => {
-    loadProjectsPaged();
-  }, []);
+    if (auth.status === "authenticated") loadProjectsPaged();
+  }, [auth.status]);
 
-  const real = paged.list ?? [];
-  if (real.length === 0) return MOCK_PROJECTS;
+  // Prefer the auto-broadcast full list; fall back to the paged reply.
+  const real = projects.length ? projects : paged.list ?? [];
+
+  if (auth.status !== "authenticated") {
+    return process.env.NODE_ENV === "production" ? [] : MOCK_PROJECTS;
+  }
 
   return real.map((p) => {
     const instances = (p.vpsInstances ?? []).map((inst) =>
