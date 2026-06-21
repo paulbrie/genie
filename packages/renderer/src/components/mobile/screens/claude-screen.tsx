@@ -34,11 +34,19 @@ function pinFor(server: MockServer): PinnedAssistantVm {
   };
 }
 
-/** Lightweight context string sent with each turn (mobile has no DOM snapshot). */
+/** Lightweight context string sent with each turn (mobile has no DOM snapshot).
+ *  Must carry the project id in a form the manager parses (`Project ID:` /
+ *  `(id: …)`) — Claude Code routes to the VPS off the context, not the pinnedVm
+ *  object, so omitting it makes the assistant report "requires a VPS instance". */
 function buildContext(server: MockServer): string {
   const lines = ["=== Genie mobile · assistant context ==="];
   const user = $auth.getValue().user;
   if (user) lines.push(`User: ${user.name} (${user.email})`);
+  if (server.projectId) {
+    lines.push(`Project: ${server.project} (id: ${server.projectId})`);
+    lines.push(`Project ID: ${server.projectId}`);
+  }
+  lines.push(`Instance ID: ${server.id}`);
   lines.push(`Server: ${server.label} (${server.host}) · project ${server.project} (${server.provider})`);
   lines.push("All ssh_exec calls run on this VM. Do not propose commands for another VM.");
   return lines.join("\n");

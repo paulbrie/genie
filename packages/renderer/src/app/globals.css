@@ -54,6 +54,21 @@
   --font-mono: "SF Mono", "Fira Code", monospace;
 }
 
+/* Mobile route reads at a larger base — bump every named text size by 2px.
+   Tailwind v4 text-* utilities resolve to these vars, so scoping the overrides
+   to the mobile shell enlarges all of them without touching the desktop UI. */
+.mobile-fonts {
+  --text-2xs: 10px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 16px;
+  --text-xl: 17px;
+  --text-2xl: 18px;
+  --text-3xl: 20px;
+}
+
 /* Animated gradient border for streaming Claude responses */
 @property --genie-angle {
   syntax: "<angle>";

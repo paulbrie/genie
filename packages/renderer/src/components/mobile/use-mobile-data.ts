@@ -120,17 +120,19 @@ export function useMobileProjects(): MockProject[] {
   // Prefer the auto-broadcast full list; fall back to the paged reply.
   const real = projects.length ? projects : paged.list ?? [];
 
-  return real.map((p) => {
-    const instances = (p.vpsInstances ?? []).map((inst) =>
-      toServer(p, inst, deploy.instances[inst.id]),
-    );
-    return {
-      name: p.name,
-      region: p.vpsRegion ?? "",
-      instances,
-      health: rollup(instances),
-    };
-  });
+  return real
+    .map((p) => {
+      const instances = (p.vpsInstances ?? []).map((inst) =>
+        toServer(p, inst, deploy.instances[inst.id]),
+      );
+      return {
+        name: p.name,
+        region: p.vpsRegion ?? "",
+        instances,
+        health: rollup(instances),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Live CPU/mem/disk for a server, falling back to the server's own (mock) numbers. */

@@ -51,7 +51,7 @@ export function MobileApp() {
   }
 
   return (
-    <div className="fixed inset-0 flex flex-col bg-background text-text overflow-hidden">
+    <div className="mobile-fonts fixed inset-0 flex flex-col bg-background text-text overflow-hidden">
       <main className="flex-1 min-h-0 overflow-hidden">
         {top.kind === "home" && (
           <div className="h-full overflow-y-auto scrollbar-thin">
