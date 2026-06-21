@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { connectWs, setManagerRunning } from "@/lib/ws";
 import { loadUiState } from "@/store/actions";
 import { HomeScreen } from "@/components/mobile/screens/home-screen";
-import { ClaudeScreen, type ClaudePin } from "@/components/mobile/screens/claude-screen";
+import { ClaudeScreen } from "@/components/mobile/screens/claude-screen";
 import { TerminalScreen } from "@/components/mobile/screens/terminal-screen";
 import { ActivityScreen } from "@/components/mobile/screens/activity-screen";
 import { ServerDetailScreen } from "@/components/mobile/screens/server-detail-screen";
@@ -15,7 +15,7 @@ import type { MockServer } from "@/components/mobile/mock-data";
 type View =
   | { kind: "home" }
   | { kind: "manager"; server: MockServer }
-  | { kind: "claude"; pin: ClaudePin }
+  | { kind: "claude"; server: MockServer }
   | { kind: "terminal" }
   | { kind: "activity" };
 
@@ -47,12 +47,10 @@ export function MobileApp() {
             server={top.server}
             onBack={back}
             onSSH={() => push({ kind: "terminal" })}
-            onOpenClaude={(server) => push({ kind: "claude", pin: { label: server.label, host: server.host } })}
+            onOpenClaude={(server) => push({ kind: "claude", server })}
           />
         )}
-        {top.kind === "claude" && (
-          <ClaudeScreen pin={top.pin} onBack={back} onRunInTerminal={() => push({ kind: "terminal" })} />
-        )}
+        {top.kind === "claude" && <ClaudeScreen server={top.server} onBack={back} />}
         {top.kind === "terminal" && <TerminalScreen onBack={back} />}
         {top.kind === "activity" && <ActivityScreen />}
       </main>
