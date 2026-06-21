@@ -1,10 +1,17 @@
 "use client";
 
 import { useState } from "react";
+import { useSubject } from "subjecto/react";
 import { ChevronRight, ChevronDown, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MOCK_USER, type MockProject, type MockServer } from "@/components/mobile/mock-data";
+import { $auth } from "@/store/subjects";
+import type { MockProject, MockServer } from "@/components/mobile/mock-data";
 import { useMobileProjects } from "@/components/mobile/use-mobile-data";
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
+}
 
 const HEALTH_DOT: Record<MockServer["health"], string> = {
   healthy: "bg-green",
@@ -19,8 +26,11 @@ const HEALTH_TEXT: Record<MockServer["health"], string> = {
 };
 
 export function HomeScreen({ onOpenServer }: { onOpenServer: (server: MockServer) => void }) {
+  const [auth] = useSubject($auth);
   const projects = useMobileProjects();
   const servers = projects.flatMap((p) => p.instances);
+  const userName = auth.user?.name ?? "there";
+  const firstName = userName.split(/\s+/)[0];
   const counts = {
     healthy: servers.filter((s) => s.health === "healthy").length,
     degraded: servers.filter((s) => s.health === "degraded").length,
@@ -32,13 +42,13 @@ export function HomeScreen({ onOpenServer }: { onOpenServer: (server: MockServer
       {/* Greeting */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-text">Good morning, Paul</h1>
+          <h1 className="text-2xl font-semibold text-text">Hello, {firstName}</h1>
           <p className="text-sm text-overlay0 mt-0.5">
             {projects.length} projects · {servers.length} servers
           </p>
         </div>
         <div className="w-9 h-9 rounded-full bg-mauve text-background grid place-items-center text-md font-semibold">
-          {MOCK_USER.initials}
+          {initialsOf(userName)}
         </div>
       </div>
 

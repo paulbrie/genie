@@ -24,15 +24,12 @@ import type {
   VmTmuxSession,
   VpsServiceInfo,
 } from "@/store/types";
-import {
-  getServices,
-  getSessions,
-  MOCK_PROJECTS,
-  type MockProject,
-  type MockServer,
-  type MockService,
-  type MockSession,
-  type ServerHealth,
+import type {
+  MockProject,
+  MockServer,
+  MockService,
+  MockSession,
+  ServerHealth,
 } from "@/components/mobile/mock-data";
 
 function providerOf(inst: VpsInstance): MockServer["provider"] {
@@ -107,9 +104,7 @@ function rollup(instances: MockServer[]): ServerHealth {
   return "healthy";
 }
 
-/** Live projects (with their instances) for the Home screen. Falls back to the
- *  prototype mock ONLY in dev when there's no authenticated session — prod never
- *  shows dummy data. */
+/** Live projects (with their instances) for the Home screen. */
 export function useMobileProjects(): MockProject[] {
   const [auth] = useSubject($auth);
   const [projects] = useSubject($projects);
@@ -124,10 +119,6 @@ export function useMobileProjects(): MockProject[] {
 
   // Prefer the auto-broadcast full list; fall back to the paged reply.
   const real = projects.length ? projects : paged.list ?? [];
-
-  if (auth.status !== "authenticated") {
-    return process.env.NODE_ENV === "production" ? [] : MOCK_PROJECTS;
-  }
 
   return real.map((p) => {
     const instances = (p.vpsInstances ?? []).map((inst) =>
@@ -173,7 +164,7 @@ function mapTmuxSession(s: VmTmuxSession): MockSession {
   };
 }
 
-/** Live tmux/Claude sessions for a server, or the mock session list. */
+/** Live tmux/Claude sessions for a server. */
 export function useInstanceSessions(server: MockServer): MockSession[] {
   const deploy = useDeepSubjectAll($vpsDeploy);
 
@@ -182,13 +173,11 @@ export function useInstanceSessions(server: MockServer): MockSession[] {
     refreshVmTmuxSessions(server.projectId, server.id);
   }, [server.projectId, server.id]);
 
-  if (!server.projectId) return getSessions(server.id);
   const tmux = deploy.instances[server.id]?.tmuxSessions;
-  if (!tmux) return [];
-  return tmux.map(mapTmuxSession);
+  return tmux ? tmux.map(mapTmuxSession) : [];
 }
 
-/** Live services for a server, or the mock list. */
+/** Live services for a server. */
 export function useInstanceServices(server: MockServer): MockService[] {
-  return server.services ?? (server.projectId ? [] : getServices(server.id));
+  return server.services ?? [];
 }
