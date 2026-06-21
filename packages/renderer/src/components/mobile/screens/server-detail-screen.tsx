@@ -33,11 +33,13 @@ export function ServerDetailScreen({
   onBack,
   onSSH,
   onOpenClaude,
+  onOpenSession,
 }: {
   server: MockServer;
   onBack: () => void;
   onSSH: (server: MockServer) => void;
   onOpenClaude: (server: MockServer) => void;
+  onOpenSession: (server: MockServer, session: MockSession) => void;
 }) {
   const stats = useInstanceStats(s);
   const services = useInstanceServices(s);
@@ -84,7 +86,7 @@ export function ServerDetailScreen({
                 <SessionRow
                   key={sess.id}
                   session={sess}
-                  onOpen={() => (sess.kind === "claude" ? onOpenClaude(s) : onSSH(s))}
+                  onOpen={() => onOpenSession(s, sess)}
                 />
               ))
             )}

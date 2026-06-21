@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { TerminalSquare, Plus, ChevronDown, ChevronLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MOCK_TERM_LINES, MOCK_TERM_TABS, type TermLine } from "@/components/mobile/mock-data";
+import type { MockServer, MockSession, TermLine } from "@/components/mobile/mock-data";
 
 const TONE: Record<NonNullable<TermLine["tone"]>, string> = {
   dim: "text-subtext0",
@@ -14,12 +14,48 @@ const TONE: Record<NonNullable<TermLine["tone"]>, string> = {
   mauve: "text-mauve",
 };
 
-// Mobile-friendly key strip — the keys you actually reach for over SSH but that
-// a phone keyboard hides or makes painful. Static in the prototype.
+// Mobile-friendly key strip — the keys you reach for over SSH but that a phone
+// keyboard hides or makes painful.
 const KEY_STRIP = ["esc", "tab", "ctrl", "/", "-", "|", "~", "↑", "↓"];
 
-export function TerminalScreen({ onBack }: { onBack: () => void }) {
-  const [activeTab, setActiveTab] = useState(MOCK_TERM_TABS[0].id);
+/** Opening lines for the tapped session. The live PTY isn't wired in this build
+ *  (buildTerminalSshSpawnPayload is stubbed), so the body is a placeholder — but
+ *  it reflects the *respective* session, not a generic one. */
+function sessionLines(host: string, session?: MockSession): TermLine[] {
+  if (!session) {
+    return [{ text: `genie@${host}:~$`, tone: "green" }];
+  }
+  if (session.kind === "tmux") {
+    return [
+      { text: `genie@${host}:~$ tmux attach -t ${session.title}`, tone: "green" },
+      { text: `[reattaching to ${session.title}]`, tone: "dim" },
+      { text: session.detail, tone: "dim" },
+      { text: "live output not yet wired on mobile", tone: "yellow" },
+    ];
+  }
+  return [
+    { text: `genie@${host}:~$ # ${session.title}`, tone: "green" },
+    { text: session.detail, tone: "dim" },
+    { text: "live output not yet wired on mobile", tone: "yellow" },
+  ];
+}
+
+export function TerminalScreen({
+  server,
+  session,
+  onBack,
+}: {
+  server?: MockServer;
+  session?: MockSession;
+  onBack: () => void;
+}) {
+  const host = server?.host ?? "server";
+  const title = session?.title ?? "Terminal";
+  const tabs = session
+    ? [{ id: session.id, title: session.title, running: session.running }]
+    : [{ id: "shell", title: `ssh ${host}`, running: true }];
+  const [activeTab, setActiveTab] = useState(tabs[0].id);
+  const lines = sessionLines(host, session);
 
   return (
     <div className="flex flex-col h-full bg-mantle">
@@ -29,7 +65,7 @@ export function TerminalScreen({ onBack }: { onBack: () => void }) {
           <ChevronLeft size={22} />
         </button>
         <TerminalSquare size={16} className="text-green shrink-0" />
-        <span className="text-md font-semibold text-subtext0 truncate">Terminal</span>
+        <span className="text-md font-semibold text-subtext0 truncate">{title}</span>
         <button className="ml-auto p-1.5 rounded-lg text-overlay0 active:bg-surface0" aria-label="New session">
           <Plus size={16} />
         </button>
@@ -37,7 +73,7 @@ export function TerminalScreen({ onBack }: { onBack: () => void }) {
 
       {/* Session tabs */}
       <div className="flex gap-2 px-4 py-2 overflow-x-auto scrollbar-thin border-b border-surface0/60 shrink-0">
-        {MOCK_TERM_TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
@@ -61,13 +97,13 @@ export function TerminalScreen({ onBack }: { onBack: () => void }) {
 
       {/* Terminal body */}
       <div className="flex-1 overflow-y-auto px-3 py-3 font-mono text-sm leading-relaxed bg-crust">
-        {MOCK_TERM_LINES.map((l, i) => (
+        {lines.map((l, i) => (
           <div key={i} className={cn("whitespace-pre-wrap break-words", TONE[l.tone ?? "dim"])}>
             {l.text}
           </div>
         ))}
         <div className="flex items-center gap-0 text-green">
-          <span>genie@api-prod-01:~$&nbsp;</span>
+          <span>genie@{host}:~$&nbsp;</span>
           <span className="inline-block w-2 h-4 bg-green/80 animate-pulse" />
         </div>
       </div>

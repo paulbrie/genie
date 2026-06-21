@@ -65,15 +65,3 @@ export interface TermLine {
   text: string;
   tone?: "dim" | "green" | "blue" | "yellow" | "red" | "mauve";
 }
-
-export const MOCK_TERM_LINES: TermLine[] = [
-  { text: "genie@server:~$ systemctl status nginx", tone: "green" },
-  { text: "● nginx.service - A high performance web server", tone: "dim" },
-  { text: "   Active: active (running)", tone: "green" },
-  { text: "genie@server:~$ claude", tone: "green" },
-  { text: "✻ Claude Code session resumed", tone: "mauve" },
-];
-
-export const MOCK_TERM_TABS = [
-  { id: "t1", title: "ssh session", running: true },
-];

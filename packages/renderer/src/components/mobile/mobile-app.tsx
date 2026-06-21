@@ -10,15 +10,17 @@ import { HomeScreen } from "@/components/mobile/screens/home-screen";
 import { ClaudeScreen } from "@/components/mobile/screens/claude-screen";
 import { TerminalScreen } from "@/components/mobile/screens/terminal-screen";
 import { ServerDetailScreen } from "@/components/mobile/screens/server-detail-screen";
-import type { MockServer } from "@/components/mobile/mock-data";
+import type { MockServer, MockSession } from "@/components/mobile/mock-data";
 
 // Simple navigation stack. Home is the root; every other view pushes on top and
-// shows a back button until you pop back to Home.
+// shows a back button until you pop back to Home. `session` is the specific
+// tmux/Claude session a row was opened from (absent for the server-level
+// Actions buttons) so each opens its respective session, not a generic one.
 type View =
   | { kind: "home" }
   | { kind: "manager"; server: MockServer }
-  | { kind: "claude"; server: MockServer }
-  | { kind: "terminal" };
+  | { kind: "claude"; server: MockServer; session?: MockSession }
+  | { kind: "terminal"; server?: MockServer; session?: MockSession };
 
 export function MobileApp() {
   const [auth] = useSubject($auth);
@@ -62,12 +64,21 @@ export function MobileApp() {
           <ServerDetailScreen
             server={top.server}
             onBack={back}
-            onSSH={() => push({ kind: "terminal" })}
+            onSSH={(server) => push({ kind: "terminal", server })}
             onOpenClaude={(server) => push({ kind: "claude", server })}
+            onOpenSession={(server, session) =>
+              push(
+                session.kind === "claude"
+                  ? { kind: "claude", server, session }
+                  : { kind: "terminal", server, session },
+              )
+            }
           />
         )}
-        {top.kind === "claude" && <ClaudeScreen server={top.server} onBack={back} />}
-        {top.kind === "terminal" && <TerminalScreen onBack={back} />}
+        {top.kind === "claude" && <ClaudeScreen server={top.server} session={top.session} onBack={back} />}
+        {top.kind === "terminal" && (
+          <TerminalScreen server={top.server} session={top.session} onBack={back} />
+        )}
       </main>
     </div>
   );

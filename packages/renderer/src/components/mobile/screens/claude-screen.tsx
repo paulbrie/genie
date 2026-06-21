@@ -17,7 +17,7 @@ import {
   stopChat,
   type ChatModelId,
 } from "@/store/actions";
-import { QUICK_REPLIES, SUGGESTED_PROMPTS, type MockServer } from "@/components/mobile/mock-data";
+import { QUICK_REPLIES, SUGGESTED_PROMPTS, type MockServer, type MockSession } from "@/components/mobile/mock-data";
 import type { PinnedAssistantVm } from "@/store/types";
 
 /** Build the manager-side pin so the assistant's ssh_exec runs on this server. */
@@ -38,7 +38,7 @@ function pinFor(server: MockServer): PinnedAssistantVm {
  *  Must carry the project id in a form the manager parses (`Project ID:` /
  *  `(id: …)`) — Claude Code routes to the VPS off the context, not the pinnedVm
  *  object, so omitting it makes the assistant report "requires a VPS instance". */
-function buildContext(server: MockServer): string {
+function buildContext(server: MockServer, session?: MockSession): string {
   const lines = ["=== Genie mobile · assistant context ==="];
   const user = $auth.getValue().user;
   if (user) lines.push(`User: ${user.name} (${user.email})`);
@@ -48,15 +48,18 @@ function buildContext(server: MockServer): string {
   }
   lines.push(`Instance ID: ${server.id}`);
   lines.push(`Server: ${server.label} (${server.host}) · project ${server.project} (${server.provider})`);
+  if (session) lines.push(`Resuming session: ${session.title}`);
   lines.push("All ssh_exec calls run on this VM. Do not propose commands for another VM.");
   return lines.join("\n");
 }
 
 export function ClaudeScreen({
   server,
+  session,
   onBack,
 }: {
   server: MockServer;
+  session?: MockSession;
   onBack: () => void;
 }) {
   const [chat] = useSubject($chat);
@@ -89,7 +92,7 @@ export function ClaudeScreen({
     const t = text.trim();
     if (!t || chat.loading) return;
     setInput("");
-    sendChatMessage(t, buildContext(server));
+    sendChatMessage(t, buildContext(server, session));
   }
 
   const busy = chat.loading;
@@ -139,7 +142,7 @@ export function ClaudeScreen({
       {chat.connectionError && (
         <div className="flex items-center gap-2 px-4 py-1.5 border-b border-red/20 bg-red/10 shrink-0 text-xs text-red">
           <span className="flex-1 truncate">{chat.connectionError}</span>
-          <button onClick={() => retryLastChatMessage(buildContext(server))} className="font-medium underline">
+          <button onClick={() => retryLastChatMessage(buildContext(server, session))} className="font-medium underline">
             Retry
           </button>
         </div>
@@ -157,7 +160,7 @@ export function ClaudeScreen({
             statusText={chat.statusText}
             maxToolRounds={chat.maxToolRounds}
             toolRoundsUsed={chat.toolRoundsUsed}
-            onRetry={() => retryLastChatMessage(buildContext(server))}
+            onRetry={() => retryLastChatMessage(buildContext(server, session))}
             accent="peach"
             emptyState={<EmptyState onPick={send} />}
           />
