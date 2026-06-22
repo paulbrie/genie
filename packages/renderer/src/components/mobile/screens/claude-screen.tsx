@@ -2,9 +2,10 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSubject } from "subjecto/react";
-import { ChevronLeft, Pin, ArrowUp, Square, SquarePen, Loader2 } from "lucide-react";
+import { ChevronLeft, Pin, ArrowUp, Square, SquarePen, Loader2, Mic } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClaudeLogo } from "@/components/mobile/claude-logo";
+import { useSpeechToText } from "@/components/mobile/use-speech-to-text";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { $auth, $claudeStream } from "@/store/subjects";
 import {
@@ -36,6 +37,26 @@ export function ClaudeScreen({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const currentIdRef = useRef<string | null>(null);
   currentIdRef.current = streamId;
+
+  // Voice dictation (Web Speech API where available). Interim results preview
+  // live; finalized chunks are appended to whatever was already in the box.
+  const dictateBaseRef = useRef("");
+  const speech = useSpeechToText((transcript, isFinal) => {
+    if (isFinal) {
+      dictateBaseRef.current = (dictateBaseRef.current ? `${dictateBaseRef.current} ` : "") + transcript.trim();
+      setInput(dictateBaseRef.current);
+    } else {
+      setInput((dictateBaseRef.current ? `${dictateBaseRef.current} ` : "") + transcript);
+    }
+  });
+  function toggleDictation() {
+    if (speech.listening) {
+      speech.stop();
+    } else {
+      dictateBaseRef.current = input;
+      speech.start();
+    }
+  }
 
   // Open (or reattach) the durable Claude session for this server/tmux session.
   useEffect(() => {
@@ -78,6 +99,8 @@ export function ClaudeScreen({
   function send(text: string) {
     const t = text.trim();
     if (!t || !streamId || !sess?.ready || sess.loading) return;
+    if (speech.listening) speech.stop();
+    dictateBaseRef.current = "";
     setInput("");
     sendClaudeStreamMessage(streamId, t);
   }
@@ -188,18 +211,34 @@ export function ClaudeScreen({
         className="flex items-end gap-2 px-3 py-2.5 border-t border-surface0 shrink-0"
         style={{ paddingBottom: "max(0.625rem, env(safe-area-inset-bottom))" }}
       >
+        {speech.supported && (
+          <button
+            onClick={toggleDictation}
+            className={cn(
+              "w-9 h-9 rounded-full grid place-items-center shrink-0 transition-colors",
+              speech.listening ? "bg-red text-background animate-pulse" : "bg-surface0 text-overlay0 active:bg-surface1",
+            )}
+            aria-label={speech.listening ? "Stop dictation" : "Dictate"}
+            title={speech.listening ? "Stop dictation" : "Dictate"}
+          >
+            <Mic size={18} />
+          </button>
+        )}
         <textarea
           ref={inputRef}
           rows={1}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value);
+            if (!speech.listening) dictateBaseRef.current = e.target.value;
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send(input);
             }
           }}
-          placeholder={sess?.ready ? "Ask or run something…" : "Connecting…"}
+          placeholder={speech.listening ? "Listening…" : sess?.ready ? "Ask or run something…" : "Connecting…"}
           disabled={!sess?.ready}
           className="flex-1 resize-none bg-surface0 border border-surface1 rounded-2xl px-4 py-2 text-md text-text placeholder:text-overlay0 outline-none focus:border-peach leading-relaxed disabled:opacity-60"
         />
