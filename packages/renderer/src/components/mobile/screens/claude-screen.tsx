@@ -79,8 +79,14 @@ export function ClaudeScreen({
   }, [server.projectId, server.id, session?.id]);
 
   // Detach the session when leaving the screen (the tmux session lives on).
+  // BUT keep a session that's mid-turn attached, so its Manager row keeps
+  // glowing and the in-flight result isn't dropped while you navigate away.
   useEffect(() => () => {
-    if (currentIdRef.current) closeClaudeStream(currentIdRef.current);
+    const id = currentIdRef.current;
+    if (!id) return;
+    const s = $claudeStream.getValue().sessions[id];
+    if (s && (s.loading || s.reconnecting)) return;
+    closeClaudeStream(id);
   }, []);
 
   const sess = streamId ? state.sessions[streamId] : null;

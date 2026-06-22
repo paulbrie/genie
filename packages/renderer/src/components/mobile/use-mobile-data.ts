@@ -10,6 +10,7 @@ import { useEffect } from "react";
 import { useSubject } from "subjecto/react";
 import { $auth, $claudeStream, $projects, $projectsPaged, $vpsDeploy } from "@/store/subjects";
 import { useDeepSubjectAll } from "@/lib/hooks";
+import { useLivePoll } from "@/hooks/use-live-poll";
 import {
   fetchVpsStats,
   loadProjectsPaged,
@@ -176,10 +177,15 @@ export function useInstanceSessions(server: MockServer): MockSession[] {
   const deploy = useDeepSubjectAll($vpsDeploy);
   const [claudeState] = useSubject($claudeStream);
 
-  useEffect(() => {
-    if (!server.projectId) return;
-    refreshVmTmuxSessions(server.projectId, server.id);
-  }, [server.projectId, server.id]);
+  // Auto-probe like the desktop badges (8s) so the `running` flag stays fresh —
+  // otherwise a row only reflects whatever the session was doing on mount.
+  useLivePoll(
+    () => {
+      if (server.projectId) refreshVmTmuxSessions(server.projectId, server.id);
+    },
+    8000,
+    { enabled: !!server.projectId },
+  );
 
   const tmux = deploy.instances[server.id]?.tmuxSessions;
   if (!tmux) return [];
