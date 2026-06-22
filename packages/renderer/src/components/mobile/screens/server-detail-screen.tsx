@@ -169,34 +169,13 @@ function ActionTile({
   );
 }
 
-// Mirror the desktop session palette: Claude = peach + Claude glyph,
-// SSH = blue + Terminal, plain tmux/shell = green + Terminal. Running sessions
-// get a pulsing dot + the accent glow (tmux-running-glow-*).
-const SESSION_PALETTE: Record<
-  SessionKind,
-  { text: string; dot: string; glow: string; activePill: string; idlePill: string }
-> = {
-  claude: {
-    text: "text-peach",
-    dot: "bg-peach",
-    glow: "tmux-running-glow-peach",
-    activePill: "border-peach/60 bg-peach/25 text-peach font-semibold",
-    idlePill: "border-peach/40 bg-peach/15 text-peach",
-  },
-  ssh: {
-    text: "text-blue",
-    dot: "bg-blue",
-    glow: "tmux-running-glow-green",
-    activePill: "border-blue/60 bg-blue/20 text-blue font-semibold",
-    idlePill: "border-transparent bg-surface0 text-overlay1",
-  },
-  tmux: {
-    text: "text-green",
-    dot: "bg-green",
-    glow: "tmux-running-glow-green",
-    activePill: "border-green/60 bg-green/20 text-green font-semibold",
-    idlePill: "border-transparent bg-surface0 text-overlay1",
-  },
+// Mirror the desktop session accent: Claude = peach + Claude glyph, SSH = blue,
+// plain tmux/shell = green + Terminal. The row itself carries the identity (real
+// tmux session name) and glows in the accent when the session is active.
+const SESSION_PALETTE: Record<SessionKind, { text: string; glow: string; tint: string }> = {
+  claude: { text: "text-peach", glow: "tmux-running-glow-peach", tint: "bg-peach/[0.07]" },
+  ssh: { text: "text-blue", glow: "tmux-running-glow-green", tint: "bg-blue/[0.07]" },
+  tmux: { text: "text-green", glow: "tmux-running-glow-green", tint: "bg-green/[0.07]" },
 };
 
 function SessionRow({ session, onOpen }: { session: MockSession; onOpen: () => void }) {
@@ -206,29 +185,18 @@ function SessionRow({ session, onOpen }: { session: MockSession; onOpen: () => v
   return (
     <button
       onClick={onOpen}
-      className="w-full flex items-center gap-3 px-3.5 py-2.5 text-left active:bg-surface0/40 transition-colors"
+      className={cn(
+        "w-full flex items-center gap-3 px-3.5 py-2.5 text-left transition-colors active:bg-surface0/40",
+        session.running ? cn(p.tint, p.glow) : "",
+      )}
     >
       <span className={cn("shrink-0", p.text)}>
         {claude ? <ClaudeLogo size={16} /> : <Terminal size={16} />}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-md text-text truncate">{session.title}</p>
-        <p className="text-xs text-overlay0 truncate font-mono">{session.detail}</p>
+        <p className="text-sm text-text truncate font-mono">{session.title}</p>
+        <p className="text-xs text-overlay0 truncate">{session.detail}</p>
       </div>
-      {/* Desktop-style session pill */}
-      <span
-        className={cn(
-          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono shrink-0 border",
-          session.running ? p.activePill : p.idlePill,
-          session.running && p.glow,
-        )}
-      >
-        {session.running && (
-          <span className={cn("inline-block w-1.5 h-1.5 rounded-full animate-pulse", p.dot)} />
-        )}
-        {claude ? <ClaudeLogo size={10} /> : <Terminal size={10} />}
-        {session.kind}
-      </span>
       <ChevronRight size={15} className="text-overlay0 shrink-0" />
     </button>
   );

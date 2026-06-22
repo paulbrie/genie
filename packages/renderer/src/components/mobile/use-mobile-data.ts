@@ -8,7 +8,7 @@
 
 import { useEffect } from "react";
 import { useSubject } from "subjecto/react";
-import { $auth, $projects, $projectsPaged, $vpsDeploy } from "@/store/subjects";
+import { $auth, $claudeStream, $projects, $projectsPaged, $vpsDeploy } from "@/store/subjects";
 import { useDeepSubjectAll } from "@/lib/hooks";
 import {
   fetchVpsStats,
@@ -156,20 +156,25 @@ export function useInstanceStats(server: MockServer): { cpu: number; mem: number
   };
 }
 
-function mapTmuxSession(s: VmTmuxSession): MockSession {
+function mapTmuxSession(s: VmTmuxSession, running: boolean): MockSession {
   const claude = s.name.startsWith("claude");
   return {
     id: s.name,
     kind: claude ? "claude" : "tmux",
-    title: claude ? "Claude Code" : s.name,
+    title: s.name, // the real tmux session name — same as the desktop badge
     detail: s.attached ? "attached" : `${s.windows ?? 0} window${s.windows === 1 ? "" : "s"}`,
-    running: !!s.running,
+    running,
   };
 }
 
-/** Live tmux/Claude sessions for a server. */
+/** Live tmux/Claude sessions for a server. Mirrors the desktop's running signal
+ *  (tmux-session-badges useRunningTmuxSessions): non-claude sessions glow when
+ *  the probe reports a running command; claude-* sessions glow when a bound
+ *  $claudeStream turn is in flight (their pane is always `node`, so the probe
+ *  can't tell idle from busy). */
 export function useInstanceSessions(server: MockServer): MockSession[] {
   const deploy = useDeepSubjectAll($vpsDeploy);
+  const [claudeState] = useSubject($claudeStream);
 
   useEffect(() => {
     if (!server.projectId) return;
@@ -177,7 +182,18 @@ export function useInstanceSessions(server: MockServer): MockSession[] {
   }, [server.projectId, server.id]);
 
   const tmux = deploy.instances[server.id]?.tmuxSessions;
-  return tmux ? tmux.map(mapTmuxSession) : [];
+  if (!tmux) return [];
+
+  const claudeRunning = new Set<string>();
+  for (const cs of Object.values(claudeState.sessions)) {
+    if (cs.projectId === server.projectId && cs.instanceId === server.id && cs.tmuxName && cs.loading) {
+      claudeRunning.add(cs.tmuxName);
+    }
+  }
+
+  return tmux.map((s) =>
+    mapTmuxSession(s, s.name.startsWith("claude") ? claudeRunning.has(s.name) : !!s.running),
+  );
 }
 
 /** Live services for a server. */
