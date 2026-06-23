@@ -26,6 +26,7 @@ export interface MockServer {
 
 /** Servers grouped by their project. */
 export interface MockProject {
+  id: string;
   name: string;
   region: string;
   instances: MockServer[];

@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { useSubject } from "subjecto/react";
-import { ChevronRight, ChevronDown, Server } from "lucide-react";
+import { ChevronRight, ChevronDown, Server, MoreVertical, Pencil, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { $auth } from "@/store/subjects";
+import { removeProject, renameProject } from "@/store/actions";
 import type { MockProject, MockServer } from "@/components/mobile/mock-data";
 import { useMobileProjects } from "@/components/mobile/use-mobile-data";
 
@@ -97,26 +98,66 @@ function ProjectGroup({
   onOpenServer: (server: MockServer) => void;
 }) {
   const [open, setOpen] = useState(true);
+  const [menu, setMenu] = useState(false);
+  const [modal, setModal] = useState<null | "rename" | "delete">(null);
+  const canDelete = project.instances.length === 0;
+
   return (
     <div className="bg-mantle rounded-xl overflow-hidden">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-3.5 py-3 active:bg-surface0/40 transition-colors"
-      >
-        <span className={cn("w-2 h-2 rounded-full shrink-0", HEALTH_DOT[project.health])} />
-        <div className="min-w-0 flex-1 text-left">
-          <p className="text-md font-semibold text-text truncate">{project.name}</p>
-          <p className="text-xs text-overlay0 truncate">
-            {project.instances.length} {project.instances.length === 1 ? "instance" : "instances"}
-            {project.region ? ` · ${project.region}` : ""}
-          </p>
+      <div className="flex items-center">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex-1 min-w-0 flex items-center gap-3 px-3.5 py-3 active:bg-surface0/40 transition-colors"
+        >
+          <span className={cn("w-2 h-2 rounded-full shrink-0", HEALTH_DOT[project.health])} />
+          <div className="min-w-0 flex-1 text-left">
+            <p className="text-md font-semibold text-text truncate">{project.name}</p>
+            <p className="text-xs text-overlay0 truncate">
+              {project.instances.length} {project.instances.length === 1 ? "instance" : "instances"}
+              {project.region ? ` · ${project.region}` : ""}
+            </p>
+          </div>
+          <HealthSummary instances={project.instances} />
+          <ChevronDown
+            size={16}
+            className={cn("text-overlay0 shrink-0 transition-transform", !open && "-rotate-90")}
+          />
+        </button>
+        <div className="relative shrink-0 pr-1.5">
+          <button
+            onClick={() => setMenu((v) => !v)}
+            className="p-2 rounded-lg text-overlay0 active:bg-surface0"
+            aria-label="Project actions"
+          >
+            <MoreVertical size={16} />
+          </button>
+          {menu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setMenu(false)} />
+              <div className="absolute right-1.5 top-full z-40 mt-0.5 min-w-[168px] bg-surface0 border border-surface1 rounded-lg overflow-hidden shadow-xl">
+                <button
+                  onClick={() => { setMenu(false); setModal("rename"); }}
+                  className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-text active:bg-surface1"
+                >
+                  <Pencil size={14} className="text-overlay1" /> Rename
+                </button>
+                <button
+                  onClick={() => { if (canDelete) { setMenu(false); setModal("delete"); } }}
+                  disabled={!canDelete}
+                  className={cn(
+                    "w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left active:bg-surface1",
+                    canDelete ? "text-red" : "text-overlay0",
+                  )}
+                >
+                  <Trash2 size={14} />
+                  <span className="flex-1">Delete</span>
+                  {!canDelete && <span className="text-2xs text-overlay0">detach VMs</span>}
+                </button>
+              </div>
+            </>
+          )}
         </div>
-        <HealthSummary instances={project.instances} />
-        <ChevronDown
-          size={16}
-          className={cn("text-overlay0 shrink-0 transition-transform", !open && "-rotate-90")}
-        />
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-surface0/60 divide-y divide-surface0/40">
@@ -125,6 +166,88 @@ function ProjectGroup({
           ))}
         </div>
       )}
+
+      {modal === "rename" && (
+        <RenameModal project={project} onClose={() => setModal(null)} />
+      )}
+      {modal === "delete" && (
+        <DeleteModal project={project} onClose={() => setModal(null)} />
+      )}
+    </div>
+  );
+}
+
+function RenameModal({ project, onClose }: { project: MockProject; onClose: () => void }) {
+  const [name, setName] = useState(project.name);
+  function save() {
+    const t = name.trim();
+    if (t && t !== project.name) renameProject(project.id, t);
+    onClose();
+  }
+  return (
+    <ModalShell title="Rename project" onClose={onClose}>
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && save()}
+        className="w-full bg-surface0 border border-surface1 rounded-lg px-3 py-2.5 text-md text-text outline-none focus:border-mauve"
+      />
+      <div className="flex gap-2 justify-end">
+        <button onClick={onClose} className="px-3.5 py-2 rounded-lg text-sm text-subtext0 bg-surface0 active:bg-surface1">
+          Cancel
+        </button>
+        <button
+          onClick={save}
+          disabled={!name.trim() || name.trim() === project.name}
+          className={cn(
+            "px-3.5 py-2 rounded-lg text-sm font-medium",
+            name.trim() && name.trim() !== project.name ? "bg-mauve text-background" : "bg-surface0 text-overlay0",
+          )}
+        >
+          Save
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function DeleteModal({ project, onClose }: { project: MockProject; onClose: () => void }) {
+  return (
+    <ModalShell title="Delete project" onClose={onClose}>
+      <p className="text-sm text-subtext0">
+        Delete <span className="font-semibold text-text">{project.name}</span>? This can&apos;t be undone.
+      </p>
+      <div className="flex gap-2 justify-end">
+        <button onClick={onClose} className="px-3.5 py-2 rounded-lg text-sm text-subtext0 bg-surface0 active:bg-surface1">
+          Cancel
+        </button>
+        <button
+          onClick={() => { removeProject(project.id); onClose(); }}
+          className="px-3.5 py-2 rounded-lg text-sm font-medium bg-red text-background active:scale-95 transition-transform"
+        >
+          Delete
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-crust/70" onClick={onClose}>
+      <div
+        className="w-full max-w-sm bg-mantle border border-surface0 rounded-2xl p-4 flex flex-col gap-3.5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <p className="text-md font-semibold text-text">{title}</p>
+          <button onClick={onClose} className="p-1 rounded-lg text-overlay0 active:bg-surface0" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
     </div>
   );
 }

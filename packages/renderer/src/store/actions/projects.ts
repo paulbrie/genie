@@ -47,6 +47,20 @@ export function stopProjectCommand(projectId: string, commandId: string): void {
   wsSend("project:command:stop", { projectId, commandId });
 }
 
+/** Rename a project. `project:update` merges — only the name changes; the server
+ *  re-checks manage permission. */
+export function renameProject(id: string, name: string): void {
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  wsSend("project:update", { id, name: trimmed });
+}
+
+/** Delete a project. The server blocks removal while servers are still attached
+ *  (and re-checks permission), so this only succeeds for an empty project. */
+export function removeProject(id: string): void {
+  wsSend("project:remove", { id });
+}
+
 // --- Paginated projects (Projects grid) ---
 
 /** Send the current `$projectsPaged` window to the server for a fresh slice.

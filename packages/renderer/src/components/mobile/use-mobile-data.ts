@@ -128,6 +128,7 @@ export function useMobileProjects(): MockProject[] {
         toServer(p, inst, deploy.instances[inst.id]),
       );
       return {
+        id: p.id,
         name: p.name,
         region: p.vpsRegion ?? "",
         instances,
