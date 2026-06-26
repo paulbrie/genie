@@ -86,6 +86,14 @@ export class StreamJsonParser {
    *  context-occupancy figure. The last single call's prompt size IS the live
    *  occupancy, so we capture it here and use it for the token fields. */
   private lastAssistantUsage: StreamJsonEvent["usage"] | undefined;
+  /** True once the current message's content has been delivered via the
+   *  fine-grained partial-message events (`content_block_*`). Under
+   *  `--output-format stream-json` the CLI streams a message token-by-token AND
+   *  then repeats it verbatim in a consolidated `assistant` snapshot; this flag
+   *  lets us skip the snapshot's text/tool blocks so prose and tool pills aren't
+   *  doubled. Reset at each message boundary; the snapshot is still the sole
+   *  source in assistant-only mode (no partials), where it stays false. */
+  private streamedThisMessage = false;
 
   constructor(
     private readonly emit: (event: ParsedStreamEvent) => void,
@@ -129,11 +137,13 @@ export class StreamJsonParser {
         if (event.content_block?.type === "tool_use") {
           this.currentToolName = event.content_block.name || "";
           this.currentToolInput = "";
+          this.streamedThisMessage = true;
         }
         break;
 
       case "content_block_delta":
         if (event.delta?.type === "text_delta") {
+          this.streamedThisMessage = true;
           this.emit({ kind: "token", text: event.delta.text || "" });
         } else if (event.delta?.type === "input_json_delta") {
           this.currentToolInput += event.delta.partial_json || "";
@@ -152,7 +162,12 @@ export class StreamJsonParser {
 
       case "assistant":
         if (event.message?.usage) this.lastAssistantUsage = event.message.usage;
-        if (Array.isArray(event.message?.content)) {
+        // The consolidated `assistant` snapshot repeats this message's content
+        // verbatim. When the partial-message events already streamed it (text via
+        // `text_delta`, tool calls via `content_block_*`), re-emitting here would
+        // double the prose and the tool pills — so skip. Only emit from the
+        // snapshot in assistant-only mode, where no partials preceded it.
+        if (!this.streamedThisMessage && Array.isArray(event.message?.content)) {
           for (const block of event.message.content) {
             if (block.type === "text" && block.text) {
               this.emit({ kind: "token", text: block.text });
@@ -164,6 +179,7 @@ export class StreamJsonParser {
             }
           }
         }
+        this.streamedThisMessage = false; // next message starts fresh
         break;
 
       // User turn echoed by --replay-user-messages — surfaced so a cold replay of
@@ -208,9 +224,14 @@ export class StreamJsonParser {
         break;
       }
 
+      // A new message begins: clear the per-message "already streamed" flag so the
+      // upcoming partials (or, if none, the consolidated snapshot) are emitted.
+      case "message_start":
+        this.streamedThisMessage = false;
+        break;
+
       // Control acks / SSE bookkeeping — nothing to surface.
       case "control_response":
-      case "message_start":
       case "message_delta":
       case "message_stop":
       case "ping":

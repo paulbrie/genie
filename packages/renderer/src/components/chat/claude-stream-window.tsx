@@ -6,7 +6,7 @@ import { useSubject } from "subjecto/react";
 import { X, Minus, Maximize2, Minimize2, Loader2, ClipboardList, History, Check, Terminal, GitCompareArrows } from "lucide-react";
 import { $claudeStream } from "@/store/subjects/claude-stream";
 import { $reviewDiff } from "@/store/subjects/review-diff";
-import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow, runClaudeStreamBash } from "@/store/actions/claude-stream";
+import { sendClaudeStreamMessage, stopClaudeStream, openClaudeStream, closeClaudeStream, pasteClaudeStreamImage, listClaudeSessions, openClaudeChatWindow, runClaudeStreamBash, dismissClaudeStreamMessage } from "@/store/actions/claude-stream";
 import { openReviewDiff } from "@/store/actions/review-diff";
 import { $auth, $windowManager } from "@/store/subjects";
 import { registerWindow, openWindow, minimizeWindow, closeWindow } from "@/store/actions";
@@ -452,6 +452,7 @@ export function ClaudeStreamWindow({
           showCost={session.claudeInfo?.plan === "API Key"}
           accent="peach"
           messages={session.messages}
+          onDismissError={(msg) => dismissClaudeStreamMessage(session.claudeStreamId, msg)}
           streamingContent={session.streamingContent}
           streamingSteps={session.streamingSteps}
           toolUses={session.toolUses}

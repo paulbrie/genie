@@ -1,5 +1,7 @@
 import { $claudeStream } from "../subjects/claude-stream";
+import { $auth } from "../subjects/auth";
 import { emptyClaudeStreamSession, type ClaudeStreamSession, type ClaudeSessionSummary } from "../types/claude-stream";
+import type { ChatMessage } from "../types/chat";
 import { chatStreamIdForTmux } from "@/lib/claude-session-id";
 import { wsSend, wsRequest } from "@/lib/ws";
 
@@ -7,12 +9,30 @@ import { wsSend, wsRequest } from "@/lib/ws";
 // just-opened window to the front.
 let focusNonce = 0;
 
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/** A short mixed-case alphanumeric token used as the unique session suffix. */
+function randomToken(len = 4): string {
+  let out = "";
+  for (let i = 0; i < len; i++) out += TOKEN_ALPHABET[Math.floor(Math.random() * TOKEN_ALPHABET.length)];
+  return out;
+}
+
+/** tmux-safe slug for the signed-in user: the first word of their name (else the
+ *  local part of their email), lowercased and stripped to [a-z0-9]. "user" if
+ *  unknown. Keeps the session name readable and free of shell/tmux metacharacters. */
+function currentUserSlug(): string {
+  const user = $auth.getValue().user;
+  const raw = user?.name?.trim().split(/\s+/)[0] || user?.email?.split("@")[0]?.split(".")[0] || "";
+  return raw.toLowerCase().replace(/[^a-z0-9]/g, "") || "user";
+}
+
 /** A unique tmux/session name per "new chat" so the Claude button spins up a
- *  fresh, independent session + window every click (the `claude-chat-` prefix
- *  makes the tmux badge render as Claude). Reattaching a specific session passes
- *  its own name instead. */
+ *  fresh, independent session + window every click: `claude-<user>-<token>`.
+ *  The `claude-` prefix makes the tmux badge render as Claude. Reattaching a
+ *  specific session passes its own name instead. */
 function freshGchatTmuxName(): string {
-  return `claude-chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  return `claude-${currentUserSlug()}-${randomToken(4)}`;
 }
 
 /** Mutate a single session in the map (no-op if it's gone). */
@@ -193,6 +213,18 @@ export async function pasteClaudeStreamImage(
   } catch {
     return null;
   }
+}
+
+/** Dismiss a single message (an error card) from a session's log. Error bubbles
+ *  are client-only — they're never written to the on-disk transcript, so the
+ *  manager's replay snapshot never carries them. Dropping one here keeps it gone:
+ *  a reattach/reload rebuilds `messages` from the transcript, which has no errors.
+ *  Removes by reference identity so duplicate-text errors dismiss one at a time. */
+export function dismissClaudeStreamMessage(claudeStreamId: string, target: ChatMessage): void {
+  updateClaudeStreamSession(claudeStreamId, (s) => ({
+    ...s,
+    messages: s.messages.filter((m) => m !== target),
+  }));
 }
 
 export function stopClaudeStream(claudeStreamId: string): void {

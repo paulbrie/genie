@@ -179,6 +179,9 @@ export interface ChatMessageListProps {
   maxToolRounds?: number;
   toolRoundsUsed?: number;
   onRetry?: () => void;
+  /** Dismiss an error card. When provided, error bubbles show a close button that
+   *  removes that message from the log. */
+  onDismissError?: (msg: ChatMessage) => void;
   /** Rendered when there are no messages and nothing is streaming. */
   emptyState?: React.ReactNode;
   /** Show per-turn cost in the footer. False on CLI-subscription sessions, where
@@ -203,6 +206,7 @@ export function ChatMessageList({
   maxToolRounds = 0,
   toolRoundsUsed = 0,
   onRetry,
+  onDismissError,
   emptyState,
   showCost = true,
   accent = "mauve",
@@ -248,7 +252,11 @@ export function ChatMessageList({
               )}
             </div>
           ) : msg.isError || msg.content.startsWith("Error:") ? (
-            <ChatErrorBubble content={msg.content} onRetry={onRetry} />
+            <ChatErrorBubble
+              content={msg.content}
+              onRetry={onRetry}
+              onDismiss={onDismissError ? () => onDismissError(msg) : undefined}
+            />
           ) : msg.steps ? (
             <div className={cn("max-w-[90%] px-2.5 py-1.5 rounded-lg text-md break-words select-text cursor-text text-text rounded-bl-sm")}>
               <StepBlocks steps={msg.steps} />

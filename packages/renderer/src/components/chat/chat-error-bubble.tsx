@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { Copy, RefreshCw } from "lucide-react";
+import { Copy, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ERROR_HINTS: { match: RegExp; title: string; hint: string }[] = [
@@ -35,10 +35,13 @@ function parseErrorContent(raw: string): { title: string; detail: string; hint: 
 interface ChatErrorBubbleProps {
   content: string;
   onRetry?: () => void;
+  /** Dismiss this error card. Errors are client-only, so dismissing drops it for
+   *  good — it won't return on reattach/reload. Omit to hide the close button. */
+  onDismiss?: () => void;
   className?: string;
 }
 
-export function ChatErrorBubble({ content, onRetry, className }: ChatErrorBubbleProps) {
+export function ChatErrorBubble({ content, onRetry, onDismiss, className }: ChatErrorBubbleProps) {
   const { title, detail, hint } = parseErrorContent(content);
 
   const handleCopy = useCallback(() => {
@@ -48,12 +51,22 @@ export function ChatErrorBubble({ content, onRetry, className }: ChatErrorBubble
   return (
     <div
       className={cn(
-        "max-w-[90%] px-2.5 py-2 rounded-lg text-md rounded-bl-sm bg-red/10 text-red border border-red/20",
+        "relative max-w-[90%] px-2.5 py-2 rounded-lg text-md rounded-bl-sm bg-red/10 text-red border border-red/20",
         className,
       )}
       role="alert"
     >
-      <p className="font-medium">{title}</p>
+      {onDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="absolute top-1.5 right-1.5 inline-flex items-center justify-center w-5 h-5 rounded bg-transparent hover:bg-red/15 text-red/60 hover:text-red border-none cursor-pointer transition-colors"
+          aria-label="Dismiss error"
+        >
+          <X size={13} />
+        </button>
+      )}
+      <p className="font-medium pr-5">{title}</p>
       <p className="mt-0.5 break-words text-red/90">{detail}</p>
       {hint && <p className="mt-1.5 text-[11px] text-red/70">{hint}</p>}
       <div className="flex items-center gap-2 mt-2">

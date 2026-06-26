@@ -176,7 +176,10 @@ export async function handleClaudeStreamMessage(
         };
         // Bind to the specific chat session when the renderer names one
         // (per-session chat); else the VM's default chat session.
-        const tmuxName = boundTmuxName && /^claude-chat-[a-zA-Z0-9_-]+$/.test(boundTmuxName)
+        // Accept any `claude-<…>` name (e.g. `claude-<user>-<token>` from the
+        // renderer, or legacy `claude-chat-*`). Restricted to safe chars since
+        // the name is interpolated into shell/tmux commands downstream.
+        const tmuxName = boundTmuxName && /^claude-[a-zA-Z0-9_-]+$/.test(boundTmuxName)
           ? boundTmuxName
           : chatTmuxName(claudeStreamId);
         await startClaudeStream(ws, {

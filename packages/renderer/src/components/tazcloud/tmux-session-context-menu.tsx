@@ -53,7 +53,7 @@ export function TmuxSessionContextMenu({
 
   return (
     <ContextActionMenu x={x} y={y} onClose={onClose} blockClose={deleting}>
-      {onChat && sessionName.startsWith("claude-chat-") && (
+      {onChat && sessionName.startsWith("claude-") && (
         <ActionMenuItem
           icon={Bot}
           disabled={deleting}
@@ -165,7 +165,7 @@ function TmuxSessionMenuSection({
       >
         {sessionName}
       </div>
-      {onChat && sessionName.startsWith("claude-chat-") && (
+      {onChat && sessionName.startsWith("claude-") && (
         <ActionMenuItem icon={Bot} onClick={() => { onChat(sessionName); onClose(); }}>
           Open chat
         </ActionMenuItem>

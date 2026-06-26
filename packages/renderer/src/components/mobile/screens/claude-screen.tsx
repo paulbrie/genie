@@ -10,6 +10,7 @@ import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { $auth, $claudeStream } from "@/store/subjects";
 import {
   closeClaudeStream,
+  dismissClaudeStreamMessage,
   openClaudeChatWindow,
   sendClaudeStreamMessage,
   stopClaudeStream,
@@ -182,6 +183,7 @@ export function ClaudeScreen({
               )}
               <ChatMessageList
                 messages={sess?.messages ?? []}
+                onDismissError={streamId ? (msg) => dismissClaudeStreamMessage(streamId, msg) : undefined}
                 streamingContent={sess?.streamingContent ?? ""}
                 streamingSteps={sess?.streamingSteps ?? []}
                 toolUses={sess?.toolUses ?? []}

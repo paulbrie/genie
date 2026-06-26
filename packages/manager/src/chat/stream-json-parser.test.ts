@@ -51,6 +51,50 @@ describe("StreamJsonParser", () => {
     expect(events).toContainEqual({ kind: "tool", name: "read", input: { path: "/x" }, result: "" });
   });
 
+  it("does not double content when partials are followed by a consolidated assistant snapshot", () => {
+    // Under `--output-format stream-json` the CLI streams a message via
+    // content_block_* partials, then repeats it in an `assistant` snapshot. The
+    // snapshot must not re-emit the already-streamed text or tool calls.
+    const events = parseAll([
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "Digging in:" } }),
+      JSON.stringify({ type: "content_block_start", content_block: { type: "tool_use", name: "bash" } }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '{"cmd":"du"}' } }),
+      JSON.stringify({ type: "content_block_stop" }),
+      // Consolidated snapshot of the SAME message — must be ignored.
+      JSON.stringify({ type: "assistant", message: { content: [
+        { type: "text", text: "Digging in:" },
+        { type: "tool_use", name: "bash", input: { cmd: "du" } },
+      ] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([{ kind: "token", text: "Digging in:" }]);
+    expect(events.filter((e) => e.kind === "tool")).toEqual([{ kind: "tool", name: "bash", input: { cmd: "du" }, result: "" }]);
+  });
+
+  it("still emits from the assistant snapshot when no partials preceded it (assistant-only mode)", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "no partials here" }] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([{ kind: "token", text: "no partials here" }]);
+  });
+
+  it("resets the per-message dedup so a later assistant-only message still emits", () => {
+    const events = parseAll([
+      // Message 1: streamed via partials + snapshot (snapshot ignored).
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "first" } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "first" }] } }),
+      // Message 2: snapshot only (must emit).
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "second" }] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([
+      { kind: "token", text: "first" },
+      { kind: "token", text: "second" },
+    ]);
+  });
+
   it("signals turn completion on a result event (durable sessions never EOF)", () => {
     const events = parseAll([JSON.stringify({ type: "result", subtype: "success", session_id: "s1", result: "done" })]);
     expect(events).toContainEqual({ kind: "turn-done", result: "done" });
