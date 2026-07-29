@@ -1,5 +1,8 @@
 # Genie Knowledge Bundle — Update Log
 
+## 2026-07-29
+* **Creation**: Added [Browser→VM Code Proxy](/vps/code-server-proxy.md) — the "Open in VS Code" flow: the code-server recipe, the `vps:code` state machine with detached installs, and the Manager's SSH-tunneled HTTP/WebSocket proxy with HMAC-token access.
+
 ## 2026-06-14
 * **Initialization**: Created the bundle root and the `recipes/` section.
 * **Creation**: Established the [Recipe](/recipes/recipe.md) concept document.
