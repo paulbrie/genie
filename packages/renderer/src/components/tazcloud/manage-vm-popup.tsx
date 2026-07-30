@@ -1,7 +1,7 @@
 "use client";
 
 // The Manage popup: a draggable, resizable floating window with a tab strip
-// (Manage / Firewall / Ports / Processes / Sessions / Commands / Files / DB).
+// (Manage / Firewall / Ports / Processes / Commands / Files / DB).
 // Provider-agnostic — same component is mounted by tazcloud-panel and
 // digitalocean-panel via the shared `ManageVmWindows` mount.
 
@@ -11,16 +11,16 @@ import { batch } from "subjecto";
 import { useSubject } from "subjecto/react";
 import {
   Activity, ArrowDownUp, Bot, Brain, Check, ChevronDown, Cpu, Database as DatabaseIcon, FolderTree, GitBranch, KeyRound, Link2, Loader2,
-  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, Puzzle, RefreshCw, ScrollText,
-  Settings as SettingsIcon, Shield, Sparkles, Terminal, TriangleAlert, Trash2, X,
+  Maximize2, Minimize2, Minus, Moon, Network, Plug, PlayCircle, Puzzle, ScrollText,
+  Settings as SettingsIcon, Shield, Sparkles, Terminal, TriangleAlert, X,
 } from "lucide-react";
-import { $admin, $auth, $persistedTerminals, $projects, $vpsDeploy, $vpsStatsSync, $windowManager } from "@/store/subjects";
-import type { FloatingWindowState, PersistedTerminalSession, VpsDeployState } from "@/store/types";
+import { $admin, $auth, $projects, $vpsDeploy, $vpsStatsSync, $windowManager } from "@/store/subjects";
+import type { FloatingWindowState, VpsDeployState } from "@/store/types";
 import {
   adminDropletExec, adminHetznerExec, adminTazcloudExec, checkVpsRecipe, closeWindow,
   ensureAdminServerTunnelAsync, fetchVpsStats, focusWindow, loadRecipes,
-  releaseAdminServerTunnel, hibernateVps, killPersistedTerminal, killVmTmuxSession, loadPersistedTerminals,
-  minimizeWindow, openWindow, reattachPersistedTerminal, refreshVmTmuxSessions, registerWindow, renameVmTmuxSession, syncVmStatsAgent, unwatchVpsStats,
+  releaseAdminServerTunnel, hibernateVps,
+  minimizeWindow, openWindow, refreshVmTmuxSessions, registerWindow, syncVmStatsAgent, unwatchVpsStats,
   updateWindowPosition, vpsExec, watchVpsStats, openClaudeChatWindow,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
@@ -49,8 +49,6 @@ import { imageDefaultUser } from "./helpers";
 import { VmHostConnectionsPanel, useVmHostSshRegistry } from "./vm-host-connections-panel";
 import { track } from "@/lib/analytics";
 import { resolveManageVmLinked, TmuxSessionBadges } from "./tmux-session-badges";
-import { TmuxSessionContextMenu } from "./tmux-session-context-menu";
-import { TmuxRenameDialog } from "./tmux-rename-dialog";
 
 const MANAGE_VM_WINDOW_PREFIX = "manage-vm-";
 /** Default size + cascade offset for any Manage popup variant. Exported so the
@@ -472,7 +470,7 @@ function InstallMcpsButton({ projectId, instanceId }: { projectId: string; insta
 }
 
 /** Generate a fresh, human-readable tmux session name for a Claude launch.
- *  The `claude-` prefix lets the Sessions tab + badge row label it as Claude. */
+ *  The `claude-` prefix lets the badge row label it as Claude. */
 function freshClaudeTmuxName(): string {
   return `claude-${Date.now().toString(36)}`;
 }
@@ -956,7 +954,7 @@ function AddSshKeyForm({ exec, connectUser, host }: { exec: VmExecFn; connectUse
   );
 }
 
-type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "sessions" | "traffic" | "agents" | "claude-logs" | "claude-memory" | "claude-plugins" | "skills" | "files" | "db" | "commands" | "github";
+type ManageTab = "manage" | "ssh" | "firewall" | "ports" | "processes" | "traffic" | "agents" | "claude-logs" | "claude-memory" | "claude-plugins" | "skills" | "files" | "db" | "commands" | "github";
 
 /** Inline "Manage" panel rendered under a VM row. Tabs:
  *  - Manage:   recipes + system (always available, runs as image-default sudo user)
@@ -1155,7 +1153,6 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
     { key: "firewall", label: "Firewall", icon: Shield, enabled: true },
     { key: "ports", label: "Ports", icon: Network, enabled: true },
     { key: "processes", label: "Processes", icon: Cpu, enabled: true },
-    { key: "sessions", label: "Sessions", icon: Activity, enabled: true },
     { key: "traffic", label: "Traffic", icon: ArrowDownUp, enabled: hasProject, reason: "Attach this VM to a project to view traffic" },
     { key: "claude-logs", label: "Claude Logs", icon: ScrollText, enabled: true },
     { key: "claude-memory", label: "Claude Memory", icon: Brain, enabled: true },
@@ -1323,10 +1320,6 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
             <VpsProcessesPanel exec={exec} />
           )}
 
-          {tab === "sessions" && (
-            <VmSessionsTab vmHost={vm.host} />
-          )}
-
           {tab === "claude-logs" && (
             <VmClaudeLogsTab exec={exec} />
           )}
@@ -1428,194 +1421,3 @@ function DropletSleepControl({ projectId, instanceId }: { projectId: string; ins
   );
 }
 
-const SESSION_STALE_MS = 7 * 24 * 60 * 60 * 1000;
-
-function formatLastActivity(iso: string): string {
-  const d = new Date(iso).getTime();
-  const diff = Date.now() - d;
-  if (diff < 60_000) return "just now";
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  const months = Math.floor(days / 30);
-  return `${months}mo ago`;
-}
-
-/** Lists persistent tmux/PTY sessions registered against this VM, and lets the
- *  user kill stale ones. Kill ≠ forget: kill SSHs to the VM and runs
- *  `tmux kill-session`, then drops the registry row. Superadmin sees every
- *  user's sessions on the host; everyone else sees only their own. */
-function VmSessionsTab({ vmHost }: { vmHost: string }) {
-  const [auth] = useSubject($auth);
-  const [pt] = useSubject($persistedTerminals);
-  const isSuperAdmin = auth.user?.role === "superadmin";
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; session: PersistedTerminalSession } | null>(null);
-  const [renameTarget, setRenameTarget] = useState<PersistedTerminalSession | null>(null);
-
-  const refresh = useCallback(() => {
-    loadPersistedTerminals({
-      vpsHost: vmHost,
-      // Reset other filters so a previous History-panel scope doesn't bleed in.
-      projectId: null,
-      instanceId: null,
-      // null = all users (superadmin); undefined = scoped to caller for others.
-      ownerId: isSuperAdmin ? null : undefined,
-    });
-  }, [vmHost, isSuperAdmin]);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  // Client-side filter as well — the singleton subject is shared with the
-  // History panel, so its last load could have a different scope.
-  const sessions = useMemo<PersistedTerminalSession[]>(
-    () => pt.sessions.filter((s) => s.vpsHost === vmHost),
-    [pt.sessions, vmHost],
-  );
-
-  const now = Date.now();
-  const staleSessions = sessions.filter((s) => now - new Date(s.lastActivity).getTime() > SESSION_STALE_MS);
-
-  const clearStale = useCallback(() => {
-    for (const s of staleSessions) killPersistedTerminal(s.id);
-  }, [staleSessions]);
-
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
-
-  const handleSessionRename = useCallback((session: PersistedTerminalSession) => {
-    if (!session.projectId || !session.instanceId) {
-      window.alert("Cannot rename — session is not linked to a project VPS.");
-      return;
-    }
-    setRenameTarget(session);
-  }, []);
-
-  const submitSessionRename = useCallback((newName: string) => {
-    if (!renameTarget?.projectId || !renameTarget.instanceId) return;
-    const tmuxName = renameTarget.id;
-    void renameVmTmuxSession(renameTarget.projectId, renameTarget.instanceId, tmuxName, newName).then((res) => {
-      setRenameTarget(null);
-      if (res.error) window.alert(res.output || "Rename failed");
-      else refresh();
-    });
-  }, [renameTarget, refresh]);
-
-  const handleSessionDelete = useCallback(async (session: PersistedTerminalSession) => {
-    if (session.projectId && session.instanceId) {
-      const res = await killVmTmuxSession(session.projectId, session.instanceId, session.id);
-      if (res.error) {
-        window.alert(res.output || "Delete failed");
-        throw new Error(res.output || "Delete failed");
-      }
-    }
-    killPersistedTerminal(session.id);
-    refresh();
-  }, [refresh]);
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs text-overlay0 max-w-2xl">
-          Persistent terminal sessions registered for <span className="font-mono text-overlay1">{vmHost}</span>.
-          Killing a session terminates the tmux process on the VM and removes the registry row.
-          {!isSuperAdmin && " You see only your own sessions."}
-        </p>
-        <div className="flex items-center gap-2 shrink-0">
-          {staleSessions.length > 0 && (
-            <Button variant="ghost" size="sm" onClick={clearStale} title={`Kill ${staleSessions.length} session(s) inactive for >7d`}>
-              <Trash2 size={13} className="mr-1" />
-              Clear {staleSessions.length} stale
-            </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={refresh} disabled={pt.loading} title="Refresh">
-            {pt.loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          </Button>
-        </div>
-      </div>
-
-      {pt.loading && sessions.length === 0 ? (
-        <div className="flex items-center gap-2 text-overlay0 text-md py-4">
-          <Loader2 size={14} className="animate-spin" /> Loading sessions…
-        </div>
-      ) : sessions.length === 0 ? (
-        <div className="text-overlay0 text-md py-6 text-center border border-surface0 rounded">
-          No registered sessions on this VM.
-        </div>
-      ) : (
-        <ul className="divide-y divide-surface0 border border-surface0 rounded overflow-hidden">
-          {sessions.map((s) => {
-            const age = now - new Date(s.lastActivity).getTime();
-            const stale = age > SESSION_STALE_MS;
-            const isClaude = s.kind === "claude" || s.kind === "claude-tmux";
-            const baseLabel = isClaude ? "Claude" : "Shell";
-            const tmuxSuffix = s.kind === "claude-tmux" ? " (tmux)" : "";
-            const title = s.commandLabel ? `${s.commandLabel}${tmuxSuffix}` : `${baseLabel}${tmuxSuffix}`;
-            return (
-              <li
-                key={s.id}
-                className="flex items-center gap-3 px-3 py-2 hover:bg-surface0/40 transition-colors"
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setContextMenu({ x: e.clientX, y: e.clientY, session: s });
-                }}
-              >
-                <Terminal size={14} className={cn("shrink-0", isClaude ? "text-mauve" : "text-overlay1")} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-text font-medium truncate" style={{ fontSize: 13 }}>{title}</span>
-                    <span className="font-mono text-overlay0 shrink-0" style={{ fontSize: 11 }}>{s.id}</span>
-                    {stale && (
-                      <span className="px-1.5 py-0.5 rounded bg-peach/15 text-peach shrink-0" style={{ fontSize: 10 }}>
-                        stale
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 text-overlay0 mt-0.5 flex-wrap" style={{ fontSize: 11 }}>
-                    {isSuperAdmin && <span className="font-mono">user {s.ownerId.slice(0, 8)}</span>}
-                    <span>last active {formatLastActivity(s.lastActivity)}</span>
-                  </div>
-                </div>
-                <button
-                  onClick={() => reattachPersistedTerminal(s)}
-                  title="Reattach to this terminal in the bottom panel"
-                  className="flex items-center gap-1 px-2 py-1 rounded bg-mauve/20 text-mauve hover:bg-mauve/30 transition-colors"
-                  style={{ fontSize: 11 }}
-                >
-                  <Plug size={11} />
-                  Resume
-                </button>
-                <button
-                  onClick={() => killPersistedTerminal(s.id)}
-                  title="Kill the tmux session on the VPS and remove from the registry"
-                  className="p-1.5 rounded hover:bg-red/20 text-overlay0 hover:text-red transition-colors"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {contextMenu && (
-        <TmuxSessionContextMenu
-          sessionName={contextMenu.session.commandLabel || contextMenu.session.id}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={closeContextMenu}
-          onRename={() => handleSessionRename(contextMenu.session)}
-          onDelete={async () => handleSessionDelete(contextMenu.session)}
-          deleteConfirmMessage={`Kill terminal session "${contextMenu.session.commandLabel || contextMenu.session.id}"?`}
-        />
-      )}
-      {renameTarget && (
-        <TmuxRenameDialog
-          sessionName={renameTarget.id}
-          onConfirm={submitSessionRename}
-          onClose={() => setRenameTarget(null)}
-        />
-      )}
-    </div>
-  );
-}
