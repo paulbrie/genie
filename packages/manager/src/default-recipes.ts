@@ -1372,6 +1372,279 @@ systemctl daemon-reload && systemctl enable --now nextjs-dev`,
     ],
   },
   {
+    slug: "dotnet-sdk",
+    label: ".NET SDK",
+    icon: "Box",
+    description:
+      "Install the .NET SDK (portable install at /opt/dotnet, 'dotnet' on PATH via /usr/local/bin). Uses Microsoft's dotnet-install.sh — distro-agnostic, sidesteps the Ubuntu-vs-Microsoft apt repo conflict. Prereq for the 'ASP.NET Core (dev)' recipe.",
+    port: null,
+    checkScript: `if command -v dotnet > /dev/null 2>&1 && dotnet --list-sdks 2>/dev/null | grep -q .; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+set -o pipefail
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+# builds.dotnet.microsoft.com and api.nuget.org sit behind CDNs with the same
+# broken-IPv6 symptom as npm on Taz VMs — prefer v4 (taz-ipv6-quirk).
+force_ipv4_dns
+DOTNET_CHANNEL="\${DOTNET_CHANNEL:-10.0}"
+DOTNET_ROOT=/opt/dotnet
+
+# ICU is the one native dependency the portable SDK needs that minimal images may lack.
+if command -v apt-get > /dev/null 2>&1; then
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+  wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq libicu-dev curl ca-certificates > /dev/null
+elif command -v dnf > /dev/null 2>&1; then
+  sudo dnf install -y -q libicu curl ca-certificates > /dev/null
+else
+  log "No apt-get/dnf found — assuming ICU is already present."
+fi
+
+log "Installing .NET SDK channel \${DOTNET_CHANNEL} to $DOTNET_ROOT (downloads ~200MB, 1-3 min)..."
+curl -4 -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+sudo bash /tmp/dotnet-install.sh --channel "$DOTNET_CHANNEL" --install-dir "$DOTNET_ROOT" 2>&1 | sed 's/^/  /'
+rm -f /tmp/dotnet-install.sh
+
+# The muxer resolves its root through the symlink, so this is enough for CLI use;
+# DOTNET_ROOT below covers apphost-launched binaries and 'dotnet tool' installs.
+sudo ln -sf "$DOTNET_ROOT/dotnet" /usr/local/bin/dotnet
+sudo tee /etc/profile.d/dotnet.sh > /dev/null <<'EOF'
+export DOTNET_ROOT=/opt/dotnet
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export PATH="$PATH:/opt/dotnet:$HOME/.dotnet/tools"
+EOF
+
+log "Installed: .NET SDK $(dotnet --version)"`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+if systemctl list-unit-files --type=service 2>/dev/null | grep -q '^dotnet-dev.service'; then
+  log "WARNING: dotnet-dev.service exists and depends on this SDK — uninstall 'ASP.NET Core (dev)' first if it should stop working cleanly."
+fi
+log "Removing .NET SDK from /opt/dotnet..."
+sudo rm -rf /opt/dotnet
+sudo rm -f /usr/local/bin/dotnet /etc/profile.d/dotnet.sh
+log "Note: per-user NuGet caches (~/.nuget) are left in place."
+log "Removed."`,
+    setupShSnippet: `# .NET SDK — portable install at /opt/dotnet, 'dotnet' on PATH via /usr/local/bin symlink
+command -v apt-get > /dev/null 2>&1 && apt-get -o Acquire::ForceIPv4=true install -y -qq libicu-dev > /dev/null
+curl -4 -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /opt/dotnet 2>&1 | tail -3
+rm -f /tmp/dotnet-install.sh
+ln -sf /opt/dotnet/dotnet /usr/local/bin/dotnet
+printf 'export DOTNET_ROOT=/opt/dotnet\\nexport DOTNET_CLI_TELEMETRY_OPTOUT=1\\nexport PATH="$PATH:/opt/dotnet:$HOME/.dotnet/tools"\\n' > /etc/profile.d/dotnet.sh`,
+    options: [
+      {
+        name: "DOTNET_CHANNEL",
+        label: ".NET version",
+        choices: [
+          { value: "10.0", label: ".NET 10 (LTS)" },
+          { value: "9.0", label: ".NET 9" },
+          { value: "8.0", label: ".NET 8 (LTS)" },
+        ],
+        defaultValue: "10.0",
+      },
+    ],
+    commands: [
+      { name: "Version", command: "dotnet --version" },
+      { name: "List SDKs", command: "dotnet --list-sdks" },
+      { name: "List runtimes", command: "dotnet --list-runtimes" },
+      { name: "Info", command: "dotnet --info | head -30" },
+      { name: "Where installed", command: "command -v dotnet && ls -la $(command -v dotnet) && du -sh /opt/dotnet" },
+    ],
+  },
+  {
+    slug: "dotnet-dev",
+    label: "ASP.NET Core (dev)",
+    icon: "Braces",
+    description:
+      "Scaffold an ASP.NET Core app at /opt/project and run 'dotnet watch' as the 'dotnet-dev' systemd service on port 5000. Logs append to /var/log/dotnet-dev.log (see CLAUDE.md → VPS Service Logs). Requires the '.NET SDK' recipe.",
+    port: 5000,
+    checkScript: `if command -v dotnet > /dev/null 2>&1 && ls /opt/project/*.csproj > /dev/null 2>&1 && systemctl is-enabled --quiet dotnet-dev 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+set -o pipefail
+${BASH_HELPERS}
+# Log path is the convention in CLAUDE.md → VPS Service Logs. Keep these in sync.
+LOG_FILE=/var/log/dotnet-dev.log
+force_ipv4_dns
+DOTNET_TEMPLATE="\${DOTNET_TEMPLATE:-webapp}"
+
+# Prereqs: dotnet ('.NET SDK' recipe), the 'genie' user ('Genie Standard Setup').
+if ! command -v dotnet > /dev/null 2>&1; then
+  log "ERROR: dotnet missing — install the '.NET SDK' recipe first."; exit 1
+fi
+if ! id genie > /dev/null 2>&1; then
+  log "ERROR: 'genie' user missing — install 'Genie Standard Setup' first."; exit 1
+fi
+sudo mkdir -p /opt/project
+sudo chown -R genie:genie /opt/project
+log ".NET SDK: $(dotnet --version)"
+
+# Scaffold only when /opt/project isn't already a .NET project. Unlike
+# create-next-app there's no parent-dir writability trap — 'dotnet new -o .'
+# writes straight into the (genie-owned) target dir.
+if ls /opt/project/*.csproj > /dev/null 2>&1; then
+  log ".NET project already present at /opt/project — skipping scaffold."
+else
+  if [ -n "$(ls -A /opt/project 2>/dev/null)" ]; then
+    log "ERROR: /opt/project not empty and not a .NET project — refusing to overwrite."; exit 1
+  fi
+  # --no-https: headless VM, no dev-cert; TLS is terminated upstream by the router.
+  log "Scaffolding 'dotnet new \${DOTNET_TEMPLATE}' at /opt/project..."
+  sudo -H -u genie bash -lc "cd /opt/project && DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 dotnet new '$DOTNET_TEMPLATE' -n App -o . --no-https" 2>&1 | sed 's/^/  /'
+fi
+
+# First restore+build as genie so NuGet errors surface here with logs, instead
+# of the systemd unit silently looping on a failed restore.
+log "Restoring and building (first NuGet restore can take 1-3 min)..."
+sudo -H -u genie bash -lc "cd /opt/project && DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SYSTEM_NET_DISABLEIPV6=1 dotnet build" 2>&1 | sed 's/^/  /'
+
+# systemd 'append:' requires the file to be writable by the service User.
+log "Preparing log file $LOG_FILE..."
+sudo touch "$LOG_FILE"
+sudo chown genie:genie "$LOG_FILE"
+sudo chmod 644 "$LOG_FILE"
+
+# Resolve paths now (systemd units don't inherit interactive PATH), and derive
+# DOTNET_ROOT from the real binary location rather than hardcoding /opt/dotnet.
+DOTNET_PATH=$(command -v dotnet)
+DOTNET_ROOT_DIR=$(dirname "$(readlink -f "$DOTNET_PATH")")
+log "Writing /etc/systemd/system/dotnet-dev.service (ExecStart=$DOTNET_PATH watch run)..."
+sudo tee /etc/systemd/system/dotnet-dev.service > /dev/null <<UNIT
+[Unit]
+Description=ASP.NET Core dev server — dotnet watch (Genie)
+After=network.target
+
+[Service]
+Type=simple
+User=genie
+WorkingDirectory=/opt/project
+Environment=DOTNET_ROOT=$DOTNET_ROOT_DIR
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_NOLOGO=1
+Environment=DOTNET_SYSTEM_NET_DISABLEIPV6=1
+Environment=DOTNET_WATCH_RESTART_ON_RUDE_EDIT=1
+Environment=ASPNETCORE_URLS=http://0.0.0.0:5000
+ExecStart=$DOTNET_PATH watch run --no-launch-profile
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+log "Reloading systemd and starting dotnet-dev..."
+sudo systemctl daemon-reload
+sudo systemctl enable dotnet-dev > /dev/null 2>&1 || true
+sudo systemctl restart dotnet-dev
+
+log "Waiting for dotnet-dev to become active..."
+for i in $(seq 1 30); do
+  if sudo systemctl is-active --quiet dotnet-dev; then
+    log "  systemd: active after \${i}s."
+    break
+  fi
+  sleep 1
+done
+if ! sudo systemctl is-active --quiet dotnet-dev; then
+  log "ERROR: dotnet-dev failed to reach active state. Recent status:"
+  sudo systemctl status dotnet-dev --no-pager 2>&1 | head -30 || true
+  log "Recent log lines ($LOG_FILE):"
+  sudo tail -n 50 "$LOG_FILE" 2>/dev/null || true
+  exit 1
+fi
+
+# 'dotnet watch' re-runs restore+build before Kestrel listens — poll until the
+# port actually answers, which is the real confirmation the user can hit the app.
+log "Waiting for HTTP on port 5000 (dotnet watch first build can take 30s+)..."
+ready=0
+for i in $(seq 1 60); do
+  code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:5000/ 2>/dev/null || echo 000)
+  if [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ]; then
+    log "  HTTP \${code} from http://127.0.0.1:5000/ after \${i}s — server is up."
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$ready" != "1" ]; then
+  log "WARNING: service is active but port 5000 did not respond in 60s. Recent log lines:"
+  sudo tail -n 50 "$LOG_FILE" 2>/dev/null || true
+  log "Check 'sudo journalctl -u dotnet-dev -n 100' and $LOG_FILE for build errors."
+  exit 1
+fi
+
+sudo systemctl status dotnet-dev --no-pager 2>&1 | head -10 || true
+log "Done. Service: dotnet-dev   Port: 5000 (responding)   Logs: $LOG_FILE"`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Stopping and disabling dotnet-dev.service..."
+sudo systemctl disable --now dotnet-dev 2>/dev/null || true
+sudo rm -f /etc/systemd/system/dotnet-dev.service
+sudo systemctl daemon-reload
+log "Note: /opt/project source and /var/log/dotnet-dev.log are left in place — remove manually if desired."
+log "Done."`,
+    setupShSnippet: `# ASP.NET Core app at /opt/project + dotnet-dev systemd service (logs → /var/log/dotnet-dev.log)
+LOG_FILE=/var/log/dotnet-dev.log
+mkdir -p /opt/project && chown -R genie:genie /opt/project
+if ! ls /opt/project/*.csproj > /dev/null 2>&1; then
+  sudo -H -u genie bash -lc "cd /opt/project && DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 dotnet new webapp -n App -o . --no-https" 2>&1 | tail -5
+  sudo -H -u genie bash -lc "cd /opt/project && DOTNET_SYSTEM_NET_DISABLEIPV6=1 dotnet build" 2>&1 | tail -5
+fi
+touch "$LOG_FILE" && chown genie:genie "$LOG_FILE" && chmod 644 "$LOG_FILE"
+DOTNET_PATH=$(command -v dotnet)
+DOTNET_ROOT_DIR=$(dirname "$(readlink -f "$DOTNET_PATH")")
+cat > /etc/systemd/system/dotnet-dev.service <<UNIT
+[Unit]
+Description=ASP.NET Core dev server — dotnet watch (Genie)
+After=network.target
+[Service]
+Type=simple
+User=genie
+WorkingDirectory=/opt/project
+Environment=DOTNET_ROOT=$DOTNET_ROOT_DIR
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_NOLOGO=1
+Environment=DOTNET_SYSTEM_NET_DISABLEIPV6=1
+Environment=DOTNET_WATCH_RESTART_ON_RUDE_EDIT=1
+Environment=ASPNETCORE_URLS=http://0.0.0.0:5000
+ExecStart=$DOTNET_PATH watch run --no-launch-profile
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload && systemctl enable --now dotnet-dev`,
+    options: [
+      {
+        name: "DOTNET_TEMPLATE",
+        label: "Project template",
+        choices: [
+          { value: "webapp", label: "Web App (Razor Pages)" },
+          { value: "webapi", label: "Web API" },
+          { value: "blazor", label: "Blazor Web App" },
+          { value: "mvc", label: "MVC" },
+        ],
+        defaultValue: "webapp",
+      },
+    ],
+    commands: [
+      { name: "Service status", command: "sudo systemctl status dotnet-dev --no-pager 2>&1 | head -25" },
+      { name: "Tail logs (last 80)", command: "sudo tail -n 80 /var/log/dotnet-dev.log" },
+      { name: "Follow logs (5s)", command: "sudo timeout 5 tail -n 30 -f /var/log/dotnet-dev.log || true" },
+      { name: "Restart service", command: "sudo systemctl restart dotnet-dev && sleep 2 && sudo systemctl status dotnet-dev --no-pager 2>&1 | head -10" },
+      { name: "Stop service", command: "sudo systemctl stop dotnet-dev" },
+      { name: "Start service", command: "sudo systemctl start dotnet-dev" },
+      { name: ".NET SDK version", command: "dotnet --version" },
+      { name: "Clear log file", command: "sudo truncate -s 0 /var/log/dotnet-dev.log && echo 'cleared'" },
+      { name: "Hit local URL", command: "curl -fsS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\\n' http://127.0.0.1:5000/ || echo 'not reachable yet'" },
+    ],
+  },
+  {
     slug: "crawl4ai",
     label: "Crawl4AI",
     icon: "Globe",

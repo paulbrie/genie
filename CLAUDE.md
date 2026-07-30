@@ -17,3 +17,4 @@
 
 ## VPS Service Logs
 - Next.js dev service (recipe `nextjs`) logs to `/var/log/nextjs-dev.log` on the VM. Recipes installing this service must write their systemd unit's `StandardOutput`/`StandardError` to this path.
+- ASP.NET Core dev service (recipe `dotnet-dev`) logs to `/var/log/dotnet-dev.log`, same rule.
