@@ -46,6 +46,7 @@ export function OpenInVsCode({ projectId, instanceId }: { projectId: string; ins
   const mountedRef = useRef(true);
   const loopRef = useRef(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastOpenRef = useRef(0);
 
   const runSetup = useCallback(async () => {
     if (loopRef.current) return;
@@ -123,6 +124,10 @@ export function OpenInVsCode({ projectId, instanceId }: { projectId: string; ins
 
   const openVsCode = useCallback(() => {
     if (!status?.path) return;
+    // A double-click (or a double-dispatched click) would spawn two tabs.
+    const now = Date.now();
+    if (now - lastOpenRef.current < 1000) return;
+    lastOpenRef.current = now;
     if (status.password) {
       navigator.clipboard?.writeText(status.password)
         .then(() => flashNotice("Password copied — paste it on the login page"))

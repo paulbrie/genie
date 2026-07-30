@@ -151,6 +151,11 @@ async function openUpstreamChannel(projectId: string, instanceId: string) {
   return session.forwardOut("127.0.0.1", CODE_SERVER_PORT);
 }
 
+/** Request path with the query stripped — safe to log (no gtoken). */
+function logPath(rawUrl: string | undefined): string {
+  return (rawUrl || "").split("?")[0];
+}
+
 // --- HTTP proxying ---
 
 /** Handle a /code/… request. Call before any other routing (and before CORS
@@ -212,7 +217,8 @@ export async function handleCodeProxyRequest(req: http.IncomingMessage, res: htt
       res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
       proxyRes.pipe(res);
     });
-    proxyReq.on("error", () => {
+    proxyReq.on("error", (err) => {
+      console.error(`[code-proxy] upstream request failed for ${logPath(req.url)}: ${err.message}`);
       if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
       res.end("code-server unreachable on the VM (is the service running?)");
       try { channel.destroy(); } catch { /* ignore */ }
@@ -222,6 +228,7 @@ export async function handleCodeProxyRequest(req: http.IncomingMessage, res: htt
     });
     req.pipe(proxyReq);
   } catch (err: unknown) {
+    console.error(`[code-proxy] request failed for ${logPath(req.url)}:`, err instanceof Error ? err.message : err);
     if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
     res.end(`Proxy error: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -234,6 +241,7 @@ export async function handleCodeProxyRequest(req: http.IncomingMessage, res: htt
  *  editor, terminals and extensions all run over this. */
 export async function handleCodeProxyUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
   const refuse = (status: string) => {
+    console.error(`[code-proxy] upgrade refused (${status}) for ${logPath(req.url)}`);
     try { socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`); } catch { /* ignore */ }
     try { socket.destroy(); } catch { /* ignore */ }
   };
@@ -271,7 +279,8 @@ export async function handleCodeProxyUpgrade(req: http.IncomingMessage, socket: 
     channel.on("error", teardown);
     socket.on("close", teardown);
     channel.on("close", teardown);
-  } catch {
+  } catch (err: unknown) {
+    console.error(`[code-proxy] upgrade failed for ${logPath(req.url)}:`, err instanceof Error ? err.message : err);
     refuse("502 Bad Gateway");
   }
 }
