@@ -8,6 +8,7 @@ import { File, Folder, ArrowLeft, Save, RefreshCw, Loader2, FileEdit, Trash2, Do
 import { wsRequest, wsSend } from "@/lib/ws";
 import { formatBytes } from "@/lib/utils";
 import { ErrorMessage } from "@/components/ui/error-message";
+import { OpenInVsCode } from "@/components/project/open-in-vscode-button";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ssr: false,
@@ -600,6 +601,8 @@ export function FileExplorer({ project, instance }: {
             }}
           />
         </div>
+
+        <OpenInVsCode projectId={project.id} instanceId={inst.id} />
 
         {error && (
           <ErrorMessage variant="banner" className="shrink-0">{error}</ErrorMessage>

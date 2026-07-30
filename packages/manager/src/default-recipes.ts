@@ -54,6 +54,128 @@ wait_apt() {
   log "apt lock released after \${i}s."
 }`;
 
+// --- code-server (VS Code in the browser) ---
+// The install script is exported separately because the "Open in VS Code"
+// flow (handlers/code-server-handler.ts) runs it detached over SSH on first
+// click — outside the normal recipe-apply path. Keep recipe and handler on
+// the same script by construction.
+
+/** Local port code-server listens on. 127.0.0.1-only — the public path is
+ *  /code/<projectId>/<instanceId>/ on the manager, tunneled to the VM over
+ *  SSH (see vps/code-server-proxy.ts). 8080 is taken by the navision
+ *  recipe, so we use code-server's documented alternate 13337. */
+export const CODE_SERVER_PORT = 13337;
+
+export const CODE_SERVER_CHECK_SCRIPT = `if command -v code-server > /dev/null 2>&1 && systemctl is-enabled --quiet code-server 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`;
+
+export const CODE_SERVER_INSTALL_SCRIPT = `set -e
+set -o pipefail
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+LOG_FILE=/var/log/code-server.log
+# code-server's install.sh pulls the .deb from GitHub releases (Fastly-fronted)
+# — broken IPv6 on Taz VMs, so prefer v4 (taz-ipv6-quirk).
+force_ipv4_dns
+
+# Prereqs (provided by 'Genie Standard Setup'): the 'genie' user and /opt/project.
+if ! id genie > /dev/null 2>&1; then
+  log "ERROR: 'genie' user missing — install 'Genie Standard Setup' first."; exit 1
+fi
+if [ ! -d /opt/project ]; then
+  sudo mkdir -p /opt/project
+  sudo chown genie:genie /opt/project
+fi
+
+if command -v code-server > /dev/null 2>&1; then
+  log "code-server already installed ($(code-server --version 2>/dev/null | head -1))."
+else
+  log "Installing code-server (downloads ~100MB from GitHub releases, 1-3 min)..."
+  curl -4 -fsSL https://code-server.dev/install.sh | sudo bash 2>&1 | sed 's/^/  /'
+fi
+
+# Per-VM generated password — created once, kept across re-installs. The
+# manager never stores it; the handler reads it back from this file on demand.
+CFG=/home/genie/.config/code-server/config.yaml
+if ! sudo test -s "$CFG"; then
+  log "Generating code-server password..."
+  PW=$(openssl rand -hex 16)
+  sudo -u genie mkdir -p /home/genie/.config/code-server
+  printf 'bind-addr: 127.0.0.1:13337\\nauth: password\\npassword: %s\\ncert: false\\n' "$PW" | sudo -u genie tee "$CFG" > /dev/null
+  sudo chmod 600 "$CFG"
+else
+  log "Existing config at $CFG — keeping current password."
+fi
+
+# systemd 'append:' requires the file to be writable by the service User.
+log "Preparing log file $LOG_FILE..."
+sudo touch "$LOG_FILE"
+sudo chown genie:genie "$LOG_FILE"
+sudo chmod 644 "$LOG_FILE"
+
+# Own unit instead of the shipped code-server@.service: pins the workspace to
+# /opt/project and follows the /var/log/<svc>.log convention (CLAUDE.md).
+CS_PATH=$(command -v code-server)
+log "Writing /etc/systemd/system/code-server.service (ExecStart=$CS_PATH /opt/project)..."
+sudo tee /etc/systemd/system/code-server.service > /dev/null <<UNIT
+[Unit]
+Description=code-server — VS Code in the browser (Genie)
+After=network.target
+
+[Service]
+Type=simple
+User=genie
+WorkingDirectory=/opt/project
+ExecStart=$CS_PATH /opt/project
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+log "Reloading systemd and starting code-server..."
+sudo systemctl daemon-reload
+sudo systemctl enable code-server > /dev/null 2>&1 || true
+sudo systemctl restart code-server
+
+log "Waiting for code-server to become active..."
+for i in $(seq 1 30); do
+  if sudo systemctl is-active --quiet code-server; then
+    log "  systemd: active after \${i}s."
+    break
+  fi
+  sleep 1
+done
+if ! sudo systemctl is-active --quiet code-server; then
+  log "ERROR: code-server failed to reach active state. Recent status:"
+  sudo systemctl status code-server --no-pager 2>&1 | head -30 || true
+  log "Recent log lines ($LOG_FILE):"
+  sudo tail -n 50 "$LOG_FILE" 2>/dev/null || true
+  exit 1
+fi
+
+log "Waiting for HTTP on 127.0.0.1:13337..."
+ready=0
+for i in $(seq 1 30); do
+  code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:13337/ 2>/dev/null || echo 000)
+  if [ "$code" != "000" ]; then
+    log "  HTTP \${code} from http://127.0.0.1:13337/ after \${i}s — server is up."
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$ready" != "1" ]; then
+  log "ERROR: service is active but port 13337 did not respond in 30s. Recent log lines:"
+  sudo tail -n 50 "$LOG_FILE" 2>/dev/null || true
+  exit 1
+fi
+
+log "Done. Service: code-server   Port: 13337 (local-only)   Logs: $LOG_FILE"`;
+
 export const DEFAULT_RECIPES: RecipeInput[] = [
   {
     slug: "genie-standard",
@@ -1372,6 +1494,34 @@ docker run -d --name crawl4ai \\
       { name: "Edit LLM keys", command: "echo 'Add keys to /opt/crawl4ai/.llm.env (e.g. OPENAI_API_KEY=sk-...), then: docker restart crawl4ai'" },
       { name: "View agent MCP entry", command: "cat /opt/project/.mcp.json 2>/dev/null || echo 'no .mcp.json'" },
       { name: "Playground URL", command: "echo http://127.0.0.1:11235/playground" },
+    ],
+  },
+  {
+    slug: "code-server",
+    label: "VS Code (code-server)",
+    icon: "Code",
+    description: "Run code-server (VS Code in the browser) as the 'code-server' systemd service on 127.0.0.1:13337, workspace /opt/project, password auth (auto-generated into /home/genie/.config/code-server/config.yaml). Reached through the manager's /code/<projectId>/<instanceId>/ SSH-tunneled proxy via the Files tab's 'Open in VS Code' flow — no VM domain needed. Logs append to /var/log/code-server.log.",
+    port: CODE_SERVER_PORT,
+    checkScript: CODE_SERVER_CHECK_SCRIPT,
+    installScript: CODE_SERVER_INSTALL_SCRIPT,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Stopping and disabling code-server.service..."
+sudo systemctl disable --now code-server 2>/dev/null || true
+sudo rm -f /etc/systemd/system/code-server.service
+sudo systemctl daemon-reload
+log "Note: the code-server binary, /home/genie/.config/code-server (password) and /var/log/code-server.log are left in place — remove manually if desired."
+log "Done."`,
+    commands: [
+      { name: "Service status", command: "sudo systemctl status code-server --no-pager 2>&1 | head -25" },
+      { name: "Tail logs (last 80)", command: "sudo tail -n 80 /var/log/code-server.log" },
+      { name: "Follow logs (5s)", command: "sudo timeout 5 tail -n 30 -f /var/log/code-server.log || true" },
+      { name: "Restart service", command: "sudo systemctl restart code-server && sleep 2 && sudo systemctl status code-server --no-pager 2>&1 | head -10" },
+      { name: "Stop service", command: "sudo systemctl stop code-server" },
+      { name: "Start service", command: "sudo systemctl start code-server" },
+      { name: "Show password", command: "sudo awk '/^password:/{print $2}' /home/genie/.config/code-server/config.yaml" },
+      { name: "code-server version", command: "code-server --version | head -1" },
+      { name: "Hit local URL", command: "curl -fsS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\\n' http://127.0.0.1:13337/ || echo 'not reachable yet'" },
     ],
   },
 ];

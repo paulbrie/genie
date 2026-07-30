@@ -65,6 +65,8 @@ import { handleGitMessage } from "./handlers/git-handler.js";
 import { handleVpsGitReposMessage } from "./handlers/vps-git-repos-handler.js";
 
 import { handleFsMessage } from "./handlers/fs-handler.js";
+import { handleCodeServerMessage } from "./handlers/code-server-handler.js";
+import { isCodeProxyPath, handleCodeProxyRequest, handleCodeProxyUpgrade } from "./vps/code-server-proxy.js";
 
 import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
 
@@ -1018,6 +1020,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleGitMessage(ws, msg, send, userId, state.role)) return;
   if (await handleVpsGitReposMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleFsMessage(ws, msg, send, userId)) return;
+  if (await handleCodeServerMessage(ws, msg, send, userId)) return;
   if (await handleVpsDbMessage(ws, msg, send, userId)) return;
   if (await handleSecurityMessage(ws, msg, send, userId)) return;
   if (await handleRecipesMessage(ws, msg, send, userId, broadcast, state.role)) return;
@@ -1127,6 +1130,13 @@ export async function createServer(): Promise<WebSocketServer> {
   }
 
   const httpServer = http.createServer(async (req, res) => {
+    // Browser→VM code-server proxy (Files tab "Open in VS Code"). Must run
+    // before the CORS stamp below — proxied responses pass through untouched.
+    if (isCodeProxyPath(req.url)) {
+      await handleCodeProxyRequest(req, res);
+      return;
+    }
+
     // CORS headers for public doc API
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -1314,7 +1324,17 @@ export async function createServer(): Promise<WebSocketServer> {
     res.end();
   });
 
-  const wss = new WebSocketServer({ server: httpServer });
+  // noServer so /code/… upgrades can be routed to the code-server proxy;
+  // everything else handshakes into the app WebSocketServer exactly as the
+  // previous `{ server: httpServer }` attachment did.
+  const wss = new WebSocketServer({ noServer: true });
+  httpServer.on("upgrade", (req, socket, head) => {
+    if (isCodeProxyPath(req.url)) {
+      void handleCodeProxyUpgrade(req, socket, head);
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (client) => wss.emit("connection", client, req));
+  });
   httpServer.listen(PORT);
 
   projectManager.setEventCallback((event) => {
