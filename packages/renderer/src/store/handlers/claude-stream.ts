@@ -105,6 +105,20 @@ export const handlers: HandlerMap = {
     updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, statusText: payload.status || "" }));
   },
 
+  // Claude asked the user something (AskUserQuestion) — it is blocked until
+  // claude:stream:answer goes back. Rendered as an option dialog above the input.
+  "claude:stream:ask": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      pendingAsk: { requestId: payload.requestId, toolUseId: payload.toolUseId, questions: payload.questions || [] },
+      statusText: "",
+    }));
+  },
+
+  "claude:stream:ask-resolved": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, pendingAsk: null }));
+  },
+
   "claude:stream:claude-info": (payload) => {
     updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
       ...s,
@@ -145,6 +159,7 @@ export const handlers: HandlerMap = {
       loading: !!streaming.loading,
       statusText: streaming.loading ? "Claude is thinking..." : "",
       claudeInfo: payload.claudeInfo || s.claudeInfo,
+      pendingAsk: payload.pendingAsk || null,
       ready: true,
       reconnecting: false,
       historyLoading: false,

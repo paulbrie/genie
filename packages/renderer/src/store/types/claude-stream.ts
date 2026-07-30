@@ -8,6 +8,21 @@
 
 import type { ChatMessage, StreamingStep, ToolUse, ClaudeInfo } from "./chat";
 
+/** One AskUserQuestion question, mirrored from the manager's control request. */
+export interface AskQuestion {
+  question: string;
+  header?: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+/** A question dialog Claude is blocked on, awaiting the user's choice. */
+export interface PendingAsk {
+  requestId: string;
+  toolUseId: string;
+  questions: AskQuestion[];
+}
+
 export interface ClaudeStreamSession {
   claudeStreamId: string;
   projectId: string;
@@ -47,6 +62,9 @@ export interface ClaudeStreamSession {
    *  stale pre-compact number — the real post-compact size isn't known until the
    *  next turn. Cleared once a turn reports a context smaller than this baseline. */
   compactBaseline?: number;
+  /** Claude asked the user something (AskUserQuestion) and is blocked until the
+   *  answer (or a dismissal) is sent back. Rendered as an option dialog. */
+  pendingAsk?: PendingAsk | null;
 }
 
 export interface ClaudeStreamState {

@@ -36,6 +36,14 @@ export interface StreamJsonEvent {
   [key: string]: unknown;
 }
 
+/** One question from an AskUserQuestion `can_use_tool` control request. */
+export interface AskQuestion {
+  question: string;
+  header?: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
 /** Token/cost/timing summary from a turn's `result` event. */
 export interface TurnUsage {
   /** Total prompt size: fresh input + cache reads + cache writes. */
@@ -61,7 +69,17 @@ export type ParsedStreamEvent =
   /** One assistant turn finished. `result` is the final text when no streamed
    *  tokens preceded it (rare; matches the one-shot router's fallback).
    *  `usage` carries the turn's token/cost/timing summary when present. */
-  | { kind: "turn-done"; result?: string; usage?: TurnUsage };
+  | { kind: "turn-done"; result?: string; usage?: TurnUsage }
+  /** AskUserQuestion routed over the control protocol (`--permission-prompt-tool
+   *  stdio`): claude is BLOCKED until a control_response with this requestId is
+   *  written to its stdin. */
+  | { kind: "ask"; requestId: string; toolUseId: string; questions: AskQuestion[] }
+  /** A tool_result arrived for this tool_use_id — used to clear a pending ask
+   *  when replaying captured output (the answer frame itself isn't in OUT). */
+  | { kind: "tool-result"; toolUseId: string }
+  /** Any other tool's can_use_tool request (shouldn't fire while
+   *  --dangerously-skip-permissions is on; auto-allowed by the session). */
+  | { kind: "can-use-tool"; requestId: string; toolName: string; input: Record<string, unknown> };
 
 export interface StreamJsonParserOptions {
   /** Optional debug logger; called once per parsed event with a short summary. */
@@ -195,6 +213,30 @@ export class StreamJsonParser {
         // Skip Claude Code's slash-command bookkeeping (`<local-command-caveat>`,
         // `<command-name>…`, `<local-command-stdout>`) — protocol noise, not a turn.
         if (text && !isLocalCommandNoise(text)) this.emit({ kind: "user", text });
+        // Surface tool_result ids so a pending ask can be marked answered when
+        // the captured output is replayed on reattach.
+        if (Array.isArray(content)) {
+          for (const b of content as Array<{ type: string; tool_use_id?: string }>) {
+            if (b.type === "tool_result" && b.tool_use_id) this.emit({ kind: "tool-result", toolUseId: b.tool_use_id });
+          }
+        }
+        break;
+      }
+
+      // Inbound control request (`--permission-prompt-tool stdio`). AskUserQuestion
+      // is the human-in-the-loop path; anything else is auto-allowed upstream.
+      case "control_request": {
+        const requestId = typeof event.request_id === "string" ? event.request_id : "";
+        const request = (event.request && typeof event.request === "object" ? event.request : {}) as {
+          subtype?: string; tool_name?: string; tool_use_id?: string; input?: unknown;
+        };
+        if (!requestId || request.subtype !== "can_use_tool") break;
+        const input = (request.input && typeof request.input === "object" ? request.input : {}) as Record<string, unknown>;
+        if (request.tool_name === "AskUserQuestion" && Array.isArray(input.questions)) {
+          this.emit({ kind: "ask", requestId, toolUseId: request.tool_use_id || "", questions: input.questions as AskQuestion[] });
+        } else {
+          this.emit({ kind: "can-use-tool", requestId, toolName: request.tool_name || "", input });
+        }
         break;
       }
 

@@ -117,6 +117,46 @@ describe("StreamJsonParser", () => {
     expect(events).toEqual([]);
   });
 
+  it("emits an ask event for an AskUserQuestion can_use_tool control request", () => {
+    const questions = [{
+      question: "Alpha or Beta?",
+      header: "Pick",
+      options: [{ label: "Alpha", description: "a" }, { label: "Beta", description: "b" }],
+      multiSelect: false,
+    }];
+    const events = parseAll([
+      JSON.stringify({
+        type: "control_request",
+        request_id: "req-1",
+        request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", tool_use_id: "toolu_1", input: { questions } },
+      }),
+    ]);
+    expect(events).toContainEqual({ kind: "ask", requestId: "req-1", toolUseId: "toolu_1", questions });
+  });
+
+  it("emits can-use-tool (not ask) for other tools' permission requests", () => {
+    const events = parseAll([
+      JSON.stringify({
+        type: "control_request",
+        request_id: "req-2",
+        request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "ls" } },
+      }),
+    ]);
+    expect(events).toContainEqual({ kind: "can-use-tool", requestId: "req-2", toolName: "Bash", input: { command: "ls" } });
+  });
+
+  it("emits tool-result ids from user frames so replays can clear a pending ask", () => {
+    const events = parseAll([
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "answered" }] },
+      }),
+    ]);
+    expect(events).toContainEqual({ kind: "tool-result", toolUseId: "toolu_1" });
+    // A pure tool_result frame is not a conversational user turn.
+    expect(events.filter((e) => e.kind === "user")).toEqual([]);
+  });
+
   it("tolerates non-JSON lines and partial chunks split across push() calls", () => {
     const events: ParsedStreamEvent[] = [];
     const parser = new StreamJsonParser((e) => events.push(e));

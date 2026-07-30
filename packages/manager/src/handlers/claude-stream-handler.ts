@@ -10,6 +10,7 @@ import {
   startClaudeStream,
   reattachClaudeStream,
   sendClaudeStreamInput,
+  answerClaudeStreamAsk,
   runClaudeStreamBash,
   runClaudeStreamGitDiff,
   stopClaudeStream,
@@ -218,6 +219,18 @@ export async function handleClaudeStreamMessage(
         // the floating assistant's assistant.message. (projectId is omitted here;
         // the session holds it server-side, and the by-user view doesn't need it.)
         void analyticsService.recordEvent({ userId, userName: null, event: "claude_stream.message", props: {}, ip: null });
+      }
+      return true;
+    }
+
+    case "claude:stream:answer": {
+      // Human-in-the-loop reply to an AskUserQuestion dialog. `answers` maps
+      // question → chosen label(s); absent answers = dismiss (deny).
+      const { claudeStreamId, requestId, answers } = msg.payload as {
+        claudeStreamId?: string; requestId?: string; answers?: Record<string, string | string[]> | null;
+      };
+      if (claudeStreamId && requestId) {
+        answerClaudeStreamAsk(claudeStreamId, requestId, answers ?? null);
       }
       return true;
     }

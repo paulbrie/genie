@@ -19,7 +19,7 @@
 import type { WebSocket } from "ws";
 
 import { connectSsh, type SshSession, type StreamingChannel, type SshConnectionConfig } from "../../vps/ssh-client.js";
-import { StreamJsonParser } from "../../chat/stream-json-parser.js";
+import { StreamJsonParser, type AskQuestion } from "../../chat/stream-json-parser.js";
 import { saveResumeSessionId } from "../../chat/assistant-session-state-service.js";
 
 export type ClaudeStreamSendFn = (ws: WebSocket, msg: { type: string; payload: unknown }) => void;
@@ -62,6 +62,14 @@ export interface ClaudeInfo {
   version: string;
 }
 
+/** An AskUserQuestion waiting on the human — claude is blocked until the
+ *  matching control_response is written into its stdin FIFO. */
+export interface PendingAsk {
+  requestId: string;
+  toolUseId: string;
+  questions: AskQuestion[];
+}
+
 interface StreamState {
   conn: SshSession;
   tail: StreamingChannel | null;
@@ -82,6 +90,7 @@ interface StreamState {
   currentStepContent: string;
   claudeInfo: ClaudeInfo | null;
   claudeSessionId: string | null;
+  pendingAsk: PendingAsk | null;
   /** Newline-terminated lines consumed from the out file — the re-tail offset. */
   linesConsumed: number;
   orphanedAt: number | null;
@@ -141,7 +150,18 @@ function snapshot(st: StreamState) {
     messages: st.messages,
     streaming: { loading: st.loading, steps: st.streamingSteps, partialContent: st.currentStepContent },
     claudeInfo: st.claudeInfo,
+    pendingAsk: st.pendingAsk,
   };
+}
+
+/** Write one NDJSON frame into the session's stdin FIFO. */
+function writeFrame(st: StreamState, id: string, frame: Record<string, unknown>): Promise<void> {
+  return st.conn.exec(`printf '%s\\n' ${shellSingleQuote(JSON.stringify(frame))} > ${shellSingleQuote(st.fifoPath)}`)
+    .then(() => undefined)
+    .catch((err) => {
+      console.error(`[claude-stream:${id}] frame write failed:`, err instanceof Error ? err.message : String(err));
+      throw err;
+    });
 }
 
 function finalizeAssistantTurn(st: StreamState, usage?: StreamMessageUsage, thinkingMs?: number) {
@@ -201,6 +221,33 @@ function makeParser(id: string): StreamJsonParser {
           persistSessionId(st);
         }
         break;
+      case "ask":
+        // Claude is now blocked waiting for the answer. Survives reattach: the
+        // request frame is in OUT, so a replay rebuilds this state and the
+        // snapshot carries it to the client.
+        st.pendingAsk = { requestId: event.requestId, toolUseId: event.toolUseId, questions: event.questions };
+        emit(id, "claude:stream:ask", { ...st.pendingAsk });
+        break;
+      case "tool-result":
+        // The ask was answered (this covers replayed history — the live path
+        // clears pendingAsk in answerClaudeStreamAsk before this arrives).
+        if (st.pendingAsk && st.pendingAsk.toolUseId === event.toolUseId) {
+          st.pendingAsk = null;
+          emit(id, "claude:stream:ask-resolved", {});
+        }
+        break;
+      case "can-use-tool":
+        // Non-AskUserQuestion permission request. --dangerously-skip-permissions
+        // means these shouldn't occur; auto-allow defensively so claude never
+        // deadlocks. Never respond while replaying captured output — those
+        // requests were answered in a previous manager life.
+        if (!st.replaying) {
+          void writeFrame(st, id, {
+            type: "control_response",
+            response: { subtype: "success", request_id: event.requestId, response: { behavior: "allow", updatedInput: event.input } },
+          }).catch(() => { /* logged in writeFrame */ });
+        }
+        break;
       case "turn-done": {
         const usage: StreamMessageUsage | undefined = event.usage
           ? {
@@ -213,6 +260,12 @@ function makeParser(id: string): StreamJsonParser {
             }
           : undefined;
         const thinkingMs = event.usage?.durationMs || undefined;
+        // A finished turn can't have a question still in flight (covers an
+        // interrupt racing a pending ask, where no tool_result ever arrives).
+        if (st.pendingAsk) {
+          st.pendingAsk = null;
+          emit(id, "claude:stream:ask-resolved", {});
+        }
         finalizeAssistantTurn(st, usage, thinkingMs);
         emit(id, "claude:stream:status", { status: "" });
         emit(id, "claude:stream:done", { ...(usage ? { usage } : {}), ...(thinkingMs ? { thinkingMs } : {}) });
@@ -407,6 +460,7 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
     currentStepContent: "",
     claudeInfo: params.claudeInfo,
     claudeSessionId: null,
+    pendingAsk: null,
     linesConsumed: 0,
     orphanedAt: null,
     closing: false,
@@ -432,7 +486,11 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
     `cd ${shellSingleQuote(params.dest)}`,
     // --replay-user-messages echoes each user turn back onto stdout so the OUT
     // file is a complete transcript (assistant + user) — replayed on reattach.
-    `exec ${shellSingleQuote(params.claudePath)} -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages --dangerously-skip-permissions --append-system-prompt "$CTX"${resumeFlag} < "$FIFO" >> "$OUT" 2>&1`,
+    // --permission-prompt-tool stdio + the initialize handshake below register
+    // AskUserQuestion (absent in plain headless mode) and route it to us as a
+    // can_use_tool control_request instead of auto-answering with the default;
+    // every other tool stays auto-allowed by --dangerously-skip-permissions.
+    `exec ${shellSingleQuote(params.claudePath)} -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages --dangerously-skip-permissions --permission-prompt-tool stdio --append-system-prompt "$CTX"${resumeFlag} < "$FIFO" >> "$OUT" 2>&1`,
   ].join("\n");
 
   await conn.exec(`cat > ${ctxPath} << 'GENIEEOF'\n${ctx}\nGENIEEOF`);
@@ -448,6 +506,13 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
   );
   const reattached = /GENIE_REATTACH/.test(created);
   console.log(`[claude-stream:${id}] ${reattached ? "reattached to surviving" : "created"} tmux ${tmuxName}`);
+
+  // Control-protocol handshake: registers AskUserQuestion in headless mode. Only
+  // on a fresh launch — a surviving session already shook hands in a prior life.
+  if (!reattached) {
+    void writeFrame(st, id, { type: "control_request", request_id: `genie-init-${Date.now().toString(36)}`, request: { subtype: "initialize" } })
+      .catch(() => { /* logged in writeFrame; claude still works, minus AskUserQuestion */ });
+  }
 
   emit(id, "claude:stream:ready", { reattached, tmuxName });
   emit(id, "claude:stream:claude-info", { ...params.claudeInfo });
@@ -492,10 +557,32 @@ export function reattachClaudeStream(ws: WebSocket, id: string): boolean {
   return true;
 }
 
+/** Answer (or dismiss) the pending AskUserQuestion. `answers` maps each question
+ *  text to the chosen option label (string[] for multiSelect); null dismisses —
+ *  claude is told to use its own judgment instead of a silent default. */
+export function answerClaudeStreamAsk(id: string, requestId: string, answers: Record<string, string | string[]> | null): void {
+  const st = streams.get(id);
+  if (!st || !st.pendingAsk || st.pendingAsk.requestId !== requestId) return;
+  const ask = st.pendingAsk;
+  st.pendingAsk = null;
+  emit(id, "claude:stream:ask-resolved", {});
+  const response = answers
+    ? { behavior: "allow", updatedInput: { questions: ask.questions, answers } }
+    : { behavior: "deny", message: "The user dismissed the question — continue with your best judgment." };
+  void writeFrame(st, id, {
+    type: "control_response",
+    response: { subtype: "success", request_id: requestId, response },
+  }).catch(() => emit(id, "claude:stream:error", { message: "Failed to send your answer to Claude" }));
+}
+
 /** Send a user message (or slash command): one NDJSON frame into the FIFO. */
 export function sendClaudeStreamInput(id: string, text: string): void {
   const st = streams.get(id);
   if (!st) return;
+  // Typing a message while a question dialog is pending means "never mind the
+  // options" — release claude with a dismissal first, or the new frame would sit
+  // unread behind the blocked permission wait.
+  if (st.pendingAsk) answerClaudeStreamAsk(id, st.pendingAsk.requestId, null);
   st.messages.push({ role: "user", content: text });
   if (st.messages.length > MAX_MESSAGES) st.messages.splice(0, st.messages.length - MAX_MESSAGES);
   st.loading = true;
@@ -586,6 +673,9 @@ export async function writeClaudeStreamFile(id: string, remotePath: string, data
 export function stopClaudeStream(id: string): void {
   const st = streams.get(id);
   if (!st) return;
+  // An interrupt can't preempt a blocked permission wait — dismiss the pending
+  // question first so claude is listening again.
+  if (st.pendingAsk) answerClaudeStreamAsk(id, st.pendingAsk.requestId, null);
   const frame = JSON.stringify({ type: "control_request", request: { subtype: "interrupt" } });
   void st.conn.exec(`printf '%s\\n' ${shellSingleQuote(frame)} > ${shellSingleQuote(st.fifoPath)}`).catch(() => { /* best-effort */ });
 }

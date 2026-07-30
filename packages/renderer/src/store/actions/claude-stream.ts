@@ -259,6 +259,19 @@ export function stopClaudeStream(claudeStreamId: string): void {
   updateClaudeStreamSession(claudeStreamId, (s) => ({ ...s, loading: false, statusText: "" }));
 }
 
+/** Answer the pending AskUserQuestion dialog. `answers` maps question text →
+ *  chosen label(s); null dismisses it (Claude proceeds on its own judgment). */
+export function answerClaudeStreamAsk(
+  claudeStreamId: string,
+  requestId: string,
+  answers: Record<string, string | string[]> | null,
+): void {
+  wsSend("claude:stream:answer", { claudeStreamId, requestId, answers });
+  // Optimistic clear; the manager's ask-resolved confirms (and a replay would
+  // re-surface the dialog if the answer never reached the FIFO).
+  updateClaudeStreamSession(claudeStreamId, (s) => ({ ...s, pendingAsk: null }));
+}
+
 /** Close the window: tell the manager to detach and drop local state. */
 export function closeClaudeStream(claudeStreamId: string): void {
   wsSend("claude:stream:close", { claudeStreamId });
