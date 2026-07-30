@@ -16,6 +16,7 @@
     "@genie/vps-stats": "*",
     "@ai-sdk/anthropic": "^3.0.0",
     "@ai-sdk/fireworks": "^2.0.40",
+    "@ai-sdk/openai-compatible": "^2.0.35",
     "@aws-sdk/client-s3": "^3.1010.0",
     "@aws-sdk/s3-request-presigner": "^3.1010.0",
     "@google/generative-ai": "^0.24.1",

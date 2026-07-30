@@ -171,6 +171,41 @@ export async function getGlobalRailwayProjectId(): Promise<string> {
   return (await getGlobalSetting<string>("railwayProjectId")) || process.env.RAILWAY_PROJECT_ID || "";
 }
 
+// --- RunPod: on-demand GPU pod serving self-hosted Kimi K2.7 (vLLM) ---
+//
+// One persistent pod that Genie resumes on demand and stops after an idle
+// window. The endpoint is the pod's OpenAI-compatible vLLM base URL; the idle
+// timeout is superadmin-configurable (defaults to 5 minutes).
+
+export async function getRunpodApiKey(): Promise<string> {
+  return (await getGlobalSetting<string>("runpodApiKey")) || process.env.RUNPOD_API_KEY || "";
+}
+
+export async function getRunpodKimiPodId(): Promise<string> {
+  return (await getGlobalSetting<string>("runpodKimiPodId")) || process.env.RUNPOD_KIMI_POD_ID || "";
+}
+
+export async function getRunpodKimiEndpoint(): Promise<string> {
+  // Optional explicit override. When empty, the pod service derives the
+  // OpenAI-compatible URL from the pod ID (https://<podId>-8000.proxy.runpod.net/v1).
+  return (await getGlobalSetting<string>("runpodKimiEndpoint")) || process.env.RUNPOD_KIMI_ENDPOINT || "";
+}
+
+export async function getRunpodKimiApiKey(): Promise<string> {
+  // Bearer token the vLLM server was launched with.
+  return (await getGlobalSetting<string>("runpodKimiApiKey")) || process.env.KIMI_KEY || "";
+}
+
+export async function getRunpodKimiServedModel(): Promise<string> {
+  return (await getGlobalSetting<string>("runpodKimiServedModel")) || process.env.RUNPOD_KIMI_SERVED_MODEL || "kimi-k2.7-code";
+}
+
+export async function getRunpodIdleTimeoutSeconds(): Promise<number> {
+  const raw = await getGlobalSetting<number | string>("runpodIdleTimeoutSeconds");
+  const n = typeof raw === "string" ? parseInt(raw, 10) : raw;
+  return n && n > 0 ? n : 300;
+}
+
 // --- Namecheap DNS (used to attach custom subdomains + auto-TLS to DO VMs) ---
 //
 // The ClientIp passed to Namecheap is the manager's MANAGER_PUBLIC_IP, which
@@ -400,6 +435,12 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
       namecheapApiKey: "",
       namecheapUserName: "",
       namecheapDomain: "",
+      runpodApiKey: "",
+      runpodKimiPodId: "",
+      runpodKimiEndpoint: "",
+      runpodKimiApiKey: "",
+      runpodKimiServedModel: "",
+      runpodIdleTimeoutSeconds: 300,
     };
   }
 
@@ -420,6 +461,12 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
     namecheapApiKey: (await getGlobalNamecheapApiKey()) || "",
     namecheapUserName: (await getGlobalNamecheapUserName()) || "",
     namecheapDomain: (await getGlobalNamecheapDomain()) || "",
+    runpodApiKey: (await getRunpodApiKey()) || "",
+    runpodKimiPodId: (await getRunpodKimiPodId()) || "",
+    runpodKimiEndpoint: (await getRunpodKimiEndpoint()) || "",
+    runpodKimiApiKey: (await getRunpodKimiApiKey()) || "",
+    runpodKimiServedModel: (await getRunpodKimiServedModel()) || "",
+    runpodIdleTimeoutSeconds: await getRunpodIdleTimeoutSeconds(),
   };
 }
 
@@ -432,6 +479,7 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
 const GLOBAL_FIELDS = new Set([
   "digitaloceanApiToken", "hetznerApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId",
   "namecheapApiUser", "namecheapApiKey", "namecheapUserName", "namecheapDomain",
+  "runpodApiKey", "runpodKimiPodId", "runpodKimiEndpoint", "runpodKimiApiKey", "runpodKimiServedModel",
 ]);
 
 export async function saveRoutedSettings(userId: string, fields: Record<string, unknown>, role?: SettingsRole): Promise<void> {
@@ -451,6 +499,12 @@ export async function saveRoutedSettings(userId: string, fields: Record<string, 
       if (key in fields) {
         await setGlobalSetting(key, fields[key] || "");
       }
+    }
+    // Numeric global field: idle timeout (seconds). Clamp to a sane floor.
+    if ("runpodIdleTimeoutSeconds" in fields) {
+      const raw = fields.runpodIdleTimeoutSeconds;
+      const n = typeof raw === "string" ? parseInt(raw, 10) : Number(raw);
+      await setGlobalSetting("runpodIdleTimeoutSeconds", Number.isFinite(n) && n > 0 ? Math.max(30, n) : 300);
     }
   }
 }

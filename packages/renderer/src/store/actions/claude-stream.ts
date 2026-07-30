@@ -91,13 +91,16 @@ export async function openClaudeChatWindow(args: {
   /** Resume a prior on-disk Claude session into this window. */
   resumeSessionId?: string;
 }): Promise<string> {
-  // A "new chat" (no tmuxName, no resume) gets a fresh unique tmux name so every
-  // click is an independent, blank session + window. `fresh` tells the manager
-  // not to resume the surface's last on-disk session.
+  // `fresh` (no tmuxName, no resume) means a blank "new chat" — tells the manager
+  // not to resume the surface's last on-disk session. Distinct from naming: every
+  // open that isn't reattaching an existing badge gets its OWN fresh tmux name
+  // (new chats AND resumes), so the resumed session is created with a proper
+  // `claude-<user>-<token>` name and surfaces as its own session/badge — rather
+  // than falling back to the manager's anonymous `claude-chat-<hash>`.
   const fresh = !args.tmuxName && !args.resumeSessionId;
-  const tmuxName = args.tmuxName ?? (fresh ? freshGchatTmuxName() : undefined);
-  // Unique id per open: a fresh tmux name, the picked session, or the bound name.
-  const idSeed = tmuxName ?? `resume-${args.resumeSessionId}`;
+  const tmuxName = args.tmuxName ?? freshGchatTmuxName();
+  // Unique id per open, derived from the (unique) tmux name.
+  const idSeed = tmuxName;
   const claudeStreamId = await chatStreamIdForTmux(args.ownerId, args.projectId, args.instanceId, idSeed);
   openClaudeStream({ claudeStreamId, projectId: args.projectId, instanceId: args.instanceId, label: args.label, tmuxName, resumeSessionId: args.resumeSessionId, fresh });
   // Bring the (possibly already-open) window to the front.
@@ -134,6 +137,23 @@ export async function listClaudeSessions(claudeStreamId: string): Promise<Claude
 export const SHELL_CONTEXT_OPEN = "[Shell commands I ran in the project, for context:]";
 export const SHELL_CONTEXT_CLOSE = "[End shell context]";
 
+/** Context occupancy of the latest turn that reported usage — the same figure the
+ *  window footer shows. Used to capture a pre-`/compact` baseline. */
+export function latestContextTokens(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const u = messages[i]?.usage;
+    if (u && (u.inputTokens > 0 || u.outputTokens > 0)) return u.inputTokens + u.outputTokens;
+  }
+  return 0;
+}
+
+/** Slash commands that shrink the live context (compaction / fresh conversation).
+ *  The new size isn't known until the next turn, so the footer shows "compacting…"
+ *  meanwhile instead of the stale pre-compact figure. */
+function isContextResetCommand(text: string): boolean {
+  return /^\/(compact|clear)\b/.test(text.trim());
+}
+
 export function sendClaudeStreamMessage(claudeStreamId: string, text: string, images?: string[], displayText?: string): void {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -145,6 +165,12 @@ export function sendClaudeStreamMessage(claudeStreamId: string, text: string, im
   const session = $claudeStream.getValue().sessions[claudeStreamId];
   const bashCtx = session?.pendingBashContext;
   const wire = bashCtx ? `${SHELL_CONTEXT_OPEN}\n${bashCtx}\n${SHELL_CONTEXT_CLOSE}\n\n${trimmed}` : trimmed;
+  // On `/compact` (or `/clear`), capture the current context size as a baseline so
+  // the footer can show "compacting…" until a turn reports a smaller context. Only
+  // when there's a real prior figure to be stale about (>0).
+  const compactBaseline = isContextResetCommand(trimmed)
+    ? (latestContextTokens(session?.messages ?? []) || undefined)
+    : undefined;
   updateClaudeStreamSession(claudeStreamId, (s) => ({
     ...s,
     messages: [...s.messages, { role: "user", content: shown, ...(images && images.length ? { images } : {}) }],
@@ -152,6 +178,7 @@ export function sendClaudeStreamMessage(claudeStreamId: string, text: string, im
     statusText: "Claude is thinking...",
     connectionError: null,
     pendingBashContext: undefined,
+    ...(compactBaseline ? { compactBaseline } : {}),
   }));
   wsSend("claude:stream:input", { claudeStreamId, text: wire });
 }

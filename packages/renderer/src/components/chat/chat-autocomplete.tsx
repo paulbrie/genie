@@ -15,6 +15,7 @@ const SLASH_COMMANDS: { name: string; desc: string }[] = [
   { name: "cost", desc: "Show token usage & cost" },
   { name: "init", desc: "Generate a CLAUDE.md for the project" },
   { name: "review", desc: "Review a pull request" },
+  { name: "simplify", desc: "Simplify & clean up the changed code" },
   { name: "pr-comments", desc: "Show PR comments" },
   { name: "release-notes", desc: "Show release notes" },
   { name: "help", desc: "List available commands" },

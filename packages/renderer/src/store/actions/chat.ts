@@ -4,7 +4,7 @@ import type { ChatMessage, ChatSendMeta, PinnedAssistantVm } from "../types/chat
 
 // --- Chat actions ---
 
-export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "kimi-k2.7" | "qwen-3.6-plus";
+export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "kimi-k2.7" | "kimi-k2.7-runpod" | "qwen-3.6-plus";
 
 export const CHAT_MODELS: Record<ChatModelId, string> = {
   "claude-code": "Claude Code",
@@ -14,6 +14,7 @@ export const CHAT_MODELS: Record<ChatModelId, string> = {
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "kimi-k2.6": "Kimi K2.6",
   "kimi-k2.7": "Kimi K2.7 Code",
+  "kimi-k2.7-runpod": "Kimi K2.7 (self-hosted)",
   "qwen-3.6-plus": "Qwen3.6 Plus",
 };
 

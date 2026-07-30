@@ -625,7 +625,14 @@ export function ClaudeStreamWindow({
             {session.loading && (
               <span className="text-[10px] text-overlay0/60 tabular-nums">Esc to stop</span>
             )}
-            {ctxTokens > 0 && (
+            {session.compactBaseline != null ? (
+              <span
+                className="flex items-center gap-1 text-[10px] text-overlay0/70 tabular-nums"
+                title="Compacting the conversation — the new context size shows after the next message."
+              >
+                <Loader2 size={10} className="animate-spin" /> compacting… / {formatTokens(ctxWindow)}
+              </span>
+            ) : ctxTokens > 0 && (
               <div
                 className="flex items-center gap-1.5"
                 title={`Context used: ${ctxTokens.toLocaleString()} / ${ctxWindow.toLocaleString()} tokens (${Math.round(ctxPct * 100)}%)`}

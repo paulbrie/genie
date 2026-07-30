@@ -11,6 +11,7 @@ import { DEFAULT_CLAUDE_PLUGINS } from "./chat/default-claude-plugins.js";
 import { createServer, shutdown } from "./ws-server.js";
 import { startSlackBot, stopSlackBot } from "./notifications/slack-bot.js";
 import { startWireproxyIfConfigured, stopWireproxy } from "./cloud/wireproxy-launcher.js";
+import { startIdleWatcher as startRunpodIdleWatcher } from "./runpod/runpod-pod-service.js";
 
 // One-shot egress probe at boot — logs the manager's public IPv4 and IPv6 (or "n/a")
 // so you know what to put in MANAGER_PUBLIC_IP / MANAGER_PUBLIC_IP_V6 env vars.
@@ -88,6 +89,10 @@ const wss = await createServer();
 if (process.env.SLACK_BOT_TOKEN) {
   startSlackBot().catch((err) => console.error("[slack] Failed to start:", err));
 }
+
+// Watch the self-hosted Kimi RunPod pod and stop it after the configured idle
+// window. No-op until the pod is configured in Settings.
+startRunpodIdleWatcher();
 
 function gracefulShutdown(): void {
   console.log("\nShutting down Genie manager...");

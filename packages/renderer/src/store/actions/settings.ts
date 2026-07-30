@@ -16,6 +16,12 @@ export async function loadSettings(): Promise<void> {
     namecheapApiKey: result.namecheapApiKey || "",
     namecheapUserName: result.namecheapUserName || "",
     namecheapDomain: result.namecheapDomain || "",
+    runpodApiKey: result.runpodApiKey || "",
+    runpodKimiPodId: result.runpodKimiPodId || "",
+    runpodKimiEndpoint: result.runpodKimiEndpoint || "",
+    runpodKimiApiKey: result.runpodKimiApiKey || "",
+    runpodKimiServedModel: result.runpodKimiServedModel || "",
+    runpodIdleTimeoutSeconds: result.runpodIdleTimeoutSeconds || 300,
   });
 }
 

@@ -14,6 +14,11 @@ export const handlers: HandlerMap = {
       ready: true,
       reconnecting: false,
       connectionError: null,
+      // Record the tmux name the manager actually bound (it derives one when the
+      // client didn't send a name). Without this the window's `tmuxName` stays
+      // undefined and it can't associate with its session badge or re-bind to the
+      // same session on reconnect.
+      tmuxName: payload.tmuxName || s.tmuxName,
       // A reattach (surviving tmux) or a resume rebuilds prior turns and delivers
       // them in one `replay` batch shortly after this. Flag that gap so the window
       // shows "Loading history…" instead of the blank "Chat with Claude" prompt.
@@ -76,7 +81,23 @@ export const handlers: HandlerMap = {
       };
       // Skip an entirely empty turn (e.g. a slash command with no output).
       const messages = (message.content || toolUses) ? [...s.messages, message] : s.messages;
-      return { ...s, messages, streamingContent: "", streamingSteps: [], toolUses: [], loading: false, statusText: "" };
+      // After `/compact`, clear the "compacting…" footer once a turn reports a
+      // context well below the pre-compact baseline. The compaction turn itself
+      // reports ≈the old size (the summarizer reads the whole conversation), so a
+      // fractional threshold avoids clearing on it — only the genuinely smaller
+      // post-compact turn trips it.
+      const newCtx = payload.usage ? (payload.usage.inputTokens + payload.usage.outputTokens) : 0;
+      const clearCompact = s.compactBaseline != null && newCtx > 0 && newCtx < s.compactBaseline * 0.6;
+      return {
+        ...s,
+        messages,
+        streamingContent: "",
+        streamingSteps: [],
+        toolUses: [],
+        loading: false,
+        statusText: "",
+        ...(clearCompact ? { compactBaseline: undefined } : {}),
+      };
     });
   },
 

@@ -58,6 +58,10 @@ export interface SshSession {
     onClose: () => void;
   }): Promise<ShellHandle>;
   getChannelCount(): number;
+  /** Direct-TCP forward (local→remote): open a channel to dstHost:dstPort as
+   *  seen from the VM. The returned duplex stream carries raw TCP bytes —
+   *  used by the code-server proxy to reach 127.0.0.1 ports on the VM. */
+  forwardOut(dstHost: string, dstPort: number): Promise<ClientChannel>;
   forwardIn(bindAddr: string, bindPort: number): Promise<number>;
   unforwardIn(bindAddr: string, bindPort: number): Promise<void>;
   onTcpConnection(handler: (info: { destPort: number }, accept: () => ClientChannel) => void): void;
@@ -238,6 +242,15 @@ function makeSession(conn: Client, onClose?: () => void, onSessionClosed?: () =>
         } else {
           conn.exec(command, run);
         }
+      });
+    },
+
+    forwardOut(dstHost: string, dstPort: number): Promise<ClientChannel> {
+      return new Promise((resolve, reject) => {
+        conn.forwardOut("127.0.0.1", 0, dstHost, dstPort, (err, stream) => {
+          if (err) return reject(err);
+          resolve(stream);
+        });
       });
     },
 

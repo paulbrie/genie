@@ -14,6 +14,7 @@ import { getDb } from "../db/index.js";
 import { aiUsage } from "../db/schema.js";
 import { isAdmin } from "../auth/auth.js";
 import { routeChatToVpsAgent } from "../chat/vps-agent-router.js";
+import * as runpodPodService from "../runpod/runpod-pod-service.js";
 import {
   createDurableChatTurn,
   resumeDurableChatTurn,
@@ -221,6 +222,16 @@ export async function handleChatMessage(
         }
 
         const collectedToolUses: { name: string; input: unknown; result: string }[] = [];
+
+        // Self-hosted Kimi runs on an on-demand RunPod GPU pod. Resume it (and
+        // wait for vLLM) before streaming; this records activity so the idle
+        // watcher won't stop it mid-conversation. A failure here surfaces as a
+        // normal chat error via the durable turn's catch below.
+        if (resolvedModelId === "kimi-k2.7-runpod") {
+          await runpodPodService.ensurePodRunning((statusMsg) =>
+            send(ws, { type: "chat:status", payload: { status: statusMsg } }),
+          );
+        }
 
         await handleChat(
           messages,

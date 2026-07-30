@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   GitBranch, GitCommit, GitFork, KeyRound, Loader2, Plus, RefreshCw, Trash2,
-  Download, Upload, AlertTriangle, ArrowLeftRight, Archive, FileDiff,
+  Download, Upload, AlertTriangle, ArrowLeftRight, Archive, FileDiff, ExternalLink,
 } from "lucide-react";
 import { wsRequest } from "@/lib/ws";
 import { cn } from "@/lib/utils";
@@ -284,6 +284,18 @@ function RepoRow({ repo, busy, selected, onSelect, onToggleAutoSave, onRemove }:
           </div>
         </button>
         <div className="flex items-center gap-1">
+          {repoWebUrl(repo.repoUrl) && (
+            <a
+              href={repoWebUrl(repo.repoUrl)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-transparent text-overlay0 hover:text-blue hover:bg-surface0 border-none cursor-pointer"
+              title="Open repository in browser"
+              aria-label="Open repository in browser"
+            >
+              <ExternalLink size={13} />
+            </a>
+          )}
           <label className="flex items-center gap-1.5 text-sm text-overlay0 cursor-pointer">
             <input
               type="checkbox"
@@ -419,6 +431,21 @@ interface BrowsePanelProps {
   repo: VpsGitRepoPublic;
   /** Reload the repo list after a reconcile changes the registered URL. */
   onRepoChanged: () => void;
+}
+
+/** A browser-openable web URL for a repo: convert the SSH form to https, drop any
+ *  embedded credentials, and strip a trailing `.git`/slashes — while preserving
+ *  case (owner/repo are case-sensitive). Returns "" if it isn't an http(s) URL. */
+function repoWebUrl(url: string | null | undefined): string {
+  if (!url) return "";
+  let u = url.trim();
+  const ssh = u.match(/^git@([^:]+):(.+)$/i); // git@host:owner/repo(.git)
+  if (ssh) u = `https://${ssh[1]}/${ssh[2]}`;
+  u = u
+    .replace(/^([a-z]+:\/\/)[^/@]+@/i, "$1") // drop user:pass@
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "");
+  return /^https?:\/\//i.test(u) ? u : "";
 }
 
 /** Strip credentials, trailing `.git`, and trailing slashes so a DB url and the

@@ -42,6 +42,11 @@ export interface ClaudeStreamSession {
   /** Buffered `!cmd` bang-mode output not yet handed to Claude — prepended
    *  (invisibly) to the next real message so the model gets it as context. */
   pendingBashContext?: string;
+  /** Set to the pre-compaction context size when the user runs `/compact` (or
+   *  `/clear`). While set, the context footer shows "compacting…" instead of the
+   *  stale pre-compact number — the real post-compact size isn't known until the
+   *  next turn. Cleared once a turn reports a context smaller than this baseline. */
+  compactBaseline?: number;
 }
 
 export interface ClaudeStreamState {

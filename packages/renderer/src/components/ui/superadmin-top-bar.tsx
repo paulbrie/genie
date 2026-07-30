@@ -6,6 +6,7 @@ import type { NavKey } from "@/store/types";
 import { $activeNav, $auth, $presenceSessions } from "@/store/subjects";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@/lib/navigation";
+import { KimiPodIndicator } from "@/components/ui/kimi-pod-indicator";
 
 type BarNavItem = { key: NavKey; label: string; icon: typeof ChefHat };
 
@@ -90,6 +91,8 @@ export function SuperadminTopBar() {
           )}
         </button>
       ))}
+      <div className="flex-1" />
+      <KimiPodIndicator />
     </div>
   );
 }

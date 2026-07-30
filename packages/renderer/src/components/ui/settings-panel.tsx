@@ -10,6 +10,7 @@ import { type AppSettings } from "@/lib/genie-api";
 import { Eye, EyeOff, Key, Copy, Check, Loader2, Trash2, RefreshCw } from "lucide-react";
 import { ViewHeader } from "@/components/ui/view-header";
 import { ViewTabs } from "@/components/ui/view-tabs";
+import { RunpodKimiSettings } from "@/components/ui/runpod-kimi-settings";
 import { Select } from "@/components/ui/select";
 import { buildSettingsPath, type SettingsTab } from "@/lib/routes";
 import { useRouter } from "next/navigation";
@@ -391,6 +392,8 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
               (Read &amp; Write). Falls back to the HETZNER_API_TOKEN env var.
             </p>
           </div>
+
+          <RunpodKimiSettings />
 
           <div className="bg-mantle rounded-lg p-4 mt-4">
             <label className="block text-md font-medium text-subtext0 mb-2">

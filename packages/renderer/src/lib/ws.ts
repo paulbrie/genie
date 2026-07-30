@@ -107,6 +107,17 @@ export function getWsUrl(): string {
   return currentWsUrl;
 }
 
+/** The manager's HTTP(S) origin, derived from the WS endpoint — for browser-
+ *  facing routes the manager serves directly (e.g. the /code/… code-server
+ *  proxy). ws://host → http://host, wss://host → https://host. */
+export function getManagerHttpUrl(): string {
+  const url = currentWsUrl
+    || wsUrlOverride
+    || process.env.NEXT_PUBLIC_WS_URL
+    || (typeof window !== "undefined" && window.location.hostname !== "localhost" ? "wss://api.genie.teleporthq.ai" : "ws://localhost:9876");
+  return url.replace(/^ws/, "http").replace(/\/$/, "");
+}
+
 /** Point the socket at a specific manager URL and reconnect. Used by the Chrome
  *  extension sidepanel to keep the iframe on the same manager as the service
  *  worker. No-op if it already matches the live URL. */

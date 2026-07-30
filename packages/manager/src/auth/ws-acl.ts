@@ -92,6 +92,11 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   feedback: { send: "user", receive: "user", scope: "self" },
   updates: { send: "user", receive: "user", scope: "self" },
   vps: { send: "user", receive: "user", scope: "self" },
+  // "Open in VS Code" (Files tab) — same level as the vps default, spelled out
+  // because the handler runs installs as root over SSH: it re-checks
+  // userCanSeeProject and resolves SSH only from the caller's own project
+  // instance (see handlers/code-server-handler.ts).
+  "vps:code": { send: "user", receive: "user", scope: "self", notes: "handler enforces userCanSeeProject" },
   extension: { send: "user", receive: "user", scope: "self" },
   error: { receive: "user", scope: "self" },
   ping: { send: "user", receive: "user" },
@@ -108,6 +113,9 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // tazcloud rule so plain owners/members can trigger it from the server card.
   "tazcloud:domain": { send: "user", receive: "user" },
   hetzner: { send: "tazcloud", receive: "tazcloud" },
+  // Self-hosted Kimi GPU pod (RunPod) status + manual start/stop — admin-only
+  // (handler re-checks). Superadmin configures the idle timeout via settings.
+  runpod: { send: "admin", receive: "admin", scope: "global" },
 
   // Admin namespaces.
   admin: { send: "admin", receive: "admin" },

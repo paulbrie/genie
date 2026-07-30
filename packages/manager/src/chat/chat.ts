@@ -1,6 +1,8 @@
 import { streamText, stepCountIs, tool, type LanguageModel, type Tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createFireworks } from "@ai-sdk/fireworks";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { getKimiConfig } from "../runpod/runpod-pod-service.js";
 import { z } from "zod";
 import { getCachedProcesses, getCachedDockerInfo } from "../logging/monitor.js";
 import { createTools, type ToolAuthContext } from "../tools/index.js";
@@ -24,9 +26,9 @@ export interface PinnedAssistantVm {
   sshUser?: string;
 }
 
-export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "kimi-k2.7" | "qwen-3.6-plus";
+export type ChatModelId = "claude-code" | "claude-opus" | "claude-sonnet" | "deepseek-v3" | "deepseek-v4-pro" | "kimi-k2.6" | "kimi-k2.7" | "kimi-k2.7-runpod" | "qwen-3.6-plus";
 
-export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthropic" | "fireworks" | "claude-code"; modelId: string }> = {
+export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthropic" | "fireworks" | "claude-code" | "openai-compatible"; modelId: string }> = {
   "claude-code": { label: "Claude Code", provider: "claude-code", modelId: "claude-code" },
   "claude-opus": { label: "Claude Opus", provider: "anthropic", modelId: "claude-opus-4-20250514" },
   "claude-sonnet": { label: "Claude Sonnet", provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
@@ -34,6 +36,9 @@ export const CHAT_MODELS: Record<ChatModelId, { label: string; provider: "anthro
   "deepseek-v4-pro": { label: "DeepSeek V4 Pro", provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v4-pro" },
   "kimi-k2.6": { label: "Kimi K2.6", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p6" },
   "kimi-k2.7": { label: "Kimi K2.7 Code", provider: "fireworks", modelId: "accounts/fireworks/models/kimi-k2p7-code" },
+  // Self-hosted on our RunPod GPU pod (vLLM). The served model name comes from
+  // settings at request time; the placeholder here is only a label fallback.
+  "kimi-k2.7-runpod": { label: "Kimi K2.7 (self-hosted)", provider: "openai-compatible", modelId: "kimi-k2.7-code" },
   "qwen-3.6-plus": { label: "Qwen3.6 Plus", provider: "fireworks", modelId: "accounts/fireworks/models/qwen3p6-plus" },
 };
 
@@ -46,6 +51,9 @@ export const MODEL_PRICING: Record<ChatModelId, { input: number; output: number 
   "deepseek-v4-pro": { input: 1.74, output: 3.48 },
   "kimi-k2.6": { input: 0.95, output: 4.0 },
   "kimi-k2.7": { input: 0.95, output: 4.0 },
+  // Self-hosted cost is GPU-rental (pod-hours), not per-token; this is a
+  // placeholder so usage reporting doesn't show $0.
+  "kimi-k2.7-runpod": { input: 0.95, output: 4.0 },
   "qwen-3.6-plus": { input: 0.5, output: 3.0 },
 };
 
@@ -61,11 +69,30 @@ export interface ChatUsage {
 
 const modelCache = new Map<string, LanguageModel>();
 
-function getModel(modelId?: ChatModelId) {
+async function getModel(modelId?: ChatModelId): Promise<LanguageModel> {
   const id = modelId ?? "claude-sonnet";
   if (id === "claude-code") throw new Error("claude-code model is handled via VPS SSH, not locally");
   const spec = CHAT_MODELS[id];
   if (!spec) throw new Error(`Unknown model: ${id}`);
+
+  // Self-hosted Kimi: build an OpenAI-compatible client from runtime settings
+  // (the pod's vLLM endpoint). Cache-keyed by baseURL so config edits take
+  // effect. The pod lifecycle (resume/idle-stop) is handled in chat-handler.
+  if (spec.provider === "openai-compatible") {
+    const config = await getKimiConfig();
+    if (!config) throw new Error("Self-hosted Kimi pod is not configured.");
+    const baseURL = config.endpoint.replace(/\/$/, "");
+    const cacheKey = `openai-compatible:${baseURL}:${config.servedModel}`;
+    const cached = modelCache.get(cacheKey);
+    if (cached) return cached;
+    const model = createOpenAICompatible({
+      name: "runpod-kimi",
+      baseURL,
+      apiKey: config.vllmApiKey || "EMPTY",
+    })(config.servedModel);
+    modelCache.set(cacheKey, model);
+    return model;
+  }
 
   const cacheKey = `${spec.provider}:${spec.modelId}`;
   const cached = modelCache.get(cacheKey);
@@ -186,7 +213,7 @@ export async function handleChat(
   auth: ToolAuthContext = { userId: null, role: null },
 ): Promise<void> {
   try {
-    const model = getModel(modelId);
+    const model = await getModel(modelId);
     const pinNote = pinnedVm
       ? `\n\n=== PINNED VM (ssh_exec target) ===\n`
         + `All ssh_exec calls run on "${pinnedVm.label}" (host: ${pinnedVm.host}, provider: ${pinnedVm.provider}, project: ${pinnedVm.projectName}).\n`

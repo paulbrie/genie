@@ -125,6 +125,7 @@ import { recordStatsRequest, recordWsSent, startServerMetrics, stopServerMetrics
 import { handleVpsLifecycleMessage } from "./handlers/vps-lifecycle-handler.js";
 
 import { handleMcpMessage } from "./handlers/mcp-handler.js";
+import { handleRunpodMessage } from "./handlers/runpod-handler.js";
 
 import { isPasteKeyEnabled } from "./vps/credential-crypto.js";
 
@@ -1051,6 +1052,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleAdminServerMetricsMessage(ws, msg, send, state.role)) return;
   if (await handleVpsLifecycleMessage(ws, msg, send, broadcast, state)) return;
   if (await handleMcpMessage(ws, msg, send, state)) return;
+  if (await handleRunpodMessage(ws, msg, send, state.role)) return;
 
   // No handler claimed the message — surface it as an error so the renderer can
   // distinguish "unsupported type" from "silent drop". Every namespace lives in

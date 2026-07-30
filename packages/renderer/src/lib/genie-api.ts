@@ -37,6 +37,12 @@ export interface AppSettings {
   namecheapApiKey: string;
   namecheapUserName: string;
   namecheapDomain: string;
+  runpodApiKey: string;
+  runpodKimiPodId: string;
+  runpodKimiEndpoint: string;
+  runpodKimiApiKey: string;
+  runpodKimiServedModel: string;
+  runpodIdleTimeoutSeconds: number;
 }
 
 export const genie = {
@@ -69,6 +75,12 @@ export const genie = {
       namecheapApiKey: "",
       namecheapUserName: "",
       namecheapDomain: "",
+      runpodApiKey: "",
+      runpodKimiPodId: "",
+      runpodKimiEndpoint: "",
+      runpodKimiApiKey: "",
+      runpodKimiServedModel: "",
+      runpodIdleTimeoutSeconds: 300,
       ...rest,
     })),
   saveSettings: (settings: AppSettings): Promise<FsResult> =>
