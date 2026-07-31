@@ -156,6 +156,24 @@ function logPath(rawUrl: string | undefined): string {
   return (rawUrl || "").split("?")[0];
 }
 
+/** Proxy hop headers that must NOT reach code-server. The manager rewrites Host
+ *  and Origin to the internal 127.0.0.1:CODE_SERVER_PORT so code-server's
+ *  cross-site-WebSocket check passes — but code-server is proxy-aware and, when
+ *  present, derives its expected origin from X-Forwarded-Host/-Proto instead.
+ *  Railway's edge injects those (X-Forwarded-Host: api.genie.teleporthq.ai),
+ *  which then mismatches the rewritten Origin → code-server 403s the upgrade →
+ *  the browser workbench dies with "WebSocket close 1006". Dropping the whole
+ *  X-Forwarded-* / Forwarded family makes code-server fall back to the (already
+ *  rewritten) Host, so the check passes on every fronting proxy. */
+const STRIPPED_UPSTREAM_HEADERS = new Set([
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-for",
+  "x-forwarded-port",
+  "x-forwarded-ssl",
+  "forwarded",
+]);
+
 // --- HTTP proxying ---
 
 /** Handle a /code/… request. Call before any other routing (and before CORS
@@ -204,6 +222,9 @@ export async function handleCodeProxyRequest(req: http.IncomingMessage, res: htt
     const channel = await openUpstreamChannel(parsed.projectId, parsed.instanceId);
     const headers: http.OutgoingHttpHeaders = { ...req.headers };
     headers.host = `127.0.0.1:${CODE_SERVER_PORT}`;
+    // Drop the fronting proxy's X-Forwarded-* so code-server doesn't infer an
+    // external origin from them (see STRIPPED_UPSTREAM_HEADERS).
+    for (const h of STRIPPED_UPSTREAM_HEADERS) delete headers[h];
     // One SSH channel per request; don't advertise keep-alive upstream.
     headers.connection = "close";
 
@@ -260,6 +281,9 @@ export async function handleCodeProxyUpgrade(req: http.IncomingMessage, socket: 
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       const key = req.rawHeaders[i];
       const keyLc = key.toLowerCase();
+      // Drop the fronting proxy's X-Forwarded-* — code-server would otherwise
+      // infer an external origin from them and reject the (rewritten) Origin.
+      if (STRIPPED_UPSTREAM_HEADERS.has(keyLc)) continue;
       const value =
         keyLc === "host" ? `127.0.0.1:${CODE_SERVER_PORT}`
         : keyLc === "origin" ? `http://127.0.0.1:${CODE_SERVER_PORT}`
