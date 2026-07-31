@@ -7,8 +7,10 @@ import { cn } from "@/lib/utils";
 import { ClaudeLogo } from "@/components/mobile/claude-logo";
 import { useSpeechToText } from "@/components/mobile/use-speech-to-text";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
+import { AskUserQuestionDialog } from "@/components/chat/ask-user-question-dialog";
 import { $auth, $claudeStream } from "@/store/subjects";
 import {
+  answerClaudeStreamAsk,
   closeClaudeStream,
   dismissClaudeStreamMessage,
   openClaudeChatWindow,
@@ -198,6 +200,17 @@ export function ClaudeScreen({
           <div ref={endRef} />
         </div>
       </div>
+
+      {/* Human-in-the-loop question (AskUserQuestion) — Claude is blocked on it */}
+      {sess?.pendingAsk && streamId && (
+        <AskUserQuestionDialog
+          key={sess.pendingAsk.requestId}
+          ask={sess.pendingAsk}
+          touch
+          onAnswer={(answers) => answerClaudeStreamAsk(streamId, sess.pendingAsk!.requestId, answers)}
+          onDismiss={() => answerClaudeStreamAsk(streamId, sess.pendingAsk!.requestId, null)}
+        />
+      )}
 
       {/* Quick replies */}
       {isEmpty && (
