@@ -97,6 +97,11 @@ const NAMESPACE_DEFAULTS: Record<string, AclEntry> = {
   // userCanSeeProject and resolves SSH only from the caller's own project
   // instance (see handlers/code-server-handler.ts).
   "vps:code": { send: "user", receive: "user", scope: "self", notes: "handler enforces userCanSeeProject" },
+  // Claude egress-firewall card — same level as the vps default, spelled out
+  // because the handler runs root iptables/allowlist ops over SSH: it
+  // re-checks userCanSeeProject (see handlers/firewall-handler.ts). The write
+  // path is UI-only by design — never expose it to agents/MCP.
+  "vps:firewall": { send: "user", receive: "user", scope: "self", notes: "handler enforces userCanSeeProject" },
   extension: { send: "user", receive: "user", scope: "self" },
   error: { receive: "user", scope: "self" },
   ping: { send: "user", receive: "user" },

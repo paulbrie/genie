@@ -26,6 +26,7 @@ import {
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { openVmConnectionWindow } from "@/components/tazcloud/vm-connection-window";
 import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
+import { VpsEgressFirewall } from "@/components/project/vps-egress-firewall";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
 import { ClaudePluginsPanel } from "@/components/admin/claude-plugins-panel";
 import { AdminSystemPanel, VpsProcessesPanel } from "@/components/admin/admin-system-panel";
@@ -1307,7 +1308,14 @@ function ManageVmInline({ vm }: ManageVmInlineProps) {
           )}
 
           {tab === "firewall" && (
-            <VpsFirewall exec={exec} />
+            <>
+              <VpsFirewall exec={exec} />
+              {/* Claude egress allowlist — needs the project-scoped vps:firewall
+                  handler, so only for project-linked VMs. */}
+              {linked && (
+                <VpsEgressFirewall projectId={linked.project.id} instanceId={linked.instance.id} />
+              )}
+            </>
           )}
 
           {tab === "ports" && (

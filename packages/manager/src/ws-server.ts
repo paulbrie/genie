@@ -66,6 +66,7 @@ import { handleVpsGitReposMessage } from "./handlers/vps-git-repos-handler.js";
 
 import { handleFsMessage } from "./handlers/fs-handler.js";
 import { handleCodeServerMessage } from "./handlers/code-server-handler.js";
+import { handleFirewallMessage } from "./handlers/firewall-handler.js";
 import { isCodeProxyPath, handleCodeProxyRequest, handleCodeProxyUpgrade } from "./vps/code-server-proxy.js";
 
 import { handleVpsDbMessage } from "./handlers/vps-db-handler.js";
@@ -1022,6 +1023,7 @@ async function handleMessage(ws: WebSocket, msg: WsMessage): Promise<void> {
   if (await handleVpsGitReposMessage(ws, msg, send, userId, broadcast, state.role)) return;
   if (await handleFsMessage(ws, msg, send, userId)) return;
   if (await handleCodeServerMessage(ws, msg, send, userId)) return;
+  if (await handleFirewallMessage(ws, msg, send, userId)) return;
   if (await handleVpsDbMessage(ws, msg, send, userId)) return;
   if (await handleSecurityMessage(ws, msg, send, userId)) return;
   if (await handleRecipesMessage(ws, msg, send, userId, broadcast, state.role)) return;

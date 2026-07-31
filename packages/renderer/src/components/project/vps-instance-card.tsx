@@ -25,6 +25,7 @@ import { FileExplorer } from "@/components/project/vps-file-explorer";
 import { DropletInstanceBar } from "@/components/project/droplet-instance-bar";
 import { ProcessCity as IsometricProcessCity } from "@/components/ui/process-city";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
+import { VpsEgressFirewall } from "@/components/project/vps-egress-firewall";
 import { VpsRecipes, VpsRunCommands } from "./vps-recipes";
 
 /** Claude Terminal launch button used inside VpsInstanceCard. Probes for Genie
@@ -550,8 +551,11 @@ export function VpsInstanceCard({
           {/* Recipes / Add Services */}
           <VpsRecipes projectId={project.id} instanceId={instance.id} recipes={instanceState?.recipes ?? {}} />
 
-          {/* Firewall */}
+          {/* Firewall (inbound / UFW) */}
           <VpsFirewall exec={(cmd) => vpsExec(project.id, instance.id, cmd)} />
+
+          {/* Claude egress firewall (outbound allowlist for the genie user) */}
+          <VpsEgressFirewall projectId={project.id} instanceId={instance.id} />
 
           {/* Run Commands */}
           <VpsRunCommands project={project} instanceId={instance.id} />

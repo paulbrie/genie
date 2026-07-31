@@ -176,12 +176,212 @@ fi
 
 log "Done. Service: code-server   Port: 13337 (local-only)   Logs: $LOG_FILE"`;
 
+// --- genie egress firewall (Claude hardening) ---
+// Exported separately because the vps:firewall handler (handlers/firewall-
+// handler.ts) runs this to enable the firewall from the UI on VMs whose
+// Standard Setup predates hardening — recipe and handler stay on the same
+// script by construction (same pattern as code-server above). Self-contained:
+// redefines the bash helpers so it can also run standalone.
+export const GENIE_FIREWALL_ALLOW_FILE = "/etc/genie/firewall-allow.txt";
+
+export const GENIE_FIREWALL_SETUP_SCRIPT = `set -e
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+id genie > /dev/null 2>&1 || { log "ERROR: 'genie' user missing — run Genie Standard Setup first."; exit 1; }
+  log "Installing genie egress firewall (outbound allowlist for the 'genie' user)..."
+  if command -v apt-get > /dev/null 2>&1; then
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq ipset iptables > /dev/null
+  elif command -v dnf > /dev/null 2>&1; then
+    sudo dnf install -y -q ipset iptables-nft > /dev/null 2>&1 || sudo dnf install -y -q ipset iptables > /dev/null
+  fi
+  sudo mkdir -p /etc/genie
+  # Seed the allowlist only if absent so per-VM additions survive re-apply.
+  # Recipes re-run as the genie user have un-sudo'd curls (nodesource,
+  # code-server, dot.net, playwright's npm postinstall), so every host a recipe
+  # downloads from as genie must be here or Re-apply breaks under enforcement.
+  if [ ! -f /etc/genie/firewall-allow.txt ]; then
+    sudo tee /etc/genie/firewall-allow.txt > /dev/null << 'GENIE_FW_ALLOW'
+# Outbound allowlist for the 'genie' user (one domain or IP per line, # comments).
+# Applied by /usr/local/sbin/genie-firewall; re-resolved every 10 min by
+# genie-firewall.timer. Edit, then run: sudo genie-firewall
+
+# Anthropic — inference + OAuth
+api.anthropic.com
+claude.ai
+console.anthropic.com
+
+# Package registries used by project work running as genie
+registry.npmjs.org
+api.nuget.org
+pypi.org
+files.pythonhosted.org
+
+# GitHub — git over https, releases, raw
+github.com
+api.github.com
+codeload.github.com
+objects.githubusercontent.com
+raw.githubusercontent.com
+
+# Recipe download hosts hit as the genie user on Re-apply
+deb.nodesource.com
+rpm.nodesource.com
+code-server.dev
+dot.net
+builds.dotnet.microsoft.com
+dl.google.com
+cdn.playwright.dev
+playwright.download.prss.microsoft.com
+
+# Dev-time asset fetches (next/font in the default Next.js template)
+fonts.googleapis.com
+fonts.gstatic.com
+GENIE_FW_ALLOW
+  fi
+  # Auto-allow the Manager's address (this SSH session's client) so REST MCP
+  # calls from Claude sessions keep working when the Manager has a public IP.
+  MANAGER_IP=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+  if [ -n "$MANAGER_IP" ] && ! grep -qF "$MANAGER_IP" /etc/genie/firewall-allow.txt; then
+    echo "$MANAGER_IP  # genie manager (auto-added)" | sudo tee -a /etc/genie/firewall-allow.txt > /dev/null
+  fi
+
+  sudo tee /usr/local/sbin/genie-firewall > /dev/null << 'GENIE_FW_SCRIPT'
+#!/bin/bash
+# Egress allowlist for the 'genie' user — managed by Genie standard setup
+# (default-recipes.ts), do not edit by hand. Claude Code sessions and dev
+# services run as genie with permission prompts bypassed; this limits where
+# that traffic can go. Root and other users are untouched.
+# Usage: genie-firewall [apply|off|status]   (default: apply/refresh)
+set -e
+ALLOW_FILE=/etc/genie/firewall-allow.txt
+SET=genie-egress
+CHAIN=GENIE_EGRESS
+UID_GENIE=$(id -u genie)
+
+off() {
+  while iptables -D OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null; do :; done
+  iptables -F "$CHAIN" 2>/dev/null || true
+  iptables -X "$CHAIN" 2>/dev/null || true
+  if command -v ip6tables > /dev/null 2>&1; then
+    while ip6tables -D OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null; do :; done
+    ip6tables -F "$CHAIN" 2>/dev/null || true
+    ip6tables -X "$CHAIN" 2>/dev/null || true
+  fi
+  echo "genie egress firewall: off"
+}
+
+status() {
+  if iptables -C OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null; then
+    echo "genie egress firewall: ON ($(ipset list "$SET" 2>/dev/null | grep -c '^[0-9]') allowed IPs)"
+    iptables -vL "$CHAIN"
+  else
+    echo "genie egress firewall: OFF"
+  fi
+}
+
+apply() {
+  # Serialize concurrent runs (timer fire + manual/UI apply) — the shared
+  # temp-set name below otherwise races: one run flushes/destroys it under the
+  # other, swapping an EMPTY set into place (observed on first enable).
+  exec 200>/run/genie-firewall.lock
+  flock -x 200
+  # Resolve the allowlist into an ipset; build-and-swap so refreshes are atomic.
+  ipset create "$SET" hash:ip -exist
+  ipset create "$SET-new" hash:ip -exist
+  ipset flush "$SET-new"
+  while read -r host; do
+    host="\${host%%#*}"; host=$(echo "$host" | xargs); [ -z "$host" ] && continue
+    for ip in $(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u); do
+      ipset add "$SET-new" "$ip" -exist
+    done
+  done < "$ALLOW_FILE"
+  # Refuse to swap in an empty resolution when the file has entries — happens
+  # when DNS isn't up yet (boot) and would blackhole genie until the next
+  # refresh. Keep the previous set; the 10-min timer retries.
+  NEW_COUNT=$(ipset list "$SET-new" | grep -c '^[0-9]' || true)
+  if [ "$NEW_COUNT" = "0" ] && grep -qE '^[^#[:space:]]' "$ALLOW_FILE"; then
+    echo "genie egress firewall: resolution came back empty (DNS not up?) — keeping previous set"
+    ipset destroy "$SET-new"
+  else
+    ipset swap "$SET-new" "$SET"
+    ipset destroy "$SET-new"
+  fi
+
+  iptables -N "$CHAIN" 2>/dev/null || true
+  iptables -F "$CHAIN"
+  iptables -A "$CHAIN" -o lo -j RETURN
+  # Replies on connections the Manager opened (SSH sessions run as genie).
+  iptables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  iptables -A "$CHAIN" -p udp --dport 53 -j RETURN
+  iptables -A "$CHAIN" -p tcp --dport 53 -j RETURN
+  # Private ranges: Manager REST, WireGuard nets, local services.
+  iptables -A "$CHAIN" -d 10.0.0.0/8 -j RETURN
+  iptables -A "$CHAIN" -d 172.16.0.0/12 -j RETURN
+  iptables -A "$CHAIN" -d 192.168.0.0/16 -j RETURN
+  iptables -A "$CHAIN" -m set --match-set "$SET" dst -j RETURN
+  iptables -A "$CHAIN" -m limit --limit 6/min -j LOG --log-prefix "genie-egress-block: "
+  iptables -A "$CHAIN" -j REJECT
+  iptables -C OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null || \\
+    iptables -I OUTPUT 1 -m owner --uid-owner "$UID_GENIE" -j "$CHAIN"
+
+  # IPv6: Taz v6 routing is broken anyway (taz-ipv6-quirk) — reject outright so
+  # v6 can't become the bypass path.
+  if command -v ip6tables > /dev/null 2>&1; then
+    ip6tables -N "$CHAIN" 2>/dev/null || true
+    ip6tables -F "$CHAIN"
+    ip6tables -A "$CHAIN" -o lo -j RETURN
+    ip6tables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    ip6tables -A "$CHAIN" -j REJECT
+    ip6tables -C OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null || \\
+      ip6tables -I OUTPUT 1 -m owner --uid-owner "$UID_GENIE" -j "$CHAIN"
+  fi
+  echo "genie egress firewall: on ($(ipset list "$SET" | grep -c '^[0-9]') allowed IPs)"
+}
+
+case "\${1:-apply}" in
+  off) off ;;
+  status) status ;;
+  *) apply ;;
+esac
+GENIE_FW_SCRIPT
+  sudo chmod +x /usr/local/sbin/genie-firewall
+
+  sudo tee /etc/systemd/system/genie-firewall.service > /dev/null << 'GENIE_FW_UNIT'
+[Unit]
+Description=Genie egress allowlist for the genie user
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/genie/firewall-allow.txt
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/genie-firewall
+
+[Install]
+WantedBy=multi-user.target
+GENIE_FW_UNIT
+  sudo tee /etc/systemd/system/genie-firewall.timer > /dev/null << 'GENIE_FW_TIMER'
+[Unit]
+Description=Re-resolve genie egress allowlist IPs (CDN rotation)
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
+GENIE_FW_TIMER
+  sudo systemctl daemon-reload
+  sudo systemctl enable genie-firewall.service > /dev/null 2>&1 || true
+  sudo systemctl enable --now genie-firewall.timer > /dev/null 2>&1 || true
+  sudo /usr/local/sbin/genie-firewall 2>&1 | sed 's/^/  /'`;
+
 export const DEFAULT_RECIPES: RecipeInput[] = [
   {
     slug: "genie-standard",
     label: "Genie Standard Setup",
     icon: "Sparkles",
-    description: "Baseline Genie expects on every VPS: the 'genie' deploy user (passwordless sudo, same SSH key), Docker + compose, Node.js 20, Claude Code, /opt/project owned by genie, and a genie-stats systemd service (manager syncs the bundle after install).",
+    description: "Baseline Genie expects on every VPS: the 'genie' deploy user (passwordless sudo, same SSH key), Docker + compose, Node.js 20, Claude Code, /opt/project owned by genie, a genie-stats systemd service (manager syncs the bundle after install), and Claude hardening — managed settings that deny credential reads, plus an optional egress allowlist firewall for the genie user.",
     // NOTE: we intentionally do NOT verify docker-group membership here.
     // `usermod -aG docker` only takes effect on the user's NEXT login, and
     // even a fresh SSH session can hold a stale group list (NSS cache,
@@ -198,7 +398,7 @@ export const DEFAULT_RECIPES: RecipeInput[] = [
     // exactly the bug "Genie button not green after refresh". -n is safe: the
     // install script itself relies on passwordless sudo, so if install
     // succeeded, `sudo -n` works.
-    checkScript: `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && command -v dtach > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ] && systemctl list-unit-files --type=service 2>/dev/null | grep -q '^genie-stats.service'; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    checkScript: `if id genie >/dev/null 2>&1 && sudo -n test -s /home/genie/.ssh/authorized_keys && command -v docker > /dev/null 2>&1 && docker compose version > /dev/null 2>&1 && command -v node > /dev/null 2>&1 && command -v npm > /dev/null 2>&1 && command -v claude > /dev/null 2>&1 && command -v dtach > /dev/null 2>&1 && [ -d /opt/project ] && [ "$(stat -c %U /opt/project 2>/dev/null || stat -f %Su /opt/project)" = "genie" ] && systemctl list-unit-files --type=service 2>/dev/null | grep -q '^genie-stats.service' && [ -f /etc/claude-code/managed-settings.json ]; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
@@ -384,6 +584,51 @@ WantedBy=multi-user.target
 GENIE_STATS_UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable genie-stats.service > /dev/null 2>&1 || true
+
+# --- Claude hardening ---------------------------------------------------------
+# Every Claude session on this VM runs as 'genie' with permission prompts
+# bypassed (chat/vps-agent-router.ts, ssh/claude-stream/session.ts), so policy
+# has to live on the VM, not in CLI flags:
+#  - /etc/claude-code/managed-settings.json sits at the top of Claude Code's
+#    settings precedence and blocks its file tools from touching the OAuth
+#    credentials (~/.claude) and SSH keys, and disables non-essential traffic
+#    (telemetry/Sentry/Statsig) so those hosts need no firewall exception.
+#  - genie-firewall (CLAUDE_EGRESS=enforce, the default) restricts the *genie
+#    user's* outbound traffic to /etc/genie/firewall-allow.txt, so a
+#    prompt-injected session can't exfiltrate to arbitrary hosts. Root is
+#    untouched, so apt/recipe installs keep working. Known limits: genie's
+#    passwordless sudo can switch it off, Docker container traffic (FORWARD
+#    chain) is not filtered, and DNS is open — this raises the bar, it is not
+#    a jail.
+log "Writing Claude managed settings (/etc/claude-code/managed-settings.json)..."
+sudo mkdir -p /etc/claude-code
+sudo tee /etc/claude-code/managed-settings.json > /dev/null << 'GENIE_CLAUDE_POLICY'
+{
+  "permissions": {
+    "deny": [
+      "Read(//home/genie/.claude/**)",
+      "Write(//home/genie/.claude/**)",
+      "Read(//home/genie/.claude.json*)",
+      "Write(//home/genie/.claude.json*)",
+      "Read(//home/genie/.ssh/**)",
+      "Write(//home/genie/.ssh/**)"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  }
+}
+GENIE_CLAUDE_POLICY
+
+CLAUDE_EGRESS="\${CLAUDE_EGRESS:-enforce}"
+if [ "$CLAUDE_EGRESS" = "enforce" ]; then
+${GENIE_FIREWALL_SETUP_SCRIPT}
+else
+  log "CLAUDE_EGRESS=off — removing genie egress firewall if present..."
+  [ -x /usr/local/sbin/genie-firewall ] && sudo /usr/local/sbin/genie-firewall off 2>&1 | sed 's/^/  /' || true
+  sudo systemctl disable --now genie-firewall.timer genie-firewall.service 2>/dev/null || true
+fi
+
 log "Versions:"
 log "  Docker:  $(docker --version 2>/dev/null || echo MISSING)"
 log "  Node:    $(node --version 2>/dev/null || echo MISSING)"
@@ -403,6 +648,13 @@ if [ -f /etc/ssh/sshd_config.d/60-genie.conf ]; then
   sudo rm -f /etc/ssh/sshd_config.d/60-genie.conf
   sudo sshd -t 2>/dev/null && (sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true)
 fi
+log "Removing Claude hardening (managed settings + egress firewall)..."
+[ -x /usr/local/sbin/genie-firewall ] && sudo /usr/local/sbin/genie-firewall off 2>/dev/null || true
+sudo systemctl disable --now genie-firewall.timer genie-firewall.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/genie-firewall.service /etc/systemd/system/genie-firewall.timer /usr/local/sbin/genie-firewall
+sudo systemctl daemon-reload 2>/dev/null || true
+sudo rm -f /etc/claude-code/managed-settings.json
+log "Note: /etc/genie/firewall-allow.txt is left in place (may hold per-VM additions)."
 log "Removing Claude Code (user-facing global)..."
 sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
 rm -rf "$HOME/.claude" 2>/dev/null || true
@@ -433,7 +685,28 @@ usermod -aG docker genie 2>/dev/null || true
 mkdir -p /etc/ssh/sshd_config.d
 printf 'MaxStartups 200:30:500\\nClientAliveInterval 30\\nClientAliveCountMax 3\\n' > /etc/ssh/sshd_config.d/60-genie.conf
 grep -qs 'sshd_config.d' /etc/ssh/sshd_config || echo 'Include /etc/ssh/sshd_config.d/*.conf' >> /etc/ssh/sshd_config
-sshd -t && (systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true)`,
+sshd -t && (systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true)
+# Claude hardening: managed settings deny credential reads + disable telemetry.
+# (The egress firewall is applied by the Standard Setup recipe run, which knows
+# the Manager's IP from its SSH session — not at bootstrap.)
+mkdir -p /etc/claude-code
+cat > /etc/claude-code/managed-settings.json <<'POLICY'
+{
+  "permissions": {
+    "deny": [
+      "Read(//home/genie/.claude/**)",
+      "Write(//home/genie/.claude/**)",
+      "Read(//home/genie/.claude.json*)",
+      "Write(//home/genie/.claude.json*)",
+      "Read(//home/genie/.ssh/**)",
+      "Write(//home/genie/.ssh/**)"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  }
+}
+POLICY`,
     commands: [
       { name: "Versions (all)", command: `echo "Docker:  $(docker --version 2>/dev/null || echo MISSING)"; echo "Node:    $(node --version 2>/dev/null || echo MISSING)"; echo "npm:     $(npm --version 2>/dev/null || echo MISSING)"; echo "Claude:  $(claude --version 2>&1 | head -1 || echo MISSING)"; echo "Agent:   $(command -v genie-agent 2>/dev/null || echo MISSING)"; echo "Stats:   $(systemctl is-active genie-stats 2>/dev/null || echo MISSING)"` },
       { name: "genie-stats service status", command: "systemctl status genie-stats --no-pager 2>&1 | head -15 || echo '(unit not installed)'" },
@@ -446,6 +719,23 @@ sshd -t && (systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/nul
       { name: "Verify user in docker group", command: `id -nG | tr ' ' '\\n' | grep -qx docker && echo "OK: $(whoami) is in docker group" || echo "NOT in docker group — log out + back in after install"` },
       { name: "Re-run setup (idempotent)", command: `sudo HOME=/root NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g --no-audit --no-fund @anthropic-ai/claude-code 2>&1 | tail -5` },
       { name: "Docker info", command: "docker info 2>&1 | head -20" },
+      { name: "Claude policy (managed settings)", command: "cat /etc/claude-code/managed-settings.json 2>/dev/null || echo '(no managed settings)'" },
+      { name: "Egress firewall status", command: "sudo genie-firewall status 2>/dev/null || echo '(firewall not installed)'" },
+      { name: "Egress firewall: recent blocks", command: "sudo journalctl -k --no-pager 2>/dev/null | grep genie-egress-block | tail -20 | grep . || echo '(no blocks logged)'" },
+      { name: "Egress firewall: show allowlist", command: "cat /etc/genie/firewall-allow.txt 2>/dev/null || echo '(no allowlist)'" },
+      { name: "Egress firewall: refresh IPs", command: "sudo genie-firewall 2>&1 | tail -3" },
+      { name: "Egress firewall: disable", command: "sudo genie-firewall off 2>/dev/null; sudo systemctl disable --now genie-firewall.timer genie-firewall.service 2>/dev/null; echo 'disabled (re-apply Standard Setup to re-enable)'" },
+    ],
+    options: [
+      {
+        name: "CLAUDE_EGRESS",
+        label: "Claude egress firewall",
+        choices: [
+          { value: "enforce", label: "Enforce allowlist (genie user)" },
+          { value: "off", label: "Off" },
+        ],
+        defaultValue: "enforce",
+      },
     ],
   },
   {
