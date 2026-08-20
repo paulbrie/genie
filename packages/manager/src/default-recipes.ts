@@ -442,11 +442,31 @@ if command -v apt-get > /dev/null 2>&1; then
     log "Node.js \${node_major}.x with npm already present, skipping NodeSource."
   fi
 elif command -v dnf > /dev/null 2>&1; then
-  log "dnf install docker git curl dtach..."
+  log "dnf install docker git curl..."
+  sudo dnf install -y -q docker git curl > /dev/null
   # dtach lives in EPEL on RHEL-family. epel-release is idempotent and a no-op
-  # if the repo is already enabled (CentOS Stream/AlmaLinux 9 base + EPEL).
-  sudo dnf install -y -q epel-release > /dev/null 2>&1 || true
-  sudo dnf install -y -q docker git curl dtach > /dev/null
+  # if the repo is already enabled (CentOS Stream/AlmaLinux 9 base + EPEL), but
+  # on some distros it isn't packaged in the base repos, and some EPEL branches
+  # (e.g. EPEL 10) don't carry dtach at all — so each step below is best-effort
+  # and we fall back to a source build rather than aborting the whole setup.
+  if ! command -v dtach > /dev/null 2>&1; then
+    log "dnf install dtach (via EPEL)..."
+    sudo dnf install -y -q epel-release > /dev/null 2>&1 \\
+      || sudo dnf install -y -q "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$(rpm -E %rhel).noarch.rpm" > /dev/null 2>&1 \\
+      || true
+    sudo dnf install -y -q dtach > /dev/null 2>&1 || true
+  fi
+  if ! command -v dtach > /dev/null 2>&1; then
+    log "dtach not available in any repo — building v0.9 from source..."
+    sudo dnf install -y -q gcc make > /dev/null
+    dtach_tmp=$(mktemp -d)
+    curl -4 -fsSL -o "$dtach_tmp/dtach.tar.gz" https://github.com/crigler/dtach/archive/refs/tags/v0.9.tar.gz
+    tar -xzf "$dtach_tmp/dtach.tar.gz" -C "$dtach_tmp"
+    (cd "$dtach_tmp/dtach-0.9" && ./configure > /dev/null && make > /dev/null)
+    sudo install -m 0755 "$dtach_tmp/dtach-0.9/dtach" /usr/local/bin/dtach
+    rm -rf "$dtach_tmp"
+    log "dtach built and installed to /usr/local/bin/dtach."
+  fi
   node_major=$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\\1/' || echo 0)
   if [ "$node_major" -lt 20 ] || ! command -v npm > /dev/null 2>&1; then
     log "Adding NodeSource repo (dnf install inside)..."
