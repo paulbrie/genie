@@ -538,7 +538,10 @@ const pendingAdminExecs = new Map<string, PendingAdminExec>();
 // comes back up and new requests work fine.
 onWsClose(() => {
   for (const [execId, pending] of pendingAdminExecs) {
-    try { pending.resolve({ output: pending.output || "Connection lost (manager restarted)", error: true }); }
+    // Say WHY the run ended — resolving with just the accumulated output makes
+    // an interrupted install look like the script itself failed silently.
+    const note = "[Connection to manager lost — the run was cut short. Re-check / re-run once the manager is back.]";
+    try { pending.resolve({ output: pending.output ? `${pending.output}\n${note}` : note, error: true }); }
     catch { /* ignore */ }
     pendingAdminExecs.delete(execId);
   }

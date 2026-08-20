@@ -24,7 +24,7 @@ import {
   updateWindowPosition, vpsExec, watchVpsStats, openClaudeChatWindow,
 } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
-import { openVmConnectionWindow } from "@/components/tazcloud/vm-connection-window";
+import { openDirectVmConnectionWindow, openVmConnectionWindow } from "@/components/tazcloud/vm-connection-window";
 import { ClaudeLogo, VpsFirewall, CommandsTab } from "@/components/project/project-detail";
 import { VpsEgressFirewall } from "@/components/project/vps-egress-firewall";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
@@ -580,7 +580,10 @@ function ClaudeManageButton({
 }
 
 /** SSH-launch split-button for the Manage tab. Click the body → open a terminal
- *  as `genie` (the deploy user); click the chevron → pick a different login. */
+ *  as `genie` (the deploy user); click the chevron → pick a different login.
+ *  Works from the moment the server is up: project-linked VMs go through the
+ *  project terminal path (tmux badges, stats); unlinked VMs dial direct with
+ *  the provider key. */
 function SshLaunchButton({
   vm,
   linked,
@@ -590,43 +593,42 @@ function SshLaunchButton({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   if (!vm.host) return null;
-  const enabled = !!linked;
   const openSsh = (user: string) => {
-    if (!linked) return;
-    openVmConnectionWindow({
-      projectId: linked.project.id,
-      instanceId: linked.instance.id,
+    if (linked) {
+      openVmConnectionWindow({
+        projectId: linked.project.id,
+        instanceId: linked.instance.id,
+        host: vm.host,
+        port: 22,
+        username: user,
+        vmLabel: vm.name,
+      });
+      return;
+    }
+    openDirectVmConnectionWindow({
       host: vm.host,
       port: 22,
       username: user,
+      privateKeyPath: sshKeyPathFor(vm),
       vmLabel: vm.name,
     });
   };
   const defaultUser = vm.provider === "ssh" ? (vm.connection?.username || "root") : "genie";
   const imageDefault = imageDefaultUser(vm.image);
   const userChoices = sshUserChoicesFor(vm);
-  const disabledTitle = enabled ? undefined : "Attach this VM to a project to open an SSH terminal";
   return (
     <div className="relative inline-flex items-stretch">
       <button
         onClick={() => openSsh(defaultUser)}
-        disabled={!enabled}
-        className={cn(
-          "flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 rounded-l border border-r-0 border-blue/30 text-md text-blue transition-colors",
-          enabled ? "hover:bg-blue/10" : "opacity-40 cursor-not-allowed",
-        )}
-        title={disabledTitle ?? `Open SSH terminal — ${defaultUser}@${vm.host}`}
+        className="flex items-center gap-1.5 pl-2 pr-1.5 py-0.5 rounded-l border border-r-0 border-blue/30 text-md text-blue transition-colors hover:bg-blue/10"
+        title={`Open SSH terminal — ${defaultUser}@${vm.host}`}
       >
         <Terminal size={11} />
         SSH
       </button>
       <button
         onClick={() => setMenuOpen((v) => !v)}
-        disabled={!enabled}
-        className={cn(
-          "flex items-center px-1 rounded-r border border-blue/30 text-blue transition-colors",
-          enabled ? "hover:bg-blue/10" : "opacity-40 cursor-not-allowed",
-        )}
+        className="flex items-center px-1 rounded-r border border-blue/30 text-blue transition-colors hover:bg-blue/10"
         title="Choose SSH user"
       >
         <ChevronDown size={11} />

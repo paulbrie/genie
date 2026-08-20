@@ -16,12 +16,14 @@ import {
   closeWindow,
   focusWindow,
   minimizeWindow,
+  openDirectVmConnection,
   openProjectVmConnection,
   openWindow,
   registerWindow,
   restoreWindow,
   updateWindowPosition,
 } from "@/store/actions";
+import type { OpenDirectVmArgs } from "@/store/actions/vm-connection";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { useIsWindowFocused } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -68,6 +70,17 @@ export function openVmConnectionWindow(args: {
     }
   }
   const key = openProjectVmConnection(args);
+  const wid = VM_CONN_WINDOW_PREFIX + key;
+  registerWindow(wid, `SSH ${args.username}@${args.vmLabel}`, "terminal");
+  openWindow(wid);
+  focusWindow(wid);
+}
+
+/** Same floating window for a VM that isn't attached to any project — dials
+ *  the manager's direct terminal path (host + username + key path), so an SSH
+ *  shell works the moment the server is reachable. No tmux/stats extras. */
+export function openDirectVmConnectionWindow(args: OpenDirectVmArgs): void {
+  const key = openDirectVmConnection(args);
   const wid = VM_CONN_WINDOW_PREFIX + key;
   registerWindow(wid, `SSH ${args.username}@${args.vmLabel}`, "terminal");
   openWindow(wid);

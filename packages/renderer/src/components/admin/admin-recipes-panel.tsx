@@ -187,6 +187,15 @@ export function AdminRecipesPanel({
     });
   }
 
+  /** One-line verdict for the red error strip. The output pane above already
+   *  shows the full log, so surfacing the whole output again just duplicates
+   *  it — the last non-empty line is where shell errors actually land. */
+  function failureSummary(output: string): string {
+    const lines = output.trim().split("\n").filter((l) => l.trim() !== "");
+    const last = lines[lines.length - 1]?.trim() || "Command failed";
+    return last.length > 200 ? `${last.slice(0, 200)}…` : last;
+  }
+
   async function check(recipe: VpsRecipeDef) {
     update(recipe.id, { checking: true, error: null });
     // checkScripts are short one-liners that don't use BASH_HELPERS — run as-is.
@@ -195,7 +204,7 @@ export function AdminRecipesPanel({
       checking: false,
       installed: res.output.includes("INSTALLED") && !res.output.includes("NOT_INSTALLED"),
       output: res.output,
-      error: res.error ? res.output : null,
+      error: res.error ? failureSummary(res.output) : null,
     });
   }
 
@@ -243,7 +252,7 @@ export function AdminRecipesPanel({
       // can determine the real state (the install may have partly succeeded).
       installed: aborted ? null : !res.error,
       output: res.output,
-      error: aborted ? "Cancelled" : (res.error ? res.output : null),
+      error: aborted ? "Cancelled" : (res.error ? failureSummary(res.output) : null),
     });
   }
 
@@ -263,7 +272,7 @@ export function AdminRecipesPanel({
     update(recipe.id, {
       running: false,
       output: res.output,
-      error: aborted ? "Cancelled" : (res.error ? res.output : null),
+      error: aborted ? "Cancelled" : (res.error ? failureSummary(res.output) : null),
     });
   }
 
