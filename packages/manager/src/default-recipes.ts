@@ -2107,4 +2107,107 @@ log "Done."`,
       { name: "Hit local URL", command: "curl -fsS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\\n' http://127.0.0.1:13337/ || echo 'not reachable yet'" },
     ],
   },
+  {
+    slug: "genie-local",
+    label: "Genie Local (Projects Supervisor)",
+    icon: "MonitorCog",
+    description: "Install a full Genie server from the private paulbrie/genie-local repo via its deploy/install.sh: Node 20, PostgreSQL 17 (PGDG), nginx on :3000 fronting the admin Next.js dashboard (admin.service, next dev on :3001), genie-stats, generated admin/.env.local + .mcp.json, Drizzle migrations, and code-server. Targets a fresh Ubuntu 24.04 VM. Prompts for a GitHub PAT at apply time (repo is private) — the token is used only to clone and never stored on the VM.",
+    port: 3000,
+    checkScript: `if [ -d /opt/project/admin ] && systemctl is-enabled --quiet admin.service 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
+    installScript: `set -e
+set -o pipefail
+export DEBIAN_FRONTEND=noninteractive
+${BASH_HELPERS}
+# genie-local's installer pulls from GitHub, NodeSource, PGDG and npm — all
+# CDN-fronted and v6-flaky on Taz VMs (taz-ipv6-quirk).
+force_ipv4_dns
+# GITHUB_PAT arrives via the secrets modal (exported per-apply, never persisted).
+if [ -z "\${GITHUB_PAT:-}" ]; then
+  log "ERROR: GITHUB_PAT is required — paulbrie/genie-local is a private repo."; exit 1
+fi
+if ! command -v apt-get > /dev/null 2>&1; then
+  log "ERROR: genie-local's deploy/install.sh targets Ubuntu 24.04 (apt) — unsupported package manager."; exit 1
+fi
+log "Installing prerequisites (git, curl)..."
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
+wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq git curl ca-certificates > /dev/null
+SRC=/tmp/genie-local-src
+log "Cloning paulbrie/genie-local (private, via PAT)..."
+rm -rf "$SRC"
+git clone --depth 1 "https://x-access-token:\${GITHUB_PAT}@github.com/paulbrie/genie-local.git" "$SRC" 2>&1 | sed 's/^/  /'
+# Scrub the token from the clone immediately — install.sh may copy this tree to
+# /opt/project, and a credentialed remote URL must not travel with it.
+git -C "$SRC" remote set-url origin https://github.com/paulbrie/genie-local.git
+# Pass through only the values the user actually provided — install.sh has sane
+# defaults (generates ADMIN_PASSWORD, placeholder GENIE_VPS_TOKEN) for the rest.
+ENV_ARGS=(SOURCE_DIR="$SRC")
+if [ -n "\${PUBLIC_HOST:-}" ]; then ENV_ARGS+=(PUBLIC_HOST="$PUBLIC_HOST"); fi
+if [ -n "\${ADMIN_PASSWORD:-}" ]; then ENV_ARGS+=(ADMIN_PASSWORD="$ADMIN_PASSWORD"); fi
+if [ -n "\${GENIE_VPS_TOKEN:-}" ]; then ENV_ARGS+=(GENIE_VPS_TOKEN="$GENIE_VPS_TOKEN"); fi
+log "Running deploy/install.sh (Node 20, PostgreSQL 17, nginx, admin dashboard, migrations — typically 5-15 min)..."
+sudo "\${ENV_ARGS[@]}" bash "$SRC/deploy/install.sh" 2>&1 | sed 's/^/  /'
+rm -rf "$SRC"
+log "genie-local installed."
+log "  Dashboard: http://$(hostname -I 2>/dev/null | awk '{print $1}'):3000/admin"
+log "  Login:     $(sudo awk -F= '/^ADMIN_USER=/{print $2}' /opt/project/admin/.env.local 2>/dev/null || echo admin) / $(sudo awk -F= '/^ADMIN_PASSWORD=/{print $2}' /opt/project/admin/.env.local 2>/dev/null || echo '(see /opt/project/admin/.env.local)')"
+if sudo grep -q REPLACE_WITH_GENIE_VPS_TOKEN /opt/project/.mcp.json 2>/dev/null; then
+  log "  NOTE: /opt/project/.mcp.json still holds a placeholder token — edit it to enable the genie-* MCP servers."
+fi`,
+    uninstallScript: `set -e
+${BASH_HELPERS}
+log "Stopping and disabling admin.service..."
+sudo systemctl disable --now admin.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/admin.service
+log "Removing nginx site ft-admin..."
+sudo rm -f /etc/nginx/sites-enabled/ft-admin /etc/nginx/sites-available/ft-admin
+if sudo nginx -t > /dev/null 2>&1; then sudo systemctl reload nginx 2>/dev/null || true; fi
+sudo systemctl daemon-reload 2>/dev/null || true
+log "Note: /opt/project (code + supervised projects), PostgreSQL (db 'admin_dashboard'), genie-stats and code-server are left in place — remove those individually if needed."
+log "Done."`,
+    // Bootstrap-time setup.sh can't carry a per-user PAT — the snippet ships a
+    // placeholder to replace before use. Prefer the recipe (which prompts).
+    setupShSnippet: `# Genie Local server (paulbrie/genie-local — PRIVATE repo, needs a GitHub PAT)
+GITHUB_PAT=REPLACE_WITH_GITHUB_PAT
+git clone --depth 1 "https://x-access-token:\${GITHUB_PAT}@github.com/paulbrie/genie-local.git" /tmp/genie-local-src
+git -C /tmp/genie-local-src remote set-url origin https://github.com/paulbrie/genie-local.git
+SOURCE_DIR=/tmp/genie-local-src bash /tmp/genie-local-src/deploy/install.sh
+rm -rf /tmp/genie-local-src`,
+    commands: [
+      { name: "Services status", command: `for u in admin genie-stats postgresql nginx code-server; do echo "$u: $(systemctl is-active $u 2>/dev/null || echo missing)"; done` },
+      { name: "admin.service status", command: "sudo systemctl status admin --no-pager 2>&1 | head -20" },
+      { name: "Tail admin logs (last 80)", command: "sudo journalctl -u admin.service -n 80 --no-pager" },
+      { name: "Hit dashboard (nginx :3000)", command: "curl -fsS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\\n' http://127.0.0.1:3000/admin || echo 'not reachable yet'" },
+      { name: "Show dashboard login", command: `sudo grep -E '^ADMIN_(USER|PASSWORD)=' /opt/project/admin/.env.local 2>/dev/null || echo '(no /opt/project/admin/.env.local)'` },
+      { name: "MCP token status", command: `sudo grep -q REPLACE_WITH_GENIE_VPS_TOKEN /opt/project/.mcp.json 2>/dev/null && echo 'PLACEHOLDER — edit /opt/project/.mcp.json' || echo 'token set (or file missing)'` },
+      { name: "Restart admin", command: "sudo systemctl restart admin && sleep 2 && sudo systemctl status admin --no-pager 2>&1 | head -10" },
+      { name: "Run DB migrations", command: `sudo -u genie -H bash -lc 'cd /opt/project/admin && DATABASE_URL="$(grep -E "^DATABASE_URL=" .env.local | head -1 | cut -d= -f2-)" npm run db:migrate' 2>&1 | tail -10` },
+    ],
+    secrets: [
+      {
+        name: "GITHUB_PAT",
+        label: "GitHub PAT",
+        placeholder: "github_pat_…",
+        description: "Fine-grained token with read access to the private paulbrie/genie-local repo. Used only for the clone; scrubbed from the tree before install.",
+        required: true,
+      },
+      {
+        name: "PUBLIC_HOST",
+        label: "Public hostname",
+        placeholder: "ft.cloud.teleporthq.ai (installer default if empty)",
+        description: "nginx server_name / Next.js allowedDevOrigins for the dashboard.",
+      },
+      {
+        name: "ADMIN_PASSWORD",
+        label: "Dashboard admin password",
+        placeholder: "(generated if empty)",
+        description: "Login for the Projects Supervisor at /admin (user 'admin'). When empty the installer generates one into /opt/project/admin/.env.local — use the 'Show dashboard login' command to read it.",
+      },
+      {
+        name: "GENIE_VPS_TOKEN",
+        label: "Genie VPS token",
+        placeholder: "(placeholder if empty)",
+        description: "Bearer token for the genie-* MCP servers in /opt/project/.mcp.json. Can be filled in on the VM later.",
+      },
+    ],
+  },
 ];
