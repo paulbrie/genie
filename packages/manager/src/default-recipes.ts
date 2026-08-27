@@ -2111,7 +2111,7 @@ log "Done."`,
     slug: "genie-local",
     label: "Genie Local (Projects Supervisor)",
     icon: "MonitorCog",
-    description: "Install a full Genie server from the private paulbrie/genie-local repo via its deploy/install.sh: Node 20, PostgreSQL 17 (PGDG), nginx on :3000 fronting the admin Next.js dashboard (admin.service, next dev on :3001), genie-stats, generated admin/.env.local + .mcp.json, Drizzle migrations, and code-server. Targets a fresh Ubuntu 24.04 VM. Prompts for a GitHub PAT at apply time (repo is private) — the token is used only to clone and never stored on the VM.",
+    description: "Install a full Genie server from the private paulbrie/genie-local repo via its deploy/install.sh: Node 20, PostgreSQL 17 (PGDG), nginx on :3000 fronting the admin Next.js dashboard (admin.service, next dev on :3001), genie-stats, generated admin/.env.local + .mcp.json, and Drizzle migrations (code-server is left to the dedicated recipe). Targets a fresh Ubuntu 24.04 VM. Re-applying on an installed box upgrades in place (code + deps + migrations; config untouched). Both paths end with a health check — green means the dashboard answers on :3000. Prompts for a GitHub PAT at apply time (repo is private; pre-filled from Settings → Genie Local) — the token is used only to clone and never stored on the VM.",
     port: 3000,
     checkScript: `if [ -d /opt/project/admin ] && systemctl is-enabled --quiet admin.service 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
@@ -2133,21 +2133,90 @@ wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 
 wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq git curl ca-certificates > /dev/null
 SRC=/tmp/genie-local-src
 log "Cloning paulbrie/genie-local (private, via PAT)..."
-rm -rf "$SRC"
-git clone --depth 1 "https://x-access-token:\${GITHUB_PAT}@github.com/paulbrie/genie-local.git" "$SRC" 2>&1 | sed 's/^/  /'
+sudo rm -rf "$SRC"
+# Full clone (no --depth 1): the upgrade path below does a local git fetch from
+# this tree, and git refuses to serve fetches FROM a shallow repository.
+git clone "https://x-access-token:\${GITHUB_PAT}@github.com/paulbrie/genie-local.git" "$SRC" 2>&1 | sed 's/^/  /'
 # Scrub the token from the clone immediately — install.sh may copy this tree to
 # /opt/project, and a credentialed remote URL must not travel with it.
 git -C "$SRC" remote set-url origin https://github.com/paulbrie/genie-local.git
-# Pass through only the values the user actually provided — install.sh has sane
-# defaults (generates ADMIN_PASSWORD, placeholder GENIE_VPS_TOKEN) for the rest.
-ENV_ARGS=(SOURCE_DIR="$SRC")
-if [ -n "\${PUBLIC_HOST:-}" ]; then ENV_ARGS+=(PUBLIC_HOST="$PUBLIC_HOST"); fi
-if [ -n "\${ADMIN_PASSWORD:-}" ]; then ENV_ARGS+=(ADMIN_PASSWORD="$ADMIN_PASSWORD"); fi
-if [ -n "\${GENIE_VPS_TOKEN:-}" ]; then ENV_ARGS+=(GENIE_VPS_TOKEN="$GENIE_VPS_TOKEN"); fi
-log "Running deploy/install.sh (Node 20, PostgreSQL 17, nginx, admin dashboard, migrations — typically 5-15 min)..."
-sudo "\${ENV_ARGS[@]}" bash "$SRC/deploy/install.sh" 2>&1 | sed 's/^/  /'
-rm -rf "$SRC"
-log "genie-local installed."
+# genie must be able to fetch from this tree (git's dubious-ownership check
+# rejects repos owned by another user), and install.sh copies it as genie too.
+sudo chown -R genie:genie "$SRC" 2>/dev/null || true
+
+# Shared post-install/upgrade gate: a green result must mean a working
+# dashboard, not just "the script ran".
+health_check() {
+  log "Verifying admin.service + dashboard..."
+  svc_ok=0
+  for i in $(seq 1 45); do
+    if sudo systemctl is-active --quiet admin.service; then svc_ok=1; break; fi
+    sleep 2
+  done
+  if [ "$svc_ok" != 1 ]; then
+    log "ERROR: admin.service is not active — last journal lines:"
+    sudo journalctl -u admin.service -n 25 --no-pager 2>/dev/null | sed 's/^/  /'
+    exit 1
+  fi
+  code=000
+  for i in $(seq 1 30); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/admin/login 2>/dev/null || echo 000)
+    if [ "$code" = "200" ]; then log "Dashboard healthy — HTTP 200 on /admin/login."; return 0; fi
+    sleep 2
+  done
+  log "ERROR: dashboard did not answer on :3000 (last HTTP status: $code)."
+  exit 1
+}
+
+if [ -f /opt/project/admin/package.json ] && sudo test -d /opt/project/.git; then
+  # ---- Upgrade in place (re-apply on an installed box) ----------------------
+  # install.sh never updates an existing tree ("tree already present"), and its
+  # re-run currently desyncs the DB password (see genie-local TASKS.md), so the
+  # upgrade path avoids it entirely: fetch the fresh clone locally, hard-reset
+  # tracked files (untracked .env.local/.mcp.json/projects/ survive), refresh
+  # deps, migrate, restart.
+  log "Existing install detected — upgrading in place (code, deps, migrations; config untouched)..."
+  sudo -u genie -H git -C /opt/project fetch "$SRC" HEAD 2>&1 | sed 's/^/  /'
+  sudo -u genie -H git -C /opt/project reset --hard FETCH_HEAD 2>&1 | sed 's/^/  /'
+  for pkg in admin tools tools/local-genie-mcp; do
+    if [ -f "/opt/project/$pkg/package.json" ]; then
+      log "npm install: $pkg..."
+      sudo -u genie -H bash -lc "cd /opt/project/$pkg && npm install --no-audit --no-fund" 2>&1 | tail -3 | sed 's/^/  /'
+    fi
+  done
+  log "Running DB migrations..."
+  MIGRATE_URL=$(sudo grep -E '^DATABASE_URL=' /opt/project/admin/.env.local 2>/dev/null | head -1 | cut -d= -f2- || true)
+  if [ -n "$MIGRATE_URL" ]; then
+    sudo -u genie -H bash -lc "cd /opt/project/admin && DATABASE_URL='$MIGRATE_URL' npm run db:migrate" 2>&1 | tail -5 | sed 's/^/  /'
+  else
+    log "WARNING: no DATABASE_URL in admin/.env.local — skipping migrations."
+  fi
+  log "Restarting services..."
+  sudo systemctl restart admin.service
+  sudo systemctl restart genie-stats.service 2>/dev/null || true
+  sudo systemctl reload nginx 2>/dev/null || true
+else
+  # ---- Fresh install --------------------------------------------------------
+  # Pass through only the values the user actually provided — install.sh has
+  # sane defaults (generates ADMIN_PASSWORD, placeholder GENIE_VPS_TOKEN).
+  # INSTALL_CODE_SERVER=0: the dedicated 'VS Code (code-server)' recipe owns
+  # code-server.service (127.0.0.1:13337 + managed password); install.sh's
+  # variant would fight it over the same unit name.
+  ENV_ARGS=(SOURCE_DIR="$SRC" INSTALL_CODE_SERVER=0)
+  if [ -n "\${PUBLIC_HOST:-}" ]; then ENV_ARGS+=(PUBLIC_HOST="$PUBLIC_HOST"); fi
+  if [ -n "\${ADMIN_PASSWORD:-}" ]; then ENV_ARGS+=(ADMIN_PASSWORD="$ADMIN_PASSWORD"); fi
+  if [ -n "\${GENIE_VPS_TOKEN:-}" ]; then ENV_ARGS+=(GENIE_VPS_TOKEN="$GENIE_VPS_TOKEN"); fi
+  log "Running deploy/install.sh (Node 20, PostgreSQL 17, nginx, admin dashboard, migrations — typically 5-15 min)..."
+  # Strip install.sh's ANSI colors (the output pane renders raw text), keep a
+  # copy on the box for post-mortems, and indent for the pane.
+  sudo "\${ENV_ARGS[@]}" bash "$SRC/deploy/install.sh" 2>&1 \\
+    | sed 's/\\x1b\\[[0-9;]*m//g' \\
+    | sudo tee /var/log/genie-local-install.log \\
+    | sed 's/^/  /'
+fi
+sudo rm -rf "$SRC"
+health_check
+log "genie-local ready."
 log "  Dashboard: http://$(hostname -I 2>/dev/null | awk '{print $1}'):3000/admin"
 log "  Login:     $(sudo awk -F= '/^ADMIN_USER=/{print $2}' /opt/project/admin/.env.local 2>/dev/null || echo admin) / $(sudo awk -F= '/^ADMIN_PASSWORD=/{print $2}' /opt/project/admin/.env.local 2>/dev/null || echo '(see /opt/project/admin/.env.local)')"
 if sudo grep -q REPLACE_WITH_GENIE_VPS_TOKEN /opt/project/.mcp.json 2>/dev/null; then
@@ -2176,6 +2245,7 @@ rm -rf /tmp/genie-local-src`,
       { name: "Services status", command: `for u in admin genie-stats postgresql nginx code-server; do echo "$u: $(systemctl is-active $u 2>/dev/null || echo missing)"; done` },
       { name: "admin.service status", command: "sudo systemctl status admin --no-pager 2>&1 | head -20" },
       { name: "Tail admin logs (last 80)", command: "sudo journalctl -u admin.service -n 80 --no-pager" },
+      { name: "Tail install log (last 80)", command: "sudo tail -n 80 /var/log/genie-local-install.log 2>/dev/null || echo '(no install log — box predates logging, or upgraded-only)'" },
       { name: "Hit dashboard (nginx :3000)", command: "curl -fsS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\\n' http://127.0.0.1:3000/admin || echo 'not reachable yet'" },
       { name: "Show dashboard login", command: `sudo grep -E '^ADMIN_(USER|PASSWORD)=' /opt/project/admin/.env.local 2>/dev/null || echo '(no /opt/project/admin/.env.local)'` },
       { name: "MCP token status", command: `sudo grep -q REPLACE_WITH_GENIE_VPS_TOKEN /opt/project/.mcp.json 2>/dev/null && echo 'PLACEHOLDER — edit /opt/project/.mcp.json' || echo 'token set (or file missing)'` },
@@ -2187,7 +2257,7 @@ rm -rf /tmp/genie-local-src`,
         name: "GITHUB_PAT",
         label: "GitHub PAT",
         placeholder: "github_pat_…",
-        description: "Fine-grained token with read access to the private paulbrie/genie-local repo. Used only for the clone; scrubbed from the tree before install.",
+        description: "Fine-grained token with read access to the private paulbrie/genie-local repo. Used only for the clone; scrubbed from the tree before install. Pre-filled from Settings → Genie Local when saved there.",
         required: true,
       },
       {
@@ -2195,6 +2265,7 @@ rm -rf /tmp/genie-local-src`,
         label: "Public hostname",
         placeholder: "ft.cloud.teleporthq.ai (installer default if empty)",
         description: "nginx server_name / Next.js allowedDevOrigins for the dashboard.",
+        masked: false,
       },
       {
         name: "ADMIN_PASSWORD",
