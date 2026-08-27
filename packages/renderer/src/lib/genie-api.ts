@@ -43,6 +43,9 @@ export interface AppSettings {
   runpodKimiApiKey: string;
   runpodKimiServedModel: string;
   runpodIdleTimeoutSeconds: number;
+  /** GitHub PAT with read access to the private paulbrie/genie-local repo —
+   *  pre-fills the Genie Local recipe's GITHUB_PAT prompt. */
+  genieLocalGithubPat: string;
 }
 
 export const genie = {
@@ -81,6 +84,7 @@ export const genie = {
       runpodKimiApiKey: "",
       runpodKimiServedModel: "",
       runpodIdleTimeoutSeconds: 300,
+      genieLocalGithubPat: "",
       ...rest,
     })),
   saveSettings: (settings: AppSettings): Promise<FsResult> =>

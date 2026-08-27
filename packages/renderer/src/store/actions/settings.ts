@@ -22,6 +22,7 @@ export async function loadSettings(): Promise<void> {
     runpodKimiApiKey: result.runpodKimiApiKey || "",
     runpodKimiServedModel: result.runpodKimiServedModel || "",
     runpodIdleTimeoutSeconds: result.runpodIdleTimeoutSeconds || 300,
+    genieLocalGithubPat: result.genieLocalGithubPat || "",
   });
 }
 

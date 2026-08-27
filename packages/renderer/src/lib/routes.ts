@@ -1,7 +1,7 @@
 import type { AiSubTab, CloudSubTab, DropletsSubTab, NavKey, TazCloudSubTab } from "@/store/types";
 export type ProjectTab = "settings" | "members" | "servers";
 export type AdminTab = "database" | "droplets" | "ai" | "backup" | "users" | "teams" | "orgs" | "communication" | "audit" | "prodlogs" | "analytics" | "ssh-events" | "connections" | "ssh-startups";
-export type SettingsTab = "general" | "deploy" | "org";
+export type SettingsTab = "general" | "deploy" | "genie-local" | "org";
 
 // --- Nav-level role gate ---
 //
@@ -92,7 +92,7 @@ const VALID_DROPLETS_SUBTABS = new Set<DropletsSubTab>([
 ]);
 
 const VALID_AI_SUBTABS = new Set<AiSubTab>(["costs", "settings"]);
-const VALID_SETTINGS_TABS = new Set<SettingsTab>(["general", "deploy", "org"]);
+const VALID_SETTINGS_TABS = new Set<SettingsTab>(["general", "deploy", "genie-local", "org"]);
 
 // --- URL builders ---
 

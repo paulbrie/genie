@@ -112,6 +112,7 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
   const isPermittedTab =
     requestedTab === "general"
     || (requestedTab === "deploy" && isAdmin)
+    || (requestedTab === "genie-local" && isAdmin)
     || requestedTab === "org";
   const tab: SettingsTab = isPermittedTab ? requestedTab : "general";
   // When orgId is missing, fall back to the first manageable org; undefined when
@@ -140,6 +141,10 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
   const [showNcKey, setShowNcKey] = useState(false);
   const [nc, setNc] = useState({ apiUser: "", apiKey: "", userName: "", domain: "" });
   const [ncDirty, setNcDirty] = useState(false);
+  // Genie Local — GitHub PAT that pre-fills the recipe's install prompt.
+  const [showGenieLocalPat, setShowGenieLocalPat] = useState(false);
+  const [genieLocalPatInput, setGenieLocalPatInput] = useState("");
+  const [genieLocalPatDirty, setGenieLocalPatDirty] = useState(false);
 
   const [sshKey] = useDeepSubject($admin, "sshKey");
   const [copiedKey, setCopiedKey] = useState(false);
@@ -187,6 +192,11 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
   }, [settings.namecheapApiUser, settings.namecheapApiKey, settings.namecheapUserName, settings.namecheapDomain]);
 
   useEffect(() => {
+    setGenieLocalPatInput(settings.genieLocalGithubPat || "");
+    setGenieLocalPatDirty(false);
+  }, [settings.genieLocalGithubPat]);
+
+  useEffect(() => {
     if (railwayTestResult) setRailwayTesting(false);
   }, [railwayTestResult]);
 
@@ -221,6 +231,11 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
     setRailwayProjectIdDirty(false);
   }
 
+  function handleSaveGenieLocalPat() {
+    saveSettingsField("genieLocalGithubPat", genieLocalPatInput.trim());
+    setGenieLocalPatDirty(false);
+  }
+
   function handleSaveNamecheap() {
     saveSettingsField("namecheapApiUser", nc.apiUser.trim());
     saveSettingsField("namecheapApiKey", nc.apiKey.trim());
@@ -235,7 +250,10 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
       <ViewTabs
         tabs={[
           { key: "general" as const, label: "General" },
-          ...(isAdmin ? [{ key: "deploy" as const, label: "Deploy" }] : []),
+          ...(isAdmin ? [
+            { key: "deploy" as const, label: "Deploy" },
+            { key: "genie-local" as const, label: "Genie Local" },
+          ] : []),
           ...(showOrgTab ? [{ key: "org" as const, label: "Organization" }] : []),
         ]}
         activeTab={tab}
@@ -628,6 +646,60 @@ export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: Se
           )}
           </>
           )}
+        </div>
+      ) : tab === "genie-local" ? (
+        <div className="pt-4">
+          <div className="bg-mantle rounded-lg p-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              GitHub PAT — genie-local repo
+              <span className="ml-2 text-md text-overlay0 font-normal">Global</span>
+            </label>
+            <div className="flex items-center gap-2 max-w-md">
+              <div className="relative flex-1">
+                <input
+                  type={showGenieLocalPat ? "text" : "password"}
+                  value={genieLocalPatInput}
+                  onChange={(e) => {
+                    setGenieLocalPatInput(e.target.value);
+                    setGenieLocalPatDirty(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && genieLocalPatDirty) handleSaveGenieLocalPat();
+                  }}
+                  placeholder="github_pat_..."
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  spellCheck={false}
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowGenieLocalPat(!showGenieLocalPat)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showGenieLocalPat ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {genieLocalPatDirty && (
+                <button
+                  onClick={handleSaveGenieLocalPat}
+                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+            </div>
+            {!genieLocalPatDirty && genieLocalPatInput && (
+              <p className="text-md text-green mt-2">Saved</p>
+            )}
+            <p className="text-md text-overlay0 mt-2">
+              Fine-grained token with read access to the private{" "}
+              <code className="text-text font-mono bg-surface0 px-1 rounded">paulbrie/genie-local</code> repo.
+              Pre-fills the GITHUB_PAT prompt when installing the &quot;Genie Local (Projects Supervisor)&quot;
+              recipe from a VM&apos;s Manage panel, so you don&apos;t have to paste it on every apply. The token is
+              used only to clone the repo during install and is never stored on the target VM.
+            </p>
+          </div>
         </div>
       ) : (
         <div className="pt-4">

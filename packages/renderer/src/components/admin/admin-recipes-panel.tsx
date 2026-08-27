@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useSubject } from "subjecto/react";
 import { useDeepSubjectAll } from "@/lib/hooks";
+import { $settings } from "@/store/subjects";
+import { loadSettings } from "@/store/actions";
+import type { AppSettings } from "@/lib/genie-api";
 import { Loader2, Check, X, ChevronDown, ChevronRight, Play, Square, KeyRound, Package } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { VpsRecipeDef } from "@/components/project/project-detail";
@@ -28,6 +32,13 @@ interface RecipeRuntimeState {
 }
 
 const INIT: RecipeRuntimeState = { installed: null, checking: false, running: false, error: null, output: "" };
+
+/** Recipe secret name → AppSettings field that pre-fills it in the modal.
+ *  Lets admins store recurring tokens once (Settings → Genie Local) instead of
+ *  re-pasting on every apply. The modal never writes back to settings. */
+const SECRET_SETTINGS_KEYS: Record<string, keyof AppSettings> = {
+  GITHUB_PAT: "genieLocalGithubPat",
+};
 
 /** Cap how many SSH exec calls run concurrently against a single VM. The panel
  *  fires 8+ checks on mount; without a cap, small VMs (1 vCPU / 1 GB) drop
@@ -115,10 +126,13 @@ export function AdminRecipesPanel({
   // Per-recipe option selections (e.g. { postgres: { PG_VERSION: "16" } }).
   const [optionValues, setOptionValues] = useState<Record<string, Record<string, string>>>({});
 
-  // Secrets modal state. Held only here in component state — never persisted to
-  // settings, storage, or the DB. Cleared on submit/cancel/recipe-change so a
-  // pasted token doesn't outlive the action that consumed it.
+  // Secrets modal state. Typed values are held only here in component state —
+  // never persisted to settings, storage, or the DB by the modal itself.
+  // Cleared on submit/cancel/recipe-change so a pasted token doesn't outlive
+  // the action that consumed it. Some fields prefill from Settings (see
+  // SECRET_SETTINGS_KEYS) when an admin has saved a value there.
   const [secretsPromptFor, setSecretsPromptFor] = useState<string | null>(null);
+  const [settings] = useSubject($settings);
   const [secretValuesDraft, setSecretValuesDraft] = useState<Record<string, string>>({});
   const [secretError, setSecretError] = useState<string | null>(null);
 
@@ -163,9 +177,17 @@ export function AdminRecipesPanel({
   function requestInstall(recipe: VpsRecipeDef) {
     if (recipe.secrets && recipe.secrets.length > 0) {
       setSecretError(null);
-      // Empty draft — we deliberately do NOT pre-fill from a previous apply.
-      // Each install is a fresh prompt.
-      setSecretValuesDraft({});
+      // Never pre-fill from a previous apply — but DO pre-fill fields whose
+      // value the admin stored in Settings (e.g. the genie-local GitHub PAT
+      // under Settings → Genie Local), so recurring installs are one click.
+      // The user can still overtype the value in the modal.
+      const prefill: Record<string, string> = {};
+      for (const s of recipe.secrets) {
+        const settingsKey = SECRET_SETTINGS_KEYS[s.name];
+        const stored = settingsKey ? String(settings[settingsKey] ?? "") : "";
+        if (stored) prefill[s.name] = stored;
+      }
+      setSecretValuesDraft(prefill);
       setSecretsPromptFor(recipe.id);
       // Make sure the expansion is open so post-install output is visible.
       setExpandedSet((p) => new Set(p).add(recipe.id));
@@ -210,7 +232,8 @@ export function AdminRecipesPanel({
 
   // Make sure user recipes are loaded once per session — the Manage panel may be
   // the first place anyone touches recipes (e.g. before they visit /recipes).
-  useEffect(() => { loadRecipes(); }, []);
+  // Settings too: the secrets-modal prefill (SECRET_SETTINGS_KEYS) needs them.
+  useEffect(() => { loadRecipes(); loadSettings(); }, []);
   // Auto-check every recipe whose status we don't have yet. Tracking per-id (not
   // a single ref) so recipes loaded asynchronously from the server still get
   // checked when they first appear in ALL_RECIPES.
@@ -544,7 +567,7 @@ function RecipeSecretsModal({
                 {s.required && <span className="text-red ml-1">*</span>}
               </label>
               <input
-                type="password"
+                type={s.masked === false ? "text" : "password"}
                 value={values[s.name] ?? ""}
                 onChange={(e) => onChange(s.name, e.target.value)}
                 placeholder={s.placeholder}

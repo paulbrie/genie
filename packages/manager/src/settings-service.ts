@@ -171,6 +171,12 @@ export async function getGlobalRailwayProjectId(): Promise<string> {
   return (await getGlobalSetting<string>("railwayProjectId")) || process.env.RAILWAY_PROJECT_ID || "";
 }
 
+export async function getGlobalGenieLocalGithubPat(): Promise<string> {
+  // GitHub PAT with read access to the private paulbrie/genie-local repo.
+  // Pre-fills the Genie Local recipe's GITHUB_PAT install prompt.
+  return (await getGlobalSetting<string>("genieLocalGithubPat")) || process.env.GENIE_LOCAL_GITHUB_PAT || "";
+}
+
 // --- RunPod: on-demand GPU pod serving self-hosted Kimi K2.7 (vLLM) ---
 //
 // One persistent pod that Genie resumes on demand and stops after an idle
@@ -441,6 +447,7 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
       runpodKimiApiKey: "",
       runpodKimiServedModel: "",
       runpodIdleTimeoutSeconds: 300,
+      genieLocalGithubPat: "",
     };
   }
 
@@ -467,6 +474,7 @@ export async function getComposedSettings(userId: string, role?: SettingsRole): 
     runpodKimiApiKey: (await getRunpodKimiApiKey()) || "",
     runpodKimiServedModel: (await getRunpodKimiServedModel()) || "",
     runpodIdleTimeoutSeconds: await getRunpodIdleTimeoutSeconds(),
+    genieLocalGithubPat: (await getGlobalGenieLocalGithubPat()) || "",
   };
 }
 
@@ -480,6 +488,7 @@ const GLOBAL_FIELDS = new Set([
   "digitaloceanApiToken", "hetznerApiToken", "gitlabDeployKey", "railwayToken", "railwayProjectId",
   "namecheapApiUser", "namecheapApiKey", "namecheapUserName", "namecheapDomain",
   "runpodApiKey", "runpodKimiPodId", "runpodKimiEndpoint", "runpodKimiApiKey", "runpodKimiServedModel",
+  "genieLocalGithubPat",
 ]);
 
 export async function saveRoutedSettings(userId: string, fields: Record<string, unknown>, role?: SettingsRole): Promise<void> {

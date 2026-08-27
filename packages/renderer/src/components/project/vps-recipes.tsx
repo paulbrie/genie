@@ -37,6 +37,9 @@ export interface RecipeSecret {
   description?: string;
   /** When true, the recipe will refuse to install with this field empty. */
   required?: boolean;
+  /** false renders a plain text input instead of type=password — for prompted
+   *  values that aren't actually sensitive (hostnames, ports). Default: true. */
+  masked?: boolean;
 }
 
 export interface VpsRecipeDef {

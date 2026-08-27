@@ -33,7 +33,7 @@ export const $fileExplorer = new Subject<FileExplorerState>({
   history: [], historyIndex: -1, selectedEntry: null, renamingEntry: null, panelWidth: 380,
 });
 export const $logs = new Subject<LogsState>({ activeSource: "manager", sources: ["manager"], buffers: {} });
-export const $settings = new Subject<AppSettings>({ defaultEditor: "", digitaloceanApiToken: "", hetznerApiToken: "", gitlabDeployKey: "", railwayToken: "", railwayProjectId: "", namecheapApiUser: "", namecheapApiKey: "", namecheapUserName: "", namecheapDomain: "", runpodApiKey: "", runpodKimiPodId: "", runpodKimiEndpoint: "", runpodKimiApiKey: "", runpodKimiServedModel: "", runpodIdleTimeoutSeconds: 300 });
+export const $settings = new Subject<AppSettings>({ defaultEditor: "", digitaloceanApiToken: "", hetznerApiToken: "", gitlabDeployKey: "", railwayToken: "", railwayProjectId: "", namecheapApiUser: "", namecheapApiKey: "", namecheapUserName: "", namecheapDomain: "", runpodApiKey: "", runpodKimiPodId: "", runpodKimiEndpoint: "", runpodKimiApiKey: "", runpodKimiServedModel: "", runpodIdleTimeoutSeconds: 300, genieLocalGithubPat: "" });
 export const $windowManager = new Subject<WindowManagerState>({ windows: {}, nextZIndex: 10000 });
 
 /** Global text-size preference for every floating window's title-bar selector.
