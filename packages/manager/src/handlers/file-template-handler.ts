@@ -5,7 +5,7 @@
 // through to the next handler when the message isn't ours.
 
 import { type WebSocket } from "ws";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import type { WsMessage } from "../types.js";
 import { getDb } from "../db/index.js";
 import { fileTemplates } from "../db/schema.js";
@@ -54,7 +54,8 @@ export async function handleFileTemplateMessage(
       if (name !== undefined) patch.name = name;
       if (description !== undefined) patch.description = description;
       if (files !== undefined) patch.files = files;
-      await db.update(fileTemplates).set(patch).where(eq(fileTemplates.id, id));
+      // Scope to the creator: a user may only edit their own templates.
+      await db.update(fileTemplates).set(patch).where(and(eq(fileTemplates.id, id), eq(fileTemplates.createdBy, userId)));
       send(ws, { type: "file-template:updated", payload: { ok: true, id } });
       return true;
     }
@@ -62,13 +63,18 @@ export async function handleFileTemplateMessage(
     case "file-template:delete": {
       const { id } = msg.payload;
       const db = getDb();
-      await db.delete(fileTemplates).where(eq(fileTemplates.id, id));
+      // Scope to the creator: a user may only delete their own templates.
+      await db.delete(fileTemplates).where(and(eq(fileTemplates.id, id), eq(fileTemplates.createdBy, userId)));
       send(ws, { type: "file-template:deleted", payload: { ok: true, id } });
       return true;
     }
 
     case "file-template:inject": {
       const { projectId, templateId, mode } = msg.payload; // mode: "merge" | "replace"
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "file-template:injected", payload: { ok: false, error: "Not authorized for this project" } });
+        return true;
+      }
       const db = getDb();
       const [tpl] = await db.select().from(fileTemplates).where(eq(fileTemplates.id, templateId));
       if (!tpl) {
@@ -90,6 +96,10 @@ export async function handleFileTemplateMessage(
 
     case "file-template:save-from-project": {
       const { projectId, name, description } = msg.payload;
+      if (!(await projectService.userCanSeeProject(userId, projectId))) {
+        send(ws, { type: "file-template:created", payload: { ok: false, error: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       if (!project) {
         send(ws, { type: "file-template:created", payload: { ok: false, error: "Project not found" } });

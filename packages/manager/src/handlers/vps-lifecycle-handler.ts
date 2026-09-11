@@ -449,6 +449,10 @@ export async function handleVpsLifecycleMessage(
 
     case "vps:teardown": {
       const { projectId, instanceId } = msg.payload;
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst) {
@@ -490,6 +494,10 @@ export async function handleVpsLifecycleMessage(
 
     case "vps:hibernate": {
       const { projectId, instanceId } = msg.payload;
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+        return true;
+      }
       const hProject = await projectService.getById(projectId);
       const hInst = hProject?.vpsInstances.find(v => v.id === instanceId);
       if (!hInst?.digitalocean) {
@@ -559,6 +567,10 @@ export async function handleVpsLifecycleMessage(
       // Soft reboot of a DigitalOcean droplet — `dropletAction(id, "reboot")`
       // triggers an OS-level shutdown + start. Pure DO action, no SSH involved.
       const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+        return true;
+      }
       const rProject = await projectService.getById(projectId);
       const rInst = rProject?.vpsInstances.find((v) => v.id === instanceId);
       if (!rInst?.digitalocean) {
@@ -607,6 +619,10 @@ export async function handleVpsLifecycleMessage(
 
     case "vps:wake": {
       const { projectId, instanceId } = msg.payload;
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+        return true;
+      }
       const wProject = await projectService.getById(projectId);
       const wInst = wProject?.vpsInstances.find(v => v.id === instanceId);
       if (!wInst?.hibernate) {

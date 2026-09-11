@@ -38,6 +38,21 @@ export async function getSessionMessages(sessionId: string) {
     .orderBy(assistantChatLogs.createdAt);
 }
 
+/** True iff `sessionId` has at least one log row owned by `userId`. Session ops
+ *  (load/rename/delete) MUST gate on this (or an admin role): the WS ACL is
+ *  user-tier only and sessionIds are otherwise unscoped, so without it any user
+ *  can load/rename/delete — and hijack the Claude `--resume` context of —
+ *  another user's session by id. */
+export async function sessionBelongsToUser(sessionId: string, userId: string): Promise<boolean> {
+  if (!sessionId || !userId) return false;
+  const [row] = await getDb()
+    .select({ userId: assistantChatLogs.userId })
+    .from(assistantChatLogs)
+    .where(and(eq(assistantChatLogs.sessionId, sessionId), eq(assistantChatLogs.userId, userId)))
+    .limit(1);
+  return !!row;
+}
+
 export async function getProjectSessions(projectId: string, limit = 50) {
   return getDb()
     .select()

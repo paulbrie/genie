@@ -403,7 +403,11 @@ export async function handleTazcloudMessage(
           }
           const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
           if (!tazPrivateKey) throw new Error("TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager");
-          let host = payload.host;
+          // Non-privileged callers passed the ownership check on vmId, so the SSH
+          // target MUST be resolved from that vmId — never from a client-supplied
+          // host, which (on the shared TazCloud key) could tunnel to another
+          // tenant's VM. Only privileged roles may target a raw host.
+          let host = isPrivilegedRole(role) ? payload.host : undefined;
           if (!host) {
             const tazToken = process.env.TAZCLOUD_API_TOKEN;
             if (tazToken) {
@@ -493,7 +497,10 @@ export async function handleTazcloudMessage(
       try {
         const tazPrivateKey = process.env.TAZCLOUD_SSH_PRIVATE_KEY;
         if (!tazPrivateKey) throw new Error("TAZCLOUD_SSH_PRIVATE_KEY not configured on the manager");
-        let host = hostFromClient;
+        // See the tunnel branch above: for non-privileged callers the SSH target
+        // is derived strictly from the ownership-verified vmId, never from the
+        // client-supplied host (shared key → cross-tenant reach otherwise).
+        let host = isPrivilegedRole(role) ? hostFromClient : undefined;
         if (!host) {
           const tazToken = process.env.TAZCLOUD_API_TOKEN;
           if (tazToken) {

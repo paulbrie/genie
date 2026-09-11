@@ -10,6 +10,7 @@ import { getDb } from "../db/index.js";
 import { teams, teamMembers } from "../db/schema.js";
 import { connectSsh, type SshSession } from "../vps/ssh-client.js";
 import { getVpsConnection } from "../vps/connection-resolver.js";
+import { canAccessProject } from "./handler-auth.js";
 import {
   type ClientState,
   broadcastProjectList,
@@ -65,6 +66,10 @@ export async function handleProjectMessage(
 
     case "project:update": {
       const { id, name, commands, vpsProvider, vpsRegion, vpsSize, vpsImage, vpsBaseImageId, vpsBaseImageConfigName, secrets, doToken: projDoToken2, gitlabDeployKey: projDeployKey2, dbUrl: projDbUrl2, gitFolders, teamId: projTeamIdUpdate } = msg.payload;
+      if (!(await projectService.userCanManageProject(state.userId, id))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to update this project" } });
+        return true;
+      }
       // teamId is settable by:
       //   - system admins / superadmins (any value, including null = "no team");
       //   - org admins, but only when the *target* team belongs to one of their
@@ -102,6 +107,10 @@ export async function handleProjectMessage(
 
     case "project:dbUrl:set": {
       const { id, dbUrl: newDbUrl } = msg.payload as { id: string; dbUrl: string };
+      if (!(await projectService.userCanManageProject(state.userId, id))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       const updated = await projectService.update(id, { dbUrl: newDbUrl });
       if (!updated) {
         send(ws, { type: "error", payload: { message: `Project ${id} not found` } });
@@ -140,6 +149,10 @@ export async function handleProjectMessage(
 
     case "project:setup-snippet:add": {
       const { projectId, recipeId, snippet } = msg.payload as { projectId: string; recipeId: string; snippet: string };
+      if (!(await projectService.userCanManageProject(state.userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       if (!project) {
         send(ws, { type: "error", payload: { message: "Project not found" } });
@@ -178,6 +191,10 @@ export async function handleProjectMessage(
 
     case "project:start": {
       const { projectId, commandId } = msg.payload;
+      if (!(await canAccessProject(state.userId, state.role, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       const started = await projectManager.startCommand(projectId, commandId);
       if (!started) {
         send(ws, { type: "error", payload: { message: `Cannot start command ${commandId} in project ${projectId}` } });
@@ -187,6 +204,10 @@ export async function handleProjectMessage(
 
     case "project:stop": {
       const { projectId, commandId } = msg.payload;
+      if (!(await canAccessProject(state.userId, state.role, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       const stopped = projectManager.stopCommand(projectId, commandId);
       if (!stopped) {
         send(ws, { type: "error", payload: { message: `Cannot stop command ${commandId} in project ${projectId}` } });
@@ -196,18 +217,30 @@ export async function handleProjectMessage(
 
     case "project:start-all": {
       const { projectId } = msg.payload;
+      if (!(await canAccessProject(state.userId, state.role, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       await projectManager.startAll(projectId);
       return true;
     }
 
     case "project:stop-all": {
       const { projectId } = msg.payload;
+      if (!(await canAccessProject(state.userId, state.role, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       await projectManager.stopAll(projectId);
       return true;
     }
 
     case "project:command:run": {
       const { projectId, commandId, instanceId } = msg.payload;
+      if (!(await canAccessProject(state.userId, state.role, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       if (!project) {
         send(ws, { type: "error", payload: { message: "Project not found" } });
@@ -270,6 +303,10 @@ export async function handleProjectMessage(
 
     case "project:command:stop": {
       const { projectId, commandId } = msg.payload;
+      if (!(await canAccessProject(state.userId, state.role, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+        return true;
+      }
       const cmdKey = `${projectId}:${commandId}`;
       const session = activeCommandSessions.get(cmdKey);
       if (session) {

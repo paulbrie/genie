@@ -105,6 +105,8 @@ interface StreamState {
   /** OUT line count at reattach time — the boundary at which catch-up ends and
    *  live emits resume. */
   replayUntilLine: number;
+  /** The user who opened this stream; reattach is gated on it. */
+  ownerUserId: string | null;
 }
 
 const MAX_MESSAGES = 200;
@@ -415,6 +417,9 @@ export interface StartClaudeStreamParams {
    *  sequential SSH dial off the open path. Falls back to dialing here if absent
    *  or if the pre-dial rejected. */
   connPromise?: Promise<SshSession>;
+  /** The user who opened this stream, stored on the session so reattach can be
+   *  gated to the owner (prevents live-session takeover by streamId guessing). */
+  ownerUserId?: string | null;
 }
 
 /** Open (or relaunch) a durable Claude stream. */
@@ -466,6 +471,7 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
     closing: false,
     replaying: false,
     replayUntilLine: 0,
+    ownerUserId: params.ownerUserId ?? null,
   };
   streams.set(id, st);
 
@@ -544,9 +550,15 @@ export async function startClaudeStream(ws: WebSocket, params: StartClaudeStream
 }
 
 /** Rebind an orphaned (or live) stream to a new socket and replay the transcript. */
-export function reattachClaudeStream(ws: WebSocket, id: string): boolean {
+export function reattachClaudeStream(ws: WebSocket, id: string, userId: string | null): boolean {
   const st = streams.get(id);
   if (!st) return false;
+  // Only the user who opened the stream may reattach — otherwise a guessed
+  // streamId would rebind a victim's live Claude session (transcript + input).
+  if (st.ownerUserId && st.ownerUserId !== userId) {
+    sendFn?.(ws, { type: "claude:stream:error", payload: { claudeStreamId: id, message: "Not authorized for this session" } });
+    return true;
+  }
   clearTimeout(orphanTimers.get(id));
   orphanTimers.delete(id);
   st.ws = ws;

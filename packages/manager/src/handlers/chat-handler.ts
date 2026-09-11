@@ -107,6 +107,9 @@ export async function handleChatMessage(
   state: ClientState,
 ): Promise<boolean> {
   const userId = state.userId;
+  // Staff (system admin/superadmin) may load any assistant session for support;
+  // every other path below is strictly membership/owner-scoped.
+  const isStaff = state.role === "admin" || state.role === "superadmin";
   switch (msg.type) {
     case "chat:send": {
       if (!userId) return true;
@@ -345,6 +348,7 @@ export async function handleChatMessage(
     case "chat:session:load": {
       const { sessionId } = msg.payload;
       if (!sessionId) return true;
+      if (!isStaff && !(userId && await assistantLogService.sessionBelongsToUser(sessionId, userId))) return true;
       try {
         const rows = await assistantLogService.getSessionMessages(sessionId);
         const messages = rows.map((r) => ({
@@ -381,6 +385,7 @@ export async function handleChatMessage(
     case "chat:session:rename": {
       const { sessionId, name } = msg.payload;
       if (!sessionId || !name) return true;
+      if (!isStaff && !(userId && await assistantLogService.sessionBelongsToUser(sessionId, userId))) return true;
       try {
         await assistantLogService.renameSession(sessionId, name);
         send(ws, { type: "chat:session:renamed", payload: { sessionId, name } });
@@ -393,6 +398,7 @@ export async function handleChatMessage(
     case "chat:session:delete": {
       const { sessionId } = msg.payload;
       if (!sessionId) return true;
+      if (!isStaff && !(userId && await assistantLogService.sessionBelongsToUser(sessionId, userId))) return true;
       try {
         await assistantLogService.deleteSession(sessionId);
         send(ws, { type: "chat:session:deleted", payload: { sessionId } });
@@ -467,6 +473,10 @@ export async function handleChatMessage(
     case "chat:conversation:open": {
       try {
         const { conversationId, limit, before } = msg.payload;
+        if (!userId || !(await chatService.isConversationMember(conversationId, userId))) {
+          send(ws, { type: "chat:error", payload: { message: "Not a member of this conversation" } });
+          return true;
+        }
         const effectiveLimit = limit || 20;
         const messages = await chatService.getMessages(conversationId, effectiveLimit, before);
         const members = await chatService.getConversationMembers(conversationId);
@@ -480,6 +490,10 @@ export async function handleChatMessage(
     case "chat:messages:load": {
       try {
         const { conversationId, limit, before } = msg.payload;
+        if (!userId || !(await chatService.isConversationMember(conversationId, userId))) {
+          send(ws, { type: "chat:error", payload: { message: "Not a member of this conversation" } });
+          return true;
+        }
         const messages = await chatService.getMessages(conversationId, limit || 50, before);
         send(ws, { type: "chat:messages:list", payload: { conversationId, messages, hasMore: messages.length === (limit || 50) } });
       } catch (err: unknown) {
@@ -492,6 +506,10 @@ export async function handleChatMessage(
       try {
         if (!userId) return true;
         const { conversationId, content, replyToId, metadata: msgMetadata } = msg.payload;
+        if (!(await chatService.isConversationMember(conversationId, userId))) {
+          send(ws, { type: "chat:error", payload: { message: "Not a member of this conversation" } });
+          return true;
+        }
         const message = await chatService.saveMessage(conversationId, userId, content, msgMetadata, replyToId);
         void analyticsService.recordEvent({ userId, userName: state.user?.name ?? null, event: "chat.message", props: {}, ip: state.ip });
         const members = await chatService.getConversationMembers(conversationId);
@@ -550,6 +568,7 @@ export async function handleChatMessage(
 
     case "chat:message:stop": {
       const { conversationId } = msg.payload;
+      if (!userId || !(await chatService.isConversationMember(conversationId, userId))) return true;
       const convController = activeConversationAbortControllers.get(conversationId);
       if (convController) {
         convController.abort();
@@ -561,6 +580,10 @@ export async function handleChatMessage(
     case "chat:member:add": {
       try {
         const { conversationId, targetUserId } = msg.payload;
+        if (!userId || !(await chatService.isConversationMember(conversationId, userId))) {
+          send(ws, { type: "chat:error", payload: { message: "Not a member of this conversation" } });
+          return true;
+        }
         await chatService.addMember(conversationId, targetUserId);
         const members = await chatService.getConversationMembers(conversationId);
         const memberIds = members.map((m) => m.userId);
@@ -579,6 +602,10 @@ export async function handleChatMessage(
     case "chat:member:remove": {
       try {
         const { conversationId, targetUserId } = msg.payload;
+        if (!userId || !(await chatService.isConversationMember(conversationId, userId))) {
+          send(ws, { type: "chat:error", payload: { message: "Not a member of this conversation" } });
+          return true;
+        }
         const membersBefore = await chatService.getConversationMembers(conversationId);
         const memberIdsBefore = membersBefore.map((m) => m.userId);
         await chatService.removeMember(conversationId, targetUserId);
@@ -599,6 +626,7 @@ export async function handleChatMessage(
       try {
         if (!userId) return true;
         const { conversationId, messageId, emoji } = msg.payload;
+        if (!(await chatService.isConversationMember(conversationId, userId))) return true;
         const result = await chatService.toggleReaction(messageId, userId, emoji);
         if (result) {
           const members = await chatService.getConversationMembers(conversationId);
@@ -618,6 +646,7 @@ export async function handleChatMessage(
       try {
         if (!userId) return true;
         const { conversationId, messageId, content } = msg.payload;
+        if (!(await chatService.isConversationMember(conversationId, userId))) return true;
         const result = await chatService.editMessage(messageId, userId, content);
         if (!result) {
           send(ws, { type: "chat:error", payload: { message: "Cannot edit this message" } });

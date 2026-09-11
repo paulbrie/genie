@@ -23,6 +23,10 @@ export const sessionMeta = new Map<
      *  "shell" for a plain SSH shell. Authoritative value comes from the
      *  client's terminal:start payload (so reattaches stay correctly tagged). */
     kind: "claude" | "shell";
+    /** The user who opened this session. Reattach and input (data/inject) are
+     *  gated on it so a live PTY can't be taken over by another user who guesses
+     *  the terminalId. Null only for unauthenticated/legacy sessions. */
+    ownerUserId: string | null;
     /** Set when the session was orphaned (socket dropped); cleared on reattach. */
     orphanedAt?: number | null;
   }

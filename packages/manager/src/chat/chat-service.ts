@@ -105,6 +105,24 @@ export async function createRoom(creatorId: string, name: string, memberIds: str
   return conv;
 }
 
+/** True iff `userId` is a member of `conversationId`. This is the security gate
+ *  for every conversationId-keyed op: the WS ACL only checks the "user" tier,
+ *  NOT membership, so handlers MUST call this before reading or mutating a
+ *  conversation (otherwise any user can reach any conversation by id). */
+export async function isConversationMember(conversationId: string, userId: string): Promise<boolean> {
+  if (!conversationId || !userId) return false;
+  const db = getDb();
+  const [row] = await db
+    .select({ userId: conversationMembers.userId })
+    .from(conversationMembers)
+    .where(and(
+      eq(conversationMembers.conversationId, conversationId),
+      eq(conversationMembers.userId, userId),
+    ))
+    .limit(1);
+  return !!row;
+}
+
 export async function addMember(conversationId: string, userId: string) {
   const db = getDb();
   await db.insert(conversationMembers).values({ conversationId, userId });

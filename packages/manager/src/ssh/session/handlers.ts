@@ -182,10 +182,17 @@ export function orphanSshSession(terminalId: string) {
 /** Rebind an orphaned (or still-live) session to a new socket and replay the
  *  buffered output tail. Returns false if no session exists for terminalId, in
  *  which case the caller should start a fresh dial. */
-export function reattachSshSession(ws: WebSocket, terminalId: string, cols: number, rows: number): boolean {
+export function reattachSshSession(ws: WebSocket, terminalId: string, cols: number, rows: number, userId: string | null): boolean {
   const meta = sessionMeta.get(terminalId);
   const session = sessions.get(terminalId);
   if (!meta || !session) return false;
+  // A live PTY may only be reattached by the user who opened it. Reject (and
+  // CONSUME the message, returning true) rather than returning false — returning
+  // false falls through to a fresh start that would CLOSE the victim's session.
+  if (meta.ownerUserId && meta.ownerUserId !== userId) {
+    send(ws, { type: "terminal:error", payload: { terminalId, message: "Not authorized for this terminal" } });
+    return true;
+  }
 
   clearTimeout(orphanTimers.get(terminalId));
   orphanTimers.delete(terminalId);
@@ -227,6 +234,7 @@ export async function startSshSession(
   tmuxSessionName: string | null = null,
   initialCommand: string | null = null,
   kind: "claude" | "shell" = "shell",
+  ownerUserId: string | null = null,
 ): Promise<void> {
   closeSshSession(terminalId);
 
@@ -362,11 +370,14 @@ export async function startSshSession(
   // command tracking, the ssh-cache channel entry, and the ssh-metrics registry
   // row) would leak forever along with a live WebSocket reference.
   sessions.set(terminalId, session);
-  sessionMeta.set(terminalId, { projectId, instanceId, host, ws, kind });
+  sessionMeta.set(terminalId, { projectId, instanceId, host, ws, kind, ownerUserId });
   session.start(cols, rows);
 }
 
 export function handleTerminalData(ws: WebSocket, terminalId: string, data: string, userId: string | null) {
+  // Only the session's owner may drive its input, even without reattaching.
+  const dataOwner = sessionMeta.get(terminalId)?.ownerUserId;
+  if (dataOwner && dataOwner !== userId) return;
   getSshSession(terminalId)?.write(data);
   scheduleTrafficEmit(terminalId, ws);
   // Count submitted commands (Enter on a non-empty line) for analytics. The
@@ -402,6 +413,8 @@ export function handleTerminalInject(
 ) {
   const session = getSshSession(terminalId);
   if (!session) return;
+  const injectOwner = sessionMeta.get(terminalId)?.ownerUserId;
+  if (injectOwner && injectOwner !== userId) return; // only the owner may inject
   scheduleSessionCommand(terminalId, session, command, 0, opts);
   scheduleTrafficEmit(terminalId, ws);
   // Programmatically injected command (e.g. the Commands tab). Metadata only —

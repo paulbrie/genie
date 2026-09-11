@@ -95,7 +95,7 @@ export async function handleTerminalMessage(
       // Reconnect fast-path: if the PTY is still alive (within its grace window
       // after a socket drop), rebind to this socket and replay the missed output
       // instead of redialing. Authorization was enforced when it first opened.
-      if (reattachSshSession(ws, terminalId, cols ?? 80, rows ?? 24)) {
+      if (reattachSshSession(ws, terminalId, cols ?? 80, rows ?? 24, userId)) {
         void analyticsService.recordEvent({
           userId,
           userName: null,
@@ -130,7 +130,7 @@ export async function handleTerminalMessage(
           : payloadKind === "shell" ? "shell"
           : intent === "new" ? "claude" : "shell";
         await startSshSession(ws, startParams, terminalId,
-          cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null, initialCommand ?? null, sessionKind);
+          cols ?? 80, rows ?? 24, intent, tmuxSessionName ?? null, initialCommand ?? null, sessionKind, userId);
         // Analytics: metadata only. (userName/ip filled from the user's
         // auth.login rows.)
         void analyticsService.recordEvent({

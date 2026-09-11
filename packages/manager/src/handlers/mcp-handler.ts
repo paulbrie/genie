@@ -6,6 +6,7 @@ import { execCached } from "../vps/ssh-session-cache.js";
 import { provisionMcpRestConfig, killClaudeSessions } from "../vps/mcp-config-merge.js";
 import { verifyMcpInstall } from "../vps/mcp-verify.js";
 import { type ClientState } from "../ws-server.js";
+import { canAccessProject } from "./handler-auth.js";
 
 /** Handle `mcp:install` — (re)writes the project's `.mcp.json` so Claude on the
  *  VM points at the manager's genie-* MCP REST endpoints. No tunnels involved;
@@ -22,6 +23,10 @@ export async function handleMcpMessage(
     case "mcp:install": {
       if (!userId) return true;
       const { projectId, instanceId, reqId } = msg.payload as { projectId: string; instanceId: string; reqId?: string };
+      if (!(await canAccessProject(userId, state.role, projectId))) {
+        send(ws, { type: "mcp:install:result", payload: { reqId, projectId, instanceId, ok: false, error: "Not authorized for this project" } });
+        return true;
+      }
       const project = await projectService.getById(projectId);
       const vpsInst = project?.vpsInstances.find(v => v.id === instanceId);
       if (!vpsInst || !project) {

@@ -85,7 +85,14 @@ export async function handleSecurityMessage(
 
     case "security:scan:delete": {
       try {
-        const { deleteScan } = await import("../security/security-service.js");
+        // Scope to the owner: a user (or a limited admin) may delete only their
+        // own scans. listScans(userId) returns just the caller's scans.
+        const { listScans, deleteScan } = await import("../security/security-service.js");
+        const own = await listScans(userId);
+        if (!own.some((s) => s.id === msg.payload.scanId)) {
+          send(ws, { type: "security:scan:error", payload: { scanId: msg.payload.scanId, message: "Not authorized for this scan" } });
+          return true;
+        }
         await deleteScan(msg.payload.scanId);
         send(ws, { type: "security:scan:deleted", payload: { scanId: msg.payload.scanId } });
       } catch (err: unknown) {

@@ -98,7 +98,7 @@ export async function handleClaudeStreamMessage(
       }
       // Reconnect fast-path: an in-memory session still alive (within its grace
       // window) rebinds to this socket and replays the transcript.
-      if (reattachClaudeStream(ws, claudeStreamId)) {
+      if (reattachClaudeStream(ws, claudeStreamId, userId)) {
         void analyticsService.recordEvent({ userId, userName: null, event: "claude_stream.reattach", projectId, props: {}, ip: null });
         return true;
       }
@@ -184,7 +184,7 @@ export async function handleClaudeStreamMessage(
           ? boundTmuxName
           : chatTmuxName(claudeStreamId);
         await startClaudeStream(ws, {
-          claudeStreamId, shellOpts, projectId, instanceId, sessionKey,
+          claudeStreamId, shellOpts, projectId, instanceId, sessionKey, ownerUserId: userId,
           tmuxName,
           claudePath, dest, context,
           resumeSessionId,

@@ -27,6 +27,14 @@ export async function handleAdminUsersMessage(
   send: (ws: WebSocket, message: WsMessage) => void,
   state: ClientState,
 ): Promise<boolean> {
+  // Global team management crosses org boundaries (adding a user to a team grants
+  // project visibility), so it is superadmin-only. Org owners/admins manage their
+  // own teams via the org:* namespace (which enforces userCanManageOrg). The ACL
+  // only requires the "admin" tier here, so re-gate to superadmin in-handler.
+  if (msg.type.startsWith("admin:teams:") && state.role !== "superadmin") {
+    send(ws, { type: "admin:error", payload: { message: "Only a superadmin can manage global teams" } });
+    return true;
+  }
   switch (msg.type) {
     case "admin:users:list": {
       try {
@@ -96,7 +104,10 @@ export async function handleAdminUsersMessage(
         if (data.name !== undefined) allowedFields.name = data.name;
         if (data.validated !== undefined) allowedFields.validated = data.validated;
         if (data.defaultEditor !== undefined) allowedFields.defaultEditor = data.defaultEditor;
-        if (data.role !== undefined) allowedFields.role = data.role;
+        // Role changes are superadmin-only: "admin" is a limited tier, so a
+        // non-superadmin admin may edit name/validated/editor but NOT role —
+        // otherwise they could self-promote to superadmin.
+        if (data.role !== undefined && state.role === "superadmin") allowedFields.role = data.role;
         const [updated] = await db.update(users).set(allowedFields).where(eq(users.id, userId)).returning();
         send(ws, { type: "admin:users:updated", payload: { user: updated } });
         if (data.validated === false) disconnectUser(userId);
@@ -108,6 +119,10 @@ export async function handleAdminUsersMessage(
 
     case "admin:users:delete": {
       try {
+        if (state.role !== "superadmin") {
+          send(ws, { type: "admin:error", payload: { message: "Only a superadmin can delete users" } });
+          return true;
+        }
         const db = getDb();
         const { userId } = msg.payload;
         await db.delete(users).where(eq(users.id, userId));
