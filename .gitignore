@@ -1,0 +1,26 @@
+node_modules/
+.next/
+dist/
+out/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tsbuildinfo
+.claude/worktrees/
+.mcp.json
+
+# Local-only test creds (TazCloud bearer + SSH key). Never commit.
+TESTER-CREDENTIALS.md
+
+# Scratch screenshots
+.tmp-*.png
+
+# Playwright generated output — never commit
+packages/*/playwright-report/
+packages/*/test-results/
+test-results/
+.playwright-mcp/
+
+# Cursor IDE local files (debug logs etc.)
+.cursor/

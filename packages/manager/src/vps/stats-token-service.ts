@@ -1,0 +1,94 @@
+// Per-instance bearer tokens for VM → manager HTTPS calls.
+//
+// Originally minted for the genie-stats daemon's postback, the same token now
+// also authenticates the VM's MCP REST calls (POST /api/vps/mcp/:service) — one
+// secret per instance, written into both the stats drop-in and the VM's
+// .mcp.json. `ensureStatsToken` is called at provisioning time
+// (syncGenieStatsOnVm) and is idempotent so re-provisioning keeps the same
+// token. `resolveStatsToken` is the hot path on every postback / MCP call —
+// backed by an in-memory cache since tokens are long-lived.
+
+import crypto from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { getDb } from "../db/index.js";
+import { vpsStatsTokens } from "../db/schema.js";
+
+export interface TokenOwner {
+  projectId: string;
+  instanceId: string;
+}
+
+/** token → owner. Populated lazily on resolve and on mint. */
+const tokenCache = new Map<string, TokenOwner>();
+
+function newToken(): string {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+/** Return the existing token for this instance, or mint + persist a new one. */
+export async function ensureStatsToken(projectId: string, instanceId: string): Promise<string> {
+  const db = getDb();
+  const [existing] = await db
+    .select({ token: vpsStatsTokens.token })
+    .from(vpsStatsTokens)
+    .where(and(eq(vpsStatsTokens.projectId, projectId), eq(vpsStatsTokens.instanceId, instanceId)))
+    .limit(1);
+  if (existing) {
+    tokenCache.set(existing.token, { projectId, instanceId });
+    return existing.token;
+  }
+
+  const token = newToken();
+  // ON CONFLICT on the (project_id, instance_id) unique index guards against a
+  // concurrent provision racing us; re-read the winner if we lost.
+  await db
+    .insert(vpsStatsTokens)
+    .values({ projectId, instanceId, token })
+    .onConflictDoNothing();
+
+  const [row] = await db
+    .select({ token: vpsStatsTokens.token })
+    .from(vpsStatsTokens)
+    .where(and(eq(vpsStatsTokens.projectId, projectId), eq(vpsStatsTokens.instanceId, instanceId)))
+    .limit(1);
+  const finalToken = row?.token ?? token;
+  tokenCache.set(finalToken, { projectId, instanceId });
+  return finalToken;
+}
+
+/** Delete the bearer token(s) for an instance. Call when an instance is
+ *  removed from a project (detach / move / teardown) so its old token can no
+ *  longer resolve — otherwise a server moved to another project keeps a token
+ *  that still scopes MCP calls (tracker tickets, storage, …) to the OLD
+ *  project, leaking its data. Idempotent. */
+export async function deleteInstanceToken(projectId: string, instanceId: string): Promise<void> {
+  const db = getDb();
+  const rows = await db
+    .delete(vpsStatsTokens)
+    .where(and(eq(vpsStatsTokens.projectId, projectId), eq(vpsStatsTokens.instanceId, instanceId)))
+    .returning({ token: vpsStatsTokens.token });
+  for (const r of rows) tokenCache.delete(r.token);
+}
+
+/** Resolve a bearer token to its owning instance, or null if unknown. */
+export async function resolveStatsToken(token: string): Promise<TokenOwner | null> {
+  if (!token) return null;
+  const cached = tokenCache.get(token);
+  if (cached) return cached;
+
+  const db = getDb();
+  const [row] = await db
+    .select({ projectId: vpsStatsTokens.projectId, instanceId: vpsStatsTokens.instanceId })
+    .from(vpsStatsTokens)
+    .where(eq(vpsStatsTokens.token, token))
+    .limit(1);
+  if (!row) return null;
+  const owner: TokenOwner = { projectId: row.projectId, instanceId: row.instanceId };
+  tokenCache.set(token, owner);
+  return owner;
+}
+
+// The MCP REST endpoints reuse the same per-instance token as stats; these
+// aliases document that intent at the call sites without a second token table.
+export const ensureInstanceToken = ensureStatsToken;
+export const resolveInstanceToken = resolveStatsToken;

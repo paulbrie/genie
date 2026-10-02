@@ -1,0 +1,306 @@
+import crypto from "node:crypto";
+import { URL } from "node:url";
+import type http from "node:http";
+import { OAuth2Client } from "google-auth-library";
+import jwt from "jsonwebtoken";
+import { eq, isNull, and } from "drizzle-orm";
+import { getDb } from "../db/index.js";
+import { users } from "../db/schema.js";
+import { acceptTeamInvite, ensureDefaultOrgFor } from "../org-service.js";
+import { getGlobalSetting, setGlobalSetting } from "../settings-service.js";
+import { notifySuperadmin, superadminEmails } from "../notifications/email-service.js";
+
+const JWT_EXPIRY = "30d";
+const MANAGER_PORT = Number(process.env.PORT) || 9876;
+const MANAGER_BASE_URL = process.env.MANAGER_URL || `http://127.0.0.1:${MANAGER_PORT}`;
+const REDIRECT_URI = `${MANAGER_BASE_URL}/auth/callback`;
+
+interface GoogleUserInfo {
+  sub: string;
+  email: string;
+  name: string;
+  picture?: string;
+}
+
+// JWT signing secret: GENIE_JWT_SECRET, or else a random secret generated once
+// and persisted in global_settings (initJwtSecret, called at boot). There is
+// deliberately no guessable fallback.
+let persistedJwtSecret: string | null = null;
+
+export async function initJwtSecret(): Promise<void> {
+  if (process.env.GENIE_JWT_SECRET) return;
+  let s = await getGlobalSetting<string>("jwtSecret");
+  if (!s) {
+    s = crypto.randomBytes(32).toString("hex");
+    await setGlobalSetting("jwtSecret", s);
+  }
+  persistedJwtSecret = s;
+  console.warn("[auth] GENIE_JWT_SECRET is not set — using a generated secret stored in global_settings.");
+}
+
+function jwtSecret(): string {
+  const s = process.env.GENIE_JWT_SECRET || persistedJwtSecret;
+  if (!s) throw new Error("JWT secret not initialized: set GENIE_JWT_SECRET or call initJwtSecret() at boot.");
+  return s;
+}
+
+export function createToken(userId: string, impersonatedBy?: string): string {
+  const payload: { userId: string; impersonatedBy?: string } = { userId };
+  if (impersonatedBy) payload.impersonatedBy = impersonatedBy;
+  return jwt.sign(payload, jwtSecret(), { expiresIn: JWT_EXPIRY });
+}
+
+export function verifyToken(token: string): { userId: string; impersonatedBy?: string } | null {
+  try {
+    const decoded = jwt.verify(token, jwtSecret()) as { userId: string; impersonatedBy?: string };
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+export async function getUserById(id: string) {
+  const db = getDb();
+  const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return user || null;
+}
+
+/** Admin = superadmin role, or first non-agent user by creation date */
+export async function isAdmin(userId: string): Promise<boolean> {
+  const db = getDb();
+  const [user] = await db.select({ id: users.id, role: users.role })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (user?.role === "superadmin" || user?.role === "admin") return true;
+  const [first] = await db.select({ id: users.id })
+    .from(users)
+    .where(eq(users.isAgent, false))
+    .orderBy(users.createdAt)
+    .limit(1);
+  return first?.id === userId;
+}
+
+// --- Pending OAuth state ---
+
+interface PendingOAuth {
+  oauth2Client: OAuth2Client;
+  onSuccess: (user: typeof users.$inferSelect, token: string) => void;
+  onError: (message: string) => void;
+  timeout: ReturnType<typeof setTimeout>;
+  inviteToken?: string;
+}
+
+let pendingOAuth: PendingOAuth | null = null;
+
+export function initiateOAuth(
+  onSuccess: (user: typeof users.$inferSelect, token: string) => void,
+  onError: (message: string) => void,
+  inviteToken?: string,
+): string {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set");
+  }
+
+  // Clean up any previous pending auth
+  if (pendingOAuth) {
+    clearTimeout(pendingOAuth.timeout);
+    pendingOAuth = null;
+  }
+
+  console.log(`[auth] OAuth redirect URI: ${REDIRECT_URI}`);
+  const oauth2Client = new OAuth2Client(clientId, clientSecret, REDIRECT_URI);
+
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: "offline",
+    scope: ["openid", "email", "profile"],
+  });
+
+  const timeout = setTimeout(() => {
+    pendingOAuth = null;
+    onError("OAuth timed out");
+  }, 120000);
+
+  pendingOAuth = { oauth2Client, onSuccess, onError, timeout, inviteToken: inviteToken?.trim() || undefined };
+
+  return authUrl;
+}
+
+/**
+ * Handle the /auth/callback HTTP request on the manager's server.
+ * Returns true if the request was handled.
+ */
+export async function handleOAuthCallback(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<boolean> {
+  if (!req.url?.startsWith("/auth/callback")) return false;
+
+  if (!pendingOAuth) {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("<html><body style=\"font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4\"><div style=\"text-align:center\"><h2>No pending authentication</h2><p>Please start sign-in from Genie first.</p></div></body></html>");
+    return true;
+  }
+
+  const { oauth2Client, onSuccess, onError, timeout, inviteToken } = pendingOAuth;
+  pendingOAuth = null;
+  clearTimeout(timeout);
+
+  try {
+    const url = new URL(req.url, MANAGER_BASE_URL);
+    const code = url.searchParams.get("code");
+    const error = url.searchParams.get("error");
+
+    if (error || !code) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end("<html><body><h2>Authentication failed</h2><p>You can close this tab.</p></body></html>");
+      onError(error || "No authorization code received");
+      return true;
+    }
+
+    // Exchange code for tokens
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
+    // Get user info
+    const response = await oauth2Client.request<GoogleUserInfo>({
+      url: "https://www.googleapis.com/oauth2/v3/userinfo",
+    });
+    const userInfo = response.data;
+
+    // Upsert user in DB
+    const db = getDb();
+    const existing = await db
+      .select()
+      .from(users)
+      .where(eq(users.googleId, userInfo.sub))
+      .limit(1);
+
+    let user: typeof users.$inferSelect;
+    if (existing.length > 0) {
+      const [updated] = await db
+        .update(users)
+        .set({
+          name: userInfo.name,
+          avatarUrl: userInfo.picture || null,
+          email: userInfo.email,
+        })
+        .where(eq(users.googleId, userInfo.sub))
+        .returning();
+      user = updated;
+    } else {
+      // Check for a pre-existing stub (admin-invited user that hasn't signed in
+      // yet — googleId is NULL but email matches). If found, hydrate it instead
+      // of creating a new row; preserve their pre-assigned role and validate.
+      const [stub] = await db
+        .select()
+        .from(users)
+        .where(and(eq(users.email, userInfo.email), isNull(users.googleId)))
+        .limit(1);
+
+      if (stub) {
+        const [hydrated] = await db
+          .update(users)
+          .set({
+            googleId: userInfo.sub,
+            name: userInfo.name,
+            avatarUrl: userInfo.picture || null,
+            validated: true,
+          })
+          .where(eq(users.id, stub.id))
+          .returning();
+        user = hydrated;
+      } else {
+        // Check if this is the first non-agent user (auto-validate as admin)
+        const [firstUser] = await db.select({ id: users.id })
+          .from(users)
+          .where(eq(users.isAgent, false))
+          .orderBy(users.createdAt)
+          .limit(1);
+        const isFirstUser = !firstUser; // No non-agent users yet, so this one is first
+
+        const isSuperAdmin = superadminEmails().includes(userInfo.email.toLowerCase());
+
+        const [created] = await db
+          .insert(users)
+          .values({
+            googleId: userInfo.sub,
+            email: userInfo.email,
+            name: userInfo.name,
+            avatarUrl: userInfo.picture || null,
+            isAgent: false,
+            validated: isFirstUser || isSuperAdmin,
+            role: isSuperAdmin ? "superadmin" : (isFirstUser ? "admin" : "user"),
+          })
+          .returning();
+        user = created;
+
+        // Notify superadmins of the new signup (no-op without SendGrid / GENIE_SUPERADMIN_EMAILS).
+        await notifySuperadmin(
+          `[Genie] New user signup: ${user.name}`,
+          `New user signed up:\n\nName: ${user.name}\nEmail: ${user.email}\n\nThey need to be validated before they can use the platform.`,
+        );
+      }
+    }
+
+    // Accept a pending team invite (from sign-up via invite link). Validates
+    // the user and adds them to the org + team before the validation gate.
+    if (inviteToken) {
+      try {
+        const accepted = await acceptTeamInvite(inviteToken, user.id);
+        if (accepted) {
+          const [refreshed] = await db.select().from(users).where(eq(users.id, user.id)).limit(1);
+          if (refreshed) user = refreshed;
+        }
+      } catch (inviteErr) {
+        console.error("[auth] Failed to accept team invite during OAuth:", inviteErr);
+      }
+    }
+
+    // Block unvalidated users from logging in
+    if (!user.validated) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4"><div style="text-align:center"><h2>Access Pending</h2><p>Your account is pending validation by an administrator.</p><p style="color:#a6adc8;margin-top:1rem">Please contact the admin for access.</p></div></body></html>`);
+      onError("User not validated");
+      return true;
+    }
+
+    // Auto-create a default org for admin/superadmin if they have none yet.
+    // Other users only get into an org via admin invitation — never silently.
+    if (user.role === "admin" || user.role === "superadmin") {
+      try {
+        await ensureDefaultOrgFor(user.id, user.name, user.email);
+      } catch (orgErr) {
+        console.error("[auth] Failed to ensure default org:", orgErr);
+      }
+    }
+
+    const token = createToken(user.id);
+
+    const frontendUrl = process.env.FRONTEND_URL || "https://genie.teleporthq.ai";
+    // Check Origin/Referer to decide: redirect to frontend or show close-tab message
+    const origin = req.headers.origin || req.headers.referer || "";
+    const isExtension = origin.includes("chrome-extension://");
+
+    if (isExtension) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:#1e1e2e;color:#cdd6f4"><div style="text-align:center"><h2>Signed in as ${user.name}</h2><p>You can close this tab and return to Genie.</p></div></body></html>`);
+    } else {
+      res.writeHead(302, { Location: `${frontendUrl}?token=${encodeURIComponent(token)}` });
+      res.end();
+    }
+
+    onSuccess(user, token);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[auth] OAuth callback error:", err);
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<html><body><h2>Authentication error</h2><p>${message || "Unknown error"}</p><p>You can close this tab.</p></body></html>`);
+    onError(message || "OAuth exchange failed");
+  }
+
+  return true;
+}

@@ -1,0 +1,11 @@
+# python3, gcc, gnumake are required for node-pty native compilation (used by the terminal feature).
+# Taz private VMs (10.128/24) are now reached via the authenticated bastion SOCKS5 proxy
+# (GENIE_TAZ_SOCKS*), so the wireproxy userspace-WireGuard binary is no longer bundled.
+[phases.setup]
+nixPkgs = ["nodejs_22", "python3", "gcc", "gnumake"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]

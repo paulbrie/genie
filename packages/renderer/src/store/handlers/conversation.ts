@@ -1,0 +1,298 @@
+import { wsSend, onWsClose } from "@/lib/ws";
+import { $auth } from "../subjects/auth";
+import { $activeNav } from "../subjects/common";
+import { $conversationChat } from "../subjects/chat";
+import type { ConversationChatState } from "../types/chat";
+import type { HandlerMap } from "./types";
+
+// --- Conversation Chat messages ---
+
+export const handlers: HandlerMap = {
+  "chat:users:list": (payload) => {
+    $conversationChat.nextAssign({ users: payload.users });
+  },
+
+  "chat:presence": (_payload) => {
+    // Re-fetch full user list so online status is accurate
+    wsSend("chat:users:list", {});
+  },
+
+  "chat:conversations:list": (payload) => {
+    $conversationChat.nextAssign({ conversations: payload.conversations });
+  },
+
+  "chat:conversation:created": (payload) => {
+    const { conversation } = payload;
+    // Auto-open the new conversation. Mirror selectConversation()'s reset so
+    // the lazy-load state (hasMoreMessages/loadingOlder) starts clean, then
+    // ask the server for the most recent 20 messages — same window as the
+    // sidebar's click path. Without this fetch, opening a DM via the popup
+    // (which goes through chat:conversation:create) would show an empty
+    // history even if the conversation already has one.
+    $conversationChat.nextAssign({
+      activeConversationId: conversation.id,
+      messages: [],
+      loading: true,
+      streamingContent: "",
+      toolUses: [],
+      hasMoreMessages: false,
+      loadingOlder: false,
+    });
+    wsSend("chat:conversation:open", { conversationId: conversation.id, limit: 20 });
+  },
+
+  "chat:messages:list": (payload) => {
+    const { conversationId, messages: msgs, members, hasMore } = payload;
+    const cc = $conversationChat.getValue();
+    if (cc.activeConversationId === conversationId) {
+      if (cc.loadingOlder) {
+        // Prepend older messages
+        $conversationChat.nextAssign({
+          messages: [...msgs, ...cc.messages],
+          loadingOlder: false,
+          hasMoreMessages: hasMore ?? false,
+          ...(members ? { members } : {}),
+        });
+      } else {
+        // Initial load. Honour the server's `hasMore` when present so the
+        // page-size stays in one place; fall back to the local heuristic only
+        // for older replies that don't carry the flag.
+        $conversationChat.nextAssign({
+          messages: msgs,
+          hasMoreMessages: hasMore ?? msgs.length >= 20,
+          loading: false,
+          ...(members ? { members } : {}),
+        });
+      }
+    }
+  },
+
+  "chat:message:new": (payload) => {
+    const { conversationId, message } = payload;
+    const cc = $conversationChat.getValue();
+    const isViewingThisConv = cc.activeConversationId === conversationId && $activeNav.getValue() === "chat";
+    if (isViewingThisConv) {
+      $conversationChat.nextAssign({ messages: [...cc.messages, message] });
+    } else {
+      // Increment unread count for conversations we're not viewing
+      $conversationChat.nextAssign({
+        unreadCounts: {
+          ...cc.unreadCounts,
+          [conversationId]: (cc.unreadCounts[conversationId] || 0) + 1,
+        },
+      });
+
+      // Toast for messages from other human users (not Genie) while not viewing this conversation
+      const currentUser = $auth.getValue().user;
+      if (currentUser && message.senderId !== currentUser.id && !message.isAgent) {
+        const conv = cc.conversations.find((c) => c.id === conversationId);
+        const convName = conv?.name || (conv?.type === "dm" ? "DM" : "Chat");
+        const notifId = message.id || `msg-${Date.now()}`;
+        const alreadyQueued = cc.mentionNotifications.some((n) => n.id === notifId);
+        if (!alreadyQueued) {
+          $conversationChat.nextAssign({
+            mentionNotifications: [
+              ...cc.mentionNotifications,
+              {
+                id: notifId,
+                conversationId,
+                conversationName: convName,
+                senderName: message.senderName,
+                content: message.content.slice(0, 100),
+                createdAt: message.createdAt,
+              },
+            ],
+          });
+        }
+      }
+    }
+    // Update conversation list preview immutably
+    const convIdx = cc.conversations.findIndex((c) => c.id === conversationId);
+    if (convIdx >= 0) {
+      $conversationChat.nextAssign({
+        conversations: cc.conversations.map((c) =>
+          c.id === conversationId
+            ? {
+                ...c,
+                lastMessage: {
+                  content: message.content.slice(0, 100),
+                  senderName: message.senderName,
+                  createdAt: message.createdAt,
+                },
+                updatedAt: message.createdAt,
+              }
+            : c
+        ),
+      });
+    } else {
+      // Conversation not in our list yet — re-fetch
+      wsSend("chat:conversations:list", {});
+    }
+  },
+
+  "chat:message:token": (payload) => {
+    const { conversationId, token } = payload;
+    const cc = $conversationChat.getValue();
+    if (cc.activeConversationId === conversationId) {
+      $conversationChat.nextAssign({
+        streamingContent: cc.streamingContent + token,
+        streamingConversationId: conversationId,
+      });
+    }
+  },
+
+  "chat:message:done": (payload) => {
+    const { conversationId, message } = payload;
+    const cc = $conversationChat.getValue();
+    if (cc.activeConversationId === conversationId) {
+      $conversationChat.nextAssign({
+        messages: [...cc.messages, message],
+        streamingContent: "",
+        streamingConversationId: null,
+        toolUses: [],
+      });
+    }
+    // Update conversation list preview immutably
+    $conversationChat.nextAssign({
+      conversations: cc.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              lastMessage: {
+                content: message.content.slice(0, 100),
+                senderName: message.senderName,
+                createdAt: message.createdAt,
+              },
+            }
+          : c
+      ),
+    });
+  },
+
+  "chat:message:tool": (payload) => {
+    const { conversationId } = payload;
+    const cc = $conversationChat.getValue();
+    if (cc.activeConversationId === conversationId) {
+      $conversationChat.nextAssign({
+        toolUses: [...cc.toolUses, {
+          name: payload.name,
+          input: payload.input,
+          result: payload.result,
+        }],
+      });
+    }
+  },
+
+  "chat:members:updated": (payload) => {
+    const { conversationId, members: updatedMembers } = payload;
+    const cc = $conversationChat.getValue();
+    // Update members if this is the active conversation
+    const memberUpdate: Partial<ConversationChatState> = {};
+    if (cc.activeConversationId === conversationId) {
+      memberUpdate.members = updatedMembers;
+    }
+    // Update conversation summary members immutably
+    memberUpdate.conversations = cc.conversations.map((c) =>
+      c.id === conversationId ? { ...c, members: updatedMembers } : c
+    );
+    $conversationChat.nextAssign(memberUpdate);
+  },
+
+  "chat:mention": (payload) => {
+    const { conversationId, conversationName, senderName, content, messageId } = payload;
+    const cc = $conversationChat.getValue();
+    const isViewing = cc.activeConversationId === conversationId && $activeNav.getValue() === "chat";
+    if (isViewing) return;
+
+    const id = messageId || `mention-${Date.now()}`;
+    const existing = cc.mentionNotifications.find((n) => n.id === id);
+    if (existing) {
+      if (!existing.isMention) {
+        $conversationChat.nextAssign({
+          mentionNotifications: cc.mentionNotifications.map((n) =>
+            n.id === id ? { ...n, isMention: true } : n,
+          ),
+        });
+      }
+      return;
+    }
+
+    $conversationChat.nextAssign({
+      mentionNotifications: [
+        ...cc.mentionNotifications,
+        {
+          id,
+          conversationId,
+          conversationName,
+          senderName,
+          content,
+          createdAt: new Date().toISOString(),
+          isMention: true,
+        },
+      ],
+    });
+  },
+
+  "chat:reaction:updated": (payload) => {
+    const { conversationId, messageId, reactions } = payload;
+    const cc = $conversationChat.getValue();
+    if (cc.activeConversationId === conversationId) {
+      $conversationChat.nextAssign({
+        messages: cc.messages.map((m) =>
+          m.id === messageId ? { ...m, reactions } : m
+        ),
+      });
+    }
+  },
+
+  "chat:message:edited": (payload) => {
+    const { conversationId, messageId, content, editedAt } = payload;
+    const cc = $conversationChat.getValue();
+    if (cc.activeConversationId === conversationId) {
+      $conversationChat.nextAssign({
+        messages: cc.messages.map((m) =>
+          m.id === messageId ? { ...m, content, editedAt } : m
+        ),
+      });
+    }
+  },
+
+  "chat:message:error": (payload) => {
+    const { conversationId, message: errMsg } = payload;
+    const cc = $conversationChat.getValue();
+    if (cc.activeConversationId === conversationId) {
+      $conversationChat.nextAssign({
+        streamingContent: "",
+        streamingConversationId: null,
+        toolUses: [],
+        // Add error as a system message
+        messages: [...cc.messages, {
+          id: `error-${Date.now()}`,
+          conversationId,
+          senderId: "system",
+          senderName: "System",
+          senderAvatar: null,
+          isAgent: false,
+          content: `Error: ${errMsg}`,
+          metadata: null,
+          replyToId: null,
+          replyTo: null,
+          editedAt: null,
+          reactions: {},
+          createdAt: new Date().toISOString(),
+        }],
+      });
+    }
+  },
+};
+
+onWsClose(() => {
+  const cc = $conversationChat.getValue();
+  if (cc.streamingContent || cc.toolUses.length > 0) {
+    $conversationChat.nextAssign({
+      streamingContent: "",
+      streamingConversationId: null,
+      toolUses: [],
+    });
+  }
+});

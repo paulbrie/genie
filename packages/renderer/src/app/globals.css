@@ -1,0 +1,342 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+@source "../";
+
+.xterm-screen {
+  padding: 4px;
+}
+
+@theme {
+  /* Catppuccin Mocha — "base" renamed to "background" to avoid text-base collision */
+  --color-background: #1e1e2e;
+  --color-mantle: #181825;
+  --color-crust: #11111b;
+  --color-surface0: #313244;
+  --color-surface1: #45475a;
+  --color-surface2: #585b70;
+  --color-overlay0: #6c7086;
+  --color-overlay1: #7f849c;
+  --color-subtext0: #a6adc8;
+  --color-subtext1: #bac2de;
+  --color-text: #cdd6f4;
+  --color-mauve: #cba6f7;
+  --color-lavender: #b4befe;
+  --color-blue: #89b4fa;
+  --color-green: #a6e3a1;
+  --color-yellow: #f9e2af;
+  --color-red: #f38ba8;
+  --color-peach: #fab387;
+
+  /* Compact font sizes matching the original UI
+     Tailwind v4 uses --text-* for font-size utilities */
+  --text-2xs: 8px;
+  --text-2xs--line-height: 1.2;
+  --text-xs: 10px;
+  --text-xs--line-height: 1.4;
+  --text-sm: 11px;
+  --text-sm--line-height: 1.4;
+  --text-base: 12px;
+  --text-base--line-height: 1.5;
+  --text-md: 13px;
+  --text-md--line-height: 1.5;
+  --text-lg: 14px;
+  --text-lg--line-height: 1.5;
+  --text-xl: 15px;
+  --text-xl--line-height: 1.5;
+  --text-2xl: 16px;
+  --text-2xl--line-height: 1.4;
+  --text-3xl: 18px;
+  --text-3xl--line-height: 1.4;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", "Fira Code", monospace;
+}
+
+/* Mobile route reads at a larger base — bump every named text size by 2px.
+   Tailwind v4 text-* utilities resolve to these vars, so scoping the overrides
+   to the mobile shell enlarges all of them without touching the desktop UI. */
+.mobile-fonts {
+  --text-2xs: 10px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 16px;
+  --text-xl: 17px;
+  --text-2xl: 18px;
+  --text-3xl: 20px;
+}
+
+/* Animated gradient border for streaming Claude responses */
+@property --genie-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes genie-border-spin {
+  to { --genie-angle: 360deg; }
+}
+
+.genie-streaming-border {
+  position: relative;
+  isolation: isolate;
+}
+
+.genie-streaming-border::before {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 14px;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--genie-angle),
+    transparent 40%,
+    var(--color-mauve) 50%,
+    var(--color-blue) 55%,
+    transparent 65%
+  );
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: genie-border-spin 2.5s linear infinite;
+  pointer-events: none;
+}
+
+/* "Claude is thinking" cue for the durable chat popups: gently breathe the
+   peach border + a soft outer glow so an in-progress turn is obvious at a
+   glance, without a distracting spinner-style border. Animates the element's
+   own border/box-shadow (not an outset pseudo-element) so it survives the
+   window's overflow:hidden and keeps the existing drop shadow. */
+@keyframes claude-thinking {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--color-peach) 40%, transparent);
+    box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5);
+  }
+  50% {
+    border-color: var(--color-peach);
+    box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5),
+                0 0 14px 0 color-mix(in srgb, var(--color-peach) 45%, transparent);
+  }
+}
+.claude-thinking {
+  animation: claude-thinking 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .claude-thinking {
+    animation: none;
+    border-color: var(--color-peach);
+  }
+}
+
+/* tmux badge "running" glow — a soft pulsing halo in the session's accent so a
+   busy session reads at a glance. Two variants (claude=peach, shell=green). */
+@keyframes tmux-running-glow-peach {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-peach) 45%, transparent); }
+  50%      { box-shadow: 0 0 8px 1px color-mix(in srgb, var(--color-peach) 55%, transparent); }
+}
+@keyframes tmux-running-glow-green {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-green) 40%, transparent); }
+  50%      { box-shadow: 0 0 8px 1px color-mix(in srgb, var(--color-green) 55%, transparent); }
+}
+.tmux-running-glow-peach { animation: tmux-running-glow-peach 1.6s ease-in-out infinite; }
+.tmux-running-glow-green { animation: tmux-running-glow-green 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .tmux-running-glow-peach, .tmux-running-glow-green { animation: none; }
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  background: var(--color-background);
+  color: var(--color-text);
+  overflow: hidden;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+/* Global scrollbar: thin, transparent gutter, visible on hover */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background: transparent;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-surface1);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-surface2);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Terminal viewport: keep the scrollbar visible at all times (wider gutter,
+   solid thumb) so the whole conversation is obviously scrollable, not just on
+   hover. xterm sets overflow-y: scroll on the viewport, so the gutter is always
+   present — we only need a permanently-visible, easy-to-grab thumb. */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--color-surface2);
+  border-radius: 5px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--color-overlay0);
+}
+
+/* Scrollbar: overlay, transparent gutter, show only on scroll */
+@utility scrollbar-thin {
+  overflow: overlay;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+    background: transparent;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 2px;
+    transition: background 0.2s;
+  }
+  &:hover::-webkit-scrollbar-thumb {
+    background: var(--color-surface1);
+  }
+  &::-webkit-scrollbar-thumb:active {
+    background: var(--color-surface2);
+  }
+}
+
+/* Tabular nums utility */
+@utility tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* DB drawer slide-in */
+@keyframes dbDrawerSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+/* Chat markdown styles */
+.chat-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+
+  p { margin: 0.75em 0; line-height: 1.6; }
+  p:first-child { margin-top: 0; }
+  p:last-child { margin-bottom: 0; }
+
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--color-surface0);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  pre {
+    background: var(--color-surface0);
+    border-radius: 4px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    margin: 0.4em 0;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+  }
+
+  ul, ol {
+    margin: 0.3em 0;
+    padding-left: 1.4em;
+  }
+  li { margin: 0.3em 0; line-height: 1.6; }
+  li > p { margin: 0.25em 0; }
+  ul { list-style: disc; }
+  ol { list-style: decimal; }
+
+  .contains-task-list {
+    list-style: none;
+    padding-left: 0.2em;
+  }
+  .task-list-item {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4em;
+  }
+  .task-list-item > span:first-child {
+    flex-shrink: 0;
+  }
+
+  h1, h2, h3, h4 {
+    font-weight: 600;
+    margin: 0.5em 0 0.2em;
+    line-height: 1.35;
+  }
+  h1 { font-size: 1.2em; }
+  h2 { font-size: 1.1em; }
+  h3 { font-size: 1.05em; }
+
+  blockquote {
+    border-left: 2px solid var(--color-surface2);
+    padding-left: 8px;
+    margin: 0.3em 0;
+    color: var(--color-subtext0);
+  }
+
+  table {
+    border-collapse: collapse;
+    margin: 0.4em 0;
+    width: 100%;
+    font-size: 0.95em;
+  }
+  th, td {
+    border: 1px solid var(--color-surface1);
+    padding: 4px 8px;
+    text-align: left;
+  }
+  th {
+    background: var(--color-surface0);
+    font-weight: 600;
+  }
+  tr:nth-child(even) {
+    background: var(--color-mantle);
+  }
+
+  a {
+    color: var(--color-blue);
+    text-decoration: underline;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--color-surface1);
+    margin: 0.5em 0;
+  }
+}
+
+/* Plain-text chat bubbles (team chat own messages, assistant user bubbles) */
+.chat-message-content {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}

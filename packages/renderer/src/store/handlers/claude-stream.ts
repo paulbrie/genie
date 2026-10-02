@@ -1,0 +1,177 @@
+import type { HandlerMap } from "./types";
+import type { StreamingStep, ToolUse } from "../types/chat";
+import { updateClaudeStreamSession, handleClaudeStreamWsDisconnect } from "../actions/claude-stream";
+import { onWsClose } from "@/lib/ws";
+
+// Handlers for the durable chat-mode Claude session. Each event carries a
+// `claudeStreamId`; logic mirrors store/handlers/chat.ts but is scoped to one
+// session in the $claudeStream map (no shared singleton).
+
+export const handlers: HandlerMap = {
+  "claude:stream:ready": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      ready: true,
+      reconnecting: false,
+      connectionError: null,
+      // Record the tmux name the manager actually bound (it derives one when the
+      // client didn't send a name). Without this the window's `tmuxName` stays
+      // undefined and it can't associate with its session badge or re-bind to the
+      // same session on reconnect.
+      tmuxName: payload.tmuxName || s.tmuxName,
+      // A reattach (surviving tmux) or a resume rebuilds prior turns and delivers
+      // them in one `replay` batch shortly after this. Flag that gap so the window
+      // shows "Loading history…" instead of the blank "Chat with Claude" prompt.
+      // Skip if turns are already present (e.g. a second ready after replay).
+      historyLoading: (!!payload.reattached || !!s.resumeSessionId) && s.messages.length === 0,
+    }));
+  },
+
+  // A user turn rebuilt from the captured output on a cold reopen. During live
+  // sends the manager dedups the echo and doesn't emit this, so the optimistic
+  // bubble isn't doubled; the extra guard here is defensive.
+  "claude:stream:user": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => {
+      const last = s.messages[s.messages.length - 1];
+      if (last && last.role === "user" && last.content === payload.content) return s;
+      return { ...s, historyLoading: false, messages: [...s.messages, { role: "user", content: payload.content }] };
+    });
+  },
+
+  "claude:stream:token": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      streamingContent: s.streamingContent + (payload.token || ""),
+      statusText: "",
+      loading: true,
+      historyLoading: false,
+    }));
+  },
+
+  "claude:stream:tool": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => {
+      const tool: ToolUse = {
+        name: payload.name,
+        input: payload.input,
+        result: payload.result,
+        startedAt: Date.now(),
+        completedAt: Date.now(),
+      };
+      return {
+        ...s,
+        streamingSteps: [...s.streamingSteps, { content: s.streamingContent, toolUse: tool }],
+        streamingContent: "",
+        toolUses: [...s.toolUses, tool],
+      };
+    });
+  },
+
+  "claude:stream:done": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => {
+      const steps: StreamingStep[] = [...s.streamingSteps];
+      if (s.streamingContent) steps.push({ content: s.streamingContent });
+      const toolUses = s.toolUses.length > 0 ? [...s.toolUses] : undefined;
+      const message = {
+        role: "assistant" as const,
+        content: steps.map((st) => st.content).join(""),
+        steps: steps.length > 0 ? steps : undefined,
+        toolUses,
+        usage: payload.usage,
+        thinkingMs: payload.thinkingMs,
+      };
+      // Skip an entirely empty turn (e.g. a slash command with no output).
+      const messages = (message.content || toolUses) ? [...s.messages, message] : s.messages;
+      // After `/compact`, clear the "compacting…" footer once a turn reports a
+      // context well below the pre-compact baseline. The compaction turn itself
+      // reports ≈the old size (the summarizer reads the whole conversation), so a
+      // fractional threshold avoids clearing on it — only the genuinely smaller
+      // post-compact turn trips it.
+      const newCtx = payload.usage ? (payload.usage.inputTokens + payload.usage.outputTokens) : 0;
+      const clearCompact = s.compactBaseline != null && newCtx > 0 && newCtx < s.compactBaseline * 0.6;
+      return {
+        ...s,
+        messages,
+        streamingContent: "",
+        streamingSteps: [],
+        toolUses: [],
+        loading: false,
+        statusText: "",
+        ...(clearCompact ? { compactBaseline: undefined } : {}),
+      };
+    });
+  },
+
+  "claude:stream:status": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, statusText: payload.status || "" }));
+  },
+
+  // Claude asked the user something (AskUserQuestion) — it is blocked until
+  // claude:stream:answer goes back. Rendered as an option dialog above the input.
+  "claude:stream:ask": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      pendingAsk: { requestId: payload.requestId, toolUseId: payload.toolUseId, questions: payload.questions || [] },
+      statusText: "",
+    }));
+  },
+
+  "claude:stream:ask-resolved": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, pendingAsk: null }));
+  },
+
+  "claude:stream:claude-info": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      claudeInfo: {
+        model: payload.model || s.claudeInfo?.model || "",
+        email: payload.email || s.claudeInfo?.email || "",
+        plan: payload.plan || s.claudeInfo?.plan || "",
+        version: payload.version || s.claudeInfo?.version || "",
+      },
+    }));
+  },
+
+  "claude:stream:error": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      messages: [...s.messages, { role: "assistant", content: `Error: ${payload.message}`, isError: true }],
+      streamingContent: "",
+      streamingSteps: [],
+      toolUses: [],
+      loading: false,
+      statusText: "",
+      historyLoading: false,
+      connectionError: payload.message || "Claude stream failed",
+    }));
+  },
+
+  // Bulk catch-up on reattach: replace the session's transcript + streaming
+  // state with the manager's authoritative snapshot.
+  "claude:stream:replay": (payload) => {
+    const streaming = payload.streaming || {};
+    const steps: StreamingStep[] = streaming.steps || [];
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({
+      ...s,
+      messages: payload.messages || [],
+      streamingSteps: steps,
+      streamingContent: streaming.partialContent || "",
+      toolUses: steps.filter((st) => st.toolUse).map((st) => st.toolUse as ToolUse),
+      loading: !!streaming.loading,
+      statusText: streaming.loading ? "Claude is thinking..." : "",
+      claudeInfo: payload.claudeInfo || s.claudeInfo,
+      pendingAsk: payload.pendingAsk || null,
+      ready: true,
+      reconnecting: false,
+      historyLoading: false,
+    }));
+  },
+
+  "claude:stream:closed": (payload) => {
+    updateClaudeStreamSession(payload.claudeStreamId, (s) => ({ ...s, ready: false, loading: false, statusText: "", historyLoading: false }));
+  },
+};
+
+onWsClose(() => handleClaudeStreamWsDisconnect());
+// The reconnect re-attach (re-issuing claude:stream:start) is fired from the
+// auth:success handler, not onWsOpen — a cold reattach needs the manager to have
+// re-confirmed our userId (canAccessProject) before the message arrives.

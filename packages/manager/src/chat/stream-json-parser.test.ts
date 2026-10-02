@@ -1,0 +1,199 @@
+import { describe, it, expect } from "vitest";
+import { StreamJsonParser, type ParsedStreamEvent } from "./stream-json-parser.js";
+
+function parseAll(lines: string[]): ParsedStreamEvent[] {
+  const events: ParsedStreamEvent[] = [];
+  const parser = new StreamJsonParser((e) => events.push(e));
+  for (const l of lines) parser.push(l + "\n");
+  parser.flush();
+  return events;
+}
+
+describe("StreamJsonParser", () => {
+  it("emits a session event whenever session_id is present", () => {
+    const events = parseAll([JSON.stringify({ type: "system", subtype: "init", session_id: "abc", model: "claude-x" })]);
+    expect(events).toContainEqual({ kind: "session", sessionId: "abc" });
+    expect(events).toContainEqual({ kind: "claude-info", model: "claude-x", version: "" });
+  });
+
+  it("streams text tokens from assistant events", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Hello " }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "world" }] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([
+      { kind: "token", text: "Hello " },
+      { kind: "token", text: "world" },
+    ]);
+  });
+
+  it("streams text tokens from content_block_delta", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }),
+    ]);
+    expect(events).toContainEqual({ kind: "token", text: "hi" });
+  });
+
+  it("assembles a tool call across content_block_start/delta/stop", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "content_block_start", content_block: { type: "tool_use", name: "bash" } }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '{"cmd":' } }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '"ls"}' } }),
+      JSON.stringify({ type: "content_block_stop" }),
+    ]);
+    expect(events).toContainEqual({ kind: "tool", name: "bash", input: { cmd: "ls" }, result: "" });
+  });
+
+  it("emits a tool event from an assistant tool_use block", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "read", input: { path: "/x" } }] } }),
+    ]);
+    expect(events).toContainEqual({ kind: "tool", name: "read", input: { path: "/x" }, result: "" });
+  });
+
+  it("does not double content when partials are followed by a consolidated assistant snapshot", () => {
+    // Under `--output-format stream-json` the CLI streams a message via
+    // content_block_* partials, then repeats it in an `assistant` snapshot. The
+    // snapshot must not re-emit the already-streamed text or tool calls.
+    const events = parseAll([
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "Digging in:" } }),
+      JSON.stringify({ type: "content_block_start", content_block: { type: "tool_use", name: "bash" } }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '{"cmd":"du"}' } }),
+      JSON.stringify({ type: "content_block_stop" }),
+      // Consolidated snapshot of the SAME message — must be ignored.
+      JSON.stringify({ type: "assistant", message: { content: [
+        { type: "text", text: "Digging in:" },
+        { type: "tool_use", name: "bash", input: { cmd: "du" } },
+      ] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([{ kind: "token", text: "Digging in:" }]);
+    expect(events.filter((e) => e.kind === "tool")).toEqual([{ kind: "tool", name: "bash", input: { cmd: "du" }, result: "" }]);
+  });
+
+  it("still emits from the assistant snapshot when no partials preceded it (assistant-only mode)", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "no partials here" }] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([{ kind: "token", text: "no partials here" }]);
+  });
+
+  it("resets the per-message dedup so a later assistant-only message still emits", () => {
+    const events = parseAll([
+      // Message 1: streamed via partials + snapshot (snapshot ignored).
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "first" } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "first" }] } }),
+      // Message 2: snapshot only (must emit).
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "second" }] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([
+      { kind: "token", text: "first" },
+      { kind: "token", text: "second" },
+    ]);
+  });
+
+  it("dedupes a repeated preamble when one message is split across assistant events (assistant-only mode)", () => {
+    // Claude Code writes a text-preamble+multi-tool message as SEVERAL `assistant`
+    // events, each repeating the preamble verbatim with one tool_use. The
+    // preamble must render once; every distinct tool call is kept.
+    const pre = "Playwright is downloading Chromium — waiting for it to finish.";
+    const events = parseAll([
+      JSON.stringify({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: pre }, { type: "tool_use", name: "bash", input: { cmd: "1" } }] } }),
+      JSON.stringify({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: pre }, { type: "tool_use", name: "bash", input: { cmd: "2" } }] } }),
+      JSON.stringify({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: pre }, { type: "tool_use", name: "bash", input: { cmd: "3" } }] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([{ kind: "token", text: pre }]);
+    expect(events.filter((e) => e.kind === "tool")).toEqual([
+      { kind: "tool", name: "bash", input: { cmd: "1" }, result: "" },
+      { kind: "tool", name: "bash", input: { cmd: "2" }, result: "" },
+      { kind: "tool", name: "bash", input: { cmd: "3" }, result: "" },
+    ]);
+  });
+
+  it("re-emits identical text in a new message group after a tool_result (user) boundary", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "same" }] } }),
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } }),
+      JSON.stringify({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "same" }] } }),
+    ]);
+    expect(events.filter((e) => e.kind === "token")).toEqual([
+      { kind: "token", text: "same" },
+      { kind: "token", text: "same" },
+    ]);
+  });
+
+  it("signals turn completion on a result event (durable sessions never EOF)", () => {
+    const events = parseAll([JSON.stringify({ type: "result", subtype: "success", session_id: "s1", result: "done" })]);
+    expect(events).toContainEqual({ kind: "turn-done", result: "done" });
+    expect(events).toContainEqual({ kind: "session", sessionId: "s1" });
+  });
+
+  it("emits a user event for echoed user turns (--replay-user-messages)", () => {
+    expect(parseAll([JSON.stringify({ type: "user", message: { role: "user", content: "hi there" } })]))
+      .toEqual([{ kind: "user", text: "hi there" }]);
+    // Block-array content is flattened to text too.
+    expect(parseAll([JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "blocks" }] } })]))
+      .toEqual([{ kind: "user", text: "blocks" }]);
+  });
+
+  it("ignores control_response and ping without throwing", () => {
+    const events = parseAll([
+      JSON.stringify({ type: "control_response", response: { subtype: "ack" } }),
+      JSON.stringify({ type: "ping" }),
+    ]);
+    expect(events).toEqual([]);
+  });
+
+  it("emits an ask event for an AskUserQuestion can_use_tool control request", () => {
+    const questions = [{
+      question: "Alpha or Beta?",
+      header: "Pick",
+      options: [{ label: "Alpha", description: "a" }, { label: "Beta", description: "b" }],
+      multiSelect: false,
+    }];
+    const events = parseAll([
+      JSON.stringify({
+        type: "control_request",
+        request_id: "req-1",
+        request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", tool_use_id: "toolu_1", input: { questions } },
+      }),
+    ]);
+    expect(events).toContainEqual({ kind: "ask", requestId: "req-1", toolUseId: "toolu_1", questions });
+  });
+
+  it("emits can-use-tool (not ask) for other tools' permission requests", () => {
+    const events = parseAll([
+      JSON.stringify({
+        type: "control_request",
+        request_id: "req-2",
+        request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "ls" } },
+      }),
+    ]);
+    expect(events).toContainEqual({ kind: "can-use-tool", requestId: "req-2", toolName: "Bash", input: { command: "ls" } });
+  });
+
+  it("emits tool-result ids from user frames so replays can clear a pending ask", () => {
+    const events = parseAll([
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "answered" }] },
+      }),
+    ]);
+    expect(events).toContainEqual({ kind: "tool-result", toolUseId: "toolu_1" });
+    // A pure tool_result frame is not a conversational user turn.
+    expect(events.filter((e) => e.kind === "user")).toEqual([]);
+  });
+
+  it("tolerates non-JSON lines and partial chunks split across push() calls", () => {
+    const events: ParsedStreamEvent[] = [];
+    const parser = new StreamJsonParser((e) => events.push(e));
+    parser.push("garbage line\n");
+    parser.push('{"type":"assistant","message":{"content":[{"type":"text",');
+    parser.push('"text":"ok"}]}}\n');
+    parser.flush();
+    expect(events).toEqual([{ kind: "token", text: "ok" }]);
+  });
+});

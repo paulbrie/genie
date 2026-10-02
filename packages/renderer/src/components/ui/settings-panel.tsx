@@ -1,0 +1,863 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useSubject } from "subjecto/react";
+import { $admin, $auth, $doTokenValid, $railwayTestResult, $settings } from "@/store/subjects";
+import { $orgSettings } from "@/store/subjects/org-settings";
+import { deleteSshKey, loadSettings, loadSshKey, regenerateSshKey, saveSettingsField, testRailwayToken, validateDoToken } from "@/store/actions";
+import { useDeepSubject } from "subjecto/react";
+import { type AppSettings } from "@/lib/genie-api";
+import { Eye, EyeOff, Key, Copy, Check, Loader2, Trash2, RefreshCw } from "lucide-react";
+import { ViewHeader } from "@/components/ui/view-header";
+import { ViewTabs } from "@/components/ui/view-tabs";
+import { RunpodKimiSettings } from "@/components/ui/runpod-kimi-settings";
+import { Select } from "@/components/ui/select";
+import { buildSettingsPath, type SettingsTab } from "@/lib/routes";
+import { useRouter } from "next/navigation";
+import { OrgSettingsPanel } from "@/components/settings/org-settings-panel";
+import { ErrorMessage } from "@/components/ui/error-message";
+
+const editorOptions = [
+  { value: "", label: "System Default" },
+  { value: "Visual Studio Code", label: "Visual Studio Code" },
+  { value: "Cursor", label: "Cursor" },
+  { value: "Zed", label: "Zed" },
+  { value: "Sublime Text", label: "Sublime Text" },
+  { value: "WebStorm", label: "WebStorm" },
+];
+
+const DEPLOY_STEPS = [
+  {
+    title: "Ensure SSH Key",
+    description: "Checks if a Genie SSH key pair (ed25519) exists in the database. If not, generates a new one. The public key is registered with DigitalOcean if not already present.",
+  },
+  {
+    title: "Create Droplet",
+    description: "Creates a new DigitalOcean droplet named genie-<project>-<timestamp> using either a custom base snapshot or the default docker-20-04 image. The Genie deploy key is attached and the droplet is tagged with \"genie\". A cloud-init script configures UFW: default deny incoming, SSH restricted to manager IP, port 3000 open.",
+  },
+  {
+    title: "Wait for Droplet Activation",
+    description: "Polls the DigitalOcean API every 5 seconds (up to 120s timeout) until the droplet has status \"active\" and a public IPv4 address.",
+  },
+  {
+    title: "Wait for SSH & Docker Readiness",
+    description: "Attempts SSH connections to the droplet as root (up to 180s) and verifies Docker is installed by running docker --version. Each attempt has a 15-second timeout.",
+  },
+  {
+    title: "Wait for Cloud-Init",
+    description: "Polls cloud-init status every 5 seconds (up to 2 minutes) until complete. Skipped when using a pre-built base image. Cloud-init applies the initial UFW firewall rules: default deny incoming, SSH from manager IP only, port 3000 open.",
+  },
+  {
+    title: "Configure Firewall",
+    description: "Sets UFW to default deny incoming, default allow outgoing. Allows SSH (port 22) only from MANAGER_PUBLIC_IP. Allows port 3000 from all sources. No other ports are opened.",
+    conditional: true,
+  },
+  {
+    title: "Create genie User",
+    description: "Creates a non-root \"genie\" user with passwordless sudo, SSH key access (copied from root), docker group membership, and ownership of /opt/project. Claude Code's --dangerously-skip-permissions flag requires a non-root user. All subsequent steps run as genie.",
+  },
+  {
+    title: "Install GitLab Deploy Key",
+    description: "Writes the GitLab deploy key to ~/.ssh/id_gitlab on the droplet (as genie) and configures SSH to use it when connecting to gitlab.com.",
+    conditional: true,
+  },
+  {
+    title: "Install VPS Agent",
+    description: "Checks if the genie-agent command exists on the droplet. If not, installs the @genie/vps-agent npm package globally (via sudo).",
+  },
+  {
+    title: "Create Project Directory",
+    description: "Creates the /opt/project directory on the droplet (owned by genie) where all project files will be deployed.",
+  },
+  {
+    title: "Wait for SSH Stabilization",
+    description: "Cloud-init may restart sshd during provisioning. Retries SSH connections (up to 60s) to ensure the connection is stable before writing files.",
+  },
+  {
+    title: "Update Claude Code",
+    description: "Installs or updates Claude Code CLI globally via sudo npm install -g @anthropic-ai/claude-code.",
+  },
+  {
+    title: "Write Setup Files",
+    description: "All project setup files from the database (docker-compose.yml, Dockerfile, .env, setup.sh, etc.) are written to /opt/project on the droplet.",
+  },
+  {
+    title: "Write MCP Configuration",
+    description: "Writes .mcp.json to /opt/project with genie-browser (http://127.0.0.1:9877/mcp) and genie-tracker (http://127.0.0.1:9878/mcp) MCP server entries so the VPS agent can use browser and tracker tools via reverse SSH tunnels.",
+  },
+  {
+    title: "Run setup.sh",
+    description: "Executes the project's setup.sh via sudo as the single entry point for deployment. Typically runs docker compose build and docker compose up. Genie monitors container lifecycle events and considers deployment complete when all containers have started. Timeout: 30 minutes max, 5 minutes idle.",
+  },
+];
+
+export function SettingsPanel({ activeTab = "general", orgId }: { activeTab?: SettingsTab; orgId?: string }) {
+  const router = useRouter();
+  const [auth] = useSubject($auth);
+  const role = auth.user?.role;
+  const isAdmin = role === "admin" || role === "superadmin";
+  const [manageableOrgs] = useDeepSubject($orgSettings, "mine");
+  const [mineError] = useDeepSubject($orgSettings, "mineError");
+  const [mineFetched] = useDeepSubject($orgSettings, "mineFetched");
+  const hasManageableOrgs = manageableOrgs.length > 0;
+  const requestedTab: SettingsTab = activeTab;
+  // Show the "Organization" tab when the user has manageable orgs OR when the
+  // URL explicitly asks for it (direct nav to /settings/org). The latter lets
+  // a user who landed there see a clear empty-state instead of a silent
+  // fallback to the General tab.
+  const showOrgTab = hasManageableOrgs || requestedTab === "org";
+  // `requestedTab === "org"` is always permitted when requested: showOrgTab is
+  // (hasManageableOrgs || requestedTab === "org"), so the org case is self-gating
+  // and only "deploy" is actually role-restricted.
+  const isPermittedTab =
+    requestedTab === "general"
+    || (requestedTab === "deploy" && isAdmin)
+    || (requestedTab === "genie-local" && isAdmin)
+    || requestedTab === "org";
+  const tab: SettingsTab = isPermittedTab ? requestedTab : "general";
+  // When orgId is missing, fall back to the first manageable org; undefined when
+  // the user has none, so the panel renders the empty state. An unknown/unauthorized
+  // orgId is passed through as-is and rejected by the server's org:get ACL.
+  const resolvedOrgId = orgId || manageableOrgs[0]?.id || undefined;
+  const [settings] = useSubject($settings);
+  const [doTokenValid] = useSubject($doTokenValid);
+  const [railwayTestResult] = useSubject($railwayTestResult);
+  const [railwayTesting, setRailwayTesting] = useState(false);
+  const [showDoToken, setShowDoToken] = useState(false);
+  const [doTokenInput, setDoTokenInput] = useState("");
+  const [doTokenDirty, setDoTokenDirty] = useState(false);
+  const [showHetznerToken, setShowHetznerToken] = useState(false);
+  const [hetznerTokenInput, setHetznerTokenInput] = useState("");
+  const [hetznerTokenDirty, setHetznerTokenDirty] = useState(false);
+  const [showGitlabKey, setShowGitlabKey] = useState(false);
+  const [gitlabKeyInput, setGitlabKeyInput] = useState("");
+  const [gitlabKeyDirty, setGitlabKeyDirty] = useState(false);
+  const [showRailwayToken, setShowRailwayToken] = useState(false);
+  const [railwayTokenInput, setRailwayTokenInput] = useState("");
+  const [railwayTokenDirty, setRailwayTokenDirty] = useState(false);
+  const [railwayProjectIdInput, setRailwayProjectIdInput] = useState("");
+  const [railwayProjectIdDirty, setRailwayProjectIdDirty] = useState(false);
+  // Namecheap DNS — used to attach custom subdomains + auto-TLS to DO droplets.
+  const [showNcKey, setShowNcKey] = useState(false);
+  const [nc, setNc] = useState({ apiUser: "", apiKey: "", userName: "", domain: "" });
+  const [ncDirty, setNcDirty] = useState(false);
+  // Genie Local — GitHub PAT that pre-fills the recipe's install prompt.
+  const [showGenieLocalPat, setShowGenieLocalPat] = useState(false);
+  const [genieLocalPatInput, setGenieLocalPatInput] = useState("");
+  const [genieLocalPatDirty, setGenieLocalPatDirty] = useState(false);
+
+  const [sshKey] = useDeepSubject($admin, "sshKey");
+  const [copiedKey, setCopiedKey] = useState(false);
+
+  useEffect(() => {
+    loadSettings();
+    loadSshKey();
+    // The org list is fetched once on auth by the always-mounted Sidebar
+    // (UserBadge), so there's no need to re-fetch it on every Settings visit.
+  }, []);
+
+  useEffect(() => {
+    setDoTokenInput(settings.digitaloceanApiToken || "");
+    setDoTokenDirty(false);
+  }, [settings.digitaloceanApiToken]);
+
+  useEffect(() => {
+    setHetznerTokenInput(settings.hetznerApiToken || "");
+    setHetznerTokenDirty(false);
+  }, [settings.hetznerApiToken]);
+
+  useEffect(() => {
+    setGitlabKeyInput(settings.gitlabDeployKey || "");
+    setGitlabKeyDirty(false);
+  }, [settings.gitlabDeployKey]);
+
+  useEffect(() => {
+    setRailwayTokenInput(settings.railwayToken || "");
+    setRailwayTokenDirty(false);
+  }, [settings.railwayToken]);
+
+  useEffect(() => {
+    setRailwayProjectIdInput(settings.railwayProjectId || "");
+    setRailwayProjectIdDirty(false);
+  }, [settings.railwayProjectId]);
+
+  useEffect(() => {
+    setNc({
+      apiUser: settings.namecheapApiUser || "",
+      apiKey: settings.namecheapApiKey || "",
+      userName: settings.namecheapUserName || "",
+      domain: settings.namecheapDomain || "",
+    });
+    setNcDirty(false);
+  }, [settings.namecheapApiUser, settings.namecheapApiKey, settings.namecheapUserName, settings.namecheapDomain]);
+
+  useEffect(() => {
+    setGenieLocalPatInput(settings.genieLocalGithubPat || "");
+    setGenieLocalPatDirty(false);
+  }, [settings.genieLocalGithubPat]);
+
+  useEffect(() => {
+    if (railwayTestResult) setRailwayTesting(false);
+  }, [railwayTestResult]);
+
+  function handleTestRailway() {
+    setRailwayTesting(true);
+    testRailwayToken();
+  }
+
+  function handleSaveDoToken() {
+    saveSettingsField("digitaloceanApiToken", doTokenInput);
+    setDoTokenDirty(false);
+    setTimeout(() => validateDoToken(), 300);
+  }
+
+  function handleSaveHetznerToken() {
+    saveSettingsField("hetznerApiToken", hetznerTokenInput);
+    setHetznerTokenDirty(false);
+  }
+
+  function handleSaveGitlabKey() {
+    saveSettingsField("gitlabDeployKey", gitlabKeyInput);
+    setGitlabKeyDirty(false);
+  }
+
+  function handleSaveRailwayToken() {
+    saveSettingsField("railwayToken", railwayTokenInput);
+    setRailwayTokenDirty(false);
+  }
+
+  function handleSaveRailwayProjectId() {
+    saveSettingsField("railwayProjectId", railwayProjectIdInput);
+    setRailwayProjectIdDirty(false);
+  }
+
+  function handleSaveGenieLocalPat() {
+    saveSettingsField("genieLocalGithubPat", genieLocalPatInput.trim());
+    setGenieLocalPatDirty(false);
+  }
+
+  function handleSaveNamecheap() {
+    saveSettingsField("namecheapApiUser", nc.apiUser.trim());
+    saveSettingsField("namecheapApiKey", nc.apiKey.trim());
+    saveSettingsField("namecheapUserName", nc.userName.trim());
+    saveSettingsField("namecheapDomain", nc.domain.trim());
+    setNcDirty(false);
+  }
+
+  return (
+    <div className="flex-1 flex flex-col overflow-y-auto px-5 pb-5">
+      <ViewHeader title="Settings" />
+      <ViewTabs
+        tabs={[
+          { key: "general" as const, label: "General" },
+          ...(isAdmin ? [
+            { key: "deploy" as const, label: "Deploy" },
+            { key: "genie-local" as const, label: "Genie Local" },
+          ] : []),
+          ...(showOrgTab ? [{ key: "org" as const, label: "Organization" }] : []),
+        ]}
+        activeTab={tab}
+        onTabChange={(t) => router.push(buildSettingsPath(t, t === "org" ? resolvedOrgId : undefined))}
+      />
+
+      {tab === "org" ? (
+        resolvedOrgId ? (
+          <OrgSettingsPanel orgId={resolvedOrgId} />
+        ) : (
+          <div className="pt-6 max-w-xl">
+            <div className="bg-mantle border border-surface0 rounded-lg p-4 flex flex-col gap-2">
+              {mineFetched ? (
+                <>
+                  <h3 className="text-text font-medium text-md">No organizations to manage</h3>
+                  <p className="text-md text-overlay1">
+                    You're not an owner or admin of any organization yet, so there's nothing
+                    to configure here. A superadmin can add you to an org from{" "}
+                    <span className="font-mono text-subtext0">Admin → Orgs</span>, or create
+                    a new org and make you its owner.
+                  </p>
+                </>
+              ) : (
+                <div className="text-md text-overlay0">Checking your org memberships…</div>
+              )}
+              {mineError && (
+                <ErrorMessage className="text-xs">Server returned: {mineError}</ErrorMessage>
+              )}
+            </div>
+          </div>
+        )
+      ) : tab === "general" ? (
+        <div className="pt-4">
+          <div className="bg-mantle rounded-lg p-4 mb-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Default Code Editor
+              <span className="ml-2 text-md text-overlay0 font-normal">Per user</span>
+            </label>
+            <Select
+              value={settings.defaultEditor}
+              onChange={(e) => saveSettingsField("defaultEditor", e.target.value)}
+              className="w-full max-w-xs bg-background border-surface0"
+            >
+              {editorOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </Select>
+            <p className="text-md text-overlay0 mt-2">
+              Choose which application opens when you double-click files in the file explorer.
+            </p>
+          </div>
+
+          {isAdmin && (
+          <>
+          <div className="bg-mantle rounded-lg p-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              DigitalOcean API Token
+              <span className="ml-2 text-md text-overlay0 font-normal">Global default</span>
+            </label>
+            <div className="flex items-center gap-2 max-w-md">
+              <div className="relative flex-1">
+                <input
+                  type={showDoToken ? "text" : "password"}
+                  value={doTokenInput}
+                  onChange={(e) => {
+                    setDoTokenInput(e.target.value);
+                    setDoTokenDirty(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && doTokenDirty) handleSaveDoToken();
+                  }}
+                  placeholder="dop_v1_..."
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowDoToken(!showDoToken)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showDoToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {doTokenDirty && (
+                <button
+                  onClick={handleSaveDoToken}
+                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+              {!doTokenDirty && doTokenInput && (
+                <button
+                  onClick={() => validateDoToken()}
+                  className="px-3 py-2 bg-surface0 text-text text-md rounded-md hover:bg-surface1 transition-colors shrink-0"
+                >
+                  Validate
+                </button>
+              )}
+            </div>
+            {doTokenValid && !doTokenDirty && (
+              <p className={`text-md mt-2 ${doTokenValid.valid ? "text-green" : "text-red"}`}>
+                {doTokenValid.valid
+                  ? `Valid — ${doTokenValid.email}`
+                  : "Invalid token"}
+              </p>
+            )}
+            <p className="text-md text-overlay0 mt-2">
+              Get your token from DigitalOcean dashboard &rarr; API &rarr; Tokens.
+              Can be overridden per project.
+            </p>
+          </div>
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Hetzner API Token
+              <span className="ml-2 text-md text-overlay0 font-normal">Global default</span>
+            </label>
+            <div className="flex items-center gap-2 max-w-md">
+              <div className="relative flex-1">
+                <input
+                  type={showHetznerToken ? "text" : "password"}
+                  value={hetznerTokenInput}
+                  onChange={(e) => {
+                    setHetznerTokenInput(e.target.value);
+                    setHetznerTokenDirty(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && hetznerTokenDirty) handleSaveHetznerToken();
+                  }}
+                  placeholder="Hetzner Cloud API token"
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowHetznerToken(!showHetznerToken)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showHetznerToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {hetznerTokenDirty && (
+                <button
+                  onClick={handleSaveHetznerToken}
+                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+            </div>
+            <p className="text-md text-overlay0 mt-2">
+              Create a token in the Hetzner Cloud Console &rarr; Security &rarr; API Tokens
+              (Read &amp; Write). Falls back to the HETZNER_API_TOKEN env var.
+            </p>
+          </div>
+
+          <RunpodKimiSettings />
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              TazCloud
+              <span className="ml-2 text-md text-overlay0 font-normal">Configured via env vars on the manager</span>
+            </label>
+            <p className="text-md text-overlay0">
+              The manager reads <code className="text-text font-mono bg-surface0 px-1 rounded">TAZCLOUD_API_TOKEN</code> and{" "}
+              <code className="text-text font-mono bg-surface0 px-1 rounded">TAZCLOUD_SSH_PRIVATE_KEY</code> from{" "}
+              <code className="text-text font-mono bg-surface0 px-1 rounded">packages/manager/.env.local</code> at startup.
+              Restart the manager after changing them. Snapshots, base-image templates, and hibernation are unsupported for TazCloud.
+            </p>
+          </div>
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              GitLab Deploy Key (Private)
+              <span className="ml-2 text-md text-overlay0 font-normal">Global default</span>
+            </label>
+            <div className="max-w-md">
+              <div className="relative">
+                <textarea
+                  value={showGitlabKey ? gitlabKeyInput : gitlabKeyInput ? "••••••••••••••••" : ""}
+                  onChange={(e) => {
+                    setGitlabKeyInput(e.target.value);
+                    setGitlabKeyDirty(true);
+                    if (!showGitlabKey) setShowGitlabKey(true);
+                  }}
+                  onFocus={() => {
+                    if (!showGitlabKey && gitlabKeyInput) setShowGitlabKey(true);
+                  }}
+                  placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"}
+                  spellCheck={false}
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono resize-y min-h-[80px] max-h-[200px]"
+                  rows={4}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowGitlabKey(!showGitlabKey)}
+                  className="absolute right-2 top-2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showGitlabKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {gitlabKeyDirty && (
+                <button
+                  onClick={handleSaveGitlabKey}
+                  className="mt-2 px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+              {!gitlabKeyDirty && gitlabKeyInput && (
+                <p className="text-md text-green mt-2">Saved</p>
+              )}
+            </div>
+            <p className="text-md text-overlay0 mt-2">
+              SSH private key used to clone private repos from GitLab on provisioned droplets.
+              This key will be installed as <code className="text-text">~/.ssh/id_gitlab</code> on each new droplet.
+              Can be overridden per project.
+            </p>
+          </div>
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Namecheap DNS
+              <span className="ml-2 text-md text-overlay0 font-normal">Global — DigitalOcean custom domains</span>
+            </label>
+            <div className="flex flex-col gap-2 max-w-md">
+              <input
+                type="text"
+                value={nc.apiUser}
+                onChange={(e) => { setNc((p) => ({ ...p, apiUser: e.target.value })); setNcDirty(true); }}
+                placeholder="API user (Namecheap username)"
+                spellCheck={false}
+                className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+              />
+              <div className="relative">
+                <input
+                  type={showNcKey ? "text" : "password"}
+                  value={nc.apiKey}
+                  onChange={(e) => { setNc((p) => ({ ...p, apiKey: e.target.value })); setNcDirty(true); }}
+                  placeholder="API key"
+                  spellCheck={false}
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNcKey(!showNcKey)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showNcKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              <input
+                type="text"
+                value={nc.userName}
+                onChange={(e) => { setNc((p) => ({ ...p, userName: e.target.value })); setNcDirty(true); }}
+                placeholder="Username (optional — defaults to API user)"
+                spellCheck={false}
+                className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+              />
+              <input
+                type="text"
+                value={nc.domain}
+                onChange={(e) => { setNc((p) => ({ ...p, domain: e.target.value })); setNcDirty(true); }}
+                placeholder="Managed domain, e.g. example.com"
+                spellCheck={false}
+                className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+              />
+              {ncDirty ? (
+                <button
+                  onClick={handleSaveNamecheap}
+                  className="self-start px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              ) : (nc.apiUser || nc.domain) ? (
+                <p className="text-md text-green">Saved</p>
+              ) : null}
+            </div>
+            <p className="text-md text-overlay0 mt-2">
+              Lets you attach a custom subdomain with automatic HTTPS (Caddy + Let&apos;s Encrypt) to a DigitalOcean
+              droplet from the Droplets panel. Subdomains must be under the managed domain. The manager&apos;s public IP
+              must be whitelisted in Namecheap &rarr; Profile &rarr; Tools &rarr; API Access &rarr; Whitelisted IPs.
+            </p>
+          </div>
+          </>
+          )}
+
+          {isAdmin && (
+          <>
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Railway API Token
+              <span className="ml-2 text-md text-overlay0 font-normal">Global</span>
+            </label>
+            <div className="flex items-center gap-2 max-w-md">
+              <div className="relative flex-1">
+                <input
+                  type={showRailwayToken ? "text" : "password"}
+                  value={railwayTokenInput}
+                  onChange={(e) => {
+                    setRailwayTokenInput(e.target.value);
+                    setRailwayTokenDirty(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && railwayTokenDirty) handleSaveRailwayToken();
+                  }}
+                  placeholder="Enter Railway API token"
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowRailwayToken(!showRailwayToken)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showRailwayToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {railwayTokenDirty && (
+                <button
+                  onClick={handleSaveRailwayToken}
+                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+            </div>
+            {!railwayTokenDirty && railwayTokenInput && (
+              <p className="text-md text-green mt-2">Saved</p>
+            )}
+            <p className="text-md text-overlay0 mt-2">
+              Used to fetch deployments and logs from Railway. Get it from Railway dashboard &rarr; Account Settings &rarr; Tokens.
+            </p>
+          </div>
+
+          <div className="bg-mantle rounded-lg p-4 mt-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Railway Project ID
+              <span className="ml-2 text-md text-overlay0 font-normal">Global</span>
+            </label>
+            <div className="flex items-center gap-2 max-w-md">
+              <input
+                type="text"
+                value={railwayProjectIdInput}
+                onChange={(e) => {
+                  setRailwayProjectIdInput(e.target.value);
+                  setRailwayProjectIdDirty(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && railwayProjectIdDirty) handleSaveRailwayProjectId();
+                }}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="flex-1 bg-background text-text border border-surface0 rounded-md px-3 py-2 text-md outline-none focus:border-blue font-mono"
+              />
+              {railwayProjectIdDirty && (
+                <button
+                  onClick={handleSaveRailwayProjectId}
+                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+            </div>
+            {!railwayProjectIdDirty && railwayProjectIdInput && (
+              <p className="text-md text-green mt-2">Saved</p>
+            )}
+            <p className="text-md text-overlay0 mt-2">
+              The Railway project to monitor. Find it in the Railway dashboard URL or project settings.
+            </p>
+          </div>
+
+          {/* Railway connection test */}
+          {railwayTokenInput && railwayProjectIdInput && !railwayTokenDirty && !railwayProjectIdDirty && (
+            <div className="bg-mantle rounded-lg p-4 mt-4">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleTestRailway}
+                  disabled={railwayTesting}
+                  className="px-3 py-2 bg-surface0 text-text text-md rounded-md hover:bg-surface1 transition-colors disabled:opacity-50"
+                >
+                  {railwayTesting ? "Testing..." : "Test Railway Connection"}
+                </button>
+                {railwayTestResult && (
+                  <span className={`text-md ${railwayTestResult.ok ? "text-green" : "text-red"}`}>
+                    {railwayTestResult.message}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+          </>
+          )}
+        </div>
+      ) : tab === "genie-local" ? (
+        <div className="pt-4">
+          <div className="bg-mantle rounded-lg p-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              GitHub PAT — genie-local repo
+              <span className="ml-2 text-md text-overlay0 font-normal">Global</span>
+            </label>
+            <div className="flex items-center gap-2 max-w-md">
+              <div className="relative flex-1">
+                <input
+                  type={showGenieLocalPat ? "text" : "password"}
+                  value={genieLocalPatInput}
+                  onChange={(e) => {
+                    setGenieLocalPatInput(e.target.value);
+                    setGenieLocalPatDirty(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && genieLocalPatDirty) handleSaveGenieLocalPat();
+                  }}
+                  placeholder="github_pat_..."
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  spellCheck={false}
+                  className="w-full bg-background text-text border border-surface0 rounded-md px-3 py-2 pr-9 text-md outline-none focus:border-blue font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowGenieLocalPat(!showGenieLocalPat)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-overlay0 hover:text-text transition-colors"
+                >
+                  {showGenieLocalPat ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {genieLocalPatDirty && (
+                <button
+                  onClick={handleSaveGenieLocalPat}
+                  className="px-3 py-2 bg-blue text-background text-md rounded-md hover:opacity-90 transition-opacity shrink-0"
+                >
+                  Save
+                </button>
+              )}
+            </div>
+            {!genieLocalPatDirty && genieLocalPatInput && (
+              <p className="text-md text-green mt-2">Saved</p>
+            )}
+            <p className="text-md text-overlay0 mt-2">
+              Fine-grained token with read access to the private{" "}
+              <code className="text-text font-mono bg-surface0 px-1 rounded">paulbrie/genie-local</code> repo.
+              Pre-fills the GITHUB_PAT prompt when installing the &quot;Genie Local (Projects Supervisor)&quot;
+              recipe from a VM&apos;s Manage panel, so you don&apos;t have to paste it on every apply. The token is
+              used only to clone the repo during install and is never stored on the target VM.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="pt-4">
+          {/* Deploy tab: SSH Key */}
+          <div className="bg-mantle rounded-lg p-4 mb-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              <span className="flex items-center gap-1.5">
+                <Key size={14} />
+                Genie Deploy SSH Key
+              </span>
+              <span className="ml-5 text-md text-overlay0 font-normal">ed25519 — used for VPS provisioning</span>
+            </label>
+
+            {sshKey.loading ? (
+              <div className="flex items-center gap-2 text-overlay0 text-md py-2">
+                <Loader2 size={14} className="animate-spin" /> Loading...
+              </div>
+            ) : sshKey.exists ? (
+              <div className="flex flex-col gap-3 max-w-lg">
+                <div>
+                  <span className="text-md text-overlay0 mb-1 block">Public Key</span>
+                  <div className="flex items-start gap-2">
+                    <pre className="flex-1 bg-background text-text border border-surface0 rounded-md px-3 py-2 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all select-text">
+                      {sshKey.publicKey}
+                    </pre>
+                    <button
+                      onClick={() => {
+                        if (sshKey.publicKey) {
+                          navigator.clipboard.writeText(sshKey.publicKey);
+                          setCopiedKey(true);
+                          setTimeout(() => setCopiedKey(false), 2000);
+                        }
+                      }}
+                      className="shrink-0 p-2 text-overlay0 hover:text-text bg-background border border-surface0 rounded-md transition-colors"
+                      title="Copy public key"
+                    >
+                      {copiedKey ? <Check size={14} className="text-green" /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                </div>
+
+                {sshKey.fingerprint && (
+                  <div>
+                    <span className="text-md text-overlay0">Fingerprint</span>
+                    <p className="text-md text-text font-mono select-text">{sshKey.fingerprint}</p>
+                  </div>
+                )}
+
+                {sshKey.createdAt && (
+                  <div>
+                    <span className="text-md text-overlay0">Created</span>
+                    <p className="text-md text-text">{new Date(sshKey.createdAt).toLocaleString()}</p>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    onClick={() => {
+                      if (confirm("Generate a new SSH key? The new key will be used for all future deploys. Existing droplets will keep using the old key.")) {
+                        regenerateSshKey();
+                      }
+                    }}
+                    disabled={sshKey.regenerating}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-surface0 text-text text-md rounded-md hover:bg-surface1 transition-colors disabled:opacity-50"
+                  >
+                    {sshKey.regenerating ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                    Regenerate
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm("Delete the SSH key? You won't be able to deploy until a new key is generated.")) {
+                        deleteSshKey();
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-red hover:bg-red/10 text-md rounded-md transition-colors"
+                  >
+                    <Trash2 size={13} />
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <p className="text-md text-overlay0">No SSH key exists. Generate one to enable VPS deployments.</p>
+                <button
+                  onClick={() => regenerateSshKey()}
+                  disabled={sshKey.regenerating}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-mauve text-crust text-md rounded-md hover:opacity-90 transition-opacity disabled:opacity-50 w-fit"
+                >
+                  {sshKey.regenerating ? <Loader2 size={13} className="animate-spin" /> : <Key size={13} />}
+                  Generate SSH Key
+                </button>
+              </div>
+            )}
+            <p className="text-md text-overlay0 mt-3">
+              This key is registered with DigitalOcean and used to SSH into provisioned droplets.
+              The last generated key is used for all new deploys.
+            </p>
+
+            {sshKey.history.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-surface0">
+                <span className="text-md font-medium text-subtext0 block mb-2">Previous Keys</span>
+                <div className="flex flex-col gap-2 max-w-lg">
+                  {sshKey.history.map((entry, i) => (
+                    <div key={i} className="bg-background border border-surface0 rounded-md px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono text-overlay1 truncate flex-1 select-text">{entry.fingerprint}</span>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(entry.publicKey);
+                          }}
+                          className="shrink-0 p-1 text-overlay0 hover:text-text transition-colors"
+                          title="Copy public key"
+                        >
+                          <Copy size={12} />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px] text-overlay0 mt-1">
+                        {entry.createdAt && <span>Created: {new Date(entry.createdAt).toLocaleDateString()}</span>}
+                        <span>Archived: {new Date(entry.archivedAt).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Deploy tab: Default Deploy Steps */}
+          <div className="bg-mantle rounded-lg p-4">
+            <label className="block text-md font-medium text-subtext0 mb-2">
+              Default Deploy Steps
+            </label>
+            <p className="text-md text-overlay0 mb-4">
+              These are the steps Genie executes in sequence when provisioning a new droplet and deploying a project.
+            </p>
+            <div className="flex flex-col gap-0">
+              {DEPLOY_STEPS.map((step, i) => (
+                <div key={i} className="flex gap-3 pb-4 last:pb-0">
+                  <div className="flex flex-col items-center">
+                    <div className="w-6 h-6 rounded-full bg-surface0 text-overlay1 flex items-center justify-center text-[11px] font-medium shrink-0">
+                      {i + 1}
+                    </div>
+                    {i < DEPLOY_STEPS.length - 1 && <div className="w-px flex-1 bg-surface0 mt-1" />}
+                  </div>
+                  <div className="flex-1 min-w-0 pt-0.5">
+                    <span className="text-md font-medium text-text">
+                      {step.title}
+                      {step.conditional && <span className="ml-1.5 text-[11px] text-overlay0 font-normal">conditional</span>}
+                    </span>
+                    <p className="text-md text-overlay1 mt-0.5 leading-relaxed">{step.description}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
