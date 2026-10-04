@@ -14,7 +14,9 @@ const publicHosts = (process.env.PUBLIC_HOST ?? "")
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  basePath: "/projects/genie",
+  // Production serves at the domain root. Behind genie-local the app lives at
+  // /projects/genie — set NEXT_BASE_PATH in that instance's .env.local.
+  basePath: process.env.NEXT_BASE_PATH ?? "",
   images: { unoptimized: true },
   transpilePackages: ["react-markdown", "remark-gfm"],
   allowedDevOrigins: publicHosts,
