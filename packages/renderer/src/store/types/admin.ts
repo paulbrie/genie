@@ -145,6 +145,9 @@ export interface AdminTazState {
   projectError: string | null;
   /** Base OS images from `GET /v1/capabilities`. Falls back to hardcoded list when empty. */
   capabilityImages: string[];
+  /** Sizes the deployment offers (`admin:tazcloud:capabilities`); empty until
+   *  loaded, when the UI falls back to its built-in list. */
+  capabilitySizes: string[];
   capabilitiesLoading: boolean;
   capabilitiesError: string | null;
   /** Per-VM stats keyed by vmId. Populated by `admin:tazcloud:stats`. */
@@ -171,6 +174,10 @@ export interface AdminTazState {
    *  `admin:tazcloud:reboot:progress`; cleared on `:done`, kept (with `error`
    *  set) on `:error` so the card can show why. Mirrors `AdminHetznerState.reboot`. */
   reboot: Record<string, { messages: string[]; error: string | null; done: boolean }>;
+  /** Per-VM resize progress, keyed by vmId (`size` = the target). Populated by
+   *  `admin:tazcloud:resize:progress`; cleared on `:done` (which also updates
+   *  the VM's size in `vms`), kept with `error` set on `:error`. */
+  resize: Record<string, { size: string; messages: string[]; error: string | null; done: boolean }>;
   /** Network diagnostics (Diagnostics tab). Populated by `admin:tazcloud:netdiag`. */
   netdiag: AdminTazNetdiag;
 }

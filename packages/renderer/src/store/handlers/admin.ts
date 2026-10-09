@@ -528,6 +528,37 @@ export const handlers: HandlerMap = {
     });
   },
 
+  "admin:tazcloud:resize:progress": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    const id = payload.vmId as string;
+    batch(() => {
+      const cur = t.resize[id] ?? { size: payload.size ?? "", messages: [], error: null, done: false };
+      cur.messages = [...cur.messages, payload.message];
+      t.resize[id] = cur;
+    });
+  },
+
+  "admin:tazcloud:resize:done": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    const id = payload.vmId as string;
+    batch(() => {
+      // Show the new size at once; the list refetch (list:stale) confirms it.
+      const vm = t.vms.find((v) => v.id === id);
+      if (vm && payload.size) vm.size = payload.size;
+      delete t.resize[id];
+    });
+  },
+
+  "admin:tazcloud:resize:error": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    const id = payload.vmId as string;
+    batch(() => {
+      const cur = t.resize[id] ?? { size: payload.size ?? "", messages: [], error: null, done: false };
+      cur.error = payload.message ?? "Resize failed";
+      t.resize[id] = cur;
+    });
+  },
+
   "admin:tazcloud:snapshot:list": (payload) => {
     const t = $admin.getValue().tazcloud;
     if (payload.error) {
@@ -584,12 +615,14 @@ export const handlers: HandlerMap = {
       batch(() => {
         t.capabilitiesError = payload.error;
         t.capabilityImages = [];
+        t.capabilitySizes = [];
         t.capabilitiesLoading = false;
       });
       return;
     }
     batch(() => {
       t.capabilityImages = payload.images || [];
+      t.capabilitySizes = payload.sizes || [];
       t.capabilitiesError = null;
       t.capabilitiesLoading = false;
     });

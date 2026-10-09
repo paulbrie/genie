@@ -582,6 +582,47 @@ export async function handleTazcloudMessage(
       return true;
     }
 
+    case "admin:tazcloud:resize": {
+      // Admin-card resize: `POST /v1/vm/{id}/resize` with the target size. The
+      // call blocks while the VM reboots at its new size (a short outage; disk
+      // and data are unchanged). Streams `admin:tazcloud:resize:progress` (a
+      // tick every 10 s while waiting), then `:done` (with the new size) or
+      // `:error`. tazcloud+ via the namespace ACL default, like reboot.
+      const { vmId, size } = (msg.payload ?? {}) as { vmId?: string; size?: string };
+      const resizeFail = (message: string) =>
+        send(ws, { type: "admin:tazcloud:resize:error", payload: { vmId, size, message } });
+      if (!vmId || typeof vmId !== "string") { resizeFail("vmId is required"); return true; }
+      if (!size || typeof size !== "string" || !/^[a-z0-9-]{1,32}$/i.test(size)) { resizeFail("A valid size is required"); return true; }
+      const resizeToken = process.env.TAZCLOUD_API_TOKEN;
+      if (!resizeToken) { resizeFail("TAZCLOUD_API_TOKEN not configured"); return true; }
+      void (async () => {
+        const client = createTazClient(resizeToken);
+        const progress = (message: string) =>
+          send(ws, { type: "admin:tazcloud:resize:progress", payload: { vmId, size, message } });
+        let ticker: ReturnType<typeof setInterval> | undefined;
+        try {
+          // Reject sizes the deployment doesn't offer before touching the VM.
+          const caps = await client.getCapabilities();
+          if (caps.sizes?.length && !caps.sizes.includes(size)) {
+            resizeFail(`Unknown size "${size}". Available: ${caps.sizes.join(", ")}`);
+            return;
+          }
+          progress(`Resizing to ${size}… the VM reboots; this usually takes under a minute.`);
+          const started = Date.now();
+          ticker = setInterval(() => progress(`Still resizing… (${Math.round((Date.now() - started) / 1000)}s)`), 10_000);
+          const result = await client.resizeVm(vmId, size);
+          clearInterval(ticker);
+          const newSize = result.size || size;
+          send(ws, { type: "admin:tazcloud:resize:done", payload: { vmId, size: newSize, status: result.status } });
+          broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
+        } catch (err: unknown) {
+          if (ticker) clearInterval(ticker);
+          resizeFail(err instanceof Error ? err.message : String(err));
+        }
+      })();
+      return true;
+    }
+
     case "admin:tazcloud:create": {
       try {
         const { name, image, size, snapshot_id, project_id } = msg.payload as {

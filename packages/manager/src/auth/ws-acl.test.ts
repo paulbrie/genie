@@ -191,6 +191,13 @@ describe("ws-acl", () => {
       expect(canSend("tazcloud", "admin:droplets:delete")).toBe(true);
     });
 
+    it("admin:tazcloud:resize (reboots the VM) is tazcloud+ only, like reboot", () => {
+      expect(canSend("user", "admin:tazcloud:resize")).toBe(false);
+      expect(canSend("tazcloud", "admin:tazcloud:resize")).toBe(true);
+      expect(canReceive("user", "admin:tazcloud:resize:progress")).toBe(false);
+      expect(canReceive("tazcloud", "admin:tazcloud:resize:done")).toBe(true);
+    });
+
     it("admin:impersonate:start requires superadmin", () => {
       expect(canSend("admin", "admin:impersonate:start")).toBe(false);
       expect(canSend("superadmin", "admin:impersonate:start")).toBe(true);

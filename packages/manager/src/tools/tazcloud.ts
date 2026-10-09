@@ -108,6 +108,17 @@ export async function executeTazDeleteVm(vmId: string): Promise<string> {
   }
 }
 
+export async function executeTazResizeVm(vmId: string, size: string): Promise<string> {
+  const c = getClient();
+  if ("error" in c) return c.error;
+  try {
+    const result = await c.client.resizeVm(vmId, size);
+    return `Resized VM ${result.id} to ${result.size}. Status: ${result.status}. The VM rebooted; disk and data are unchanged.`;
+  } catch (err: unknown) {
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 // ---- Snapshots ----
 
 export async function executeTazListSnapshots(): Promise<string> {

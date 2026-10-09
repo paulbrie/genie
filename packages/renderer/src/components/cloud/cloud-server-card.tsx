@@ -57,6 +57,9 @@ export interface CloudServerRebootState {
   active: boolean;
   messages: string[];
   error: string | null;
+  /** Banner title while active / after a failure. Default "Restarting…" / "Restart failed". */
+  activeLabel?: string;
+  errorLabel?: string;
 }
 
 export type CloudServerCardResourceProps = Omit<
@@ -205,7 +208,7 @@ export function CloudServerRebootBanner({ reboot }: { reboot: CloudServerRebootS
           ? <Loader2 size={13} className="text-peach animate-spin shrink-0" />
           : <RotateCw size={13} className="text-red shrink-0" />}
         <span className={cn("text-md font-medium", reboot.active ? "text-peach" : "text-red")}>
-          {reboot.active ? "Restarting…" : "Restart failed"}
+          {reboot.active ? (reboot.activeLabel ?? "Restarting…") : (reboot.errorLabel ?? "Restart failed")}
         </span>
       </div>
       {reboot.messages.length > 0 && (

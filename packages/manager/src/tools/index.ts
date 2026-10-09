@@ -8,6 +8,7 @@ import {
   executeTazGetVm,
   executeTazCreateVm,
   executeTazDeleteVm,
+  executeTazResizeVm,
   executeTazListSnapshots,
   executeTazGetSnapshot,
   executeTazCreateSnapshot,
@@ -273,6 +274,15 @@ export function createTools(ctx: ToolAuthContext) {
         vmId: z.string().describe("The TazCloud VM id (from tazcloud_list_vms)"),
       }),
       execute: async ({ vmId }) => executeTazDeleteVm(vmId),
+    }),
+    tazcloud_resize_vm: tool({
+      description:
+        "Resize a TazCloud VM to another size (e.g. xlarge ↔ 2xlarge). DISRUPTIVE: the VM reboots (a short outage, usually under a minute) and may change cost; disk and data are unchanged. Confirm intent with the user before calling. Use tazcloud_get_capabilities for the available sizes and tazcloud_list_vms for the id and current size.",
+      inputSchema: z.object({
+        vmId: z.string().describe("The TazCloud VM id (from tazcloud_list_vms)"),
+        size: z.string().describe("Target size slug, one of tazcloud_get_capabilities' sizes"),
+      }),
+      execute: async ({ vmId, size }) => executeTazResizeVm(vmId, size),
     }),
     tazcloud_get_capabilities: tool({
       description:

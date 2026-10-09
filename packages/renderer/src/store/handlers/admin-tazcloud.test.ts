@@ -173,3 +173,50 @@ describe("admin:tazcloud:reboot:*", () => {
     expect(e.messages).toEqual(["x"]);
   });
 });
+
+describe("admin:tazcloud:resize:*", () => {
+  beforeEach(() => {
+    const t = $admin.getValue().tazcloud;
+    t.resize = {};
+    t.vms = [{ id: "vm-1", name: "web", status: "ACTIVE", ipv6: "", size: "xlarge", tazProjectId: null, projectId: null, projectName: null, locked: false }];
+  });
+
+  it("accumulates progress lines per VM with the target size", () => {
+    handlers["admin:tazcloud:resize:progress"]({ vmId: "vm-1", size: "2xlarge", message: "Resizing to 2xlarge…" });
+    handlers["admin:tazcloud:resize:progress"]({ vmId: "vm-1", size: "2xlarge", message: "Still resizing… (10s)" });
+    const r = $admin.getValue().tazcloud.resize["vm-1"];
+    expect(r.size).toBe("2xlarge");
+    expect(r.messages).toEqual(["Resizing to 2xlarge…", "Still resizing… (10s)"]);
+    expect(r.error).toBeNull();
+  });
+
+  it("on :done clears the entry and shows the new size at once", () => {
+    handlers["admin:tazcloud:resize:progress"]({ vmId: "vm-1", size: "2xlarge", message: "x" });
+    handlers["admin:tazcloud:resize:done"]({ vmId: "vm-1", size: "2xlarge", status: "resized" });
+    const t = $admin.getValue().tazcloud;
+    expect(t.resize["vm-1"]).toBeUndefined();
+    expect(t.vms[0].size).toBe("2xlarge");
+  });
+
+  it("keeps the entry with the error message on :error, size unchanged", () => {
+    handlers["admin:tazcloud:resize:progress"]({ vmId: "vm-1", size: "2xlarge", message: "x" });
+    handlers["admin:tazcloud:resize:error"]({ vmId: "vm-1", size: "2xlarge", message: "VM is busy" });
+    const t = $admin.getValue().tazcloud;
+    expect(t.resize["vm-1"]).toMatchObject({ size: "2xlarge", error: "VM is busy", messages: ["x"] });
+    expect(t.vms[0].size).toBe("xlarge");
+  });
+
+  it("records an :error that arrives without prior progress (e.g. validation)", () => {
+    handlers["admin:tazcloud:resize:error"]({ vmId: "vm-1", size: "huge", message: 'Unknown size "huge"' });
+    expect($admin.getValue().tazcloud.resize["vm-1"]).toMatchObject({ size: "huge", error: 'Unknown size "huge"', messages: [] });
+  });
+});
+
+describe("admin:tazcloud:capabilities (sizes)", () => {
+  it("stores the deployment's sizes, and clears them on error", () => {
+    handlers["admin:tazcloud:capabilities"]({ images: ["ubuntu-24"], sizes: ["small", "xlarge", "2xlarge"] });
+    expect($admin.getValue().tazcloud.capabilitySizes).toEqual(["small", "xlarge", "2xlarge"]);
+    handlers["admin:tazcloud:capabilities"]({ error: "TAZCLOUD_API_TOKEN not configured" });
+    expect($admin.getValue().tazcloud.capabilitySizes).toEqual([]);
+  });
+});

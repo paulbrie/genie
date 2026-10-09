@@ -511,6 +511,14 @@ export function rebootAdminTazVm(vmId: string, opts?: { hard?: boolean }): void 
   wsSend("admin:tazcloud:reboot", { vmId, hard: opts?.hard === true });
 }
 
+/** Resize a TazCloud VM via `POST /v1/vm/{id}/resize`. The VM reboots at the
+ *  new size (a short outage; disk and data unchanged). Progress lands in
+ *  `$admin.tazcloud.resize[vmId]`; removed on success, kept with `error` on failure. */
+export function resizeAdminTazVm(vmId: string, size: string): void {
+  batch(() => { $admin.getValue().tazcloud.resize[vmId] = { size, messages: [], error: null, done: false }; });
+  wsSend("admin:tazcloud:resize", { vmId, size });
+}
+
 export function lockAdminTazVm(vmId: string): void {
   wsSend("admin:tazcloud:lock", { vmId });
 }

@@ -3,7 +3,14 @@ const TAZ_API = "https://api.taz.ro";
 interface TazRequestInit {
   method?: string;
   body?: unknown;
+  /** Abort after this long (ms). Default: no explicit limit. */
+  timeoutMs?: number;
 }
+
+/** `POST /v1/vm/{id}/resize` blocks until the VM is back (usually under a
+ *  minute). Node's fetch gives up on response headers after 5 min anyway, so
+ *  that is the ceiling here too. */
+export const TAZ_RESIZE_TIMEOUT_MS = 5 * 60_000;
 
 function formatTazDetail(json: Record<string, unknown> | null): string {
   const detail = json?.detail;
@@ -36,6 +43,7 @@ async function tazFetch(token: string, path: string, init?: TazRequestInit): Pro
       Authorization: `Bearer ${token}`,
     },
     ...(init?.body ? { body: JSON.stringify(init.body) } : {}),
+    ...(init?.timeoutMs ? { signal: AbortSignal.timeout(init.timeoutMs) } : {}),
   });
 
   if (res.status === 204) return null;
@@ -206,6 +214,12 @@ export interface TazRestartResult {
   hard: boolean;
 }
 
+export interface TazResizeResult {
+  status: string;       // "resized"
+  id: string;
+  size: string;
+}
+
 export interface TazRegisterIngressOpts {
   domain: string;
   /** Port the VM's app listens on. Default: 80. Range: 1–65535. */
@@ -226,6 +240,10 @@ export interface TazApiClient {
    *  forces a power-cycle. Returns 202 immediately; the VM reports
    *  `status: "REBOOT"` until it is back to `ACTIVE` (~1 min). */
   restartVm(id: string, opts?: { hard?: boolean }): Promise<TazRestartResult>;
+  /** `POST /v1/vm/{id}/resize` — change the VM's size (e.g. "2xlarge"). The VM
+   *  reboots (a short outage); disk and data are unchanged. Blocks until the
+   *  resize is done and returns the new size. */
+  resizeVm(id: string, size: string): Promise<TazResizeResult>;
   // Snapshots
   createSnapshot(vmId: string, opts: TazCreateSnapshotOpts): Promise<TazSnapshot>;
   getSnapshot(snapshotId: string): Promise<TazSnapshot>;
@@ -310,6 +328,23 @@ export function createTazClient(token: string): TazApiClient {
       const data = await tazFetch(token, `/v1/vm/${id}/restart`, { method: "POST", body: { hard: opts?.hard === true } });
       if (!data) throw new Error("TazCloud restart returned no body");
       return data as unknown as TazRestartResult;
+    },
+
+    async resizeVm(id: string, size: string) {
+      if (!size) throw new Error("resizeVm: size is required");
+      let data: Record<string, unknown> | null;
+      try {
+        data = await tazFetch(token, `/v1/vm/${id}/resize`, { method: "POST", body: { size }, timeoutMs: TAZ_RESIZE_TIMEOUT_MS });
+      } catch (err: unknown) {
+        if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+          throw new Error(
+            `TazCloud resize timed out after ${TAZ_RESIZE_TIMEOUT_MS / 60_000} min. The VM may still be resizing — check its status and size before retrying.`,
+          );
+        }
+        throw err;
+      }
+      if (!data) throw new Error("TazCloud resize returned no body");
+      return data as unknown as TazResizeResult;
     },
 
     async deleteVm(id: string) {

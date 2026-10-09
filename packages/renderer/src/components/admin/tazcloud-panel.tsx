@@ -8,7 +8,7 @@ import { Cloud, RefreshCw, Loader2, Terminal, Plus, ChevronDown, Settings as Set
 import { $admin, $auth, $manager, $persistedTerminals, $ssh, $vpsDeploy, $windowManager } from "@/store/subjects";
 import type { AdminTazVm, FloatingWindowState, PersistedTerminalSession, TazCloudSubTab, VpsDeployState, VpsMonitorState } from "@/store/types";
 import { buildTazCloudPath } from "@/lib/routes";
-import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, fetchVpsStats, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazCapabilities, loadTazNetdiag, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, rebootAdminTazVm, registerTazIngress, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
+import { addSshTerminalTab, adminDropletExec, adminTazcloudExec, closeWindow, createAdminTazVm, createTazProject, createTazSnapshot, deleteAdminTazVm, deleteTazProject, deleteTazSnapshot, disconnectVps, fetchVpsStats, focusWindow, hibernateVps, killPersistedTerminal, loadAdminTazVms, loadAdminTazcloudStats, loadPersistedTerminals, loadTazCapabilities, loadTazNetdiag, loadTazProjects, loadTazSnapshots, lockAdminTazVm, minimizeWindow, openWindow, reattachPersistedTerminal, rebootAdminTazVm, registerTazIngress, resizeAdminTazVm, registerWindow, removeTazIngress, renameAdminTazVm, startSecurityScan, switchNav, unlockAdminTazVm, updateWindowPosition, vpsExec } from "@/store/actions";
 import { useDraggable, useResizable } from "@/hooks/use-draggable";
 import { ClaudeLogo, VpsFirewall } from "@/components/project/project-detail";
 import { AdminRecipesPanel } from "@/components/admin/admin-recipes-panel";
@@ -31,6 +31,7 @@ import { Select } from "@/components/ui/select";
 import { ErrorMessage } from "@/components/ui/error-message";
 import { IMAGES, SIZES, TAZ_NAME_RE, defaultSshUserFor, defaultVmBootSource, defaultVmName, imageDefaultUser, parseVmBootSource, validateTazVmName } from "../tazcloud/helpers";
 import { TazSnapshotsSection } from "../tazcloud/taz-snapshots-section";
+import { TazResizeDialog } from "../tazcloud/taz-resize-dialog";
 import { ViewTabs } from "@/components/ui/view-tabs";
 import { TazNetDiagnostics } from "@/components/admin/tazcloud-netdiag";
 import { openManageVmWindow } from "../tazcloud/manage-vm-popup";
@@ -88,6 +89,8 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   /** Per-row overflow menu. Collapses the rename/lock/security/rkhunter/snapshot/
    *  ingress/manage/delete cluster so the row isn't visually swamped. */
   const [actionMenuOpenFor, setActionMenuOpenFor] = useState<string | null>(null);
+  // VM whose Resize dialog is open (size picker + reboot warning).
+  const [resizeFor, setResizeFor] = useState<AdminTazVm | null>(null);
   const [vmSearch, setVmSearch] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -406,6 +409,17 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   return (
     <div className="px-4 py-4">
       {viewTabs}
+      {resizeFor && (
+        <TazResizeDialog
+          vm={resizeFor}
+          sizes={admin.tazcloud.capabilitySizes.length > 0 ? admin.tazcloud.capabilitySizes : SIZES}
+          onClose={() => setResizeFor(null)}
+          onConfirm={(size) => {
+            resizeAdminTazVm(resizeFor.id, size);
+            setResizeFor(null);
+          }}
+        />
+      )}
       <div className="flex items-center gap-2 mb-3 mt-3">
         <Cloud size={16} className="text-blue" />
         <span className="text-md font-medium text-subtext0">VMs</span>
@@ -700,6 +714,8 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
           const renderActionsMenu = (vm: AdminTazVm, isActive: boolean, isRenaming: boolean) => {
             const rebootState = admin.tazcloud.reboot[vm.id];
             const rebooting = !!rebootState && !rebootState.done && !rebootState.error;
+            const resizeState = admin.tazcloud.resize[vm.id];
+            const resizing = !!resizeState && !resizeState.done && !resizeState.error;
             return (
               <CloudServerCardMenu
                 open={actionMenuOpenFor === vm.id}
@@ -751,6 +767,20 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                   }}
                 >
                   {rebooting ? "Restarting…" : "Restart VM…"}
+                </ActionMenuItem>
+                <ActionMenuItem
+                  icon={Maximize2}
+                  iconClassName="text-blue"
+                  loading={resizing}
+                  disabled={!isActive || rebooting || resizing}
+                  title={resizing ? `Resizing to ${resizeState.size}…` : isActive ? "Change the VM's size (it reboots)" : "VM is not active"}
+                  onClick={() => {
+                    setActionMenuOpenFor(null);
+                    if (admin.tazcloud.capabilitySizes.length === 0) loadTazCapabilities();
+                    setResizeFor(vm);
+                  }}
+                >
+                  {resizing ? "Resizing…" : "Resize…"}
                 </ActionMenuItem>
                 <ActionMenuDivider />
                 <ActionMenuItem
@@ -981,6 +1011,8 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
               const isRenaming = renamingId === vm.id;
               const rebootState = admin.tazcloud.reboot[vm.id];
               const rebooting = !!rebootState && !rebootState.done && !rebootState.error;
+              const resizeState = admin.tazcloud.resize[vm.id];
+              const resizing = !!resizeState && !resizeState.done && !resizeState.error;
               const adminStats = isActive ? admin.tazcloud.vmStats[vm.id] : null;
               const adminStatsError = isActive ? admin.tazcloud.vmStatsErrors[vm.id] : null;
               const link = findLinkedInstance(projects, { tazVmId: vm.id });
@@ -1017,7 +1049,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                       )}
                     </>
                   }
-                  status={rebooting && isActive ? "rebooting" : vm.status}
+                  status={(rebooting || resizing) && isActive ? "rebooting" : vm.status}
                   renaming={isRenaming ? renderRenameInput() : undefined}
                   onOpen={canOpen ? () => openManageVmWindow(vm) : undefined}
                   className={cn(vm.locked && "border-red/40 hover:border-red/60")}
@@ -1040,7 +1072,15 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
                   notice={!isActive ? { tone: "muted", text: <>VM is {vm.status.toLowerCase()}</> } : null}
                   reboot={rebootState
                     ? { active: rebooting, messages: rebootState.messages, error: rebootState.error }
-                    : null}
+                    : resizeState
+                      ? {
+                          active: resizing,
+                          messages: resizeState.messages,
+                          error: resizeState.error,
+                          activeLabel: `Resizing to ${resizeState.size}…`,
+                          errorLabel: `Resize to ${resizeState.size} failed`,
+                        }
+                      : null}
                   details={[
                     ...(vm.image ? [{ label: "Image", value: vm.image }] : []),
                     ...(vm.size ? [{ label: "Size", value: vm.size }] : []),
