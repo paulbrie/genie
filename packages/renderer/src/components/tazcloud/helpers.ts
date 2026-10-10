@@ -3,7 +3,7 @@
 // `./tazcloud/` rather than `@/lib` because they're TazCloud-specific.
 
 export const IMAGES = ["ubuntu-22", "ubuntu-24", "debian-12", "almalinux-9"];
-export const SIZES = ["small", "medium", "large", "xlarge"];
+export const SIZES = ["small", "medium", "large", "xlarge", "2xlarge"];
 
 export type VmBootSource =
   | { kind: "image"; image: string }

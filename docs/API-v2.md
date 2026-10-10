@@ -633,6 +633,9 @@ VMs already booted from this snapshot are unaffected.
 | `medium` | 2 | 2 GB | 40 GB |
 | `large` | 4 | 8 GB | 80 GB |
 | `xlarge` | 8 | 16 GB | 160 GB |
+| `2xlarge` | 16 | 32 GB | unknown¹ |
+
+¹ 16 vCPU and 32 GB RAM as seen on a VM resized to it (2026-10-10). Its disk on a fresh VM is not known yet: a resize keeps the VM's disk, so that VM still has the 160 GB of its xlarge.
 
 ---
 

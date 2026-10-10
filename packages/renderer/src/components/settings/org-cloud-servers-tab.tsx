@@ -268,6 +268,7 @@ function ToolbarRow({ orgId }: { orgId: string }) {
               <option value="medium">medium</option>
               <option value="large">large</option>
               <option value="xlarge">xlarge</option>
+              <option value="2xlarge">2xlarge</option>
             </select>
           </div>
           <Button size="sm" variant="primary" onClick={submit} disabled={!name.trim() || state.vms.creating}>

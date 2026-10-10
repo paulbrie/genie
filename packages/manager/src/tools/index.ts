@@ -262,7 +262,7 @@ export function createTools(ctx: ToolAuthContext) {
       inputSchema: z.object({
         name: z.string().describe("VM name (lowercase letters, digits, hyphens; ≤63 chars)"),
         image: z.string().optional().describe("Image slug. One of: ubuntu-22, ubuntu-24, debian-12, almalinux-9. Default: almalinux-9. Ignored if snapshot_id is provided."),
-        size: z.string().optional().describe("Size slug. One of: small, medium, large, xlarge. Default: small. Must be ≥ the snapshot's recorded disk size when booting from a snapshot."),
+        size: z.string().optional().describe("Size slug. One of: small, medium, large, xlarge, 2xlarge. Default: small. Must be ≥ the snapshot's recorded disk size when booting from a snapshot."),
         snapshot_id: z.string().optional().describe("Boot from this active snapshot id instead of a base image. Mutually exclusive with `image`."),
       }),
       execute: async ({ name, image, size, snapshot_id }) => executeTazCreateVm({ name, image, size, snapshot_id }),

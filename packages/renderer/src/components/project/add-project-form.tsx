@@ -216,6 +216,7 @@ export function AddProjectForm() {
                   <option value="medium">medium — 2 vCPU / 2 GB / 40 GB</option>
                   <option value="large">large — 4 vCPU / 8 GB / 80 GB</option>
                   <option value="xlarge">xlarge — 8 vCPU / 16 GB / 160 GB</option>
+                  <option value="2xlarge">2xlarge — 16 vCPU / 32 GB / disk unknown</option>
                 </Select>
               </div>
             </div>

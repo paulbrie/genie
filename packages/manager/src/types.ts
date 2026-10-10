@@ -48,7 +48,7 @@ export interface TazVmInfo {
    *  outside the tunnel. */
   ipv6: string;
   image: string;      // ubuntu-22 / almalinux-9 / debian-12 / ubuntu-24
-  size: string;       // small / medium / large / xlarge
+  size: string;       // small / medium / large / xlarge / 2xlarge
   sshUser: string;    // "genie" on v2; image-default on legacy
   /** v2.0.0 tenants only. Project the VM belongs to. */
   projectId?: string;

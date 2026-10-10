@@ -36,7 +36,7 @@ export interface TazProvisionOpts {
   privateKey: string;          // PEM/OpenSSH text from env (TAZCLOUD_SSH_PRIVATE_KEY)
   projectName: string;
   image?: string;              // ubuntu-22 / ubuntu-24 / almalinux-9 / debian-12 (default: ubuntu-22)
-  size?: string;               // small / medium / large / xlarge (default: small)
+  size?: string;               // small / medium / large / xlarge / 2xlarge (default: small)
   signal?: AbortSignal;
   gitlabDeployKey?: string;
   envVars?: Record<string, string>;
