@@ -15,7 +15,7 @@ import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import type { WebSocket } from "ws";
 
 import { isTestDbAvailable, setupTestDb, truncateAllTables, getTestDb } from "../test-helpers/db.js";
-import { makeUser, makeProject, addProjectMember } from "../test-helpers/fixtures.js";
+import { makeUser, makeProject, addProjectMember, makeOrg, addUserToOrg, makeTeam, addUserToTeam } from "../test-helpers/fixtures.js";
 import { conversations, conversationMembers, assistantChatLogs } from "../db/schema.js";
 import type { ClientState } from "../ws-server.js";
 
@@ -95,6 +95,28 @@ describe.skipIf(!isTestDbAvailable())("access control (security)", () => {
       expect(await projectService.userCanManageProject(owner.id, proj.id)).toBe(true);
     });
 
+    it("getAllForUser's canManage says what userCanManageProject allows (the server card's ⋮ menu, T219)", async () => {
+      const org = await makeOrg();
+      const team = await makeTeam({ orgId: org.id });
+      const proj = await makeProject({ teamId: team.id });
+      const owner = await makeUser();
+      await addProjectMember(proj.id, owner.id, "owner");
+      const member = await makeUser();
+      await addProjectMember(proj.id, member.id, "member");
+      // an org admin outside the project's team: the server lets them manage, so the UI must too
+      const orgAdmin = await makeUser();
+      await addUserToOrg(org.id, orgAdmin.id, "admin");
+      // a plain team member: sees the project, may not manage it
+      const teamMember = await makeUser();
+      await addUserToTeam(team.id, teamMember.id, "member");
+
+      for (const [who, expected] of [[owner, true], [member, false], [orgAdmin, true], [teamMember, false]] as const) {
+        const listed = (await projectService.getAllForUser(who.id)).find((p) => p.id === proj.id);
+        expect(listed?.canManage).toBe(expected);
+        expect(await projectService.userCanManageProject(who.id, proj.id)).toBe(expected);
+      }
+    });
+
     it("getAllForUser / getAccessibleProjectIds never leak another user's projects", async () => {
       const owner = await makeUser();
       const outsider = await makeUser();
@@ -172,6 +194,21 @@ describe.skipIf(!isTestDbAvailable())("access control (security)", () => {
 
       expect(cap.types()).toContain("error");
       expect(cap.types()).not.toContain("vps:teardown:done");
+    });
+
+    it("vps:disconnect — a plain project member cannot detach the project's server (T219)", async () => {
+      const owner = await makeUser();
+      const member = await makeUser();
+      const proj = await makeProject();
+      await addProjectMember(proj.id, owner.id, "owner");
+      await addProjectMember(proj.id, member.id, "member");
+
+      const cap = capture();
+      await handleVpsLifecycleMessage(fakeWs,
+        { type: "vps:disconnect", payload: { projectId: proj.id, instanceId: "any" } } as never,
+        cap.send, noopBroadcast, stateFor(member.id));
+
+      expect(cap.types()).toContain("error");
     });
 
     it("admin:users:update — a non-superadmin admin cannot change roles (no self-promotion)", async () => {

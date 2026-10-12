@@ -804,8 +804,9 @@ export async function handleVpsLifecycleMessage(
     case "vps:disconnect": {
       const { projectId, instanceId } = msg.payload;
       if (!userId) return true;
-      if (!(await projectService.userCanSeeProject(userId, projectId))) {
-        send(ws, { type: "error", payload: { message: "Not authorized for this project" } });
+      // Detaching a server is managing the project (as reboot is): not for a plain member who can only see it
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
         return true;
       }
       const dProject = await projectService.getById(projectId);

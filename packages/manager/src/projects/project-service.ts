@@ -3,6 +3,7 @@ import { getDb } from "../db/index.js";
 import { orgMembers, projectMembers, projectTeams, projects, teamMembers, teams, users } from "../db/schema.js";
 import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "../types.js";
 import { deleteInstanceToken } from "../vps/stats-token-service.js";
+import { canManageProject } from "./manage-rule.js";
 import { v4 as uuidv4 } from "uuid";
 
 // --- Helpers ---
@@ -162,7 +163,7 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   // ensures any admin/superadmin ends up with at least one org on first login.
   const db = getDb();
   const [u] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
-  if (u?.role === "superadmin") return getAll();
+  if (u?.role === "superadmin") return (await getAll()).map((p) => ({ ...p, canManage: true }));
 
   // 1. Teams whose org the user owns/admins → see every project in those teams.
   const ownedOrgIds = await db
@@ -181,7 +182,7 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
 
   // 3. Explicit project memberships.
   const directRows = await db
-    .select({ projectId: projectMembers.projectId })
+    .select({ projectId: projectMembers.projectId, role: projectMembers.role })
     .from(projectMembers)
     .where(eq(projectMembers.userId, userId));
   const directProjectIds = directRows.map((r) => r.projectId);
@@ -212,7 +213,13 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
     .where(and(notDeleted, access))
     .orderBy(projects.createdAt);
   const teamMap = await getTeamNameMap();
-  return rows.map((r) => attachTeamName(rowToProjectDef(r), teamMap));
+  // (each project says whether this user may manage it, by the server's own rule, so the UI shows what it allows)
+  const roleByProject = new Map(directRows.map((r) => [r.projectId, r.role]));
+  const adminTeamIds = new Set(teamIdsFromOrgs);
+  return rows.map((r) => ({
+    ...attachTeamName(rowToProjectDef(r), teamMap),
+    canManage: canManageProject({ superadmin: false, memberRole: roleByProject.get(r.id), teamId: r.teamId, adminTeamIds }),
+  }));
 }
 
 /** Paginated, name-ordered, optionally-search-filtered slice of the user's
@@ -412,7 +419,8 @@ export async function userCanManageProject(userId: string | null, projectId: str
     .from(orgMembers)
     .where(and(eq(orgMembers.orgId, team.orgId), eq(orgMembers.userId, userId)))
     .limit(1);
-  return orgMember?.role === "owner" || orgMember?.role === "admin";
+  const orgAdmin = orgMember?.role === "owner" || orgMember?.role === "admin";
+  return canManageProject({ superadmin: false, memberRole: pm?.role, teamId: row.teamId, adminTeamIds: new Set(orgAdmin ? [row.teamId] : []) });
 }
 
 // --- Per-project members ---

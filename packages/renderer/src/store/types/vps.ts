@@ -206,6 +206,10 @@ export interface ProjectDef {
    *  manager `project-service.ts → decorate()`). Read-only on the client —
    *  the source of truth is `teamId`. */
   teamName?: string | null;
+  /** Whether the active user may manage it, by the server's own rule (manager
+   *  `projects/manage-rule.ts`). Populated on list responses; absent from an
+   *  older server, where `useCanManageProject` falls back to its own check. */
+  canManage?: boolean;
 }
 
 export interface DoSnapshot {

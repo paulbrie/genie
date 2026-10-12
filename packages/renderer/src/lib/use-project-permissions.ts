@@ -19,8 +19,13 @@ import type { ProjectDef } from "@/store/types";
  * controls).
  *
  * Granted to: superadmins, owners on the project's own member roster, and
- * owners/admins of the org that owns the project's team (primary or any shared
- * team).
+ * owners/admins of the org that owns the project's team.
+ *
+ * The server says it on each listed project (`project.canManage`, the same rule
+ * as its own `userCanManageProject`), so the UI shows exactly what the server
+ * allows — and a plain member sees no ⋮ menu on a server card, where every item
+ * would be refused (T219). Only without it (an older server) is it worked out
+ * here, from the roster and the org's teams (primary or any shared team).
  */
 export function useCanManageProject(project: ProjectDef): boolean {
   const [auth] = useSubject($auth);
@@ -37,6 +42,8 @@ export function useCanManageProject(project: ProjectDef): boolean {
     loadProjectTeams(project.id);
     if (!mineFetched) loadMyOrgs();
   }, [project.id]);
+
+  if (typeof project.canManage === "boolean") return project.canManage;
 
   const members = projectMembersMap[project.id] || [];
   const projectTeams = projectTeamsMap[project.id] || [];

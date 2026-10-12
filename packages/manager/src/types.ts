@@ -128,6 +128,7 @@ export interface ProjectDef {
   gitFolders?: string[];
   teamId?: string | null;              // Owning team — required for normal users to see the project
   teamName?: string | null;            // Resolved team name (read-only, populated on list responses)
+  canManage?: boolean;                 // Whether the requesting user may manage it (list responses; manage-rule.ts)
 }
 
 export interface WsMessage {
