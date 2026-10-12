@@ -571,8 +571,9 @@ export async function handleVpsLifecycleMessage(
       //  - Hetzner:      `serverAction(id, "reboot")` and poll the action
       // Plain SSH-attached servers have no provider API and are rejected.
       const { projectId, instanceId } = msg.payload as { projectId: string; instanceId: string };
-      if (!(await projectService.userCanManageProject(userId, projectId))) {
-        send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+      // A project's own members may restart its servers, not only its managers (T219b)
+      if (!(await projectService.userCanRestartProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to restart this project's servers" } });
         return true;
       }
       const rProject = await projectService.getById(projectId);

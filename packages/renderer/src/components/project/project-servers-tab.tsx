@@ -34,6 +34,8 @@ export function ProjectServersTab({ project, vpsDeploy, canManage }: ProjectServ
   const [deployLabel, setDeployLabel] = useState("");
   const [connectOpen, setConnectOpen] = useState(false);
   const [actionMenuOpenFor, setActionMenuOpenFor] = useState<string | null>(null);
+  // Restart is open to the project's own members too, not only its managers (T219b); an older server doesn't say
+  const canRestart = project.canRestart ?? canManage;
   const { monitor } = useCloudsMonitor(true);
   const instances = project.vpsInstances;
 
@@ -90,6 +92,7 @@ export function ProjectServersTab({ project, vpsDeploy, canManage }: ProjectServ
               vpsDeploy={vpsDeploy}
               monitor={monitor}
               canManage={canManage}
+              canRestart={canRestart}
               actionMenuOpen={actionMenuOpenFor === instance.id}
               onToggleActionMenu={() =>
                 setActionMenuOpenFor((cur) => (cur === instance.id ? null : instance.id))
@@ -114,6 +117,7 @@ interface ProjectServerCardProps {
   vpsDeploy: VpsDeployState;
   monitor: ReturnType<typeof useCloudsMonitor>["monitor"];
   canManage: boolean;
+  canRestart: boolean;
   actionMenuOpen: boolean;
   onToggleActionMenu: () => void;
   onCloseActionMenu: () => void;
@@ -125,6 +129,7 @@ function ProjectServerCard({
   vpsDeploy,
   monitor,
   canManage,
+  canRestart,
   actionMenuOpen,
   onToggleActionMenu,
   onCloseActionMenu,
@@ -262,15 +267,18 @@ function ProjectServerCard({
           >
             <Terminal size={13} />
           </button>
-          {canManage && (
+          {/* (managers: every item; the project's own members: Restart only, T219b; anyone else: no menu) */}
+          {(canManage || canRestart) && (
             <CloudServerCardMenu open={actionMenuOpen} onToggle={onToggleActionMenu} onClose={onCloseActionMenu}>
-              <ActionMenuItem
-                icon={Server}
-                disabled={!supportsManage}
-                onClick={() => { onCloseActionMenu(); openManage(); }}
-              >
-                Open Manage popup…
-              </ActionMenuItem>
+              {canManage && (
+                <ActionMenuItem
+                  icon={Server}
+                  disabled={!supportsManage}
+                  onClick={() => { onCloseActionMenu(); openManage(); }}
+                >
+                  Open Manage popup…
+                </ActionMenuItem>
+              )}
               <ActionMenuItem
                 icon={RotateCw}
                 iconClassName="text-peach"
@@ -283,30 +291,34 @@ function ProjectServerCard({
               >
                 {rebooting ? "Restarting…" : "Restart server…"}
               </ActionMenuItem>
-              <ActionMenuDivider />
-              <ActionMenuItem
-                icon={Unlink}
-                title="Remove the project↔server link without touching the server"
-                onClick={() => {
-                  onCloseActionMenu();
-                  if (!window.confirm(`Detach "${instance.label}" from this project?\n\nThe server keeps running — only the link in Genie is removed.`)) return;
-                  disconnectVps(project.id, instance.id);
-                }}
-              >
-                Detach from project
-              </ActionMenuItem>
-              <ActionMenuItem
-                icon={Trash2}
-                variant="danger"
-                title="Detach the server and remove the record"
-                onClick={() => {
-                  onCloseActionMenu();
-                  if (!window.confirm(`Detach "${instance.label}" from this project?\n\nThe server itself is not destroyed — to delete it, do so from /clouds.`)) return;
-                  disconnectVps(project.id, instance.id);
-                }}
-              >
-                Remove…
-              </ActionMenuItem>
+              {canManage && (
+                <>
+                  <ActionMenuDivider />
+                  <ActionMenuItem
+                    icon={Unlink}
+                    title="Remove the project↔server link without touching the server"
+                    onClick={() => {
+                      onCloseActionMenu();
+                      if (!window.confirm(`Detach "${instance.label}" from this project?\n\nThe server keeps running — only the link in Genie is removed.`)) return;
+                      disconnectVps(project.id, instance.id);
+                    }}
+                  >
+                    Detach from project
+                  </ActionMenuItem>
+                  <ActionMenuItem
+                    icon={Trash2}
+                    variant="danger"
+                    title="Detach the server and remove the record"
+                    onClick={() => {
+                      onCloseActionMenu();
+                      if (!window.confirm(`Detach "${instance.label}" from this project?\n\nThe server itself is not destroyed — to delete it, do so from /clouds.`)) return;
+                      disconnectVps(project.id, instance.id);
+                    }}
+                  >
+                    Remove…
+                  </ActionMenuItem>
+                </>
+              )}
             </CloudServerCardMenu>
           )}
         </>

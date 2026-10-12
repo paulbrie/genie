@@ -210,6 +210,10 @@ export interface ProjectDef {
    *  `projects/manage-rule.ts`). Populated on list responses; absent from an
    *  older server, where `useCanManageProject` falls back to its own check. */
   canManage?: boolean;
+  /** Whether the active user may restart its servers: managers and the
+   *  project's own members (T219b). Absent from an older server, where only
+   *  managers may. */
+  canRestart?: boolean;
 }
 
 export interface DoSnapshot {

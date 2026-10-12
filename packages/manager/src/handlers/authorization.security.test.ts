@@ -110,10 +110,13 @@ describe.skipIf(!isTestDbAvailable())("access control (security)", () => {
       const teamMember = await makeUser();
       await addUserToTeam(team.id, teamMember.id, "member");
 
-      for (const [who, expected] of [[owner, true], [member, false], [orgAdmin, true], [teamMember, false]] as const) {
+      // [who, may manage, may restart (T219b: the project's own members too)]
+      for (const [who, manage, restart] of [[owner, true, true], [member, false, true], [orgAdmin, true, true], [teamMember, false, false]] as const) {
         const listed = (await projectService.getAllForUser(who.id)).find((p) => p.id === proj.id);
-        expect(listed?.canManage).toBe(expected);
-        expect(await projectService.userCanManageProject(who.id, proj.id)).toBe(expected);
+        expect(listed?.canManage).toBe(manage);
+        expect(await projectService.userCanManageProject(who.id, proj.id)).toBe(manage);
+        expect(listed?.canRestart).toBe(restart);
+        expect(await projectService.userCanRestartProject(who.id, proj.id)).toBe(restart);
       }
     });
 
@@ -194,6 +197,35 @@ describe.skipIf(!isTestDbAvailable())("access control (security)", () => {
 
       expect(cap.types()).toContain("error");
       expect(cap.types()).not.toContain("vps:teardown:done");
+    });
+
+    it("vps:reboot is allowed to a plain project member; the same member's vps:disconnect is refused (T219b)", async () => {
+      const owner = await makeUser();
+      const member = await makeUser();
+      const outsider = await makeUser();
+      const proj = await makeProject();
+      await addProjectMember(proj.id, owner.id, "owner");
+      await addProjectMember(proj.id, member.id, "member");
+
+      // (past the permission check, the reboot fails on the made-up instance: proof it was let through)
+      const reboot = capture();
+      await handleVpsLifecycleMessage(fakeWs,
+        { type: "vps:reboot", payload: { projectId: proj.id, instanceId: "any" } } as never,
+        reboot.send, noopBroadcast, stateFor(member.id));
+      expect(reboot.types()).not.toContain("error");
+      expect(reboot.sent.find((m) => m.type === "vps:reboot:error")?.payload?.message).toBe("Server not found on this project");
+
+      const detach = capture();
+      await handleVpsLifecycleMessage(fakeWs,
+        { type: "vps:disconnect", payload: { projectId: proj.id, instanceId: "any" } } as never,
+        detach.send, noopBroadcast, stateFor(member.id));
+      expect(detach.types()).toContain("error");
+
+      const stranger = capture();
+      await handleVpsLifecycleMessage(fakeWs,
+        { type: "vps:reboot", payload: { projectId: proj.id, instanceId: "any" } } as never,
+        stranger.send, noopBroadcast, stateFor(outsider.id));
+      expect(stranger.types()).toContain("error");
     });
 
     it("vps:disconnect — a plain project member cannot detach the project's server (T219)", async () => {

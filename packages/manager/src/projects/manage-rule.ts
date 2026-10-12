@@ -20,3 +20,13 @@ export function canManageProject(input: {
   if (input.memberRole === "owner") return true;
   return !!input.teamId && input.adminTeamIds.has(input.teamId);
 }
+
+/**
+ * Who may restart a project's servers (T219b, the user's rule: "project members should only be able to restart"):
+ * whoever may manage it, and anyone on the project's own member roster (project_members, any role). Not someone who
+ * only sees the project through a team it is shared with, nor through a team membership alone. The Manage console,
+ * Detach and Remove stay manage-only.
+ */
+export function canRestartProject(input: Parameters<typeof canManageProject>[0]): boolean {
+  return canManageProject(input) || !!input.memberRole;
+}

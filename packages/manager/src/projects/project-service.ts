@@ -3,7 +3,7 @@ import { getDb } from "../db/index.js";
 import { orgMembers, projectMembers, projectTeams, projects, teamMembers, teams, users } from "../db/schema.js";
 import { type ProjectDef, type ProjectCommand, type ProcessStatus, type VpsInstance, type VpsInfo, VPS_SSH_USERNAME } from "../types.js";
 import { deleteInstanceToken } from "../vps/stats-token-service.js";
-import { canManageProject } from "./manage-rule.js";
+import { canManageProject, canRestartProject } from "./manage-rule.js";
 import { v4 as uuidv4 } from "uuid";
 
 // --- Helpers ---
@@ -163,7 +163,7 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   // ensures any admin/superadmin ends up with at least one org on first login.
   const db = getDb();
   const [u] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
-  if (u?.role === "superadmin") return (await getAll()).map((p) => ({ ...p, canManage: true }));
+  if (u?.role === "superadmin") return (await getAll()).map((p) => ({ ...p, canManage: true, canRestart: true }));
 
   // 1. Teams whose org the user owns/admins → see every project in those teams.
   const ownedOrgIds = await db
@@ -216,10 +216,10 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   // (each project says whether this user may manage it, by the server's own rule, so the UI shows what it allows)
   const roleByProject = new Map(directRows.map((r) => [r.projectId, r.role]));
   const adminTeamIds = new Set(teamIdsFromOrgs);
-  return rows.map((r) => ({
-    ...attachTeamName(rowToProjectDef(r), teamMap),
-    canManage: canManageProject({ superadmin: false, memberRole: roleByProject.get(r.id), teamId: r.teamId, adminTeamIds }),
-  }));
+  return rows.map((r) => {
+    const who = { superadmin: false, memberRole: roleByProject.get(r.id), teamId: r.teamId, adminTeamIds };
+    return { ...attachTeamName(rowToProjectDef(r), teamMap), canManage: canManageProject(who), canRestart: canRestartProject(who) };
+  });
 }
 
 /** Paginated, name-ordered, optionally-search-filtered slice of the user's
@@ -390,6 +390,21 @@ export async function userCanSeeProject(userId: string | null, projectId: string
 
   // Legacy primary-team membership fallback.
   return teamIds.includes(row.teamId);
+}
+
+/** True iff the user may restart this project's servers: a manager, or anyone on its member roster (T219b). */
+export async function userCanRestartProject(userId: string | null, projectId: string): Promise<boolean> {
+  if (!userId) return false;
+  if (await userCanManageProject(userId, projectId)) return true;
+  const db = getDb();
+  const [row] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.id, projectId), notDeleted)).limit(1);
+  if (!row) return false;
+  const [pm] = await db
+    .select({ role: projectMembers.role })
+    .from(projectMembers)
+    .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)))
+    .limit(1);
+  return canRestartProject({ superadmin: false, memberRole: pm?.role, teamId: null, adminTeamIds: new Set() });
 }
 
 /** True iff the user may manage (add/remove members of) this project. */
