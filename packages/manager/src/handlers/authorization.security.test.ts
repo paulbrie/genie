@@ -15,7 +15,7 @@ import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import type { WebSocket } from "ws";
 
 import { isTestDbAvailable, setupTestDb, truncateAllTables, getTestDb } from "../test-helpers/db.js";
-import { makeUser, makeProject, addProjectMember, makeOrg, addUserToOrg, makeTeam, addUserToTeam } from "../test-helpers/fixtures.js";
+import { makeUser, makeProject, addProjectMember, makeOrg, addUserToOrg, makeTeam, addUserToTeam, addProjectTeam } from "../test-helpers/fixtures.js";
 import { conversations, conversationMembers, assistantChatLogs } from "../db/schema.js";
 import type { ClientState } from "../ws-server.js";
 
@@ -106,18 +106,34 @@ describe.skipIf(!isTestDbAvailable())("access control (security)", () => {
       // an org admin outside the project's team: the server lets them manage, so the UI must too
       const orgAdmin = await makeUser();
       await addUserToOrg(org.id, orgAdmin.id, "admin");
-      // a plain team member: sees the project, may not manage it
+      // a plain team member: sees the project, may restart its servers (T219d), may not manage it
       const teamMember = await makeUser();
       await addUserToTeam(team.id, teamMember.id, "member");
+      // the owner of the project's team: manages it (T219c)
+      const teamOwner = await makeUser();
+      await addUserToTeam(team.id, teamOwner.id, "owner");
+      // a team the project is shared with: its members (and its owner) may restart, not manage
+      const shared = await makeTeam({ orgId: org.id });
+      await addProjectTeam(proj.id, shared.id);
+      const sharedMember = await makeUser();
+      await addUserToTeam(shared.id, sharedMember.id, "member");
+      const sharedOwner = await makeUser();
+      await addUserToTeam(shared.id, sharedOwner.id, "owner");
+      const outsider = await makeUser();
 
-      // [who, may manage, may restart (T219b: the project's own members too)]
-      for (const [who, manage, restart] of [[owner, true, true], [member, false, true], [orgAdmin, true, true], [teamMember, false, false]] as const) {
+      // [who, may manage, may restart (T219b: the project's own members too; T219d: its teams' members)]
+      for (const [who, manage, restart] of [
+        [owner, true, true], [member, false, true], [orgAdmin, true, true], [teamMember, false, true],
+        [teamOwner, true, true], [sharedMember, false, true], [sharedOwner, false, true],
+      ] as const) {
         const listed = (await projectService.getAllForUser(who.id)).find((p) => p.id === proj.id);
         expect(listed?.canManage).toBe(manage);
         expect(await projectService.userCanManageProject(who.id, proj.id)).toBe(manage);
         expect(listed?.canRestart).toBe(restart);
         expect(await projectService.userCanRestartProject(who.id, proj.id)).toBe(restart);
       }
+      expect(await projectService.userCanRestartProject(outsider.id, proj.id)).toBe(false);
+      expect(await projectService.userCanManageProject(outsider.id, proj.id)).toBe(false);
     });
 
     it("getAllForUser / getAccessibleProjectIds never leak another user's projects", async () => {
@@ -226,6 +242,35 @@ describe.skipIf(!isTestDbAvailable())("access control (security)", () => {
         { type: "vps:reboot", payload: { projectId: proj.id, instanceId: "any" } } as never,
         stranger.send, noopBroadcast, stateFor(outsider.id));
       expect(stranger.types()).toContain("error");
+    });
+
+    it("a team-only member may restart (vps:reboot) but not detach; the team's owner may detach (T219c, T219d)", async () => {
+      const team = await makeTeam();
+      const proj = await makeProject({ teamId: team.id });
+      const teamMember = await makeUser();
+      await addUserToTeam(team.id, teamMember.id, "member");
+      const teamOwner = await makeUser();
+      await addUserToTeam(team.id, teamOwner.id, "owner");
+
+      // (past the permission check, the reboot fails on the made-up instance: proof it was let through)
+      const reboot = capture();
+      await handleVpsLifecycleMessage(fakeWs,
+        { type: "vps:reboot", payload: { projectId: proj.id, instanceId: "any" } } as never,
+        reboot.send, noopBroadcast, stateFor(teamMember.id));
+      expect(reboot.types()).not.toContain("error");
+      expect(reboot.sent.find((m) => m.type === "vps:reboot:error")?.payload?.message).toBe("Server not found on this project");
+
+      const memberDetach = capture();
+      await handleVpsLifecycleMessage(fakeWs,
+        { type: "vps:disconnect", payload: { projectId: proj.id, instanceId: "any" } } as never,
+        memberDetach.send, noopBroadcast, stateFor(teamMember.id));
+      expect(memberDetach.types()).toContain("error");
+
+      const ownerDetach = capture();
+      await handleVpsLifecycleMessage(fakeWs,
+        { type: "vps:disconnect", payload: { projectId: proj.id, instanceId: "any" } } as never,
+        ownerDetach.send, noopBroadcast, stateFor(teamOwner.id));
+      expect(ownerDetach.types()).not.toContain("error");
     });
 
     it("vps:disconnect — a plain project member cannot detach the project's server (T219)", async () => {

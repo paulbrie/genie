@@ -102,6 +102,15 @@ function rowToProjectDef(row: typeof projects.$inferSelect): ProjectDef {
 }
 
 /** Team IDs the given user is a member of. */
+/** The user's teams with their role in each (team_members). */
+async function getUserTeamRoles(userId: string): Promise<{ teamId: string; role: string }[]> {
+  const db = getDb();
+  return db.select({ teamId: teamMembers.teamId, role: teamMembers.role }).from(teamMembers).where(eq(teamMembers.userId, userId));
+}
+
+/** a team role that owns the team (and so manages the projects it owns, T219c) */
+const TEAM_OWNER_ROLES = new Set(["owner", "superadmin"]);
+
 async function getUserTeamIds(userId: string): Promise<string[]> {
   const db = getDb();
   const rows = await db.select({ teamId: teamMembers.teamId })
@@ -178,7 +187,8 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   }
 
   // 2. Legacy team membership.
-  const userTeamIds = await getUserTeamIds(userId);
+  const teamRoles = await getUserTeamRoles(userId);
+  const userTeamIds = teamRoles.map((r) => r.teamId);
 
   // 3. Explicit project memberships.
   const directRows = await db
@@ -216,8 +226,21 @@ export async function getAllForUser(userId: string | null): Promise<ProjectDef[]
   // (each project says whether this user may manage it, by the server's own rule, so the UI shows what it allows)
   const roleByProject = new Map(directRows.map((r) => [r.projectId, r.role]));
   const adminTeamIds = new Set(teamIdsFromOrgs);
+  const ownedTeamIds = new Set(teamRoles.filter((r) => TEAM_OWNER_ROLES.has(r.role)).map((r) => r.teamId));
+  const memberTeamIds = new Set(userTeamIds);
+  const sharedByProject = new Map<string, string[]>();
+  if (rows.length > 0) {
+    const shared = await db
+      .select({ projectId: projectTeams.projectId, teamId: projectTeams.teamId })
+      .from(projectTeams)
+      .where(inArray(projectTeams.projectId, rows.map((r) => r.id)));
+    for (const s of shared) sharedByProject.set(s.projectId, [...(sharedByProject.get(s.projectId) ?? []), s.teamId]);
+  }
   return rows.map((r) => {
-    const who = { superadmin: false, memberRole: roleByProject.get(r.id), teamId: r.teamId, adminTeamIds };
+    const who = {
+      superadmin: false, memberRole: roleByProject.get(r.id), teamId: r.teamId, sharedTeamIds: sharedByProject.get(r.id),
+      adminTeamIds, ownedTeamIds, memberTeamIds,
+    };
     return { ...attachTeamName(rowToProjectDef(r), teamMap), canManage: canManageProject(who), canRestart: canRestartProject(who) };
   });
 }
@@ -392,19 +415,26 @@ export async function userCanSeeProject(userId: string | null, projectId: string
   return teamIds.includes(row.teamId);
 }
 
-/** True iff the user may restart this project's servers: a manager, or anyone on its member roster (T219b). */
+/**
+ * True iff the user may restart this project's servers: a manager, anyone on its member roster (T219b), or a member
+ * of its team or of a team it is shared with (T219d).
+ */
 export async function userCanRestartProject(userId: string | null, projectId: string): Promise<boolean> {
   if (!userId) return false;
   if (await userCanManageProject(userId, projectId)) return true;
   const db = getDb();
-  const [row] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.id, projectId), notDeleted)).limit(1);
+  const [row] = await db.select({ teamId: projects.teamId }).from(projects).where(and(eq(projects.id, projectId), notDeleted)).limit(1);
   if (!row) return false;
   const [pm] = await db
     .select({ role: projectMembers.role })
     .from(projectMembers)
     .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)))
     .limit(1);
-  return canRestartProject({ superadmin: false, memberRole: pm?.role, teamId: null, adminTeamIds: new Set() });
+  const shared = await db.select({ teamId: projectTeams.teamId }).from(projectTeams).where(eq(projectTeams.projectId, projectId));
+  return canRestartProject({
+    superadmin: false, memberRole: pm?.role, teamId: row.teamId, sharedTeamIds: shared.map((s) => s.teamId),
+    adminTeamIds: new Set(), memberTeamIds: new Set(await getUserTeamIds(userId)),
+  });
 }
 
 /** True iff the user may manage (add/remove members of) this project. */
@@ -425,8 +455,16 @@ export async function userCanManageProject(userId: string | null, projectId: str
     .limit(1);
   if (pm?.role === "owner") return true;
 
-  // Org owner/admin?
+  // Owner of the team that owns the project (T219c)?
   if (!row.teamId) return false;
+  const [tm] = await db
+    .select({ role: teamMembers.role })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.teamId, row.teamId), eq(teamMembers.userId, userId)))
+    .limit(1);
+  if (tm && TEAM_OWNER_ROLES.has(tm.role)) return true;
+
+  // Org owner/admin?
   const [team] = await db.select({ orgId: teams.orgId }).from(teams).where(eq(teams.id, row.teamId)).limit(1);
   if (!team?.orgId) return false;
   const [orgMember] = await db
