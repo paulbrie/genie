@@ -41,7 +41,9 @@ describe("the list's sizes, asked of each VM when the list has none (T240b)", ()
     const client = { getVm: async (id: string) => { asked.push(id); return id === "a" ? { ...GET_VM, size: "medium" } : { ...LIST_ITEM } } };
     let t = 1_000;
     const first = await resolveTazVmSizes(client, vms, () => t);
-    expect(Object.fromEntries([...first].map(([id, s]) => [id, [s.size, s.source]]))).toEqual({ a: ["medium", "vm"], b: ["large", "list"] });
+    expect(Object.fromEntries([...first].map(([id, s]) => [id, [s.size, s.source]]))).toEqual({ a: ["medium", "vm"], b: ["large", "list"], c: [null, "vm"] });
+    // (a VM whose answer has no size says what it has: field names only, T240c)
+    expect(first.get("c")?.raw).toBe("no size in GET /v1/vm/{id} (fields: id, name, status, ip, project_id, ssh_user, ssh_command)");
     expect(asked.sort()).toEqual(["a", "c"]);
     t += 60_000;
     await resolveTazVmSizes(client, vms, () => t);
@@ -53,7 +55,7 @@ describe("the list's sizes, asked of each VM when the list has none (T240b)", ()
   it("shrugs off a VM that can't be asked, and takes a resize's size at once", async () => {
     clearTazVmSizeCache();
     const client = { getVm: async () => { throw new Error("timeout"); } };
-    expect((await resolveTazVmSizes(client, [{ ...LIST_ITEM, id: "x" }])).size).toBe(0);
+    expect((await resolveTazVmSizes(client, [{ ...LIST_ITEM, id: "x" }])).get("x")).toEqual({ size: null, specs: null, raw: "lookup failed: timeout", source: "vm" });
     noteTazVmSize("x", "xlarge");
     expect((await resolveTazVmSizes(client, [{ ...LIST_ITEM, id: "x" }])).get("x")).toMatchObject({ size: "xlarge", source: "vm" });
   });

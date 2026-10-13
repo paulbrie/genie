@@ -49,6 +49,9 @@ export interface VpsMetricSample {
   diskPercent: number;
   memUsedBytes: number;
   diskUsedBytes: number;
+  /** the VM's own RAM and disk, as it measures them (sent since T240c; absent from an older manager) */
+  memTotalBytes?: number;
+  diskTotalBytes?: number;
 }
 
 export interface VpsMonitorState {

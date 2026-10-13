@@ -31,6 +31,9 @@ export interface VpsMetricSampleRow {
   diskPercent: number;
   memUsedBytes: number;
   diskUsedBytes: number;
+  /** the VM's own totals, as measured on it (T240c: its real RAM and disk, whatever genie or Taz say its size is) */
+  memTotalBytes: number;
+  diskTotalBytes: number;
 }
 
 export function enqueueVpsMetricSample(
@@ -91,6 +94,8 @@ function rowToSample(row: {
   diskPercent: number;
   memUsedBytes: number;
   diskUsedBytes: number;
+  memTotalBytes: number;
+  diskTotalBytes: number;
 }): VpsMetricSampleRow {
   return {
     sampledAt: row.sampledAt.toISOString(),
@@ -99,6 +104,8 @@ function rowToSample(row: {
     diskPercent: row.diskPercent,
     memUsedBytes: row.memUsedBytes,
     diskUsedBytes: row.diskUsedBytes,
+    memTotalBytes: row.memTotalBytes,
+    diskTotalBytes: row.diskTotalBytes,
   };
 }
 
@@ -117,6 +124,8 @@ export async function getVpsMetricHistory(
       diskPercent: vpsMetricSamples.diskPercent,
       memUsedBytes: vpsMetricSamples.memUsedBytes,
       diskUsedBytes: vpsMetricSamples.diskUsedBytes,
+      memTotalBytes: vpsMetricSamples.memTotalBytes,
+      diskTotalBytes: vpsMetricSamples.diskTotalBytes,
     })
     .from(vpsMetricSamples)
     .where(
@@ -228,6 +237,8 @@ export async function getBulkVpsMetricHistory(
         diskPercent: vpsMetricSamples.diskPercent,
         memUsedBytes: vpsMetricSamples.memUsedBytes,
         diskUsedBytes: vpsMetricSamples.diskUsedBytes,
+        memTotalBytes: vpsMetricSamples.memTotalBytes,
+        diskTotalBytes: vpsMetricSamples.diskTotalBytes,
       })
       .from(vpsMetricSamples)
       .where(

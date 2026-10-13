@@ -61,17 +61,32 @@ export interface ResourceVm {
   sizeRaw?: string | null;
   /** the size genie recorded when it provisioned the VM (a fallback: a resize since isn't in it) */
   genieSize?: string | null;
-  /** live: CPU busy %, RAM and disk in use (GB), when the VM's stats are known */
-  live?: { cpuPercent: number; memUsedGb: number; diskUsedGb: number } | null;
+  /** live, as measured on the VM (its stats): CPU busy % (of all its cores), RAM and disk used and in total (GB),
+   *  and their use in % of its own totals */
+  live?: LiveUse | null;
+}
+
+export interface LiveUse {
+  cpuPercent: number;
+  memPercent: number;
+  diskPercent: number;
+  memUsedGb: number;
+  diskUsedGb: number;
+  /** the VM's own RAM and disk as it reports them (GiB); null when the sample doesn't carry them */
+  memTotalGb: number | null;
+  diskTotalGb: number | null;
 }
 
 export interface ResourceRow extends ResourceVm {
-  /** its size's resources; null when the size is missing or unknown (then it counts nowhere) */
+  /** its resources; null when they can't be known (then it counts nowhere) */
   spec: TazSizeSpec | null;
   /** the size as shown: a known size's name, or Taz's own value */
   sizeLabel: string | null;
-  /** where the size came from: Taz, or genie's record of it */
-  sizeFrom: "taz" | "genie" | null;
+  /** where its resources came from: Taz (its size or numbers), or measured on the VM (RAM and disk; vCPU inferred
+   *  from the RAM, since nothing measures cores) */
+  sizeFrom: "taz" | "measured" | null;
+  /** its vCPU is a guess from its RAM, not a fact */
+  vcpuInferred: boolean;
   /** why it couldn't be sized, when it couldn't */
   unknownWhy: string | null;
   group: StatusGroup;
@@ -84,6 +99,8 @@ export interface ResourceRow extends ResourceVm {
 export interface ResourceTotal {
   capacity: number;
   allocated: number;
+  /** how much of `allocated` is inferred rather than known (vCPU from RAM) */
+  inferred: number;
   free: number;
   /** allocated / capacity, in % (may pass 100) */
   pct: number;
@@ -129,27 +146,83 @@ export function normalizeSize(name: string | null | undefined, sizes: Record<str
   return keys.get(s) ?? keys.get(SIZE_ALIASES[s] ?? "") ?? keys.get(s.replace(/-/g, "")) ?? null;
 }
 
-/** what the page reads from a stats sample (the server cards' gauges): CPU %, RAM and disk in use, in GB */
-export function liveOf(sample: { cpuPercent: number; memUsedBytes: number; diskUsedBytes: number } | null | undefined) {
-  return sample ? { cpuPercent: sample.cpuPercent, memUsedGb: sample.memUsedBytes / 1e9, diskUsedGb: sample.diskUsedBytes / 1e9 } : null;
+const GIB = 1024 ** 3;
+
+/** a stats sample as the server cards get it (vps_metric_samples), or the SSH probe's: the totals may be missing */
+export interface StatsSample {
+  sampledAt?: string;
+  cpuPercent: number;
+  memPercent: number;
+  diskPercent: number;
+  memUsedBytes: number;
+  diskUsedBytes: number;
+  memTotalBytes?: number | null;
+  diskTotalBytes?: number | null;
+}
+
+/** total = used / percent, for a sample from before the totals were sent */
+const totalOf = (total: number | null | undefined, used: number, pct: number) => (total && total > 0 ? total : pct > 0 ? (used * 100) / pct : null);
+
+/** what the page reads from a stats sample: the VM's own use, in % of its own totals, and those totals (T240c) */
+export function liveOf(sample: StatsSample | null | undefined): LiveUse | null {
+  if (!sample) return null;
+  const mem = totalOf(sample.memTotalBytes, sample.memUsedBytes, sample.memPercent), disk = totalOf(sample.diskTotalBytes, sample.diskUsedBytes, sample.diskPercent);
+  return {
+    cpuPercent: sample.cpuPercent,
+    memPercent: sample.memPercent,
+    diskPercent: sample.diskPercent,
+    memUsedGb: sample.memUsedBytes / GIB,
+    diskUsedGb: sample.diskUsedBytes / GIB,
+    memTotalGb: mem ? mem / GIB : null,
+    diskTotalGb: disk ? disk / GIB : null,
+  };
+}
+
+/**
+ * The size whose RAM a VM's measured RAM is (a VM reports a little less than its size, about 93–98 %: the kernel
+ * keeps some), within 85–110 % of the size's; each size has its own RAM, so this tells its vCPU, a guess (a custom
+ * size wouldn't match, and stays unknown).
+ */
+export function sizeFromRam(memTotalGb: number | null | undefined, sizes: Record<string, TazSizeSpec>): string | null {
+  if (!memTotalGb || memTotalGb <= 0) return null;
+  let best: string | null = null, bestGap = Infinity;
+  for (const [name, spec] of Object.entries(sizes)) {
+    const ratio = memTotalGb / spec.ramGb;
+    if (ratio >= 0.85 && ratio <= 1.1 && Math.abs(1 - ratio) < bestGap) { best = name; bestGap = Math.abs(1 - ratio); }
+  }
+  return best;
 }
 const round = (n: number, d = 1) => Math.round(n * 10 ** d) / 10 ** d;
 
 export function summarize(vms: ResourceVm[], capacity: TazCapacity): ResourceSummary {
   const rows: ResourceRow[] = vms.map(vm => {
-    const tazName = normalizeSize(vm.size, capacity.sizes), genieName = normalizeSize(vm.genieSize, capacity.sizes);
-    const spec = vm.specs ?? (tazName ? capacity.sizes[tazName] : genieName ? capacity.sizes[genieName] : null);
-    const sizeFrom = vm.specs || tazName ? "taz" : genieName ? "genie" : null;
+    // (its resources: Taz's own numbers or size if Taz gives them; else what the VM itself measures, its vCPU
+    // inferred from its RAM; genie's record of the size is never counted: it is written once, as a default)
+    const tazName = normalizeSize(vm.size, capacity.sizes);
+    const ramName = sizeFromRam(vm.live?.memTotalGb, capacity.sizes);
+    let spec: TazSizeSpec | null = null, sizeFrom: ResourceRow["sizeFrom"] = null, vcpuInferred = false;
+    if (vm.specs) { spec = vm.specs; sizeFrom = "taz"; }
+    else if (tazName) { spec = capacity.sizes[tazName]; sizeFrom = "taz"; }
+    else if (ramName && vm.live?.memTotalGb) {
+      const s = capacity.sizes[ramName];
+      spec = { vcpu: s.vcpu, ramGb: s.ramGb, diskGb: vm.live.diskTotalGb ? Math.round(vm.live.diskTotalGb) : s.diskGb };
+      sizeFrom = "measured";
+      vcpuInferred = true;
+    }
     const raw = vm.sizeRaw ?? vm.size ?? null;
-    const unknownWhy = spec ? null : raw ? `Taz gave "${raw}", not a known size` : "Taz gives no size for it, and genie has none recorded";
-    const use = spec && vm.live
-      ? { cpu: vm.live.cpuPercent / 100, ram: vm.live.memUsedGb / spec.ramGb, disk: vm.live.diskUsedGb / spec.diskGb }
-      : null;
+    const genieNote = vm.genieSize ? `; genie's record says ${vm.genieSize}, a value written once, not counted` : "";
+    const unknownWhy = spec ? null
+      : vm.live?.memTotalGb ? `it reports ${round(vm.live.memTotalGb)} GB RAM, no size's${raw ? `; Taz: ${raw}` : ""}${genieNote}`
+      : raw ? `Taz: ${raw}; no stats from the VM${genieNote}`
+      : `no size from Taz and no stats from the VM${genieNote}`;
+    // (its live use, in % of what it has, as it measures it)
+    const use = vm.live ? { cpu: vm.live.cpuPercent / 100, ram: vm.live.memPercent / 100, disk: vm.live.diskPercent / 100 } : null;
     return {
       ...vm,
       spec,
-      sizeLabel: tazName ?? (vm.specs ? raw : null) ?? genieName ?? raw,
+      sizeLabel: tazName ?? (vm.specs ? raw : null) ?? ramName ?? raw,
       sizeFrom,
+      vcpuInferred,
       unknownWhy,
       group: statusGroup(vm.status),
       use,
@@ -157,11 +230,13 @@ export function summarize(vms: ResourceVm[], capacity: TazCapacity): ResourceSum
     };
   });
   const allocated: Record<ResourceKey, number> = { vcpu: 0, ramGb: 0, diskGb: 0 };
+  const inferred: Record<ResourceKey, number> = { vcpu: 0, ramGb: 0, diskGb: 0 };
   for (const r of rows) if (r.spec) for (const k of RESOURCES) allocated[k] += r.spec[k];
+  for (const r of rows) if (r.spec && r.vcpuInferred) inferred.vcpu += r.spec.vcpu;
   const totals = Object.fromEntries(
     RESOURCES.map(k => {
       const cap = capacity[k], pct = cap > 0 ? (allocated[k] / cap) * 100 : 0;
-      return [k, { capacity: cap, allocated: round(allocated[k], 2), free: round(Math.max(0, cap - allocated[k]), 2), pct: round(pct), level: levelOf(pct) }];
+      return [k, { capacity: cap, allocated: round(allocated[k], 2), inferred: round(inferred[k], 2), free: round(Math.max(0, cap - allocated[k]), 2), pct: round(pct), level: levelOf(pct) }];
     })
   ) as Record<ResourceKey, ResourceTotal>;
   const byStatus: Record<StatusGroup, number> = { running: 0, stopped: 0, provisioning: 0, error: 0, other: 0 };
@@ -242,9 +317,9 @@ export interface ResourceSources {
   projects: { id: string; teamName?: string | null; vpsInstances: { id: string; tazcloud?: { vmId: string; size?: string } }[] }[];
   tazProjects: { id: string; name: string }[];
   /** the server cards' history: "<projectId>:<instanceId>" → samples, oldest first */
-  history?: Record<string, { cpuPercent: number; memUsedBytes: number; diskUsedBytes: number }[]>;
+  history?: Record<string, StatsSample[]>;
   /** the SSH probe's stats by VM id (often empty: the probe is off where the VMs post their own stats) */
-  vmStats?: Record<string, { cpuPercent: number; memUsedBytes: number; diskUsedBytes: number }>;
+  vmStats?: Record<string, StatsSample>;
 }
 
 /**

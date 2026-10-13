@@ -69,6 +69,9 @@ function Meter({ k, total }: { k: ResourceKey; total: ReturnType<typeof summariz
         <span className="absolute inset-y-0 left-[80%] w-px bg-base/70" aria-hidden />
         <span className="absolute inset-y-0 left-[90%] w-px bg-base/70" aria-hidden />
       </div>
+      {total.inferred > 0 && (
+        <p className="mt-2 text-xs text-overlay1">{formatResource(k, total.inferred)} of it inferred from the VMs&apos; RAM, not measured</p>
+      )}
       <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
         <div><dt className="text-overlay1">Allocated</dt><dd className="font-semibold tabular-nums text-text">{formatResource(k, total.allocated)}</dd></div>
         <div><dt className="text-overlay1">Capacity</dt><dd className="font-semibold tabular-nums text-text">{formatResource(k, total.capacity)}</dd></div>
@@ -340,7 +343,7 @@ export function TazResources({ monitor }: { monitor?: VpsMonitorState }) {
             }
           >
             <p className="mb-2 text-xs text-overlay1">
-              Live use from the VMs&apos; stats ({summary.withLive} of {summary.rows.length} known). A running VM using under 10% of its CPU and 25% of its RAM is marked over-provisioned.
+              Live use as each VM measures it, in % of its own CPU, RAM and disk ({summary.withLive} of {summary.rows.length} known). Without a size from Taz, RAM and disk are the VM&apos;s own and its vCPU is inferred from its RAM (≈). A running VM using under 10% of its CPU and 25% of its RAM is marked over-provisioned.
             </p>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[760px] text-sm">
@@ -365,16 +368,20 @@ export function TazResources({ monitor }: { monitor?: VpsMonitorState }) {
                       <td className="max-w-[10rem] truncate px-2 py-1.5 text-subtext0">{r.teamName ?? <span className="text-overlay0">—</span>}</td>
                       <td className="px-2 py-1.5 text-subtext0">
                         {r.spec ? (
-                          <span title={r.sizeFrom === "genie" ? "From genie's record of the VM (Taz gave no size)" : undefined}>
-                            {r.sizeLabel}{r.sizeFrom === "genie" && <span className="ml-1 text-xs text-overlay1">(genie record)</span>}
-                          </span>
+                          r.sizeFrom === "measured" ? (
+                            <span title="Taz gives no size: RAM and disk as the VM measures them, its vCPU inferred from its RAM">
+                              ≈ {r.sizeLabel} <span className="text-xs text-overlay1">(from RAM)</span>
+                            </span>
+                          ) : r.sizeLabel
                         ) : (
-                          <span className="text-yellow" title={r.unknownWhy ?? undefined}>
-                            unknown <span className="text-xs text-overlay1">({r.sizeLabel ? `Taz: ${r.sizeLabel}` : "no size from Taz"})</span>
+                          <span className="text-yellow">
+                            unknown <span className="block max-w-[16rem] text-xs leading-snug text-overlay1">{r.unknownWhy}</span>
                           </span>
                         )}
                       </td>
-                      <td className="px-2 py-1.5 text-right tabular-nums text-text">{r.spec?.vcpu ?? "—"}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-text" title={r.vcpuInferred ? "Inferred from its RAM: nothing measures a VM's cores yet" : undefined}>
+                        {r.spec ? (r.vcpuInferred ? <span className="text-subtext0">≈ {r.spec.vcpu}</span> : r.spec.vcpu) : "—"}
+                      </td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-text">{r.spec ? `${r.spec.ramGb} GB` : "—"}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-text">{r.spec ? `${r.spec.diskGb} GB` : "—"}</td>
                       <td className={cn("px-2 py-1.5", STATUS_STYLE[r.group])}>{STATUS_LABEL[r.group]}</td>

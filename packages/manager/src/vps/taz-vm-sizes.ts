@@ -21,18 +21,22 @@ export async function resolveTazVmSizes(
     const own = tazVmSize(v as Record<string, unknown>);
     if (own.size || own.specs) { out.set(v.id, { ...own, source: "list" }); continue; }
     const kept = cache.get(v.id);
-    if (kept && now() - kept.at < TTL_MS) {
-      if (kept.size.size || kept.size.specs) out.set(v.id, { ...kept.size, source: "vm" });
-    } else ask.push(v.id);
+    if (kept && now() - kept.at < TTL_MS) out.set(v.id, { ...kept.size, source: "vm" });
+    else ask.push(v.id);
   }
   for (let i = 0; i < ask.length; i += AT_ONCE) {
     await Promise.all(ask.slice(i, i + AT_ONCE).map(async (id) => {
       try {
-        const s = tazVmSize(((await client.getVm(id)) ?? {}) as Record<string, unknown>);
-        cache.set(id, { size: s, at: now() });
-        if (s.size || s.specs) out.set(id, { ...s, source: "vm" });
-      } catch {
-        // (unknown this time; asked again on the next list)
+        const vm = ((await client.getVm(id)) ?? {}) as Record<string, unknown>;
+        const s = tazVmSize(vm);
+        // (no size in it: say what it has, field names only, so the real shape shows on the page; T240c)
+        const kept = s.size || s.specs ? s : { ...s, raw: `no size in GET /v1/vm/{id} (fields: ${Object.keys(vm).slice(0, 20).join(", ") || "none"})` };
+        cache.set(id, { size: kept, at: now() });
+        out.set(id, { ...kept, source: "vm" });
+      } catch (err: unknown) {
+        // (asked again on the next list; the reason shows meanwhile)
+        const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 100);
+        out.set(id, { size: null, specs: null, raw: `lookup failed: ${message}`, source: "vm" });
       }
     }));
   }

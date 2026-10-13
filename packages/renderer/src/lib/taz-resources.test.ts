@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { distribution, formatResource, headroomOf, levelOf, normalizeSize, resourceVmsOf, statusGroup, summarize, topGroups, type ResourceSources, type ResourceVm, type TazCapacity } from "./taz-resources";
+import { distribution, formatResource, headroomOf, levelOf, liveOf, normalizeSize, resourceVmsOf, sizeFromRam, statusGroup, summarize, topGroups, type ResourceSources, type ResourceVm, type TazCapacity } from "./taz-resources";
 
 const CAPACITY: TazCapacity = {
   vcpu: 250, ramGb: 500, diskGb: 2000,
@@ -16,7 +16,7 @@ const vm = (id: string, size: string | null, extra: Partial<ResourceVm> = {}): R
 describe("Taz Cloud resources (T240)", () => {
   it("sums what the VMs' sizes allocate, against capacity, with the free part and the level", () => {
     const s = summarize([vm("a", "large"), vm("b", "xlarge"), vm("c", "small", { status: "SHUTOFF" })], CAPACITY);
-    expect(s.totals.vcpu).toEqual({ capacity: 250, allocated: 13, free: 237, pct: 5.2, level: "ok" });
+    expect(s.totals.vcpu).toEqual({ capacity: 250, allocated: 13, inferred: 0, free: 237, pct: 5.2, level: "ok" });
     expect(s.totals.ramGb.allocated).toBe(25);
     expect(s.totals.diskGb.allocated).toBe(260);
     expect(s.byStatus).toEqual({ running: 2, stopped: 1, provisioning: 0, error: 0, other: 0 });
@@ -61,16 +61,17 @@ describe("Taz Cloud resources (T240)", () => {
     expect(top).toHaveLength(5);
     expect(top[4]).toMatchObject({ label: "4 others", vcpu: 4 + 3 + 2 + 1, vms: 4 });
   });
-  it("flags running VMs that use little of what they're given, from their live stats", () => {
+  it("flags running VMs that use little of what they have, from what they measure", () => {
+    const live = (cpuPercent: number, memPercent: number, diskPercent: number) => ({ cpuPercent, memPercent, diskPercent, memUsedGb: 0, diskUsedGb: 0, memTotalGb: null, diskTotalGb: null });
     const s = summarize([
-      vm("idle", "xlarge", { live: { cpuPercent: 3, memUsedGb: 2, diskUsedGb: 30 } }),
-      vm("busy", "large", { live: { cpuPercent: 70, memUsedGb: 6, diskUsedGb: 40 } }),
-      vm("stopped", "large", { status: "SHUTOFF", live: { cpuPercent: 0, memUsedGb: 0, diskUsedGb: 10 } }),
+      vm("idle", "xlarge", { live: live(3, 12, 20) }),
+      vm("busy", "large", { live: live(70, 75, 50) }),
+      vm("stopped", "large", { status: "SHUTOFF", live: live(0, 0, 12) }),
       vm("unknown", "large"),
     ], CAPACITY);
     const by = Object.fromEntries(s.rows.map(r => [r.id, r]));
     expect(by.idle.overProvisioned).toBe(true);
-    expect(by.idle.use).toEqual({ cpu: 0.03, ram: 0.125, disk: 0.1875 });
+    expect(by.idle.use).toEqual({ cpu: 0.03, ram: 0.12, disk: 0.2 });
     expect(by.busy.overProvisioned).toBe(false);
     expect(by.stopped.overProvisioned).toBe(false);
     expect(by.unknown.use).toBeNull();
@@ -82,57 +83,72 @@ describe("Taz Cloud resources (T240)", () => {
   });
 });
 
-// Shaped like genie's state on live data (T240b), made-up names: the Taz list gives no size; the manager now asks each
-// VM (`size` from GET /v1/vm/{id}); genie's project instance records a size and posts the stats the cards show.
+// Shaped like genie's state on live data (T240c), made-up names: the Taz list and the VM give no size (the manager
+// says why); genie's project instances all record "small" (a default written once); the server cards' samples carry
+// the VMs' own totals. A 16-core VM reports ~31 GiB of RAM; a small one ~0.95 GiB.
+const GIB = 1024 ** 3;
+const sample = (cpuPercent: number, memUsedGiB: number, memTotalGiB: number, diskUsedGiB: number, diskTotalGiB: number) => ({
+  sampledAt: "2026-10-13T10:00:00Z", cpuPercent,
+  memUsedBytes: memUsedGiB * GIB, memTotalBytes: memTotalGiB * GIB, memPercent: Math.round((memUsedGiB / memTotalGiB) * 100),
+  diskUsedBytes: diskUsedGiB * GIB, diskTotalBytes: diskTotalGiB * GIB, diskPercent: Math.round((diskUsedGiB / diskTotalGiB) * 100),
+});
+const NO_SIZE = "no size in GET /v1/vm/{id} (fields: id, name, status, ip, project_id, ssh_user, ssh_command)";
 const SOURCES: ResourceSources = {
   vms: [
-    { id: "vm-a", name: "acme-web", status: "ACTIVE", size: "small", sizeSpecs: null, sizeRaw: "small", tazProjectId: "tp1", projectId: "p1", projectName: "Acme" },
-    { id: "vm-b", name: "acme-db", status: "ACTIVE", size: undefined, sizeSpecs: null, sizeRaw: null, tazProjectId: "tp1", projectId: "p1", projectName: "Acme" },
-    { id: "vm-c", name: "lab-box", status: "ACTIVE", size: "TAZ-XLarge", sizeSpecs: null, sizeRaw: "TAZ-XLarge", tazProjectId: "tp2", projectId: null, projectName: null },
-    { id: "vm-d", name: "odd-one", status: "SHUTOFF", size: "m1.tiny", sizeSpecs: null, sizeRaw: "m1.tiny", tazProjectId: null, projectId: null, projectName: null },
-    { id: "vm-e", name: "numbers", status: "ACTIVE", size: undefined, sizeSpecs: { vcpu: 6, ramGb: 12, diskGb: 100 }, sizeRaw: "6 vCPU / 12 GB / 100 GB", tazProjectId: null, projectId: null, projectName: null },
-    { id: "vm-f", name: "mystery", status: "ACTIVE", size: undefined, sizeSpecs: null, sizeRaw: null, tazProjectId: null, projectId: null, projectName: null },
+    { id: "vm-big", name: "acme-ml", status: "ACTIVE", size: undefined, sizeSpecs: null, sizeRaw: NO_SIZE, tazProjectId: "tp1", projectId: "p1", projectName: "Acme" },
+    { id: "vm-small", name: "acme-web", status: "ACTIVE", size: undefined, sizeSpecs: null, sizeRaw: NO_SIZE, tazProjectId: "tp1", projectId: "p1", projectName: "Acme" },
+    { id: "vm-old", name: "acme-db", status: "ACTIVE", size: undefined, sizeSpecs: null, sizeRaw: NO_SIZE, tazProjectId: "tp1", projectId: "p1", projectName: "Acme" },
+    { id: "vm-custom", name: "lab-odd", status: "ACTIVE", size: undefined, sizeSpecs: null, sizeRaw: NO_SIZE, tazProjectId: "tp2", projectId: "p2", projectName: "Lab" },
+    { id: "vm-nostats", name: "lab-quiet", status: "SHUTOFF", size: undefined, sizeSpecs: null, sizeRaw: "lookup failed: timeout", tazProjectId: "tp2", projectId: "p2", projectName: "Lab" },
+    { id: "vm-taz", name: "sized", status: "ACTIVE", size: "Large", sizeSpecs: null, sizeRaw: "Large", tazProjectId: null, projectId: null, projectName: null },
   ],
   projects: [
-    { id: "p1", teamName: "Platform", vpsInstances: [{ id: "i1", tazcloud: { vmId: "vm-a", size: "small" } }, { id: "i2", tazcloud: { vmId: "vm-b", size: "large" } }] },
+    { id: "p1", teamName: "Platform", vpsInstances: [
+      { id: "i1", tazcloud: { vmId: "vm-big", size: "small" } }, { id: "i2", tazcloud: { vmId: "vm-small", size: "small" } }, { id: "i3", tazcloud: { vmId: "vm-old", size: "small" } },
+    ] },
+    { id: "p2", teamName: null, vpsInstances: [{ id: "i4", tazcloud: { vmId: "vm-custom", size: "small" } }, { id: "i5", tazcloud: { vmId: "vm-nostats", size: "small" } }] },
   ],
   tazProjects: [{ id: "tp1", name: "prod" }, { id: "tp2", name: "lab" }],
   history: {
-    "p1:i1": [{ cpuPercent: 50, memUsedBytes: 0.5e9, diskUsedBytes: 5e9 }, { cpuPercent: 4, memUsedBytes: 0.2e9, diskUsedBytes: 6e9 }],
-    "p1:i2": [{ cpuPercent: 30, memUsedBytes: 4e9, diskUsedBytes: 40e9 }],
+    "p1:i1": [sample(80, 10, 31.2, 60, 155), sample(62, 11, 31.2, 61, 155)],
+    "p1:i2": [sample(4, 0.2, 0.95, 6, 19.5)],
+    // (an old sample: no totals, only used + percent)
+    "p1:i3": [{ sampledAt: "2026-10-13T10:00:00Z", cpuPercent: 30, memUsedBytes: 4 * GIB, memPercent: 50, diskUsedBytes: 40 * GIB, diskPercent: 50 }],
+    "p2:i4": [sample(20, 5, 12, 30, 100)],
   },
   vmStats: {},
 };
 
-describe("live data (T240b): sizes as Taz and genie give them, live use as the cards show it", () => {
-  it("maps size names case-insensitively, with a taz- prefix and the usual spellings", () => {
-    expect(["small", "SMALL", "Taz-Large", "taz.medium", "tazcloud-xlarge", "XLarge", "2XL", "xx-large", "X-Large"].map(n => normalizeSize(n, CAPACITY.sizes)))
-      .toEqual(["small", "small", "large", "medium", "xlarge", "xlarge", "2xlarge", "2xlarge", "xlarge"]);
-    expect([normalizeSize("m1.tiny", CAPACITY.sizes), normalizeSize("", CAPACITY.sizes), normalizeSize(null, CAPACITY.sizes)]).toEqual([null, null, null]);
+describe("live data (T240c): resources as the VMs measure them, never genie's default", () => {
+  it("reads a sample's live use in % of the VM's own totals, and the totals (or works them out from an old sample)", () => {
+    expect(liveOf(sample(62, 11, 31.2, 61, 155))).toMatchObject({ cpuPercent: 62, memPercent: 35, diskPercent: 39, memTotalGb: 31.2, diskTotalGb: 155 });
+    const old = liveOf({ cpuPercent: 30, memUsedBytes: 4 * GIB, memPercent: 50, diskUsedBytes: 40 * GIB, diskPercent: 50 });
+    expect([old?.memTotalGb, old?.diskTotalGb]).toEqual([8, 80]);
+    expect(liveOf(null)).toBeNull();
   });
-  it("joins each VM to its project instance: team, Taz project, genie's recorded size, the latest sample", () => {
-    const vms = Object.fromEntries(resourceVmsOf(SOURCES).map(v => [v.id, v]));
-    expect(vms["vm-a"]).toMatchObject({ teamName: "Platform", tazProjectName: "prod", genieSize: "small", live: { cpuPercent: 4, memUsedGb: 0.2, diskUsedGb: 6 } });
-    expect(vms["vm-b"]).toMatchObject({ genieSize: "large", live: { cpuPercent: 30 } });
-    expect(vms["vm-c"]).toMatchObject({ teamName: null, tazProjectName: "lab", genieSize: null, live: null });
-    // (the SSH probe's stats, when the cards' history has nothing)
-    const probed = resourceVmsOf({ ...SOURCES, vmStats: { "vm-c": { cpuPercent: 12, memUsedBytes: 3e9, diskUsedBytes: 20e9 } } });
-    expect(probed.find(v => v.id === "vm-c")?.live).toEqual({ cpuPercent: 12, memUsedGb: 3, diskUsedGb: 20 });
+  it("tells a size from the RAM a VM reports (a little under the size's), and nothing for a RAM no size has", () => {
+    expect([31.2, 15.6, 7.7, 1.9, 0.95].map(g => sizeFromRam(g, CAPACITY.sizes))).toEqual(["2xlarge", "xlarge", "large", "medium", "small"]);
+    expect([12, 64, 0.5, null].map(g => sizeFromRam(g, CAPACITY.sizes))).toEqual([null, null, null, null]);
   });
-  it("sizes every VM it can (Taz's name, Taz's numbers, else genie's record), and says why for the rest", () => {
+  it("sizes each VM by Taz if it can, else by what it measures (vCPU inferred, marked), and never by genie's record", () => {
     const s = summarize(resourceVmsOf(SOURCES), CAPACITY);
     const by = Object.fromEntries(s.rows.map(r => [r.id, r]));
-    expect([by["vm-a"].sizeLabel, by["vm-a"].sizeFrom]).toEqual(["small", "taz"]);
-    expect([by["vm-b"].sizeLabel, by["vm-b"].sizeFrom, by["vm-b"].spec?.vcpu]).toEqual(["large", "genie", 4]);
-    expect([by["vm-c"].sizeLabel, by["vm-c"].spec?.vcpu]).toEqual(["xlarge", 8]);
-    expect([by["vm-e"].sizeLabel, by["vm-e"].spec]).toEqual(["6 vCPU / 12 GB / 100 GB", { vcpu: 6, ramGb: 12, diskGb: 100 }]);
-    expect(by["vm-d"].unknownWhy).toBe('Taz gave "m1.tiny", not a known size');
-    expect(by["vm-f"].unknownWhy).toBe("Taz gives no size for it, and genie has none recorded");
-    expect(s.unsized.map(r => r.id)).toEqual(["vm-d", "vm-f"]);
-    // small 1 + large 4 + xlarge 8 + 6 numbers = 19 vCPU
-    expect(s.totals.vcpu.allocated).toBe(19);
-    expect(s.withLive).toBe(2);
-    // (vm-a uses 4 % of its CPU and 20 % of its 1 GB: over-provisioned; vm-b, at 30 % CPU, isn't)
-    expect([by["vm-a"].overProvisioned, by["vm-b"].overProvisioned]).toEqual([true, false]);
+    expect([by["vm-big"].sizeFrom, by["vm-big"].sizeLabel, by["vm-big"].vcpuInferred, by["vm-big"].spec]).toEqual(["measured", "2xlarge", true, { vcpu: 16, ramGb: 32, diskGb: 155 }]);
+    expect([by["vm-small"].sizeLabel, by["vm-small"].spec]).toEqual(["small", { vcpu: 1, ramGb: 1, diskGb: 20 }]);
+    expect([by["vm-old"].sizeLabel, by["vm-old"].spec?.vcpu]).toEqual(["large", 4]);
+    expect([by["vm-taz"].sizeFrom, by["vm-taz"].sizeLabel, by["vm-taz"].vcpuInferred, by["vm-taz"].spec?.vcpu]).toEqual(["taz", "large", false, 4]);
+    expect(by["vm-custom"].spec).toBeNull();
+    expect(by["vm-custom"].unknownWhy).toContain("it reports 12 GB RAM, no size's");
+    expect(by["vm-custom"].unknownWhy).toContain("genie's record says small, a value written once, not counted");
+    expect(by["vm-nostats"].unknownWhy).toBe("Taz: lookup failed: timeout; no stats from the VM; genie's record says small, a value written once, not counted");
+    // 16 + 1 + 4 measured (inferred) + 4 from Taz = 25 vCPU, 21 of them inferred
+    expect([s.totals.vcpu.allocated, s.totals.vcpu.inferred]).toEqual([25, 21]);
+    expect(s.totals.ramGb.allocated).toBe(32 + 1 + 8 + 8);
+  });
+  it("shows live use as the VM measures it: never over 100 % of what it has", () => {
+    const s = summarize(resourceVmsOf(SOURCES), CAPACITY);
+    const big = s.rows.find(r => r.id === "vm-big")!;
+    expect(big.use).toEqual({ cpu: 0.62, ram: 0.35, disk: 0.39 });
+    expect(s.rows.every(r => !r.use || (r.use.ram <= 1 && r.use.disk <= 1))).toBe(true);
   });
 });
