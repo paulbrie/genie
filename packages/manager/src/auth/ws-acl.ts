@@ -186,6 +186,9 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   // Audit MEDIUM: noisy ops data.
   "monitor:interval": { receive: "admin" },
 
+  // The Taz Cloud's capacity (T240): everyone on the Taz panel reads it (admin:tazcloud default); a superadmin sets it.
+  "admin:tazcloud:capacity:set": { send: "superadmin", notes: "the handler re-checks the role" },
+
   // Admin-only inside an otherwise-user namespace.
   "vps:attach-existing": { send: "admin", receive: "user", notes: "admin command; error/ok responses still readable by the originating user" },
   "vps:attach-existing:error": { receive: "user" },

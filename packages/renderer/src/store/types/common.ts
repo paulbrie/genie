@@ -12,7 +12,7 @@ export type CloudSubTab = "do" | "taz" | "hetzner";
 
 /** Sub-tab within the TazCloud panel (`/clouds/taz/*`): the VM inventory vs the
  *  network-diagnostics view. The URL segment after `/clouds/taz/` is one of these. */
-export type TazCloudSubTab = "vms" | "diagnostics";
+export type TazCloudSubTab = "vms" | "diagnostics" | "resources";
 
 export interface AppDef {
   id: string;

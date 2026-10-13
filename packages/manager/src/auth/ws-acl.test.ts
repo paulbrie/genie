@@ -107,6 +107,11 @@ describe("ws-acl", () => {
     it("admin:tazcloud sub-namespace is tazcloud-accessible", () => {
       expect(canSend("tazcloud", "admin:tazcloud:list")).toBe(true);
       expect(canSend("user", "admin:tazcloud:list")).toBe(false);
+      // (the Taz Cloud's capacity, T240: read on the panel, changed by a superadmin)
+      expect(canSend("tazcloud", "admin:tazcloud:capacity")).toBe(true);
+      expect(canReceive("tazcloud", "admin:tazcloud:capacity")).toBe(true);
+      expect(canSend("admin", "admin:tazcloud:capacity:set")).toBe(false);
+      expect(canSend("superadmin", "admin:tazcloud:capacity:set")).toBe(true);
     });
 
     it("longer namespace prefix wins over shorter (admin:droplets beats admin)", () => {

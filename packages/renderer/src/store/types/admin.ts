@@ -1,3 +1,4 @@
+import type { TazCapacity } from "@/lib/taz-resources";
 import type { VpsStats } from "./vps";
 
 // --- Admin types ---
@@ -150,6 +151,10 @@ export interface AdminTazState {
   capabilitySizes: string[];
   capabilitiesLoading: boolean;
   capabilitiesError: string | null;
+  /** The cloud's capacity and the sizes' resources (`admin:tazcloud:capacity`, T240); null until loaded. */
+  capacity: TazCapacity | null;
+  /** The latest capacity load/save error (e.g. not a superadmin, a bad value). */
+  capacityError: string | null;
   /** Per-VM stats keyed by vmId. Populated by `admin:tazcloud:stats`. */
   vmStats: Record<string, VpsStats>;
   /** Per-VM stats-probe error keyed by vmId. Set when an SSH probe fails so the

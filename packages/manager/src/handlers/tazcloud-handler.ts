@@ -13,6 +13,7 @@ import { tazcloudProvisionAndDeploy, tazcloudDestroyVm, ensureTazcloudKeyOnDisk,
 import { createTazClient, sshUserForImage, type TazVm } from "../vps/tazcloud-api-client.js";
 import { tazRestartVmAndWait } from "../vps/tazcloud-restart.js";
 import { gatherManagerNetEnv, buildVmDiagnostics } from "../vps/tazcloud-netdiag.js";
+import { getTazCapacity, setTazCapacity } from "../vps/taz-capacity.js";
 import { restartWireproxy } from "../cloud/wireproxy-launcher.js";
 import { vpsStatus, vpsStats } from "../vps/deploy-service.js";
 import type { SshConnectionConfig } from "../vps/ssh-client.js";
@@ -261,6 +262,26 @@ export async function handleTazcloudMessage(
         send(ws, { type: "tazcloud:destroy-failed-vm:done", payload: { vmId: failedVmId } });
       } catch (err: unknown) {
         send(ws, { type: "tazcloud:destroy-failed-vm:error", payload: { vmId: failedVmId, message: (err instanceof Error ? err.message : String(err)) } });
+      }
+      return true;
+    }
+
+    // The cloud's capacity and the sizes' resources (T240): read by whoever sees the Taz panel (the ACL's
+    // admin:tazcloud default), changed by a superadmin only (ACL override, checked again here).
+    case "admin:tazcloud:capacity": {
+      send(ws, { type: "admin:tazcloud:capacity", payload: { capacity: await getTazCapacity() } });
+      return true;
+    }
+    case "admin:tazcloud:capacity:set": {
+      if (role !== "superadmin") {
+        send(ws, { type: "admin:tazcloud:capacity", payload: { capacity: await getTazCapacity(), error: "Only a superadmin can change the Taz Cloud's capacity" } });
+        return true;
+      }
+      try {
+        const capacity = await setTazCapacity(msg.payload?.capacity);
+        broadcast({ type: "admin:tazcloud:capacity", payload: { capacity } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:tazcloud:capacity", payload: { capacity: await getTazCapacity(), error: err instanceof Error ? err.message : String(err) } });
       }
       return true;
     }

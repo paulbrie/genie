@@ -609,6 +609,13 @@ export const handlers: HandlerMap = {
 
   // --- TazCloud project (v2.0.0) handlers ---
 
+  "admin:tazcloud:capacity": (payload) => {
+    const t = $admin.getValue().tazcloud;
+    batch(() => {
+      if (payload.capacity) t.capacity = payload.capacity;
+      t.capacityError = payload.error ?? null;
+    });
+  },
   "admin:tazcloud:capabilities": (payload) => {
     const t = $admin.getValue().tazcloud;
     if (payload.error) {

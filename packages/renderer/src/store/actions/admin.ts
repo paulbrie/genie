@@ -12,6 +12,7 @@ import type {
   BaseImageTemplate,
   DropletsSubTab,
 } from "../types/admin";
+import type { TazCapacity } from "@/lib/taz-resources";
 
 // --- Admin actions ---
 
@@ -399,6 +400,18 @@ export function loadTazCapabilities(): void {
     t.capabilitiesError = null;
   });
   wsSend("admin:tazcloud:capabilities", {});
+}
+
+/** The Taz Cloud's capacity and the sizes' resources (T240). */
+export function loadTazCapacity(): void {
+  $admin.getValue().tazcloud.capacityError = null;
+  wsSend("admin:tazcloud:capacity", {});
+}
+
+/** Change the Taz Cloud's capacity (a superadmin; the server checks). Every Taz panel gets the new one. */
+export function saveTazCapacity(capacity: TazCapacity): void {
+  $admin.getValue().tazcloud.capacityError = null;
+  wsSend("admin:tazcloud:capacity:set", { capacity });
 }
 
 /** Fetch all TazCloud projects (VXLAN tenant projects). Empty on legacy v6

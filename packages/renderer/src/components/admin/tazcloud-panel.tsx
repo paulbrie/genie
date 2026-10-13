@@ -38,6 +38,7 @@ import { openManageVmWindow } from "../tazcloud/manage-vm-popup";
 import { ServerTunnelIndicator } from "../tazcloud/server-tunnel-indicator";
 import { VM_HOST_SSH_REFRESH_MS } from "../tazcloud/vm-host-connections-panel";
 import { loadSshSessions } from "@/store/actions/ssh";
+import { TazResources } from "@/components/tazcloud/taz-resources";
 
 export function formatBytesShort(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);
@@ -110,9 +111,9 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
   const router = useRouter();
   const params = useParams();
   const tazSubFromUrl = ((params?.slug as string[] | undefined) ?? [])[2]?.toLowerCase();
-  const [view, setView] = useState<TazCloudSubTab>(tazSubFromUrl === "diagnostics" ? "diagnostics" : "vms");
+  const [view, setView] = useState<TazCloudSubTab>(tazSubFromUrl === "diagnostics" || tazSubFromUrl === "resources" ? tazSubFromUrl : "vms");
   useEffect(() => {
-    if (tazSubFromUrl === "vms" || tazSubFromUrl === "diagnostics") {
+    if (tazSubFromUrl === "vms" || tazSubFromUrl === "diagnostics" || tazSubFromUrl === "resources") {
       setView((prev) => (prev === tazSubFromUrl ? prev : tazSubFromUrl));
     } else {
       // Bare /clouds/taz (or a bad sub-segment) — canonicalize so the URL always
@@ -387,6 +388,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
       tabs={[
         { key: "vms" as const, label: "VMs" },
         { key: "diagnostics" as const, label: "Diagnostics" },
+        { key: "resources" as const, label: "Resources" },
       ]}
       activeTab={view}
       onTabChange={(t) => {
@@ -396,6 +398,15 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
       }}
     />
   );
+
+  if (view === "resources") {
+    return (
+      <div className="px-4 py-4">
+        {viewTabs}
+        <TazResources />
+      </div>
+    );
+  }
 
   if (view === "diagnostics") {
     return (

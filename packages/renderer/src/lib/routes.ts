@@ -70,7 +70,7 @@ const NAV_TO_PATH: Record<NavKey, string> = {
 };
 
 const VALID_CLOUD_SUBTABS = new Set<CloudSubTab>(["do", "taz", "hetzner"]);
-const VALID_TAZ_SUBTABS = new Set<TazCloudSubTab>(["vms", "diagnostics"]);
+const VALID_TAZ_SUBTABS = new Set<TazCloudSubTab>(["vms", "diagnostics", "resources"]);
 
 const PATH_TO_NAV: Record<string, NavKey> = Object.fromEntries(
   Object.entries(NAV_TO_PATH).map(([k, v]) => [v, k as NavKey])
@@ -152,7 +152,7 @@ export interface ParsedRoute {
   /** For settingsTab === "org": which org's settings to render. */
   orgId?: string;
   cloudSubTab?: CloudSubTab;
-  /** Sub-tab within the TazCloud panel — only set for `/clouds/taz/{vms,diagnostics}`. */
+  /** Sub-tab within the TazCloud panel — only set for `/clouds/taz/{vms,diagnostics,resources}`. */
   tazSubTab?: TazCloudSubTab;
   docId?: string;
 }
@@ -221,7 +221,7 @@ export function parseRoute(slugSegments: string[]): ParsedRoute | null {
     return { nav, settingsTab };
   }
 
-  // Clouds sub-routes: /clouds/do, /clouds/taz, /clouds/taz/{vms,diagnostics}
+  // Clouds sub-routes: /clouds/do, /clouds/taz, /clouds/taz/{vms,diagnostics,resources}
   if (nav === "clouds") {
     const seg1 = slugSegments[1]?.toLowerCase();
     const cloudSubTab = seg1 && VALID_CLOUD_SUBTABS.has(seg1 as CloudSubTab) ? (seg1 as CloudSubTab) : "do";

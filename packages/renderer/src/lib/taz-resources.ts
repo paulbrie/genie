@@ -1,0 +1,196 @@
+/**
+ * The Taz Cloud's resources (T240), pure: what the VMs' sizes allocate against the cloud's capacity, how that is
+ * distributed (by project, team, Taz project, status), how many more VMs of each size fit, and, where a VM's live
+ * stats are known, how much of its allocation it uses. Rendered by /clouds/taz/resources (taz-resources.tsx).
+ * Capacity and sizes come from the manager's "tazCapacity" setting (manager/src/vps/taz-capacity.ts).
+ */
+
+export interface TazSizeSpec {
+  vcpu: number;
+  ramGb: number;
+  diskGb: number;
+  /** a guess, not seen on a fresh VM yet */
+  assumed?: boolean;
+}
+
+export interface TazCapacity {
+  vcpu: number;
+  ramGb: number;
+  diskGb: number;
+  sizes: Record<string, TazSizeSpec>;
+  updatedAt?: string;
+}
+
+export type ResourceKey = "vcpu" | "ramGb" | "diskGb";
+export const RESOURCES: ResourceKey[] = ["vcpu", "ramGb", "diskGb"];
+export const RESOURCE_LABEL: Record<ResourceKey, string> = { vcpu: "vCPU", ramGb: "RAM", diskGb: "Disk" };
+
+/** amber from WARN_PCT % allocated, red from CRITICAL_PCT % */
+export const WARN_PCT = 80, CRITICAL_PCT = 90;
+export type Level = "ok" | "warn" | "critical";
+export const levelOf = (pct: number): Level => (pct >= CRITICAL_PCT ? "critical" : pct >= WARN_PCT ? "warn" : "ok");
+
+export type StatusGroup = "running" | "stopped" | "provisioning" | "error" | "other";
+export const STATUS_LABEL: Record<StatusGroup, string> = {
+  running: "Running", stopped: "Stopped", provisioning: "Provisioning", error: "Error", other: "Other",
+};
+
+/** A Taz (OpenStack) VM status as one of a few groups: ACTIVE runs; SHUTOFF/PAUSED/SUSPENDED stop; BUILD,
+ *  REBOOT, RESIZE… are on their way; ERROR fails. */
+export function statusGroup(status: string | null | undefined): StatusGroup {
+  const s = (status ?? "").toUpperCase();
+  if (s === "ACTIVE" || s === "RUNNING") return "running";
+  if (["SHUTOFF", "STOPPED", "PAUSED", "SUSPENDED", "SHELVED", "SHELVED_OFFLOADED"].includes(s)) return "stopped";
+  if (["BUILD", "BUILDING", "REBOOT", "HARD_REBOOT", "RESIZE", "VERIFY_RESIZE", "MIGRATING", "REBUILD", "PENDING", "PROVISIONING"].includes(s)) return "provisioning";
+  if (s === "ERROR") return "error";
+  return "other";
+}
+
+/** What the page knows of a VM (from the admin VM list, its linked project and its live stats). */
+export interface ResourceVm {
+  id: string;
+  name: string;
+  status: string;
+  size?: string | null;
+  projectName?: string | null;
+  teamName?: string | null;
+  tazProjectName?: string | null;
+  /** live: CPU busy %, RAM and disk in use (GB), when the VM's stats are known */
+  live?: { cpuPercent: number; memUsedGb: number; diskUsedGb: number } | null;
+}
+
+export interface ResourceRow extends ResourceVm {
+  /** its size's resources; null when the size is missing or unknown (then it counts nowhere) */
+  spec: TazSizeSpec | null;
+  group: StatusGroup;
+  /** live use as a share of what it is allocated (0–1+), when known */
+  use?: { cpu: number; ram: number; disk: number } | null;
+  /** allocated far more than it uses: CPU under 10 % and RAM under 25 % of its allocation */
+  overProvisioned: boolean;
+}
+
+export interface ResourceTotal {
+  capacity: number;
+  allocated: number;
+  free: number;
+  /** allocated / capacity, in % (may pass 100) */
+  pct: number;
+  level: Level;
+}
+
+export interface Headroom {
+  size: string;
+  spec: TazSizeSpec;
+  /** how many more VMs of that size fit in what is free */
+  fits: number;
+  /** the resource that runs out first */
+  limitedBy: ResourceKey;
+}
+
+export interface ResourceSummary {
+  totals: Record<ResourceKey, ResourceTotal>;
+  rows: ResourceRow[];
+  /** VMs whose size isn't known: not counted in the totals */
+  unsized: ResourceRow[];
+  byStatus: Record<StatusGroup, number>;
+  headroom: Headroom[];
+  /** how many rows have live stats */
+  withLive: number;
+}
+
+const OVER_CPU = 0.1, OVER_RAM = 0.25;
+const round = (n: number, d = 1) => Math.round(n * 10 ** d) / 10 ** d;
+
+export function summarize(vms: ResourceVm[], capacity: TazCapacity): ResourceSummary {
+  const rows: ResourceRow[] = vms.map(vm => {
+    const spec = (vm.size && capacity.sizes[vm.size]) || null;
+    const use = spec && vm.live
+      ? { cpu: vm.live.cpuPercent / 100, ram: vm.live.memUsedGb / spec.ramGb, disk: vm.live.diskUsedGb / spec.diskGb }
+      : null;
+    return {
+      ...vm,
+      spec,
+      group: statusGroup(vm.status),
+      use,
+      overProvisioned: !!use && statusGroup(vm.status) === "running" && use.cpu < OVER_CPU && use.ram < OVER_RAM,
+    };
+  });
+  const allocated: Record<ResourceKey, number> = { vcpu: 0, ramGb: 0, diskGb: 0 };
+  for (const r of rows) if (r.spec) for (const k of RESOURCES) allocated[k] += r.spec[k];
+  const totals = Object.fromEntries(
+    RESOURCES.map(k => {
+      const cap = capacity[k], pct = cap > 0 ? (allocated[k] / cap) * 100 : 0;
+      return [k, { capacity: cap, allocated: round(allocated[k], 2), free: round(Math.max(0, cap - allocated[k]), 2), pct: round(pct), level: levelOf(pct) }];
+    })
+  ) as Record<ResourceKey, ResourceTotal>;
+  const byStatus: Record<StatusGroup, number> = { running: 0, stopped: 0, provisioning: 0, error: 0, other: 0 };
+  for (const r of rows) byStatus[r.group]++;
+  return {
+    totals,
+    rows,
+    unsized: rows.filter(r => !r.spec),
+    byStatus,
+    headroom: headroomOf(totals, capacity.sizes),
+    withLive: rows.filter(r => r.live).length,
+  };
+}
+
+/** For each size, how many more fit in what is free, and what runs out first; sizes from the smallest. */
+export function headroomOf(totals: Record<ResourceKey, ResourceTotal>, sizes: Record<string, TazSizeSpec>): Headroom[] {
+  return Object.entries(sizes)
+    .map(([size, spec]) => {
+      let fits = Infinity, limitedBy: ResourceKey = "vcpu";
+      for (const k of RESOURCES) {
+        const n = spec[k] > 0 ? Math.floor(totals[k].free / spec[k]) : Infinity;
+        if (n < fits) { fits = n; limitedBy = k; }
+      }
+      return { size, spec, fits: Number.isFinite(fits) ? Math.max(0, fits) : 0, limitedBy };
+    })
+    .sort((a, b) => a.spec.vcpu - b.spec.vcpu || a.spec.ramGb - b.spec.ramGb);
+}
+
+export type GroupBy = "project" | "team" | "tazProject" | "status";
+export const GROUP_BY_LABEL: Record<GroupBy, string> = { project: "Project", team: "Team", tazProject: "Taz project", status: "Status" };
+
+export interface DistributionGroup {
+  key: string;
+  label: string;
+  vms: number;
+  vcpu: number;
+  ramGb: number;
+  diskGb: number;
+}
+
+/** what each group (a project, a team, a Taz project, a status) is allocated, biggest first (by vCPU, then RAM) */
+export function distribution(rows: ResourceRow[], by: GroupBy): DistributionGroup[] {
+  const groups = new Map<string, DistributionGroup>();
+  for (const r of rows) {
+    if (!r.spec) continue;
+    const [key, label] =
+      by === "status" ? [r.group, STATUS_LABEL[r.group]]
+      : by === "project" ? [r.projectName ?? "", r.projectName ?? "Not in a project"]
+      : by === "team" ? [r.teamName ?? "", r.teamName ?? "No team"]
+      : [r.tazProjectName ?? "", r.tazProjectName ?? "No Taz project"];
+    const g = groups.get(key) ?? { key, label, vms: 0, vcpu: 0, ramGb: 0, diskGb: 0 };
+    g.vms++;
+    for (const k of RESOURCES) g[k] += r.spec[k];
+    groups.set(key, g);
+  }
+  return [...groups.values()].sort((a, b) => b.vcpu - a.vcpu || b.ramGb - a.ramGb || a.label.localeCompare(b.label));
+}
+
+/** at most `max` groups, the rest summed into one "Other" (for a readable chart) */
+export function topGroups(groups: DistributionGroup[], max: number): DistributionGroup[] {
+  if (groups.length <= max) return groups;
+  const rest = groups.slice(max - 1).reduce(
+    (o, g) => ({ ...o, vms: o.vms + g.vms, vcpu: o.vcpu + g.vcpu, ramGb: o.ramGb + g.ramGb, diskGb: o.diskGb + g.diskGb }),
+    { key: "__other", label: `${groups.length - max + 1} others`, vms: 0, vcpu: 0, ramGb: 0, diskGb: 0 }
+  );
+  return [...groups.slice(0, max - 1), rest];
+}
+
+/** "2 TB", "500 GB", "250 vCPU" */
+export function formatResource(k: ResourceKey, n: number): string {
+  if (k === "vcpu") return `${round(n, 1)} vCPU`;
+  return n >= 1000 ? `${round(n / 1000, 2)} TB` : `${round(n, 1)} GB`;
+}
