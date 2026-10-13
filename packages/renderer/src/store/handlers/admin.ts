@@ -194,7 +194,10 @@ export const handlers: HandlerMap = {
            *  user can't hit it from their browser without WireGuard/ingress. */
           isPrivateHost: typeof vm.ssh_host === "string" && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(vm.ssh_host),
           image: vm.image,
-          size: vm.size,
+          size: vm.size ?? undefined,
+          sizeSpecs: vm.sizeSpecs ?? null,
+          sizeRaw: vm.sizeRaw ?? null,
+          sizeSource: vm.sizeSource ?? null,
           tazProjectId: vm.project_id ?? null,
           projectId: pm?.projectId || null,
           projectName: pm?.projectName || null,

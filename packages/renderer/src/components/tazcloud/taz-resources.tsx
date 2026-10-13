@@ -7,10 +7,11 @@ import { Bar, BarChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Toolt
 import { $admin, $auth, $projects } from "@/store/subjects";
 import { loadAdminTazcloudStats, loadAdminTazVms, loadTazCapacity, loadTazProjects, saveTazCapacity } from "@/store/actions";
 import { useDeepSubjectAll } from "@/lib/hooks";
+import type { VpsMonitorState } from "@/store/types";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  distribution, formatResource, GROUP_BY_LABEL, RESOURCE_LABEL, RESOURCES, STATUS_LABEL, summarize, topGroups,
+  distribution, formatResource, GROUP_BY_LABEL, RESOURCE_LABEL, RESOURCES, resourceVmsOf, STATUS_LABEL, summarize, topGroups,
   type GroupBy, type Level, type ResourceKey, type ResourceRow, type ResourceVm, type StatusGroup, type TazCapacity,
 } from "@/lib/taz-resources";
 
@@ -27,7 +28,6 @@ const STATUS_STYLE: Record<StatusGroup, string> = {
 };
 /** groups shown by name in the distribution; the rest summed */
 const MAX_GROUPS = 7;
-const GB = 1e9;
 
 function Section({ title, children, aside }: { title: string; children: React.ReactNode; aside?: React.ReactNode }) {
   return (
@@ -126,7 +126,7 @@ function sortValue(r: ResourceRow, k: SortKey): string | number {
  * red from 90 %), how that is distributed (by project, team, Taz project or status), how many more VMs of each size
  * fit, and every VM in a table that sorts and filters, with its live use where its stats are known.
  */
-export function TazResources() {
+export function TazResources({ monitor }: { monitor?: VpsMonitorState }) {
   const admin = useDeepSubjectAll($admin);
   const [auth] = useSubject($auth);
   const [projects] = useSubject($projects);
@@ -146,23 +146,10 @@ export function TazResources() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const vms: ResourceVm[] = useMemo(() => {
-    const teamOf = new Map(projects.map(p => [p.id, p.teamName ?? null]));
-    const tazProjectName = new Map(taz.projects.map(p => [p.id, p.name]));
-    return taz.vms.map(vm => {
-      const stats = taz.vmStats[vm.id];
-      return {
-        id: vm.id,
-        name: vm.name,
-        status: vm.status,
-        size: vm.size ?? null,
-        projectName: vm.projectName,
-        teamName: vm.projectId ? teamOf.get(vm.projectId) ?? null : null,
-        tazProjectName: vm.tazProjectId ? tazProjectName.get(vm.tazProjectId) ?? null : null,
-        live: stats ? { cpuPercent: stats.cpuPercent, memUsedGb: stats.memUsedBytes / GB, diskUsedGb: stats.diskUsedBytes / GB } : null,
-      };
-    });
-  }, [taz.vms, taz.vmStats, taz.projects, projects]);
+  const vms: ResourceVm[] = useMemo(
+    () => resourceVmsOf({ vms: taz.vms, projects, tazProjects: taz.projects, history: monitor?.history, vmStats: taz.vmStats }),
+    [taz.vms, taz.vmStats, taz.projects, projects, monitor]
+  );
 
   const capacity = taz.capacity;
   const summary = useMemo(() => (capacity ? summarize(vms, capacity) : null), [vms, capacity]);
@@ -376,7 +363,17 @@ export function TazResources() {
                       <td className="max-w-[14rem] truncate px-2 py-1.5 font-medium text-text" title={r.name}>{r.name}</td>
                       <td className="max-w-[12rem] truncate px-2 py-1.5 text-subtext0">{r.projectName ?? <span className="text-overlay0">—</span>}</td>
                       <td className="max-w-[10rem] truncate px-2 py-1.5 text-subtext0">{r.teamName ?? <span className="text-overlay0">—</span>}</td>
-                      <td className="px-2 py-1.5 text-subtext0">{r.size ?? <span className="text-yellow">unknown</span>}</td>
+                      <td className="px-2 py-1.5 text-subtext0">
+                        {r.spec ? (
+                          <span title={r.sizeFrom === "genie" ? "From genie's record of the VM (Taz gave no size)" : undefined}>
+                            {r.sizeLabel}{r.sizeFrom === "genie" && <span className="ml-1 text-xs text-overlay1">(genie record)</span>}
+                          </span>
+                        ) : (
+                          <span className="text-yellow" title={r.unknownWhy ?? undefined}>
+                            unknown <span className="text-xs text-overlay1">({r.sizeLabel ? `Taz: ${r.sizeLabel}` : "no size from Taz"})</span>
+                          </span>
+                        )}
+                      </td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-text">{r.spec?.vcpu ?? "—"}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-text">{r.spec ? `${r.spec.ramGb} GB` : "—"}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-text">{r.spec ? `${r.spec.diskGb} GB` : "—"}</td>

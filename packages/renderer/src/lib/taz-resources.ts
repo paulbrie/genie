@@ -55,6 +55,12 @@ export interface ResourceVm {
   projectName?: string | null;
   teamName?: string | null;
   tazProjectName?: string | null;
+  /** its resources when Taz gives them as numbers (they win over the size's name) */
+  specs?: TazSizeSpec | null;
+  /** what Taz said of its size, when it said anything */
+  sizeRaw?: string | null;
+  /** the size genie recorded when it provisioned the VM (a fallback: a resize since isn't in it) */
+  genieSize?: string | null;
   /** live: CPU busy %, RAM and disk in use (GB), when the VM's stats are known */
   live?: { cpuPercent: number; memUsedGb: number; diskUsedGb: number } | null;
 }
@@ -62,6 +68,12 @@ export interface ResourceVm {
 export interface ResourceRow extends ResourceVm {
   /** its size's resources; null when the size is missing or unknown (then it counts nowhere) */
   spec: TazSizeSpec | null;
+  /** the size as shown: a known size's name, or Taz's own value */
+  sizeLabel: string | null;
+  /** where the size came from: Taz, or genie's record of it */
+  sizeFrom: "taz" | "genie" | null;
+  /** why it couldn't be sized, when it couldn't */
+  unknownWhy: string | null;
   group: StatusGroup;
   /** live use as a share of what it is allocated (0–1+), when known */
   use?: { cpu: number; ram: number; disk: number } | null;
@@ -99,17 +111,46 @@ export interface ResourceSummary {
 }
 
 const OVER_CPU = 0.1, OVER_RAM = 0.25;
+
+/** spellings of the sizes seen or likely ("2XL", "xx-large", "X-Large") */
+const SIZE_ALIASES: Record<string, string> = {
+  "2xl": "2xlarge", "xxl": "2xlarge", "xxlarge": "2xlarge", "2x-large": "2xlarge", "xx-large": "2xlarge",
+  "xl": "xlarge", "x-large": "xlarge", "sm": "small", "md": "medium", "med": "medium", "lg": "large",
+};
+
+/**
+ * A size's name as one of `sizes`' keys, case-insensitively, with a "taz-" / "taz." / "tazcloud-" prefix and the
+ * usual spellings tolerated ("TAZ-LARGE" → large, "2XL" → 2xlarge); null when it isn't one of them.
+ */
+export function normalizeSize(name: string | null | undefined, sizes: Record<string, TazSizeSpec>): string | null {
+  if (!name) return null;
+  const keys = new Map(Object.keys(sizes).map(k => [k.toLowerCase(), k]));
+  const s = name.trim().toLowerCase().replace(/^(tazcloud|taz)[-_. ]+/, "").replace(/[_ ]/g, "-");
+  return keys.get(s) ?? keys.get(SIZE_ALIASES[s] ?? "") ?? keys.get(s.replace(/-/g, "")) ?? null;
+}
+
+/** what the page reads from a stats sample (the server cards' gauges): CPU %, RAM and disk in use, in GB */
+export function liveOf(sample: { cpuPercent: number; memUsedBytes: number; diskUsedBytes: number } | null | undefined) {
+  return sample ? { cpuPercent: sample.cpuPercent, memUsedGb: sample.memUsedBytes / 1e9, diskUsedGb: sample.diskUsedBytes / 1e9 } : null;
+}
 const round = (n: number, d = 1) => Math.round(n * 10 ** d) / 10 ** d;
 
 export function summarize(vms: ResourceVm[], capacity: TazCapacity): ResourceSummary {
   const rows: ResourceRow[] = vms.map(vm => {
-    const spec = (vm.size && capacity.sizes[vm.size]) || null;
+    const tazName = normalizeSize(vm.size, capacity.sizes), genieName = normalizeSize(vm.genieSize, capacity.sizes);
+    const spec = vm.specs ?? (tazName ? capacity.sizes[tazName] : genieName ? capacity.sizes[genieName] : null);
+    const sizeFrom = vm.specs || tazName ? "taz" : genieName ? "genie" : null;
+    const raw = vm.sizeRaw ?? vm.size ?? null;
+    const unknownWhy = spec ? null : raw ? `Taz gave "${raw}", not a known size` : "Taz gives no size for it, and genie has none recorded";
     const use = spec && vm.live
       ? { cpu: vm.live.cpuPercent / 100, ram: vm.live.memUsedGb / spec.ramGb, disk: vm.live.diskUsedGb / spec.diskGb }
       : null;
     return {
       ...vm,
       spec,
+      sizeLabel: tazName ?? (vm.specs ? raw : null) ?? genieName ?? raw,
+      sizeFrom,
+      unknownWhy,
       group: statusGroup(vm.status),
       use,
       overProvisioned: !!use && statusGroup(vm.status) === "running" && use.cpu < OVER_CPU && use.ram < OVER_RAM,
@@ -193,4 +234,44 @@ export function topGroups(groups: DistributionGroup[], max: number): Distributio
 export function formatResource(k: ResourceKey, n: number): string {
   if (k === "vcpu") return `${round(n, 1)} vCPU`;
   return n >= 1000 ? `${round(n / 1000, 2)} TB` : `${round(n, 1)} GB`;
+}
+
+/** the parts of genie's state the page reads (shapes as in the store: AdminTazVm, ProjectDef, monitor history) */
+export interface ResourceSources {
+  vms: { id: string; name: string; status: string; size?: string; sizeSpecs?: TazSizeSpec | null; sizeRaw?: string | null; tazProjectId: string | null; projectId: string | null; projectName: string | null }[];
+  projects: { id: string; teamName?: string | null; vpsInstances: { id: string; tazcloud?: { vmId: string; size?: string } }[] }[];
+  tazProjects: { id: string; name: string }[];
+  /** the server cards' history: "<projectId>:<instanceId>" → samples, oldest first */
+  history?: Record<string, { cpuPercent: number; memUsedBytes: number; diskUsedBytes: number }[]>;
+  /** the SSH probe's stats by VM id (often empty: the probe is off where the VMs post their own stats) */
+  vmStats?: Record<string, { cpuPercent: number; memUsedBytes: number; diskUsedBytes: number }>;
+}
+
+/**
+ * The page's VMs from genie's state (T240b): each Taz VM with its project's team, its Taz project's name, the size
+ * genie recorded for it (the linked project instance's), and its live use as the server cards show it (the linked
+ * instance's latest sample, else the SSH probe's). A VM is linked to an instance by `tazcloud.vmId`.
+ */
+export function resourceVmsOf(src: ResourceSources): ResourceVm[] {
+  const link = new Map<string, { projectId: string; instanceId: string; size: string | null }>();
+  for (const p of src.projects) for (const i of p.vpsInstances) if (i.tazcloud?.vmId) link.set(i.tazcloud.vmId, { projectId: p.id, instanceId: i.id, size: i.tazcloud.size ?? null });
+  const teamOf = new Map(src.projects.map(p => [p.id, p.teamName ?? null]));
+  const tazName = new Map(src.tazProjects.map(p => [p.id, p.name]));
+  return src.vms.map(vm => {
+    const l = link.get(vm.id);
+    const samples = l ? src.history?.[`${l.projectId}:${l.instanceId}`] : undefined;
+    return {
+      id: vm.id,
+      name: vm.name,
+      status: vm.status,
+      size: vm.size ?? null,
+      specs: vm.sizeSpecs ?? null,
+      sizeRaw: vm.sizeRaw ?? null,
+      genieSize: l?.size ?? null,
+      projectName: vm.projectName,
+      teamName: vm.projectId ? teamOf.get(vm.projectId) ?? null : null,
+      tazProjectName: vm.tazProjectId ? tazName.get(vm.tazProjectId) ?? null : null,
+      live: liveOf(samples?.length ? samples[samples.length - 1] : null) ?? liveOf(src.vmStats?.[vm.id]),
+    };
+  });
 }

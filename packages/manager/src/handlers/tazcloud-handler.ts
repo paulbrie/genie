@@ -14,6 +14,7 @@ import { createTazClient, sshUserForImage, type TazVm } from "../vps/tazcloud-ap
 import { tazRestartVmAndWait } from "../vps/tazcloud-restart.js";
 import { gatherManagerNetEnv, buildVmDiagnostics } from "../vps/tazcloud-netdiag.js";
 import { getTazCapacity, setTazCapacity } from "../vps/taz-capacity.js";
+import { noteTazVmSize, resolveTazVmSizes } from "../vps/taz-vm-sizes.js";
 import { restartWireproxy } from "../cloud/wireproxy-launcher.js";
 import { vpsStatus, vpsStats } from "../vps/deploy-service.js";
 import type { SshConnectionConfig } from "../vps/ssh-client.js";
@@ -296,7 +297,19 @@ export async function handleTazcloudMessage(
         const tazClient = createTazClient(tazToken);
         const vms = await tazClient.listVms();
         const aliasMap = await cloudVmAliases.getAliasMap("tazcloud", vms.map((v) => v.id));
-        const decoratedVms = vms.map((v) => aliasMap.has(v.id) ? { ...v, name: aliasMap.get(v.id)! } : v);
+        // (the list carries no sizes: each VM's from the VM itself, kept a while; T240b)
+        const sizes = await resolveTazVmSizes(tazClient, vms);
+        const decoratedVms = vms.map((v) => {
+          const s = sizes.get(v.id);
+          return {
+            ...v,
+            ...(aliasMap.has(v.id) ? { name: aliasMap.get(v.id)! } : {}),
+            size: s?.size ?? v.size,
+            sizeSpecs: s?.specs ?? null,
+            sizeRaw: s?.raw ?? null,
+            sizeSource: s?.source ?? null,
+          };
+        });
         const projects = await projectService.getAll();
         const projectMap: Record<string, { projectId: string; projectName: string }> = {};
         for (const p of projects) {
@@ -634,6 +647,7 @@ export async function handleTazcloudMessage(
           const result = await client.resizeVm(vmId, size);
           clearInterval(ticker);
           const newSize = result.size || size;
+          noteTazVmSize(vmId, newSize);
           send(ws, { type: "admin:tazcloud:resize:done", payload: { vmId, size: newSize, status: result.status } });
           broadcast({ type: "admin:tazcloud:list:stale", payload: {} });
         } catch (err: unknown) {

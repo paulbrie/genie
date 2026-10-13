@@ -403,7 +403,7 @@ export function TazCloudPanel({ monitor }: { monitor: VpsMonitorState }) {
     return (
       <div className="px-4 py-4">
         {viewTabs}
-        <TazResources />
+        <TazResources monitor={monitor} />
       </div>
     );
   }

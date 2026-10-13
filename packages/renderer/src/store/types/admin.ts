@@ -82,6 +82,12 @@ export interface AdminTazVm {
   isPrivateHost?: boolean;
   image?: string;
   size?: string;
+  /** Its resources when the API gives them as numbers (T240b; the manager reads them from the VM). */
+  sizeSpecs?: { vcpu: number; ramGb: number; diskGb: number } | null;
+  /** What the API said of its size, shown when it can't be mapped to a known size. */
+  sizeRaw?: string | null;
+  /** Where the size came from: the list, or the VM asked itself (`GET /v1/vm/{id}`). */
+  sizeSource?: "list" | "vm" | null;
   /** v2.0.0 TazCloud VXLAN project this VM belongs to (API `project_id`). */
   tazProjectId: string | null;
   /** Genie project this VM is attached to, if any. */
