@@ -2214,12 +2214,17 @@ else
   if [ -n "\${ADMIN_PASSWORD:-}" ]; then ENV_ARGS+=(ADMIN_PASSWORD="$ADMIN_PASSWORD"); fi
   if [ -n "\${GENIE_VPS_TOKEN:-}" ]; then ENV_ARGS+=(GENIE_VPS_TOKEN="$GENIE_VPS_TOKEN"); fi
   log "Running deploy/install.sh (Node 20, PostgreSQL 17, nginx, admin dashboard, migrations — typically 5-15 min)..."
+  if [ -z "\${PUBLIC_HOST:-}" ]; then
+    log "  No PUBLIC_HOST: open the box's public URL to confirm it. The setup code the form asks for"
+    log "  is printed below and saved on the box: sudo cat /opt/project/setup-code.txt"
+  fi
   # Strip install.sh's ANSI colors (the output pane renders raw text), keep a
-  # copy on the box for post-mortems, and indent for the pane.
+  # copy on the box for post-mortems, and indent for the pane. sed -u: unbuffered,
+  # or a pipe holds lines back, e.g. the setup code while install.sh waits for the form.
   sudo "\${ENV_ARGS[@]}" bash "$SRC/deploy/install.sh" 2>&1 \\
-    | sed 's/\\x1b\\[[0-9;]*m//g' \\
+    | sed -u 's/\\x1b\\[[0-9;]*m//g' \\
     | sudo tee /var/log/genie-local-install.log \\
-    | sed 's/^/  /'
+    | sed -u 's/^/  /'
 fi
 sudo rm -rf "$SRC"
 health_check
