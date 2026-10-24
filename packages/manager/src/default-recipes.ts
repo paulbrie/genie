@@ -2127,7 +2127,7 @@ log "Done."`,
     slug: "genie-local",
     label: "Genie Local (Projects Supervisor)",
     icon: "MonitorCog",
-    description: "Install a full Genie server from the private paulbrie/genie-local repo via its deploy/install.sh: Node 20, PostgreSQL 17 (PGDG), nginx on :3000 fronting the admin Next.js dashboard (admin.service, next dev on :3001), genie-stats, generated admin/.env.local + .mcp.json, and Drizzle migrations (code-server is left to the dedicated recipe). Targets a fresh Ubuntu 24.04 VM. Re-applying on an installed box upgrades in place (code + deps + migrations; config untouched). Both paths end with a health check — green means the dashboard answers on :3000. Prompts for a GitHub PAT at apply time (repo is private; pre-filled from Settings → Genie Local) — the token is used only to clone and never stored on the VM.",
+    description: `Install a full Genie server from the private paulbrie/genie-local repo via its deploy/install.sh: Node ${VM_NODE_MAJOR}, PostgreSQL 17 (PGDG), nginx on :3000 fronting the admin Next.js dashboard (admin.service, next dev on :3001), genie-stats, generated admin/.env.local + .mcp.json, and Drizzle migrations (code-server is left to the dedicated recipe). Targets a fresh Ubuntu 24.04 VM. Re-applying on an installed box upgrades in place (Node when below its patched security release, code + deps + migrations; config untouched). Both paths end with a health check — green means the dashboard answers on :3000. Prompts for a GitHub PAT at apply time (repo is private; pre-filled from Settings → Genie Local) — the token is used only to clone and never stored on the VM.`,
     port: 3000,
     checkScript: `if [ -d /opt/project/admin ] && systemctl is-enabled --quiet admin.service 2>/dev/null; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
@@ -2194,6 +2194,15 @@ if [ -f /opt/project/admin/package.json ] && sudo test -d /opt/project/.git; the
   log "Existing install detected — upgrading in place (code, deps, migrations; config untouched)..."
   sudo -u genie -H git -C /opt/project fetch "$SRC" HEAD 2>&1 | sed 's/^/  /'
   sudo -u genie -H git -C /opt/project reset --hard FETCH_HEAD 2>&1 | sed 's/^/  /'
+  # This path skips install.sh, so it also owns keeping node on a patched
+  # release (boxes installed before the Node.js October 2026 security release
+  # run EOL 20.x). Before npm install, so deps install against the new node.
+  if ! node_is_patched; then
+    log "Node.js $(node --version 2>/dev/null || echo missing) is not a patched release — upgrading to Node ${VM_NODE_MAJOR} via NodeSource..."
+    curl -4 -fsSL ${NODESOURCE_DEB_SETUP_URL} | sudo -E bash - 2>&1 | sed 's/^/  /'
+    wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs 2>&1 | sed 's/^/  /'
+    node_is_patched || log "WARNING: Node.js $(node --version) is still below the patched releases (${Object.values(NODE_PATCHED_FLOOR).join(" / ")}) — the NodeSource repo may lag; re-apply later."
+  fi
   for pkg in admin tools tools/local-genie-mcp; do
     if [ -f "/opt/project/$pkg/package.json" ]; then
       log "npm install: $pkg..."
@@ -2222,7 +2231,7 @@ else
   if [ -n "\${PUBLIC_HOST:-}" ]; then ENV_ARGS+=(PUBLIC_HOST="$PUBLIC_HOST"); fi
   if [ -n "\${ADMIN_PASSWORD:-}" ]; then ENV_ARGS+=(ADMIN_PASSWORD="$ADMIN_PASSWORD"); fi
   if [ -n "\${GENIE_VPS_TOKEN:-}" ]; then ENV_ARGS+=(GENIE_VPS_TOKEN="$GENIE_VPS_TOKEN"); fi
-  log "Running deploy/install.sh (Node 20, PostgreSQL 17, nginx, admin dashboard, migrations — typically 5-15 min)..."
+  log "Running deploy/install.sh (Node ${VM_NODE_MAJOR}, PostgreSQL 17, nginx, admin dashboard, migrations — typically 5-15 min)..."
   if [ -z "\${PUBLIC_HOST:-}" ]; then
     log "  No PUBLIC_HOST: open the box's public URL to confirm it. The setup code the form asks for"
     log "  is printed below and saved on the box: sudo cat /opt/project/setup-code.txt"
