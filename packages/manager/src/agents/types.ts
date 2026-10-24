@@ -15,7 +15,7 @@ export type AgentSandboxConfig =
       /** Hard timeout (seconds) for the whole agent run. Enforced by the
        *  backend via `docker stop --time`. Default 600s. */
       timeoutSec?: number;
-      /** Docker image to use. Defaults to `node:20-slim` so we don't ship a
+      /** Docker image to use. Defaults to `node:24-slim` (SANDBOX_NODE_IMAGE) so we don't ship a
        *  custom image until the cold-start cost actually bites. */
       image?: string;
     }

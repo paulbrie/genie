@@ -338,7 +338,7 @@ a throwaway Docker container on the project VM.
   `/usr/lib/node_modules/@genie/vps-agent/.version` on the VM. If they differ, it uploads the
   files over SSH and runs `npm install --omit=dev` (`src/vps/vps-agent-rsync.ts`). Agent runs
   then execute
-  `docker run --rm -i node:20-slim` with the agent mounted read-only at `/opt/agent` and
+  `docker run --rm -i node:24-slim` with the agent mounted read-only at `/opt/agent` and
   `/opt/project` mounted at `/workspace`. `ANTHROPIC_API_KEY` is injected so that it never
   appears in `ps`.
 
@@ -1063,7 +1063,11 @@ Production runs on Railway as two services from this monorepo, built with **Nixp
 - **python3, gcc, gnumake** are needed to compile `node-pty`, which the manager-host terminal
   uses. Without them that feature is unavailable in production, but everything else still
   works.
-- **nodejs_22** is needed by Next.js 16, Tailwind v4 and the rest of the stack.
+- **nodejs_22** is needed by Next.js 16, Tailwind v4 and the rest of the stack. `nixpacks.toml`
+  pins `nixpkgsArchive` to a nixos-26.05 commit whose `nodejs_22` is 22.23.4, the patched
+  release from the Node.js October 2026 security releases. Bump that commit on the next one;
+  the manager logs a `[security]` warning at boot when its Node is below the floors in
+  `packages/manager/src/node-runtime.ts`.
 
 `PORT` is injected by Railway for both services.
 

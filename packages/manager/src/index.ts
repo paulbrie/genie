@@ -13,6 +13,7 @@ import { createServer, shutdown } from "./ws-server.js";
 import { startSlackBot, stopSlackBot } from "./notifications/slack-bot.js";
 import { startWireproxyIfConfigured, stopWireproxy } from "./cloud/wireproxy-launcher.js";
 import { startIdleWatcher as startRunpodIdleWatcher } from "./runpod/runpod-pod-service.js";
+import { isNodePatched, NODE_PATCHED_FLOOR } from "./node-runtime.js";
 
 // One-shot egress probe at boot — logs the manager's public IPv4 and IPv6 (or "n/a")
 // so you know what to put in MANAGER_PUBLIC_IP / MANAGER_PUBLIC_IP_V6 env vars.
@@ -52,6 +53,10 @@ try {
   // wall of opaque "SSH connection failed" errors. Better to surface the
   // wireproxy/config problem immediately.
   process.exit(1);
+}
+
+if (!isNodePatched()) {
+  console.warn(`[security] Manager runs Node.js ${process.version}, below the patched releases (${Object.values(NODE_PATCHED_FLOOR).join(" / ")}) — upgrade the runtime (nixpacks.toml / railway.toml).`);
 }
 
 // Seed the Claude agent user + upsert built-in recipes into the DB. The

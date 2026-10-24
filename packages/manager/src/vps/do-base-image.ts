@@ -1,5 +1,6 @@
 import { createDoClient } from "./do-api-client.js";
 import { connectSsh } from "./ssh-client.js";
+import { NODESOURCE_DEB_SETUP_URL } from "../node-runtime.js";
 import {
   ensureGenieKeyPair,
   ensureGenieKeyOnDisk,
@@ -161,7 +162,7 @@ ufw reload
     checkAbort();
 
     // 6. SSH in and run provision script
-    const script = provisionScript?.trim() || "#!/bin/bash\nset -e\nufw allow 80/tcp && ufw allow 443/tcp && ufw reload\ncurl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs rkhunter\nnpm install -g @anthropic-ai/claude-code\nclaude install\necho 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc";
+    const script = provisionScript?.trim() || `#!/bin/bash\nset -e\nufw allow 80/tcp && ufw allow 443/tcp && ufw reload\ncurl -fsSL ${NODESOURCE_DEB_SETUP_URL} | bash - && apt-get install -y nodejs rkhunter\nnpm install -g @anthropic-ai/claude-code\nclaude install\necho 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc`;
     onProgress("Running provision script...");
     const s = await connectSsh(connConfig);
     try {

@@ -9,18 +9,19 @@
 //
 // Why no custom Docker image: `ensureVpsAgent` already syncs the bundle to
 // /usr/lib/node_modules/@genie/vps-agent on the VPS, so we can mount that into
-// node:20-slim. When cold-start time becomes a problem we'll publish a real
-// image — the only thing that changes here is the `node:20-slim` default.
+// node:<VM_NODE_MAJOR>-slim. When cold-start time becomes a problem we'll
+// publish a real image — the only thing that changes here is the default.
 
 import { connectSsh, type SshSession, type StreamingChannel } from "../../vps/ssh-client.js";
 import { getVpsConnection } from "../../vps/connection-resolver.js";
 import { ensureVpsAgent, VPS_AGENT_REMOTE_BASE } from "../../vps/vps-agent-rsync.js";
 import type { SandboxBackend, SandboxHandle, SandboxSpec } from "./index.js";
+import { SANDBOX_NODE_IMAGE } from "../../node-runtime.js";
 
 // VPS_AGENT_REMOTE_BASE (the bundle's install path on the VPS) is imported from
 // vps-agent-rsync.js — the single source of truth — so the mount path here can't
 // drift from where ensureVpsAgent actually writes the files.
-const DEFAULT_IMAGE = "node:20-slim";
+const DEFAULT_IMAGE = SANDBOX_NODE_IMAGE;
 const WORKSPACE_HOST_PATH = "/opt/project";
 const WORKSPACE_CONTAINER_PATH = "/workspace";
 const DEFAULT_TIMEOUT_SEC = 600;

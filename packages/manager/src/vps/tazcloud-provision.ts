@@ -3,6 +3,7 @@ import { createTazClient, defaultSshUserForVm, type TazVm } from "./tazcloud-api
 import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
 import { vpsDeploy } from "./deploy-service.js";
 import { buildUfwRules } from "./do-provision.js";
+import { NODE_BASH_HELPERS, NODE_PATCHED_FLOOR, NODESOURCE_DEB_SETUP_URL, NODESOURCE_RPM_SETUP_URL } from "../node-runtime.js";
 import * as cloudVmAliases from "../cloud/cloud-vm-alias-service.js";
 import * as projectService from "../projects/project-service.js";
 import fs from "node:fs";
@@ -207,20 +208,26 @@ export async function tazcloudProvisionAndDeploy(
       "set -e",
       "export DEBIAN_FRONTEND=noninteractive",
       "wait_apt() { local i=0; while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do i=$((i+1)); [ \"$i\" -gt 600 ] && { echo 'Timeout waiting for apt lock'; exit 1; }; sleep 1; done; }",
+      NODE_BASH_HELPERS,
       "if command -v apt-get >/dev/null 2>&1; then",
       "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq",
       "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq git curl ca-certificates > /dev/null",
       // docker.io conflicts with a pre-installed docker-ce (download.docker.com repo) — only install when no engine exists.
       "  command -v docker >/dev/null 2>&1 || { wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io > /dev/null; }",
-      "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1",
-      "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null",
+      "  if ! node_is_patched; then",
+      `    curl -fsSL ${NODESOURCE_DEB_SETUP_URL} | sudo -E bash - > /dev/null 2>&1`,
+      "    wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null",
+      "  fi",
       "elif command -v dnf >/dev/null 2>&1; then",
       "  sudo dnf install -y -q docker git curl > /dev/null",
-      "  curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1",
-      "  sudo dnf install -y -q nodejs > /dev/null",
+      "  if ! node_is_patched; then",
+      `    curl -fsSL ${NODESOURCE_RPM_SETUP_URL} | sudo bash - > /dev/null 2>&1`,
+      "    sudo dnf install -y -q nodejs > /dev/null",
+      "  fi",
       "else",
       "  echo 'No supported package manager (need apt-get or dnf)'; exit 1",
       "fi",
+      `node_is_patched || echo "WARNING: Node.js $(node --version) is below the patched releases (${Object.values(NODE_PATCHED_FLOOR).join(" / ")}) — the NodeSource repo may lag the security release."`,
       "sudo systemctl enable --now docker > /dev/null 2>&1",
       // Docker Compose v2 — no consistent apt/dnf package across distros.
       // GitHub-release CLI plugin is the portable answer.

@@ -54,7 +54,7 @@ A reusable DigitalOcean snapshot pre-loaded with Docker, Node.js, and the Genie 
 3. Run provision commands over SSH:
    ```
    ufw allow 80/tcp && ufw allow 443/tcp && ufw reload
-   curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
+   curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && apt-get install -y nodejs
    npm install -g @anthropic-ai/claude-code @genie/vps-agent
    ```
 4. Shut down the droplet, snapshot it, then destroy the temp droplet.

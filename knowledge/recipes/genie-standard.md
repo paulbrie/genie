@@ -1,7 +1,7 @@
 ---
 type: VPS Recipe
 title: Genie Standard Setup
-description: The baseline software Genie expects on every VPS — deploy user, Docker, Node 20, Claude Code, and the genie-stats service.
+description: The baseline software Genie expects on every VPS — deploy user, Docker, Node 24, Claude Code, and the genie-stats service.
 resource: https://github.com/paulbrie/genie/blob/main/packages/manager/src/default-recipes.ts#L59
 slug: genie-standard
 icon: Sparkles
@@ -17,7 +17,9 @@ into a Genie-ready VPS. The Manager applies it as root over SSH; once it reports
 
 * The **`genie`** deploy user — passwordless sudo, same SSH key as the admin.
 * **Docker** + the compose plugin (`docker compose`).
-* **Node.js 20** + `npm`.
+* **Node.js 24** + `npm`. Re-applying upgrades a node below the patched security
+  release of its line (the floors live in `node-runtime.ts`, checked by the
+  `node_is_patched` bash helper).
 * **Claude Code** (`claude`) and **`dtach`** (used to persist terminal sessions).
 * **`/opt/project`**, owned by `genie`.
 * A **`genie-stats`** systemd service (the Manager syncs the stats bundle after install).
@@ -73,7 +75,7 @@ These were bug fixes worth remembering when editing the check:
 # Install notes
 
 The `installScript` calls `force_ipv4_dns` (a [`${BASH_HELPERS}`](./recipe.md#shared-bash-helpers)
-helper) before fetching the NodeSource `setup_20.x` script: that script runs its
+helper) before fetching the NodeSource `setup_24.x` script: that script runs its
 own `apt-get update` against a Cloudflare-fronted host, which stalls over IPv6 on
 TazCloud VMs. Patching `/etc/gai.conf` makes all subsequent DNS prefer IPv4.
 

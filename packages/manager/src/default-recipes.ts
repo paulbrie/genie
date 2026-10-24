@@ -8,6 +8,7 @@
 // substitution happens *here* (TS template literal) — what lands in the DB
 // is the fully-resolved bash. The renderer never needs to know about it.
 import type { RecipeInput } from "./recipes-service.js";
+import { NODE_BASH_HELPERS, NODE_PATCHED_FLOOR, NODESOURCE_DEB_SETUP_URL, NODESOURCE_RPM_SETUP_URL, VM_NODE_MAJOR } from "./node-runtime.js";
 
 export const BASH_HELPERS = `log() { printf '[%s] %s\\n' "$(date '+%H:%M:%S')" "$*"; }
 # Make glibc prefer IPv4 over IPv6 for DNS resolution, plus export NODE_OPTIONS
@@ -52,7 +53,8 @@ wait_apt() {
     sleep 1
   done
   log "apt lock released after \${i}s."
-}`;
+}
+${NODE_BASH_HELPERS}`;
 
 // --- code-server (VS Code in the browser) ---
 // The install script is exported separately because the "Open in VS Code"
@@ -388,7 +390,7 @@ export const DEFAULT_RECIPES: RecipeInput[] = [
     slug: "genie-standard",
     label: "Genie Standard Setup",
     icon: "Sparkles",
-    description: "Baseline Genie expects on every VPS: the 'genie' deploy user (passwordless sudo, same SSH key), Docker + compose, Node.js 20, Claude Code, /opt/project owned by genie, a genie-stats systemd service (manager syncs the bundle after install), and Claude hardening — managed settings that deny credential reads, plus an optional egress allowlist firewall for the genie user.",
+    description: `Baseline Genie expects on every VPS: the 'genie' deploy user (passwordless sudo, same SSH key), Docker + compose, Node.js ${VM_NODE_MAJOR} (upgraded on re-apply when below the patched security release), Claude Code, /opt/project owned by genie, a genie-stats systemd service (manager syncs the bundle after install), and Claude hardening — managed settings that deny credential reads, plus an optional egress allowlist firewall for the genie user.`,
     // NOTE: we intentionally do NOT verify docker-group membership here.
     // `usermod -aG docker` only takes effect on the user's NEXT login, and
     // even a fresh SSH session can hold a stale group list (NSS cache,
@@ -409,13 +411,13 @@ export const DEFAULT_RECIPES: RecipeInput[] = [
     installScript: `set -e
 export DEBIAN_FRONTEND=noninteractive
 ${BASH_HELPERS}
-# Prefer IPv4 globally for the rest of this script. The NodeSource setup_20.x
+# Prefer IPv4 globally for the rest of this script. The NodeSource setup_N.x
 # script runs its own apt-get update against deb.nodesource.com (Cloudflare-
 # fronted), which stalls over IPv6 on Taz VMs — see taz-ipv6-quirk. The outer
 # curl -4 only fixes the initial download, not what the script does internally,
 # so we patch /etc/gai.conf to make all subsequent DNS prefer v4.
 force_ipv4_dns
-log "Applying Genie standard setup (Docker, Node 20, Claude Code, /opt/project)..."
+log "Applying Genie standard setup (Docker, Node ${VM_NODE_MAJOR}, Claude Code, /opt/project)..."
 if command -v apt-get > /dev/null 2>&1; then
   log "apt-get update..."
   wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
@@ -435,18 +437,19 @@ if command -v apt-get > /dev/null 2>&1; then
     log "apt-get install docker.io..."
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq docker.io > /dev/null
   fi
-  # Always run NodeSource's setup — Ubuntu 22.04 ships nodejs 12 without npm,
-  # so even when 'command -v node' succeeds we can't trust the version. NodeSource
-  # installs a higher-priority apt pin so the subsequent 'apt install nodejs'
-  # *replaces* Ubuntu's old package with v20 (which bundles npm).
-  node_major=$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\\1/' || echo 0)
-  if [ "$node_major" -lt 20 ] || ! command -v npm > /dev/null 2>&1; then
-    log "Adding NodeSource repo (apt update inside — usually 30–60 s)..."
-    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>&1 | sed 's/^/  /'
-    log "Installing Node.js 20 (bundles npm)..."
+  # Run NodeSource's setup unless node is already on a patched release — Ubuntu
+  # 22.04 ships nodejs 12 without npm, and VMs set up before the Node.js
+  # October 2026 security release run an unpatched (or EOL 20.x) node, so
+  # 'command -v node' alone proves nothing. NodeSource installs a
+  # higher-priority apt pin so the subsequent 'apt install nodejs' *replaces*
+  # the old package with v${VM_NODE_MAJOR} (which bundles npm).
+  if ! node_is_patched; then
+    log "Node.js $(node --version 2>/dev/null || echo missing) is not a patched release — adding NodeSource ${VM_NODE_MAJOR}.x repo (apt update inside — usually 30–60 s)..."
+    curl -4 -fsSL ${NODESOURCE_DEB_SETUP_URL} | sudo -E bash - 2>&1 | sed 's/^/  /'
+    log "Installing Node.js ${VM_NODE_MAJOR} (bundles npm)..."
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs 2>&1 | sed 's/^/  /'
   else
-    log "Node.js \${node_major}.x with npm already present, skipping NodeSource."
+    log "Node.js $(node --version) with npm already present and patched, skipping NodeSource."
   fi
 elif command -v dnf > /dev/null 2>&1; then
   log "dnf install docker git curl..."
@@ -474,18 +477,18 @@ elif command -v dnf > /dev/null 2>&1; then
     rm -rf "$dtach_tmp"
     log "dtach built and installed to /usr/local/bin/dtach."
   fi
-  node_major=$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\\1/' || echo 0)
-  if [ "$node_major" -lt 20 ] || ! command -v npm > /dev/null 2>&1; then
-    log "Adding NodeSource repo (dnf install inside)..."
-    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>&1 | sed 's/^/  /'
-    log "Installing Node.js 20 (bundles npm)..."
+  if ! node_is_patched; then
+    log "Node.js $(node --version 2>/dev/null || echo missing) is not a patched release — adding NodeSource ${VM_NODE_MAJOR}.x repo (dnf install inside)..."
+    curl -4 -fsSL ${NODESOURCE_RPM_SETUP_URL} | sudo bash - 2>&1 | sed 's/^/  /'
+    log "Installing Node.js ${VM_NODE_MAJOR} (bundles npm)..."
     sudo dnf install -y -q nodejs 2>&1 | sed 's/^/  /'
   else
-    log "Node.js \${node_major}.x with npm already present, skipping NodeSource."
+    log "Node.js $(node --version) with npm already present and patched, skipping NodeSource."
   fi
 else
   log "Unsupported package manager (need apt-get or dnf)"; exit 1
 fi
+node_is_patched || log "WARNING: Node.js $(node --version 2>/dev/null || echo missing) is below the patched releases (${Object.values(NODE_PATCHED_FLOOR).join(" / ")}) — the NodeSource repo may lag the security release; re-apply once it catches up."
 log "Enabling and starting docker..."
 sudo systemctl enable --now docker > /dev/null 2>&1 || true
 # Docker Compose v2 is shipped by Ubuntu only on 24.04+, and the package name
@@ -687,14 +690,14 @@ sudo npm uninstall -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
 rm -rf "$HOME/.claude" 2>/dev/null || true
 log "Note: Docker, Node.js, and /opt/project are left in place — uninstall those individually if needed."
 log "Done."`,
-    setupShSnippet: `# Genie standard setup: 'genie' user, Docker, Node 20, Claude Code, /opt/project
+    setupShSnippet: `# Genie standard setup: 'genie' user, Docker, Node ${VM_NODE_MAJOR}, Claude Code, /opt/project
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq docker.io git curl ca-certificates > /dev/null
 # Docker Compose v2 from GitHub release (apt has no consistent package across distros)
 COMPOSE_VER=v2.29.7; ARCH=$(uname -m); mkdir -p /usr/local/lib/docker/cli-plugins
 curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose "https://github.com/docker/compose/releases/download/$\{COMPOSE_VER}/docker-compose-linux-$\{ARCH}"
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-curl -4 -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
+curl -4 -fsSL ${NODESOURCE_DEB_SETUP_URL} | bash - > /dev/null 2>&1
 apt-get -o Acquire::ForceIPv4=true install -y -qq nodejs > /dev/null
 systemctl enable --now docker
 NODE_OPTIONS="--dns-result-order=ipv4first" npm install -g --no-audit --no-fund @anthropic-ai/claude-code
@@ -845,21 +848,24 @@ fi
 
 # 1. Node.js (Playwright ships via npm; needs ≥18).
 if ! command -v node > /dev/null 2>&1 || ! command -v npm > /dev/null 2>&1; then
-  log "Node.js not found — installing Node 20 via NodeSource..."
+  log "Node.js not found — installing Node ${VM_NODE_MAJOR} via NodeSource..."
   if command -v apt-get > /dev/null 2>&1; then
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates > /dev/null
-    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1
+    curl -4 -fsSL ${NODESOURCE_DEB_SETUP_URL} | sudo -E bash - > /dev/null 2>&1
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null
   elif command -v dnf > /dev/null 2>&1; then
     sudo dnf install -y -q curl > /dev/null
-    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1
+    curl -4 -fsSL ${NODESOURCE_RPM_SETUP_URL} | sudo bash - > /dev/null 2>&1
     sudo dnf install -y -q nodejs > /dev/null
   else
     log "ERROR: need apt-get or dnf and Node.js is missing."; exit 1
   fi
 fi
 log "Node: $(node --version), npm: $(npm --version)"
+# Node already on the box is left as is (it may be the user's runtime), but say
+# so when it's below the patched security releases.
+node_is_patched || log "WARNING: Node.js $(node --version) is below the patched releases (${Object.values(NODE_PATCHED_FLOOR).join(" / ")}) — upgrade it (or apply 'Genie Standard Setup')."
 
 # 2. Install @playwright/test globally (provides the 'playwright' CLI).
 # HOME=/root pins npm's cache to /root/.npm — see comment in genie-standard.
@@ -1429,25 +1435,25 @@ rkhunter --propupd --nocolors > /dev/null`,
     slug: "claude-code",
     label: "Claude Code",
     icon: "Sparkles",
-    description: "Install the Claude Code CLI (Anthropic) — installs Node.js 20 first if missing",
+    description: `Install the Claude Code CLI (Anthropic) — installs Node.js ${VM_NODE_MAJOR} first if missing`,
     checkScript: `if command -v claude > /dev/null 2>&1; then echo "INSTALLED"; else echo "NOT_INSTALLED"; fi`,
     installScript: `set -e
 ${BASH_HELPERS}
 
 # 1. Ensure Node.js (the CLI is npm-distributed). Anything ≥18 works.
 if ! command -v node > /dev/null 2>&1; then
-  log "Node.js not found — installing Node 20 via NodeSource..."
+  log "Node.js not found — installing Node ${VM_NODE_MAJOR} via NodeSource..."
   if command -v apt-get > /dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     # Same v4-forcing pattern as the bootstrap — Fastly-fronted nodesource is
     # v6-flaky from some Taz VMs.
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 update -qq
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates > /dev/null
-    curl -4 -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1
+    curl -4 -fsSL ${NODESOURCE_DEB_SETUP_URL} | sudo -E bash - > /dev/null 2>&1
     wait_apt; sudo -E apt-get -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null
   elif command -v dnf > /dev/null 2>&1; then
     sudo dnf install -y -q curl > /dev/null
-    curl -4 -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1
+    curl -4 -fsSL ${NODESOURCE_RPM_SETUP_URL} | sudo bash - > /dev/null 2>&1
     sudo dnf install -y -q nodejs > /dev/null
   else
     log "ERROR: no supported package manager (need apt-get or dnf) and Node.js is missing."
@@ -1455,6 +1461,9 @@ if ! command -v node > /dev/null 2>&1; then
   fi
 fi
 log "Node: $(node --version), npm: $(npm --version)"
+# Node already on the box is left as is (it may be the user's runtime), but say
+# so when it's below the patched security releases.
+node_is_patched || log "WARNING: Node.js $(node --version) is below the patched releases (${Object.values(NODE_PATCHED_FLOOR).join(" / ")}) — upgrade it (or apply 'Genie Standard Setup')."
 
 # 2. Install Claude Code globally via npm. Two Taz-specific workarounds:
 #    - NODE_OPTIONS=--dns-result-order=ipv4first forces Node's resolver to try

@@ -102,6 +102,9 @@ lands in the DB is fully-resolved bash. The helpers are:
   (`registry.npmjs.org`, `deb.nodesource.com`, …).
 * `wait_apt` — blocks until the `apt`/`dpkg` locks are free, logging which PID
   holds them.
+* `node_is_patched` — succeeds when `node` + `npm` are present and node is at or
+  above its line's patched security release (floors in `node-runtime.ts`; EOL
+  lines like 20.x never pass).
 
 # Provenance & sync
 
@@ -117,7 +120,7 @@ lands in the DB is fully-resolved bash. The helpers are:
 # Examples
 
 * [Genie Standard Setup](./genie-standard.md) — the baseline recipe applied to
-  every VPS (the `genie` deploy user, Docker, Node 20, Claude Code, and the
+  every VPS (the `genie` deploy user, Docker, Node 24, Claude Code, and the
   `genie-stats` service).
 
 # Citations

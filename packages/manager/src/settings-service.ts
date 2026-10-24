@@ -57,7 +57,7 @@ export const DEFAULT_BASE_IMAGE_CONFIG: BaseImageConfig = {
     "",
     "# Pre-pull Docker base images",
     "docker pull node:22-alpine",
-    "docker pull node:20-alpine",
+    "docker pull node:24-alpine",
     "docker pull postgres:16-alpine",
     "docker pull rabbitmq:3.13-management",
     "docker pull redis:6.2",

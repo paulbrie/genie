@@ -1,5 +1,6 @@
 import { VPS_SSH_USERNAME } from "../types.js";
 import { connectSsh, type SshConnectionConfig } from "./ssh-client.js";
+import { NODE_BASH_HELPERS, NODE_PATCHED_FLOOR, NODESOURCE_DEB_SETUP_URL, NODESOURCE_RPM_SETUP_URL } from "../node-runtime.js";
 
 export interface BootstrapOpts {
   gitlabDeployKey?: string;
@@ -33,7 +34,7 @@ async function runBootstrap(
   opts: BootstrapOpts,
   onProgress: (msg: string) => void,
 ): Promise<void> {
-  // 1. Install runtime: Docker, Node.js 20, Claude Code, @genie/vps-agent.
+  // 1. Install runtime: Docker, Node.js (VM_NODE_MAJOR), Claude Code, @genie/vps-agent.
   //    Same script the TazCloud provisioner uses (apt + dnf paths) — idempotent,
   //    so it's safe to run on a server that already has some of these.
   onProgress("Installing Docker, Node.js, and Claude Code (idempotent)...");
@@ -41,24 +42,27 @@ async function runBootstrap(
     "set -e",
     "export DEBIAN_FRONTEND=noninteractive",
     "wait_apt() { local i=0; while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do i=$((i+1)); [ \"$i\" -gt 600 ] && { echo 'Timeout waiting for apt lock'; exit 1; }; sleep 1; done; }",
+    NODE_BASH_HELPERS,
     "if command -v apt-get >/dev/null 2>&1; then",
     "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 update -qq",
     "  wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq git curl ca-certificates > /dev/null",
     // docker.io conflicts with a pre-installed docker-ce (download.docker.com repo) — only install when no engine exists.
     "  command -v docker >/dev/null 2>&1 || { wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io > /dev/null; }",
     "  if ! command -v node >/dev/null 2>&1; then",
-    "    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - > /dev/null 2>&1",
+    `    curl -fsSL ${NODESOURCE_DEB_SETUP_URL} | sudo -E bash - > /dev/null 2>&1`,
     "    wait_apt; sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y -qq nodejs > /dev/null",
     "  fi",
     "elif command -v dnf >/dev/null 2>&1; then",
     "  sudo dnf install -y -q docker git curl > /dev/null",
     "  if ! command -v node >/dev/null 2>&1; then",
-    "    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - > /dev/null 2>&1",
+    `    curl -fsSL ${NODESOURCE_RPM_SETUP_URL} | sudo bash - > /dev/null 2>&1`,
     "    sudo dnf install -y -q nodejs > /dev/null",
     "  fi",
     "else",
     "  echo 'No supported package manager (need apt-get or dnf)'; exit 1",
     "fi",
+    // An existing node is left as is (it may run the user's apps); flag it when unpatched.
+    `node_is_patched || echo "WARNING: Node.js $(node --version) is below the patched releases (${Object.values(NODE_PATCHED_FLOOR).join(" / ")}) — upgrade it."`,
     "sudo systemctl enable --now docker > /dev/null 2>&1 || true",
     // Docker Compose v2: no consistent apt/dnf package name across distros
     // (docker-compose-v2 only on Ubuntu 24.04+, docker-compose-plugin needs

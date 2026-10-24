@@ -3,6 +3,7 @@ builder = "nixpacks"
 
 [build.nixpacks]
 # python3, gcc, gnumake are required for node-pty native compilation (used by the terminal feature).
+# nodejs_22 comes from the nixpkgs commit pinned in nixpacks.toml (22.23.4, the patched release).
 pkgs = ["nodejs_22", "python3", "gcc", "gnumake"]
 installCmd = "npm install"
 buildCmd = "npm run build"
