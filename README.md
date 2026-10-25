@@ -459,11 +459,11 @@ Root `package.json`:
 | `npm run dev:extension` | Extension webpack in watch mode |
 | `npm run build` | Full build: vps-stats → vps-agent → manager → renderer → extension |
 | `npm run build:vps-stats` / `build:vps-agent` / `build:manager` | `tsc` per package |
-| `npm run build:renderer` | `next build` |
+| `npm run build:renderer` | `next build`, then copy `.next/static` (+ `public/`) into the standalone output |
 | `npm run build:extension` | Production webpack build |
 | `npm start` | `start:manager` + `start:renderer` |
 | `npm run start:manager` | `node packages/manager/dist/index.js` |
-| `npm run start:renderer` | `next start` |
+| `npm run start:renderer` | `node .next/standalone/packages/renderer/server.js` (`output: "standalone"`; `next start` does not work with it) |
 | `npm run manager` | Run the manager once with tsx (no watch) |
 | `npm run knowledge:export` | DB `knowledge_docs` → `knowledge/*.md` |
 | `npm run knowledge:import` | `knowledge/*.md` → DB (upsert by path, non-destructive) |
@@ -1056,7 +1056,11 @@ Production runs on Railway as two services from this monorepo, built with **Nixp
   time if you are not using the default `wss://api.genie.teleporthq.ai`.
 - **Start command:** `node packages/renderer/.next/standalone/packages/renderer/server.js`
 - **Public URL:** e.g. `https://genie.teleporthq.ai`
-- **Note:** this relies on `output: "standalone"` in `next.config.ts`.
+- **Note:** this relies on `output: "standalone"` in `next.config.ts`. `next build` leaves
+  `.next/static` and `public/` out of the standalone output, so `build:renderer` copies them
+  in (`packages/renderer/scripts/copy-standalone-assets.mjs`); without that step every JS/CSS
+  chunk 404s. Don't start the renderer with `next start`: it warns and doesn't work with
+  standalone output.
 
 ### Build dependencies (`railway.toml` / `nixpacks.toml`)
 

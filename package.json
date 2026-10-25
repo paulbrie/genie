@@ -17,11 +17,11 @@
     "build:vps-stats": "tsc -p packages/vps-stats/tsconfig.json",
     "build:extension": "cd packages/chrome-extension && npx webpack --mode production",
     "dev:extension": "cd packages/chrome-extension && npx webpack --mode development --watch",
-    "build:renderer": "cd packages/renderer && next build",
+    "build:renderer": "npm run build -w @genie/renderer",
     "build:manager": "tsc -p packages/manager/tsconfig.json",
     "start": "concurrently \"npm run start:manager\" \"npm run start:renderer\"",
     "start:manager": "node packages/manager/dist/index.js",
-    "start:renderer": "cd packages/renderer && next start",
+    "start:renderer": "npm run start -w @genie/renderer",
     "manager": "npx tsx packages/manager/src/index.ts",
     "knowledge:export": "npx tsx packages/manager/src/scripts/export-knowledge.ts",
     "knowledge:import": "npx tsx packages/manager/src/scripts/import-knowledge.ts"
