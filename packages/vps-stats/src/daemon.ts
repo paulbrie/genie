@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import { collectStats } from "./collect.js";
+import { createActivityShipper, readActivityConfig } from "./activity-shipper.js";
 import type { StatsOutboundMessage } from "./types.js";
 
 /** NDJSON log written by the on-VM systemd unit (Genie Standard Setup). */
@@ -94,6 +95,13 @@ async function main(): Promise<void> {
   const postbackCfg = readPostbackConfig();
   if (postbackCfg) {
     process.stderr.write(`[genie-stats-daemon] postback enabled → ${postbackCfg.url}\n`);
+  }
+
+  // Opt-in activity shipper (genie-local user activity spool): its own loop,
+  // so a slow or failing upload never delays or breaks stats collection.
+  const activityCfg = readActivityConfig();
+  if (activityCfg) {
+    createActivityShipper(activityCfg).start();
   }
 
   let prevCpu: { total: number; idle: number } | null = null;
