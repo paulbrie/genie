@@ -936,6 +936,30 @@ export function loadAnalyticsSummary(patch?: { days?: number; userId?: string | 
   });
 }
 
+export function setAnalyticsView(view: "product" | "genie-local"): void {
+  $admin.getValue().analytics.view = view;
+}
+
+/** genie-local user activity summary. A project change clears the instance
+ *  filter (an instance belongs to one project). */
+export function loadVpsActivitySummary(patch?: { days?: number; projectId?: string | null; instanceId?: string | null }): void {
+  const v = $admin.getValue().vpsActivity;
+  batch(() => {
+    v.loading = true;
+    if (patch?.days !== undefined) v.days = patch.days;
+    if (patch?.projectId !== undefined) {
+      if (patch.projectId !== v.filterProjectId) v.filterInstanceId = null;
+      v.filterProjectId = patch.projectId;
+    }
+    if (patch?.instanceId !== undefined) v.filterInstanceId = patch.instanceId;
+  });
+  wsSend("admin:vps-activity:summary", {
+    days: v.days,
+    projectId: v.filterProjectId,
+    instanceId: v.filterInstanceId,
+  });
+}
+
 export function loadAuditLogs(opts?: { userId?: string; action?: string }): void {
   const v = $admin.getValue();
   v.audit.loading = true;

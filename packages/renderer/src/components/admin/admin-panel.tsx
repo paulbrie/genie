@@ -14,7 +14,7 @@ import {
 import type { AdminBaseImageState, AdminColumnInfo, AdminState, AdminTeam, AdminTeamMember, AdminUser, AiSettings, AiSubTab, AiUsageRow, AuditLogEntry, BaseImageConfig, BaseImageTemplate, DropletsSubTab, RailwayDeployment, RailwayLogEntry, TemplateHistoryEntry } from "@/store/types";
 import { $admin, $auth, $doSnapshots, $doSnapshotsLoading } from "@/store/subjects";
 import type { ChatModelId } from "@/store/actions";
-import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, downloadDb, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAdminUsersPaged, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadConnectionLogs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshEventsReport, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAdminUsersPage, setAdminUsersPageSize, setAdminUsersSearch, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser, loadEmailLogs, loadAnalyticsSummary } from "@/store/actions";
+import { CHAT_MODELS, addTeamMember, closeAdminRowDrawer, closeDrizzlePush, createAdminBaseImage, createBackup, createTeam, deleteAdminRow, deleteBackup, downloadDb, deleteBaseImageConfig, deleteBaseImageTemplate, deleteDoSnapshot, deleteTeam, deleteUser, executeAdminSql, hardDeleteBaseImageTemplate, impersonateUser, loadAdminOrgs, loadAdminRows, loadAdminTables, loadAdminTeams, loadAdminUsers, loadAdminUsersPaged, loadAiCosts, loadAiSettings, loadAuditLogs, loadBackups, loadBaseImageConfigs, loadConnectionLogs, loadDoSnapshots, loadProdDeployments, loadProdLogs, loadSshEventsReport, loadSshKey, loadTemplateHistory, openAdminRowDrawer, regenerateSshKey, removeTeamMember, restoreBaseImageTemplate, runDrizzlePush, saveAdminRow, saveAiSettings, saveBaseImageConfig, saveBaseImageTemplate, saveUser, selectAdminTable, setAdminSort, setAdminTab, setAdminUsersPage, setAdminUsersPageSize, setAdminUsersSearch, setAiSubTab, setDropletsSubTab, setTeamMemberRole, testBaseImageTemplate, toggleAdminSqlPanel, updateTeam, validateUser, loadEmailLogs, loadAnalyticsSummary, setAnalyticsView } from "@/store/actions";
 import { OrgsPanel } from "@/components/admin/admin-orgs-panel";
 import { InviteUserDialog } from "@/components/admin/admin-invite-user-dialog";
 import { AiCostsPanel } from "./admin-ai";
@@ -26,6 +26,7 @@ import { SshEventsPanel } from "./admin-ssh-events";
 import { ConnectionsPanel } from "./admin-connections";
 import { SshStartupsPanel } from "./admin-ssh-startups";
 import { AdminAnalytics } from "./admin-analytics";
+import { AdminVpsActivity } from "./admin-vps-activity";
 import { CommunicationPanel } from "./admin-communication";
 import { useSubject } from "subjecto/react";
 import { cn } from "@/lib/utils";
@@ -1284,8 +1285,22 @@ export function AdminPanel() {
         <CommunicationPanel communication={admin.communication} users={usersState} />
       ) : activeTab === "analytics" ? (
         /* ===== ANALYTICS TAB (superadmin) ===== */
-        <div className="flex-1 overflow-auto px-5 py-4">
-          <AdminAnalytics />
+        <div className="flex-1 overflow-auto px-5 py-4 flex flex-col gap-4">
+          <div className="flex items-center gap-1">
+            {([["product", "Genie"], ["genie-local", "genie-local servers"]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setAnalyticsView(key)}
+                className={cn(
+                  "px-3 py-1 rounded text-md transition-colors",
+                  admin.analytics.view === key ? "bg-surface1 text-text" : "text-subtext0 hover:text-text",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {admin.analytics.view === "genie-local" ? <AdminVpsActivity /> : <AdminAnalytics />}
         </div>
       ) : activeTab === "audit" ? (
         /* ===== AUDIT TAB ===== */

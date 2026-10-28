@@ -1,6 +1,8 @@
 // Analytics WS surface:
 //   client → server   analytics:track       record a UI event (allowlisted)
 //   client → server   admin:analytics:summary  superadmin dashboard query
+//   client → server   admin:vps-activity:summary  genie-local user activity
+//                                                  (superadmin dashboard query)
 //
 // Server-authoritative events (auth.login, terminal.*, project.created, …) are
 // recorded directly where they happen, NOT via analytics:track — so the client
@@ -9,6 +11,7 @@
 import { type WebSocket } from "ws";
 import type { WsMessage } from "../types.js";
 import * as analyticsService from "../logging/analytics-service.js";
+import * as vpsActivityService from "../vps/vps-activity-service.js";
 import type { ClientState } from "../ws-server.js";
 
 /** UI-only events the browser is allowed to report. Anything else is dropped —
@@ -77,6 +80,27 @@ export async function handleAnalyticsMessage(
         send(ws, { type: "admin:analytics:summary", payload: { summary, days, userId: p.userId || null, projectId: p.projectId || null } });
       } catch (err: unknown) {
         send(ws, { type: "admin:error", payload: { message: err instanceof Error ? err.message : String(err) } });
+      }
+      return true;
+    }
+
+    case "admin:vps-activity:summary": {
+      // Superadmin-only — genie-local activity across every project's servers.
+      if (state.role !== "superadmin") {
+        send(ws, { type: "admin:error", payload: { message: "Superadmin access required" } });
+        return true;
+      }
+      const p = (msg.payload ?? {}) as { days?: number; projectId?: string | null; instanceId?: string | null };
+      const rawDays = Number(p.days);
+      const days = Number.isFinite(rawDays) ? Math.min(180, Math.max(1, Math.floor(rawDays))) : 7;
+      const projectId = typeof p.projectId === "string" && p.projectId ? p.projectId : null;
+      const instanceId = typeof p.instanceId === "string" && p.instanceId ? p.instanceId : null;
+      const from = new Date(Date.now() - days * 86_400_000);
+      try {
+        const summary = await vpsActivityService.getActivitySummary(from, { projectId, instanceId });
+        send(ws, { type: "admin:vps-activity:summary", payload: { summary, days, projectId, instanceId } });
+      } catch (err: unknown) {
+        send(ws, { type: "admin:vps-activity:summary", payload: { summary: null, days, projectId, instanceId, error: err instanceof Error ? err.message : String(err) } });
       }
       return true;
     }

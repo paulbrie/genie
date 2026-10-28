@@ -441,6 +441,47 @@ export interface AnalyticsSummary {
   };
 }
 
+/** genie-local user activity summary (mirrors VpsActivitySummary in the
+ *  manager's vps/vps-activity-service.ts). Events are shipped from each
+ *  genie-local server by its genie-stats daemon. */
+export interface VpsActivitySummary {
+  since: string;
+  totals: {
+    events: number;
+    sessions: number;
+    activeSessions15m: number;
+    activeSessionsToday: number;
+    terminalSeconds: number;
+  };
+  instances: {
+    projectId: string;
+    projectName: string;
+    instanceId: string;
+    instanceLabel: string | null;
+    events: number;
+    sessions: number;
+    activeSessions15m: number;
+    activeSessionsToday: number;
+    terminalSeconds: number;
+    lastEventAt: string | null;
+  }[];
+  daily: { day: string; events: number; sessions: number }[];
+  eventCounts: { event: string; count: number }[];
+  topPages: { path: string; count: number; sessions: number }[];
+  topActions: { name: string; count: number; failed: number }[];
+  terminals: { terminal: string; attaches: number; seconds: number }[];
+  recent: {
+    id: string;
+    projectId: string;
+    instanceId: string;
+    event: string;
+    sessionId: string | null;
+    ua: string | null;
+    props: Record<string, unknown>;
+    occurredAt: string;
+  }[];
+}
+
 export interface EmailLogEntry {
   id: string;
   recipientUserId: string | null;
@@ -596,6 +637,17 @@ export interface AdminState {
     loading: boolean;
     filterUserId: string | null;
     filterProjectId: string | null;
+    /** Which section of the Analytics tab is showing: Genie's own product
+     *  analytics, or user activity on genie-local servers. */
+    view: "product" | "genie-local";
+  };
+  vpsActivity: {
+    summary: VpsActivitySummary | null;
+    days: number;
+    loading: boolean;
+    error: string | null;
+    filterProjectId: string | null;
+    filterInstanceId: string | null;
   };
   prodlogs: {
     deployments: RailwayDeployment[];

@@ -308,6 +308,9 @@ const ACL_OVERRIDES: Record<string, AclEntry> = {
   // existing logs:subscribe with { source: "errors" }.
   "logs:errors:data": { receive: "superadmin", notes: "stderr error stream broadcast; superadmin-only" },
   "logs:errors:backlog": { receive: "superadmin", notes: "stderr error backlog on subscribe; superadmin-only" },
+  // genie-local user activity across every project's servers (page views,
+  // actions, terminals, logins). The handler checks superadmin too.
+  "admin:vps-activity:summary": { send: "superadmin", receive: "superadmin", notes: "genie-local activity dashboard; superadmin-only" },
 };
 
 /** Look up the effective ACL entry for a message type. Returns null when nothing matches and policy is deny-unknown. */

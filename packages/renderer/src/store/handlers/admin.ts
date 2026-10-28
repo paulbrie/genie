@@ -92,6 +92,7 @@ export const handlers: HandlerMap = {
     const v = $admin.getValue();
     batch(() => {
       v.loading = false;
+      v.vpsActivity.loading = false;
       // If the row drawer is open this is almost certainly a failed insert/update
       // — surface it there instead of swallowing it to the console (the silent
       // "Save does nothing" report).
@@ -1091,6 +1092,18 @@ export const handlers: HandlerMap = {
       if (typeof payload.days === "number") a.days = payload.days;
       a.filterUserId = payload.userId ?? null;
       a.filterProjectId = payload.projectId ?? null;
+      a.loading = false;
+    });
+  },
+
+  "admin:vps-activity:summary": (payload) => {
+    batch(() => {
+      const a = $admin.getValue().vpsActivity;
+      a.summary = payload.summary ?? null;
+      a.error = payload.error ?? null;
+      if (typeof payload.days === "number") a.days = payload.days;
+      a.filterProjectId = payload.projectId ?? null;
+      a.filterInstanceId = payload.instanceId ?? null;
       a.loading = false;
     });
   },
