@@ -24,6 +24,9 @@ import { execCached } from "../vps/ssh-session-cache.js";
 import { storeServerCredential, deleteServerCredential, ensureServerKeyOnDisk } from "../vps/server-credential-service.js";
 import { isPasteKeyEnabled } from "../vps/credential-crypto.js";
 import { notifySuperadmin } from "../notifications/email-service.js";
+import { normalizeSsoOrigin } from "../vps/vps-sso-origin.js";
+import { writeInstanceIdentityFile } from "../vps/ensure-vps-stats.js";
+import { getVpsConnection } from "../vps/connection-resolver.js";
 import {
   type ClientState,
   broadcastProjectList,
@@ -797,6 +800,44 @@ export async function handleVpsLifecycleMessage(
           send(ws, { type: "vps:wake:done", payload: { projectId, instanceId } });
         } catch (err: unknown) {
           send(ws, { type: "vps:wake:error", payload: { projectId, instanceId, message: (err instanceof Error ? err.message : String(err)) } });
+        }
+      })();
+      return true;
+    }
+
+    case "vps:sso-origin:set": {
+      // "Sign in with Genie": the public origin a genie-local server signs in
+      // from, for servers genie knows no domain for. It decides where server
+      // sign-in may post its assertion, so only the project's managers
+      // (owner / team owner / org admin / superadmin) may set it.
+      const { projectId, instanceId, origin } = msg.payload as { projectId: string; instanceId: string; origin?: string | null };
+      const fail = (message: string) => send(ws, { type: "vps:sso-origin:set:error", payload: { projectId, instanceId, message } });
+      if (!(await projectService.userCanManageProject(userId, projectId))) {
+        send(ws, { type: "error", payload: { message: "Not authorized to manage this project" } });
+        return true;
+      }
+      const soProject = await projectService.getById(projectId);
+      if (!soProject?.vpsInstances.some((v) => v.id === instanceId)) { fail("Server not found on this project"); return true; }
+      let ssoOrigin: string | undefined;
+      try {
+        ssoOrigin = typeof origin === "string" && origin.trim() ? normalizeSsoOrigin(origin) : undefined;
+      } catch (err: unknown) {
+        fail(err instanceof Error ? err.message : String(err));
+        return true;
+      }
+      await projectService.updateVpsInstance(projectId, instanceId, { ssoOrigin });
+      await broadcastProjectList();
+      send(ws, { type: "vps:sso-origin:set:done", payload: { projectId, instanceId, origin: ssoOrigin ?? null } });
+      // Refresh the server's identity file (publicOrigin) now rather than at
+      // the next genie-stats sync. Best-effort: the server may be off.
+      void (async () => {
+        try {
+          await writeInstanceIdentityFile(await getVpsConnection(projectId, instanceId), projectId, instanceId);
+          send(ws, { type: "vps:sso-origin:synced", payload: { projectId, instanceId, ok: true } });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[vps-sso] identity file not updated on ${projectId}:${instanceId}: ${message}`);
+          send(ws, { type: "vps:sso-origin:synced", payload: { projectId, instanceId, ok: false, message } });
         }
       })();
       return true;
