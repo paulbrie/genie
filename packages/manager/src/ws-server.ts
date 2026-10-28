@@ -13,6 +13,7 @@ import { startLogCapture, getLogBuffer, getErrorBuffer } from "./logging/log-cap
 import { setWsSend as setSshWsSend, closeAllSessionsForWs } from "./ssh/index.js";
 
 import { initiateOAuth, handleOAuthCallback, verifyToken, getUserById, createToken, isAdmin } from "./auth/auth.js";
+import { handleVpsSsoRequest } from "./auth/vps-sso.js";
 
 import { handleDebugServerLogs } from "./debug/debug-api.js";
 
@@ -1172,6 +1173,11 @@ export async function createServer(): Promise<WebSocketServer> {
       res.end(JSON.stringify({ status: "ok" }));
       return;
     }
+
+    // "Sign in with Genie" for genie-local servers: /auth/vps/start, the JWKS,
+    // and /auth/callback when its state names a pending server sign-in. Runs
+    // before the genie sign-in's callback, which never sends a vps.* state.
+    if (await handleVpsSsoRequest(req, res)) return;
 
     // OAuth callback handler
     if (await handleOAuthCallback(req, res)) return;

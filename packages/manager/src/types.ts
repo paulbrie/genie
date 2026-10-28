@@ -95,6 +95,10 @@ export interface VpsInstance {
    *  Taz: ingress). Absent until a domain is attached. */
   domain?: string;
   domainUrl?: string;
+  /** "Sign in with Genie" for genie-local: the server's public origin
+   *  (https://host[:port]), set by a project manager when genie knows no
+   *  domain for it. Server sign-in only returns to this host or `domain`. */
+  ssoOrigin?: string;
   /** Present for a generic "bring-your-own" SSH server (neither digitalocean
    *  nor tazcloud). `genie-key` reuses the shared Genie keypair (the user
    *  authorized its public key on the box); `stored-key` references an

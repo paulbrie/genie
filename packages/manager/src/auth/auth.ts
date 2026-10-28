@@ -12,12 +12,15 @@ import { notifySuperadmin, superadminEmails } from "../notifications/email-servi
 
 const JWT_EXPIRY = "30d";
 const MANAGER_PORT = Number(process.env.PORT) || 9876;
-const MANAGER_BASE_URL = process.env.MANAGER_URL || `http://127.0.0.1:${MANAGER_PORT}`;
-const REDIRECT_URI = `${MANAGER_BASE_URL}/auth/callback`;
+export const MANAGER_BASE_URL = process.env.MANAGER_URL || `http://127.0.0.1:${MANAGER_PORT}`;
+/** The one Google redirect URI, shared by genie sign-in and server sign-in. */
+export const REDIRECT_URI = `${MANAGER_BASE_URL}/auth/callback`;
 
-interface GoogleUserInfo {
+export interface GoogleUserInfo {
   sub: string;
   email: string;
+  /** From the userinfo endpoint; the server sign-in requires it to be true. */
+  email_verified?: boolean;
   name: string;
   picture?: string;
 }
@@ -79,6 +82,54 @@ export async function isAdmin(userId: string): Promise<boolean> {
     .orderBy(users.createdAt)
     .limit(1);
   return first?.id === userId;
+}
+
+// --- Google account → genie user ---
+
+/** The genie user for a Google account, without creating one: the row with
+ *  this googleId (name / avatar / email refreshed), or an admin-invited stub
+ *  (googleId NULL, same email) hydrated from it and validated, keeping its
+ *  pre-assigned role. Null when Google account and genie user are unrelated.
+ *  Shared by the genie sign-in and the server sign-in (auth/vps-sso.ts). */
+export async function findOrHydrateGoogleUser(userInfo: GoogleUserInfo): Promise<typeof users.$inferSelect | null> {
+  const db = getDb();
+  const existing = await db
+    .select()
+    .from(users)
+    .where(eq(users.googleId, userInfo.sub))
+    .limit(1);
+  if (existing.length > 0) {
+    const [updated] = await db
+      .update(users)
+      .set({
+        name: userInfo.name,
+        avatarUrl: userInfo.picture || null,
+        email: userInfo.email,
+      })
+      .where(eq(users.googleId, userInfo.sub))
+      .returning();
+    return updated;
+  }
+  // Check for a pre-existing stub (admin-invited user that hasn't signed in
+  // yet — googleId is NULL but email matches). If found, hydrate it instead
+  // of creating a new row; preserve their pre-assigned role and validate.
+  const [stub] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.email, userInfo.email), isNull(users.googleId)))
+    .limit(1);
+  if (!stub) return null;
+  const [hydrated] = await db
+    .update(users)
+    .set({
+      googleId: userInfo.sub,
+      name: userInfo.name,
+      avatarUrl: userInfo.picture || null,
+      validated: true,
+    })
+    .where(eq(users.id, stub.id))
+    .returning();
+  return hydrated;
 }
 
 // --- Pending OAuth state ---
@@ -173,77 +224,40 @@ export async function handleOAuthCallback(
 
     // Upsert user in DB
     const db = getDb();
-    const existing = await db
-      .select()
-      .from(users)
-      .where(eq(users.googleId, userInfo.sub))
-      .limit(1);
-
     let user: typeof users.$inferSelect;
-    if (existing.length > 0) {
-      const [updated] = await db
-        .update(users)
-        .set({
+    const known = await findOrHydrateGoogleUser(userInfo);
+    if (known) {
+      user = known;
+    } else {
+      // Check if this is the first non-agent user (auto-validate as admin)
+      const [firstUser] = await db.select({ id: users.id })
+        .from(users)
+        .where(eq(users.isAgent, false))
+        .orderBy(users.createdAt)
+        .limit(1);
+      const isFirstUser = !firstUser; // No non-agent users yet, so this one is first
+
+      const isSuperAdmin = superadminEmails().includes(userInfo.email.toLowerCase());
+
+      const [created] = await db
+        .insert(users)
+        .values({
+          googleId: userInfo.sub,
+          email: userInfo.email,
           name: userInfo.name,
           avatarUrl: userInfo.picture || null,
-          email: userInfo.email,
+          isAgent: false,
+          validated: isFirstUser || isSuperAdmin,
+          role: isSuperAdmin ? "superadmin" : (isFirstUser ? "admin" : "user"),
         })
-        .where(eq(users.googleId, userInfo.sub))
         .returning();
-      user = updated;
-    } else {
-      // Check for a pre-existing stub (admin-invited user that hasn't signed in
-      // yet — googleId is NULL but email matches). If found, hydrate it instead
-      // of creating a new row; preserve their pre-assigned role and validate.
-      const [stub] = await db
-        .select()
-        .from(users)
-        .where(and(eq(users.email, userInfo.email), isNull(users.googleId)))
-        .limit(1);
+      user = created;
 
-      if (stub) {
-        const [hydrated] = await db
-          .update(users)
-          .set({
-            googleId: userInfo.sub,
-            name: userInfo.name,
-            avatarUrl: userInfo.picture || null,
-            validated: true,
-          })
-          .where(eq(users.id, stub.id))
-          .returning();
-        user = hydrated;
-      } else {
-        // Check if this is the first non-agent user (auto-validate as admin)
-        const [firstUser] = await db.select({ id: users.id })
-          .from(users)
-          .where(eq(users.isAgent, false))
-          .orderBy(users.createdAt)
-          .limit(1);
-        const isFirstUser = !firstUser; // No non-agent users yet, so this one is first
-
-        const isSuperAdmin = superadminEmails().includes(userInfo.email.toLowerCase());
-
-        const [created] = await db
-          .insert(users)
-          .values({
-            googleId: userInfo.sub,
-            email: userInfo.email,
-            name: userInfo.name,
-            avatarUrl: userInfo.picture || null,
-            isAgent: false,
-            validated: isFirstUser || isSuperAdmin,
-            role: isSuperAdmin ? "superadmin" : (isFirstUser ? "admin" : "user"),
-          })
-          .returning();
-        user = created;
-
-        // Notify superadmins of the new signup (no-op without SendGrid / GENIE_SUPERADMIN_EMAILS).
-        await notifySuperadmin(
-          `[Genie] New user signup: ${user.name}`,
-          `New user signed up:\n\nName: ${user.name}\nEmail: ${user.email}\n\nThey need to be validated before they can use the platform.`,
-        );
-      }
+      // Notify superadmins of the new signup (no-op without SendGrid / GENIE_SUPERADMIN_EMAILS).
+      await notifySuperadmin(
+        `[Genie] New user signup: ${user.name}`,
+        `New user signed up:\n\nName: ${user.name}\nEmail: ${user.email}\n\nThey need to be validated before they can use the platform.`,
+      );
     }
 
     // Accept a pending team invite (from sign-up via invite link). Validates
