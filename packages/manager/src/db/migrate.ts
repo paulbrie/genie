@@ -40,6 +40,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "vps_git_repos", run: migrateVpsGitRepos },
   { id: "knowledge_docs", run: migrateKnowledgeDocs },
   { id: "vps_activity_events", run: migrateVpsActivityEvents },
+  { id: "vps_sso_keys", run: migrateVpsSsoKeys },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -93,6 +94,7 @@ async function migrationTablesExist(id: string): Promise<boolean> {
     case "claude_plugins": return tableExists("claude_plugins");
     case "connection_log": return tableExists("connection_log");
     case "vps_activity_events": return tableExists("vps_activity_events");
+    case "vps_sso_keys": return tableExists("vps_sso_keys");
     // security_scan_project only adds a column (idempotent ALTER) — let the
     // catch-up path run it rather than guessing from a table name.
     default: return false;
@@ -585,6 +587,21 @@ export async function migrateVpsActivityEvents(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_activity_events_lookup ON vps_activity_events(project_id, instance_id, occurred_at)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_activity_events_occurred ON vps_activity_events(occurred_at)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_activity_events_event ON vps_activity_events(event)`);
+}
+
+/** Signing keys for "Sign in with Genie" on genie-local servers. Idempotent. */
+export async function migrateVpsSsoKeys(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS vps_sso_keys (
+    kid TEXT PRIMARY KEY,
+    public_x TEXT NOT NULL,
+    private_key_ciphertext TEXT NOT NULL,
+    private_key_iv TEXT NOT NULL,
+    private_key_auth_tag TEXT NOT NULL,
+    private_key_salt TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    expires_at TIMESTAMPTZ
+  )`);
 }
 
 /** Base image template edit history. Idempotent. */

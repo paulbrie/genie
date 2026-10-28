@@ -814,6 +814,25 @@ export const vpsActivityEvents = pgTable("vps_activity_events", {
   index("idx_vps_activity_events_event").on(t.event),
 ]);
 
+/** Ed25519 keys the manager signs "Sign in with Genie" assertions with for
+ *  genie-local servers (vps/vps-sso-keys.ts). The private key (PKCS#8 PEM) is
+ *  encrypted with the manager secret (credential-crypto: AES-256-GCM, its own
+ *  salt + iv); the public half is the JWK `x` served at /api/vps/sso/jwks.
+ *  Rotation: the newest unexpired key signs, every unexpired key verifies;
+ *  rotating sets the old keys' expires_at a grace period ahead. */
+export const vpsSsoKeys = pgTable("vps_sso_keys", {
+  kid: text("kid").primaryKey(),
+  /** base64url raw Ed25519 public key (the JWK `x`). */
+  publicX: text("public_x").notNull(),
+  privateKeyCiphertext: text("private_key_ciphertext").notNull(),
+  privateKeyIv: text("private_key_iv").notNull(),
+  privateKeyAuthTag: text("private_key_auth_tag").notNull(),
+  privateKeySalt: text("private_key_salt").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  /** Null while current; set on rotation. Past it, the key neither signs nor verifies. */
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+});
+
 /** Discrete SSH MaxStartups drop events — written only when a stats sample
  *  reports drops>0 (rare), so this table stays tiny and is the queryable source
  *  for the fleet-wide "how often is sshd refusing connections" trace. Kept
