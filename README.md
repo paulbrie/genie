@@ -68,6 +68,7 @@ the VM.*
                   └──────────┘      │ Project VM               │   TazCloud, Hetzner,
                                     │ tmux · Claude Code CLI    │   SendGrid, Slack, S3…
                                     │ genie-stats daemon ───────┼──▶ POST /api/vps/stats
+                                    │  (+ genie-local activity) ┼──▶ POST /api/vps/activity
                                     │ code-server :13337        │
                                     │ Docker sandbox (agents)   │
                                     │ .mcp.json → /api/vps/mcp/*│
@@ -148,7 +149,7 @@ broadcast (3 s), WS ping/pong heartbeat (30 s; dead sockets are terminated), loc
 process/Docker monitoring, server metrics (1-hour per-second ring buffer plus per-minute
 rollups), stdout/stderr log capture, the session janitor (first run after 30 s, then every
 `GENIE_SESSION_PRUNE_INTERVAL_MIN`), daily retention janitors for analytics, audit and
-connection logs, and the daily backup cron.
+connection logs and genie-local activity, and the daily backup cron.
 
 **Source map (`src/`):**
 
@@ -247,8 +248,8 @@ control what the sidebar shows.
 **Admin console tabs:** `database` (DB explorer with SQL runner and saved queries; outside
 production it also has a Drizzle push button), `backup`, `droplets/{snapshots|templates|configs|sshkey}`
 ("DO Build"), `ai/{costs|settings}`, `users`, `teams`, `orgs`, `audit`, `prodlogs` (Railway),
-`ssh-events`. Superadmins also get `communication` (email), `analytics`, `connections` and
-`ssh-startups`.
+`ssh-events`. Superadmins also get `communication` (email), `analytics` (Genie's own product
+analytics, plus user activity on genie-local servers), `connections` and `ssh-startups`.
 
 **Always-mounted floating UI:** Claude stream windows, terminal windows, Manage-VM windows
 (tabs: Manage, Firewall, Ports, Processes, Traffic, Claude Logs, Claude Memory, Claude
@@ -359,14 +360,38 @@ A dependency-free metrics collector shared by the manager (types and parsers) an
   - Writes JSON lines to stdout and to the output file.
   - If `GENIE_MANAGER_URL`, `GENIE_STATS_TOKEN`, `GENIE_PROJECT_ID` and `GENIE_INSTANCE_ID`
     are all set, it also POSTs each sample to `<manager>/api/vps/stats` with a Bearer token.
+  - If `GENIE_ACTIVITY_FILE` is set too, it ships genie-local's user-activity spool
+    (`activity-shipper.ts`, see below).
+- **`activity-shipper.ts`**: its own 15 s loop, separate from the stats loop, which never
+  waits on it. genie-local appends one JSON line per event (page view, action, terminal
+  attach/detach, login/logout/failed login; never contents) to
+  `/opt/project/.activity/activity.jsonl`. When that file is non-empty and nothing is
+  pending, the daemon renames it to `activity-<epoch ms>.shipping`, waits 2 s for in-flight
+  appends, and POSTs it to `<manager>/api/vps/activity` in batches of at most 500 events and
+  under 60 KB. The byte offset of the next unsent line is kept in `<file>.offset`, so a
+  restart resumes where it stopped; the file and its offset are deleted once all of it is
+  accepted. Pending files go oldest first. Files and events older than 7 days, oversize
+  lines and malformed lines are dropped with a stderr note. Network errors, 5xx and 429
+  back off (5 s doubling to 5 min) and retry the same batch; any other 4xx skips the batch.
 - **`parse-probe.ts`**: parses the output of the older SSH probe (manager polling), which is
   kept as a fallback.
 
 On the VM it runs as the systemd unit `genie-stats.service`, installed by the
 `genie-standard` recipe and writing to `/run/genie/stats.jsonl`. The manager installs a
-drop-in (`10-genie-postback.conf`) with the postback env vars. It then ingests samples
-(`vps/stats-stream.ts`), stores history in `vps_metric_samples`, and pushes live updates to
-the UI as `vps:stats:update`.
+drop-in (`10-genie-postback.conf`) with the postback env vars, including
+`GENIE_ACTIVITY_FILE=/opt/project/.activity/activity.jsonl` on every server (genie doesn't
+record which servers run genie-local; elsewhere the file never exists and nothing is sent).
+It then ingests samples (`vps/stats-stream.ts`), stores history in `vps_metric_samples`, and
+pushes live updates to the UI as `vps:stats:update`.
+
+Activity uploads (`vps/vps-activity-route.ts`, `vps/vps-activity-service.ts`) use the same
+token and project/instance checks as stats. Every event is validated (allowlisted event,
+uuid id, plausible `ts`, hex session/IP hash, `ua` ≤ 60 chars, ≤ 12 props of string ≤ 200 /
+number / boolean / null, route patterns without `?` or `#`) and its props are cut down to
+the keys defined for that event. Valid events go into `vps_activity_events` with
+`ON CONFLICT (id) DO NOTHING`, and the reply is `{accepted, duplicates, rejected}`.
+Rejected events are logged at most once a minute per server and are not retried. The
+superadmin view is Admin → Analytics → genie-local servers (`admin:vps-activity:summary`).
 
 ---
 
@@ -562,6 +587,7 @@ userspace WireGuard tunnel (`wireproxy`), which it can launch itself. See
 | `GENIE_ANALYTICS_RETENTION_DAYS` | `180` | |
 | `GENIE_AUDIT_RETENTION_DAYS` | `30` | |
 | `GENIE_CONNECTION_LOG_RETENTION_DAYS` | `30` | |
+| `GENIE_VPS_ACTIVITY_RETENTION_DAYS` | `180` (`0` keeps forever) | genie-local user activity (`vps_activity_events`) |
 
 ### Manager: notifications and storage
 
@@ -606,7 +632,7 @@ a lazy singleton.
 | Content | `docs`, `doc_folders`, `doc_shares`, `knowledge_docs`, `tracker_labels`, `tracker_issues`, `tracker_issue_labels`, `tracker_issue_comments`, `saved_queries` |
 | Catalogs | `recipes`, `claude_plugins`, `agents`, `agent_runs`, `base_image_template_history`, `global_settings` (key/value: provider tokens, the Genie SSH keypair, …) |
 | VMs and infra | `server_credentials`, `vps_stats_tokens`, `vps_metric_samples`, `ssh_maxstartups_events`, `ssh_events`, `pty_sessions`, `cloud_vm_aliases`, `cloud_vm_locks`, `security_scans` |
-| Observability | `audit_log` (every WS message), `connection_log`, `analytics_events`, `email_logs`, `server_metric_samples` |
+| Observability | `audit_log` (every WS message), `connection_log`, `analytics_events`, `vps_activity_events` (genie-local user activity), `email_logs`, `server_metric_samples` |
 
 **How the schema gets applied.** There are three mechanisms, and it helps to know all of them:
 
@@ -622,7 +648,8 @@ a lazy singleton.
 The `drizzle/0000_*.sql` baseline is stale. Tests build their schema straight from `schema.ts`.
 
 **Backups** (`src/backup-service.ts`): a logical SQL dump (INSERT statements) produced in
-Node, skipping the large telemetry tables, written to `~/.genie/backups/backup-<ts>.sql`.
+Node, skipping the large telemetry tables (`audit_log`, `vps_metric_samples`,
+`server_metric_samples`, `analytics_events`, `ssh_events`, `vps_activity_events`), written to `~/.genie/backups/backup-<ts>.sql`.
 You can list, create and delete backups from Admin → Backup. A daily midnight cron emails
 the dump through SendGrid, but only when both `SENDGRID_API_KEY` and `BACKUP_EMAIL` are set.
 
@@ -728,7 +755,7 @@ Every frame is JSON: `{ "type": "namespace:action", "payload": { … } }`.
 | `backup-handler` | `admin:backups:list/create/delete` | admin |
 | `admin-users-handler` | `admin:users:*`, `admin:teams:*`, `admin:orgs:*`, `admin:impersonate:*` | admin / superadmin |
 | `admin-misc-handler` | `admin:ai:*`, `admin:audit:list`, `admin:connections:list`, `admin:email:*`, `admin:prodlogs:*`, `admin:sshkey:*`, … | admin / superadmin |
-| `analytics-handler` | `analytics:track`, `admin:analytics:summary` | user / superadmin |
+| `analytics-handler` | `analytics:track`, `admin:analytics:summary`, `admin:vps-activity:summary` | user / superadmin |
 | `admin-server-metrics-handler` | `admin:server-metrics:*`, `admin:ssh-startups:list` | superadmin |
 | `security-handler` | `security:scans:list`, `security:scan:start/stop/delete` | admin |
 | `runpod-handler` | `runpod:start/stop/status` | admin |
@@ -753,6 +780,7 @@ The manager also serves plain HTTP on the same port:
 | `/test-login?email=&redirect=` | GET | Dev login. **Loopback only**, and returns 404 in production. |
 | `/code/<projectId>/<instanceId>/…` | any + WS | Reverse proxy to code-server (`127.0.0.1:13337` on the VM) over SSH. An HMAC `?gtoken=` (valid 12 h) is exchanged for a path-scoped HttpOnly cookie. |
 | `/api/vps/stats` | POST | Stats postback from the VM daemon (per-instance Bearer token) |
+| `/api/vps/activity` | POST | genie-local user-activity batches from the VM daemon (per-instance Bearer token); replies `{accepted, duplicates, rejected}` |
 | `/api/vps/mcp/(tracker\|security\|notify\|storage)` | POST | JSON-RPC MCP over REST for the VM's Claude Code (per-instance Bearer token) |
 | `/api/public/doc/:publicKey` | GET | Public doc JSON |
 | `/api/public/invite/:token` | GET | Invite preview |
@@ -909,7 +937,8 @@ VM Claude sessions run with bypass permissions, so two layers bound what they ca
     disconnect causes
   - SSH startup probes
 - On the manager: server metrics, live logs, the WS log drawer, connected users and
-  presence, audit log, connection log, and product analytics.
+  presence, audit log, connection log, product analytics, and user activity on genie-local
+  servers.
 
 ### Security scanner
 
@@ -988,6 +1017,7 @@ login.
 npm run build:vps-stats                     # required: the manager imports its dist/
 npm test --workspace=packages/renderer      # jsdom; store actions/handlers + routes
 npm test --workspace=packages/manager       # node; runs serially (shared test DB)
+npm test --workspace=packages/vps-stats     # the daemon's activity shipper (local HTTP server)
 ```
 
 The manager has three test tiers ([`packages/manager/TESTING.md`](packages/manager/TESTING.md)):
@@ -1026,7 +1056,7 @@ log in are skipped without it. Playwright runs Chromium against `http://localhos
 ### CI
 
 `.github/workflows/test.yml` runs on pushes and PRs to `main`, with Node 22:
-`npm ci` → `build:vps-stats` → renderer vitest → manager vitest. DB tiers are skipped in CI.
+`npm ci` → `build:vps-stats` → vps-stats vitest → renderer vitest → manager vitest. DB tiers are skipped in CI.
 
 ---
 
