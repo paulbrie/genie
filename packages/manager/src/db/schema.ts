@@ -789,6 +789,31 @@ export const vpsMetricSamples = pgTable("vps_metric_samples", {
   index("idx_vps_metric_samples_sampled_at").on(t.sampledAt),
 ]);
 
+/** User activity from genie-local servers (page views, mutating actions,
+ *  terminal attach/detach, logins), shipped by the on-VM genie-stats daemon from
+ *  genie-local's spool to POST /api/vps/activity. `id` is the event's own uuid,
+ *  the dedupe key end to end (inserts are ON CONFLICT DO NOTHING). Never
+ *  contents: `props` holds route patterns, action names, terminal names and
+ *  durations only; the IP arrives already hashed. Superadmin-only view; pruned
+ *  after GENIE_VPS_ACTIVITY_RETENTION_DAYS (180). */
+export const vpsActivityEvents = pgTable("vps_activity_events", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  instanceId: text("instance_id").notNull(),
+  /** genie-local's admin session id (32 hex), null when not signed in. */
+  sessionId: text("session_id"),
+  ipHash: text("ip_hash"),
+  ua: text("ua"),
+  event: text("event").notNull(),
+  props: jsonb("props").default({}).notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("idx_vps_activity_events_lookup").on(t.projectId, t.instanceId, t.occurredAt),
+  index("idx_vps_activity_events_occurred").on(t.occurredAt),
+  index("idx_vps_activity_events_event").on(t.event),
+]);
+
 /** Discrete SSH MaxStartups drop events — written only when a stats sample
  *  reports drops>0 (rare), so this table stays tiny and is the queryable source
  *  for the fleet-wide "how often is sshd refusing connections" trace. Kept

@@ -37,6 +37,8 @@ import { connectSsh, type SshConnectionConfig } from "./vps/ssh-client.js";
 import { ingestVpsStats, startStatsDbPoll, unwatchVpsStatsForClient } from "./vps/stats-stream.js";
 
 import { resolveStatsToken } from "./vps/stats-token-service.js";
+import { handleVpsActivityPostback } from "./vps/vps-activity-route.js";
+import * as vpsActivityService from "./vps/vps-activity-service.js";
 
 import type { VpsStatsPayload } from "@genie/vps-stats";
 import { ensureGenieKeyOnDisk } from "./vps/do-provision.js";
@@ -242,6 +244,23 @@ async function runConnectionLogJanitor(): Promise<void> {
 if (CONNECTION_LOG_RETENTION_DAYS > 0) {
   setTimeout(() => void runConnectionLogJanitor(), 60_000);
   setInterval(() => void runConnectionLogJanitor(), 24 * 60 * 60_000);
+}
+
+// vps_activity_events: genie-local user activity (page views, actions,
+// terminals, logins) shipped by the genie-stats daemon. Default 180d; set
+// GENIE_VPS_ACTIVITY_RETENTION_DAYS=0 to keep forever.
+const VPS_ACTIVITY_RETENTION_DAYS = Number(process.env.GENIE_VPS_ACTIVITY_RETENTION_DAYS ?? 180);
+async function runVpsActivityJanitor(): Promise<void> {
+  try {
+    const removed = await vpsActivityService.pruneOldActivity(VPS_ACTIVITY_RETENTION_DAYS);
+    if (removed > 0) console.log(`[vps-activity-janitor] pruned ${removed} event(s) older than ${VPS_ACTIVITY_RETENTION_DAYS}d`);
+  } catch (err) {
+    console.error("[vps-activity-janitor] prune failed:", err instanceof Error ? err.message : String(err));
+  }
+}
+if (VPS_ACTIVITY_RETENTION_DAYS > 0) {
+  setTimeout(() => void runVpsActivityJanitor(), 75_000);
+  setInterval(() => void runVpsActivityJanitor(), 24 * 60 * 60_000);
 }
 
 // Resume mapping (sessionKey → Claude Code session id) is persisted in the
@@ -1288,6 +1307,13 @@ export async function createServer(): Promise<WebSocketServer> {
       } catch (err: unknown) {
         sendJson(400, { error: err instanceof Error ? err.message : String(err) });
       }
+      return;
+    }
+
+    // genie-local user activity: the same daemon uploads genie-local's spool in
+    // batches, same per-instance bearer token as the stats postback.
+    if (req.url === "/api/vps/activity" && req.method === "POST") {
+      await handleVpsActivityPostback(req, res);
       return;
     }
 

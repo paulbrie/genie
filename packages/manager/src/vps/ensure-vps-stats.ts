@@ -17,6 +17,13 @@ const STATS_DROPIN_PATH = `${STATS_DROPIN_DIR}/10-genie-postback.conf`;
 
 const VERSION_FILE = `${VPS_STATS_REMOTE_BASE}/.version`;
 
+/** genie-local's user-activity spool, shipped by the daemon to
+ *  POST /api/vps/activity. Genie keeps no record of which servers run
+ *  genie-local (recipes leave no per-instance trace), so the drop-in always
+ *  carries it, as the activity contract allows: on any other server the file
+ *  never exists and the daemon has nothing to send. */
+export const GENIE_ACTIVITY_SPOOL_PATH = "/opt/project/.activity/activity.jsonl";
+
 /** Resolve path to vps-stats dist directory (relative to manager package). */
 export function getVpsStatsDistDir(): string {
   const dir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
@@ -131,6 +138,7 @@ async function writeStatsPostbackDropin(
     `Environment=GENIE_STATS_TOKEN=${token}`,
     `Environment=GENIE_PROJECT_ID=${projectId}`,
     `Environment=GENIE_INSTANCE_ID=${instanceId}`,
+    `Environment=GENIE_ACTIVITY_FILE=${GENIE_ACTIVITY_SPOOL_PATH}`,
     "",
   ].join("\n");
   const b64 = Buffer.from(dropin).toString("base64");

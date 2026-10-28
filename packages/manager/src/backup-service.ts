@@ -23,6 +23,7 @@ export const BACKUP_SKIP_TABLES = new Set([
   "server_metric_samples",
   "analytics_events",
   "ssh_events",
+  "vps_activity_events",
 ]);
 
 /** Build the logical SQL dump (schema-less INSERTs wrapped in a txn) as a string,

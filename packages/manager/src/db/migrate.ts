@@ -39,6 +39,7 @@ const BOOT_MIGRATIONS: { id: string; run: () => Promise<void> }[] = [
   { id: "projects_revert_fk_cascade", run: migrateProjectsRevertFkCascade },
   { id: "vps_git_repos", run: migrateVpsGitRepos },
   { id: "knowledge_docs", run: migrateKnowledgeDocs },
+  { id: "vps_activity_events", run: migrateVpsActivityEvents },
 ];
 
 async function tableExists(tableName: string): Promise<boolean> {
@@ -91,6 +92,7 @@ async function migrationTablesExist(id: string): Promise<boolean> {
     case "analytics_events": return tableExists("analytics_events");
     case "claude_plugins": return tableExists("claude_plugins");
     case "connection_log": return tableExists("connection_log");
+    case "vps_activity_events": return tableExists("vps_activity_events");
     // security_scan_project only adds a column (idempotent ALTER) — let the
     // catch-up path run it rather than guessing from a table name.
     default: return false;
@@ -561,6 +563,28 @@ export async function migrateKnowledgeDocs(): Promise<void> {
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
   )`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_knowledge_docs_path ON knowledge_docs(path)`);
+}
+
+/** genie-local user activity shipped by the genie-stats daemon
+ *  (POST /api/vps/activity). The event's own uuid is the primary key, so a
+ *  resent batch inserts nothing twice. Idempotent. */
+export async function migrateVpsActivityEvents(): Promise<void> {
+  const db = getDb();
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS vps_activity_events (
+    id UUID PRIMARY KEY,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    session_id TEXT,
+    ip_hash TEXT,
+    ua TEXT,
+    event TEXT NOT NULL,
+    props JSONB DEFAULT '{}'::jsonb NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_activity_events_lookup ON vps_activity_events(project_id, instance_id, occurred_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_activity_events_occurred ON vps_activity_events(occurred_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vps_activity_events_event ON vps_activity_events(event)`);
 }
 
 /** Base image template edit history. Idempotent. */
