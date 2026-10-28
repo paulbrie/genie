@@ -276,7 +276,7 @@ export async function getActivitySummary(from: Date, filters: VpsActivityFilters
       ) a LEFT JOIN projects p ON p.id = a."projectId"
       ORDER BY a.events DESC LIMIT 100`),
     rows<VpsActivitySummary["daily"][number]>(sql`
-      SELECT to_char(date_trunc('day', occurred_at), 'YYYY-MM-DD') AS day, count(*)::int AS events,
+      SELECT to_char(date_trunc('day', occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day, count(*)::int AS events,
         count(distinct session_id)::int AS sessions
       FROM vps_activity_events WHERE ${w} GROUP BY 1 ORDER BY 1`),
     rows<VpsActivitySummary["eventCounts"][number]>(sql`
@@ -316,13 +316,26 @@ export async function getActivitySummary(from: Date, filters: VpsActivityFilters
       instanceLabel: instanceLabel(vps, r.instanceId),
       lastEventAt: iso(lastEventAt),
     })),
-    daily,
+    daily: zeroFillDays(from, daily),
     eventCounts,
     topPages,
     topActions,
     terminals,
     recent: recent.map((r) => ({ ...r, occurredAt: iso(r.occurredAt) ?? "" })),
   };
+}
+
+/** One entry per UTC day from `from` to today, so the chart is continuous. */
+function zeroFillDays(from: Date, daily: VpsActivitySummary["daily"]): VpsActivitySummary["daily"] {
+  const byDay = new Map(daily.map((d) => [d.day, d]));
+  const out: VpsActivitySummary["daily"] = [];
+  const end = new Date().toISOString().slice(0, 10);
+  for (let t = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()); ; t += 86_400_000) {
+    const day = new Date(t).toISOString().slice(0, 10);
+    out.push(byDay.get(day) ?? { day, events: 0, sessions: 0 });
+    if (day >= end) break;
+  }
+  return out;
 }
 
 /** The instance's label from projects.vps (VpsInstance[]), when it has one. */

@@ -15,13 +15,13 @@ const RANGES = [1, 7, 30, 90] as const;
 const BLUE = "#89b4fa";
 
 const EVENT_LABELS: Record<string, string> = {
-  "page.view": "Page views",
-  action: "Actions",
-  "terminal.attach": "Terminal attached",
-  "terminal.detach": "Terminal detached",
-  "auth.login": "Logins",
-  "auth.logout": "Logouts",
-  "auth.failed": "Failed logins",
+  "page.view": "Page view",
+  action: "Action",
+  "terminal.attach": "Terminal attach",
+  "terminal.detach": "Terminal detach",
+  "auth.login": "Login",
+  "auth.logout": "Logout",
+  "auth.failed": "Failed login",
 };
 const labelFor = (e: string) => EVENT_LABELS[e] ?? e;
 
@@ -186,7 +186,7 @@ export function AdminVpsActivity() {
           <Card title="Events per day">
             <div className="h-56">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={summary!.daily} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                <AreaChart data={summary!.daily} margin={{ top: 8, right: 8, left: -4, bottom: 0 }}>
                   <defs>
                     <linearGradient id="vpsActivityDaily" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={BLUE} stopOpacity={0.35} />
@@ -195,7 +195,7 @@ export function AdminVpsActivity() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#313244" vertical={false} />
                   <XAxis dataKey="day" tick={{ fill: "#7f849c", fontSize: 11 }} tickFormatter={(d: string) => d.slice(5)} minTickGap={24} />
-                  <YAxis allowDecimals={false} tick={{ fill: "#7f849c", fontSize: 11 }} width={32} />
+                  <YAxis allowDecimals={false} tick={{ fill: "#7f849c", fontSize: 11 }} width={44} />
                   <Tooltip
                     contentStyle={{ background: "#181825", border: "1px solid #313244", borderRadius: 8, fontSize: 12 }}
                     labelStyle={{ color: "#cdd6f4" }}

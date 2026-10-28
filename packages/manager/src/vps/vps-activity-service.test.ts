@@ -178,7 +178,10 @@ describe.skipIf(!isTestDbAvailable())("vps-activity-service (DB)", () => {
       { terminal: "shell", attaches: 0, seconds: 60 },
     ]);
     expect(s.daily.reduce((n, d) => n + d.events, 0)).toBe(11);
-    expect(s.daily.length).toBeGreaterThanOrEqual(2);
+    // Zero-filled: one entry per UTC day from the range start to today.
+    expect(s.daily).toHaveLength(8);
+    expect(s.daily.filter((d) => d.events > 0)).toHaveLength(2);
+    expect(s.daily[s.daily.length - 1].day).toBe(new Date().toISOString().slice(0, 10));
     expect(s.eventCounts.slice(0, 2)).toEqual([{ event: "action", count: 3 }, { event: "page.view", count: 3 }]);
     expect(s.recent).toHaveLength(11);
     expect(new Date(s.recent[0].occurredAt).getTime()).toBeGreaterThanOrEqual(new Date(s.recent[1].occurredAt).getTime());
