@@ -46,6 +46,8 @@ describe("validateActivityEvent", () => {
       ["terminal.attach", { terminal: "claude" }],
       ["terminal.detach", { terminal: "claude", seconds: 93.5 }],
       ["auth.login", {}],
+      ["auth.login", { via: "genie" }],
+      ["auth.login", { via: "password" }],
       ["auth.logout", {}],
       ["auth.failed", { reason: "bad password" }],
     ];
@@ -79,6 +81,8 @@ describe("validateActivityEvent", () => {
       [ev({ props: { path: "/projects/genie?tab=files" } }), "bad path"],
       [ev({ props: { path: "projects" } }), "bad path"],
       [ev({ event: "terminal.detach", props: { terminal: "t", seconds: -1 } }), "bad seconds"],
+      [ev({ event: "auth.login", props: { via: "google" } }), "bad prop via"],
+      [ev({ event: "auth.login", props: { via: true } }), "bad prop via"],
       [[1], "not an object"],
       [null, "not an object"],
     ];
@@ -91,6 +95,15 @@ describe("validateActivityEvent", () => {
     const r = validateActivityEvent(ev({ event: "auth.failed", props: { reason: "bad password", username: "alice", sql: "select 1" } }), NOW);
     expect(r).toMatchObject({ ok: true, row: { props: { reason: "bad password" } } });
     if (r.ok) expect(Object.keys(r.row.props)).toEqual(["reason"]);
+  });
+
+  it("keeps auth.login's via and nothing else (Sign in with Genie)", () => {
+    const r = validateActivityEvent(ev({ event: "auth.login", props: { via: "genie", email: "a@b.c" } }), NOW);
+    expect(r).toMatchObject({ ok: true, row: { props: { via: "genie" } } });
+    if (r.ok) expect(Object.keys(r.row.props)).toEqual(["via"]);
+    // via is only defined for auth.login
+    const other = validateActivityEvent(ev({ event: "auth.logout", props: { via: "genie" } }), NOW);
+    expect(other).toMatchObject({ ok: true, row: { props: {} } });
   });
 });
 

@@ -17,13 +17,18 @@ import { vpsActivityEvents } from "../db/schema.js";
 
 type PropKind = "string" | "number" | "boolean";
 
+/** Closed string sets for props that may only take a few values. */
+const PROP_VALUES: Record<string, Record<string, readonly string[]>> = {
+  "auth.login": { via: ["genie", "password"] },
+};
+
 /** Allowlist: event → the props it may carry (and their types). */
 const EVENT_PROPS: Record<string, Record<string, PropKind>> = {
   "page.view": { path: "string", project: "string" },
   action: { name: "string", project: "string", ok: "boolean" },
   "terminal.attach": { terminal: "string" },
   "terminal.detach": { terminal: "string", seconds: "number" },
-  "auth.login": {},
+  "auth.login": { via: "string" }, // "genie" (Sign in with Genie) | "password"
   "auth.logout": {},
   "auth.failed": { reason: "string" },
 };
@@ -94,6 +99,8 @@ export function validateActivityEvent(raw: unknown, nowMs = Date.now()): Activit
     const kind = allowed[k];
     if (!kind) continue; // not part of the contract for this event: never stored
     if (v !== null && typeof v !== kind) return { ok: false, reason: `bad prop ${k}` };
+    const values = PROP_VALUES[e.event]?.[k];
+    if (values && v !== null && !values.includes(v as string)) return { ok: false, reason: `bad prop ${k}` };
     props[k] = v as string | number | boolean | null;
   }
   // A route pattern, never a concrete URL with a query string or fragment.
