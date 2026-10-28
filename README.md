@@ -378,9 +378,12 @@ A dependency-free metrics collector shared by the manager (types and parsers) an
 
 On the VM it runs as the systemd unit `genie-stats.service`, installed by the
 `genie-standard` recipe and writing to `/run/genie/stats.jsonl`. The manager installs a
-drop-in (`10-genie-postback.conf`) with the postback env vars, including
-`GENIE_ACTIVITY_FILE=/opt/project/.activity/activity.jsonl` on every server (genie doesn't
-record which servers run genie-local; elsewhere the file never exists and nothing is sent).
+drop-in (`10-genie-postback.conf`, root-only mode 0600 since it holds the token) with the
+postback env vars, including `GENIE_ACTIVITY_FILE=/opt/project/.activity/activity.jsonl` on
+every server (genie doesn't record which servers run genie-local; elsewhere the file never
+exists and nothing is sent). Next to it, it writes `/opt/project/.genie-instance.json`
+(owner genie, 0644, no secrets): `{"managerUrl","projectId","instanceId","publicOrigin"}`,
+which genie-local reads for "Sign in with Genie".
 It then ingests samples (`vps/stats-stream.ts`), stores history in `vps_metric_samples`, and
 pushes live updates to the UI as `vps:stats:update`.
 
@@ -631,7 +634,7 @@ a lazy singleton.
 | Chat and AI | `conversations`, `conversation_members`, `messages`, `chat_session_meta`, `assistant_chat_logs`, `assistant_session_state` (maps to a Claude Code session id for `--resume`), `ai_usage` |
 | Content | `docs`, `doc_folders`, `doc_shares`, `knowledge_docs`, `tracker_labels`, `tracker_issues`, `tracker_issue_labels`, `tracker_issue_comments`, `saved_queries` |
 | Catalogs | `recipes`, `claude_plugins`, `agents`, `agent_runs`, `base_image_template_history`, `global_settings` (key/value: provider tokens, the Genie SSH keypair, …) |
-| VMs and infra | `server_credentials`, `vps_stats_tokens`, `vps_metric_samples`, `ssh_maxstartups_events`, `ssh_events`, `pty_sessions`, `cloud_vm_aliases`, `cloud_vm_locks`, `security_scans` |
+| VMs and infra | `server_credentials`, `vps_stats_tokens`, `vps_sso_keys`, `vps_metric_samples`, `ssh_maxstartups_events`, `ssh_events`, `pty_sessions`, `cloud_vm_aliases`, `cloud_vm_locks`, `security_scans` |
 | Observability | `audit_log` (every WS message), `connection_log`, `analytics_events`, `vps_activity_events` (genie-local user activity), `email_logs`, `server_metric_samples` |
 
 **How the schema gets applied.** There are three mechanisms, and it helps to know all of them:
@@ -682,6 +685,22 @@ the dump through SendGrid, but only when both `SENDGRID_API_KEY` and `BACKUP_EMA
 **Roles** (ordered): `user` < `tazcloud` < `admin` < `superadmin`. Superadmins can
 **impersonate** other users (`admin:impersonate:start/stop`); a banner shows while
 impersonating, and the JWT carries `impersonatedBy`.
+
+**Sign in with Genie (genie-local servers).** A genie-local server sends its sign-in to
+`GET /auth/vps/start?project&instance&nonce&return` (`auth/vps-sso.ts`). The instance must
+belong to the project, and `return` must be `https://<host>/…/api/auth/genie/callback` where
+`<host>` is the instance's attached domain or its **sign-in origin**, which a project manager
+sets on the project's Servers tab (`vps:sso-origin:set`); with neither, sign-in is refused.
+The manager then runs the same Google OAuth (same client, same `/auth/callback`) with a
+`vps.…` state, also kept in an HttpOnly cookie so only the starting browser can finish.
+Afterwards the Google account (email verified) must be an existing, validated genie user
+(invited stubs are hydrated as usual, no new users) who can see the project. Otherwise a
+plain error page and an `auth:vps:denied` audit entry. A member gets a page that auto-POSTs
+`assertion`, an EdDSA JWT (`iss` manager URL, `aud genie-vps:<instance>`, `sub`, `email`,
+`name`, `project`, the server's `nonce`, `exp = iat + 120`, `jti`), to the return URL, audited
+as `auth:vps:assertion`. The Ed25519 keys are in `vps_sso_keys`, private halves encrypted with
+`GENIE_SECRET`; the newest signs, and rotated-out keys verify for 15 more minutes. The server
+decides who of the project's members it lets in (its own accounts list).
 
 **Tenancy:** organizations → teams → projects. A user sees a project through
 `project_members`, `project_teams`, or org owner/admin rights.
@@ -776,7 +795,9 @@ The manager also serves plain HTTP on the same port:
 | Path | Method | Purpose and auth |
 |---|---|---|
 | `/` | GET | Health check: `{"status":"ok"}` |
-| `/auth/callback` | GET | Google OAuth redirect target |
+| `/auth/callback` | GET | Google OAuth redirect target (genie sign-in, and server sign-in when `state` is `vps.…`) |
+| `/auth/vps/start?project=&instance=&nonce=&return=` | GET | "Sign in with Genie" for a genie-local server (see [Auth](#auth-roles-and-access-control)). No auth. |
+| `/api/vps/sso/jwks` | GET | Public Ed25519 keys that verify server sign-in assertions (`Cache-Control: max-age=300`) |
 | `/test-login?email=&redirect=` | GET | Dev login. **Loopback only**, and returns 404 in production. |
 | `/code/<projectId>/<instanceId>/…` | any + WS | Reverse proxy to code-server (`127.0.0.1:13337` on the VM) over SSH. An HMAC `?gtoken=` (valid 12 h) is exchanged for a path-scoped HttpOnly cookie. |
 | `/api/vps/stats` | POST | Stats postback from the VM daemon (per-instance Bearer token) |
