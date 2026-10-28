@@ -338,6 +338,18 @@ export const handlers: HandlerMap = {
     }
   },
 
+  "vps:sso-origin:set:done": (payload) => {
+    if (payload.instanceId) updateInstanceState(payload.instanceId, { ssoOriginSaving: false, ssoOriginError: null });
+  },
+
+  "vps:sso-origin:set:error": (payload) => {
+    if (payload.instanceId) updateInstanceState(payload.instanceId, { ssoOriginSaving: false, ssoOriginError: payload.message ?? "Could not save" });
+  },
+
+  "vps:sso-origin:synced": (payload) => {
+    if (payload.instanceId) updateInstanceState(payload.instanceId, { ssoOriginSynced: !!payload.ok });
+  },
+
   "vps:recipe:check:result": (payload) => {
     const { instanceId: rcInstId, recipeId: rcId, installed: rcInstalled } = payload;
     if (rcInstId && rcId) {

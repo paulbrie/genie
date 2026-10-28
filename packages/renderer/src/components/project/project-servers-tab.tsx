@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cloud, Loader2, RotateCw, Server, Terminal, Trash2, Unlink } from "lucide-react";
+import { Cloud, KeyRound, Loader2, RotateCw, Server, Terminal, Trash2, Unlink } from "lucide-react";
 import { wsSend } from "@/lib/ws";
 
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import {
   disconnectVps,
   fetchVpsStats,
   rebootVps,
+  setVpsSsoOrigin,
 } from "@/store/actions";
 import type { ProjectDef, VpsDeployState, VpsInstance } from "@/store/types";
 
@@ -148,6 +149,29 @@ function ProjectServerCard({
 
   const tazVmId = instance.tazcloud?.vmId;
 
+  // "Sign in with Genie" origin editor (managers). Draft/open are local form
+  // state; saving, errors and the server sync live in the store.
+  const [ssoEditing, setSsoEditing] = useState(false);
+  const [ssoDraft, setSsoDraft] = useState("");
+  const [ssoSubmitted, setSsoSubmitted] = useState(false);
+  const ssoSaving = !!state?.ssoOriginSaving;
+  const ssoError = state?.ssoOriginError ?? null;
+  useEffect(() => {
+    if (ssoSubmitted && !ssoSaving) {
+      setSsoSubmitted(false);
+      if (!ssoError) setSsoEditing(false);
+    }
+  }, [ssoSubmitted, ssoSaving, ssoError]);
+  const ssoValue = instance.ssoOrigin
+    ? <>{instance.ssoOrigin}{state?.ssoOriginSynced === false && <span className="text-peach"> · server not updated yet</span>}</>
+    : instance.domain
+      ? <>https://{instance.domain} <span className="text-overlay0">(domain)</span></>
+      : <span className="text-overlay0">not set</span>;
+  const saveSso = (origin: string | null) => {
+    setSsoSubmitted(true);
+    setVpsSsoOrigin(project.id, instance.id, origin);
+  };
+
   // Lazily pull the Taz ingress domain onto this instance when the card shows a
   // Taz VM with no domain yet — once per instance per session. Avoids a polling
   // interval: the sync only happens while someone is actually looking at the card.
@@ -255,6 +279,8 @@ function ProjectServerCard({
         // Genie's own instance id — the provider-side VM id lives on the
         // Clouds panel card (and in the Manage popup).
         { label: "ID", value: instance.id, title: instance.id, mono: true },
+        // Where "Sign in with Genie" on this server's genie-local may return to.
+        ...(canManage ? [{ label: "Sign-in", value: ssoValue, title: instance.ssoOrigin || instance.domain || undefined, mono: true }] : []),
       ]}
       footerStatus={isDeploying ? <><Loader2 size={11} className="animate-spin" /> Provisioning</> : undefined}
       footerControls={
@@ -292,6 +318,15 @@ function ProjectServerCard({
                 {rebooting ? "Restarting…" : "Restart server…"}
               </ActionMenuItem>
               {canManage && (
+                <ActionMenuItem
+                  icon={KeyRound}
+                  title="The public origin this server's genie-local signs in from (Sign in with Genie)"
+                  onClick={() => { onCloseActionMenu(); setSsoDraft(instance.ssoOrigin ?? ""); setSsoEditing(true); }}
+                >
+                  Sign-in origin…
+                </ActionMenuItem>
+              )}
+              {canManage && (
                 <>
                   <ActionMenuDivider />
                   <ActionMenuItem
@@ -323,7 +358,37 @@ function ProjectServerCard({
           )}
         </>
       }
-    />
+    >
+      {ssoEditing && (
+        <form
+          className="mt-2 pt-2 border-t border-surface0 flex flex-col gap-1.5"
+          onClick={(e) => e.stopPropagation()}
+          onSubmit={(e) => { e.preventDefault(); saveSso(ssoDraft); }}
+        >
+          <label className="text-xs text-overlay0" htmlFor={`sso-origin-${instance.id}`}>
+            Sign in with Genie: the server&apos;s public origin. Only needed when Genie knows no domain for it.
+          </label>
+          <input
+            id={`sso-origin-${instance.id}`}
+            value={ssoDraft}
+            onChange={(e) => setSsoDraft(e.target.value)}
+            placeholder={instance.domain ? `https://${instance.domain}` : "https://box.example.com"}
+            className="bg-base text-text text-md rounded px-2 py-1 border border-surface0 focus:border-blue focus:outline-none font-mono"
+            autoFocus
+          />
+          {ssoError && <div className="text-xs text-red">{ssoError}</div>}
+          <div className="flex items-center gap-2 justify-end">
+            {instance.ssoOrigin && (
+              <Button size="sm" type="button" disabled={ssoSaving} onClick={() => saveSso(null)}>Clear</Button>
+            )}
+            <Button size="sm" type="button" disabled={ssoSaving} onClick={() => setSsoEditing(false)}>Cancel</Button>
+            <Button size="sm" type="submit" disabled={ssoSaving || !ssoDraft.trim()}>
+              {ssoSaving && <Loader2 size={11} className="animate-spin mr-1" />} Save
+            </Button>
+          </div>
+        </form>
+      )}
+    </CloudServerCard>
   );
 }
 

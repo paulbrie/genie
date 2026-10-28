@@ -25,6 +25,9 @@ export const DEFAULT_INSTANCE_STATE: VpsInstanceState = {
   tmuxSessions: [],
   lastTmuxAt: null,
   tmuxProbeError: null,
+  ssoOriginSaving: false,
+  ssoOriginError: null,
+  ssoOriginSynced: null,
 };
 
 export function ensureInstanceState(instanceId: string): void {
@@ -134,6 +137,13 @@ export function rebootVps(projectId: string, instanceId: string): void {
     inst.error = null;
   });
   wsSend("vps:reboot", { projectId, instanceId });
+}
+
+/** Set (or clear, with null / "") the server's "Sign in with Genie" origin.
+ *  Managers only; the manager normalises it to https://host[:port]. */
+export function setVpsSsoOrigin(projectId: string, instanceId: string, origin: string | null): void {
+  updateInstanceState(instanceId, { ssoOriginSaving: true, ssoOriginError: null, ssoOriginSynced: null });
+  wsSend("vps:sso-origin:set", { projectId, instanceId, origin: origin?.trim() || null });
 }
 
 export function disconnectVps(projectId: string, instanceId: string): void {

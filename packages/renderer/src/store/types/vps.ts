@@ -115,6 +115,10 @@ export interface VpsInstance {
    *  provider call. Absent until a domain is attached. */
   domain?: string;
   domainUrl?: string;
+  /** "Sign in with Genie" for genie-local: the server's public origin
+   *  (https://host[:port]), set by a project manager when genie knows no
+   *  domain for it. Server sign-in only returns to this host or `domain`. */
+  ssoOrigin?: string;
   /** Present for a generic "bring-your-own" SSH server (neither cloud block).
    *  `genie-key` = the user authorized Genie's public key on the box;
    *  `stored-key` = an encrypted key row, materialized on the manager. */
@@ -157,6 +161,12 @@ export interface VpsInstanceState {
   /** Set on every tmux probe response (success or error) — clears the probing spinner. */
   lastTmuxAt?: number | null;
   tmuxProbeError?: string | null;
+  /** "Sign in with Genie" origin edits (vps:sso-origin:set): in flight, the
+   *  last refusal, and whether the server's identity file got the new value
+   *  (null until the manager reports back). */
+  ssoOriginSaving?: boolean;
+  ssoOriginError?: string | null;
+  ssoOriginSynced?: boolean | null;
 }
 
 export interface PendingDeploy {
