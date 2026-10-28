@@ -11,9 +11,11 @@
 //     restart resumes where it stopped. A fully accepted file is deleted with
 //     its offset. Pending files go oldest first; anything older than 7 days is
 //     dropped.
-//   - The offset moves only after a 2xx. Network error / 5xx / 429 → back off
-//     (5 s doubling to 5 min) and retry the same batch. Any other 4xx → log and
-//     skip the batch (it will never succeed). Events the manager rejects
+//   - The offset moves only after a 2xx. Network error / 5xx / 429 / 401 / 403
+//     → back off (5 s doubling to 5 min) and retry the same batch: a token being
+//     rotated or the instance re-attached is temporary, and the events wait for
+//     it rather than being lost. Any other 4xx → log and skip the batch (it will
+//     never succeed). Events the manager rejects
 //     (failed validation) are counted in its reply and not retried.
 //
 // Runs as its own loop next to the stats loop and never throws into it: every
@@ -289,7 +291,8 @@ export function createActivityShipper(cfg: ActivityShipperConfig): ActivityShipp
         }
         return "ok";
       }
-      if (res.status === 429 || res.status >= 500) {
+      // (401/403: the token is rotated or the instance moved; the events wait for the new token)
+      if (res.status === 429 || res.status === 401 || res.status === 403 || res.status >= 500) {
         backOff(`upload HTTP ${res.status}`);
         return "retry";
       }

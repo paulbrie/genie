@@ -3,7 +3,7 @@
 import { useEffect, useMemo } from "react";
 import { useDeepSubject, useSubject } from "subjecto/react";
 import { RefreshCw, Users, Activity, MousePointerClick, TerminalSquare, Eye } from "lucide-react";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { $admin, $projects } from "@/store/subjects";
 import type { VpsActivitySummary } from "@/store/types/admin";
 import { loadVpsActivitySummary } from "@/store/actions";
@@ -186,13 +186,8 @@ export function AdminVpsActivity() {
           <Card title="Events per day">
             <div className="h-56">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={summary!.daily} margin={{ top: 8, right: 8, left: -4, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="vpsActivityDaily" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={BLUE} stopOpacity={0.35} />
-                      <stop offset="100%" stopColor={BLUE} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+                {/* (a count per day: bars, not a curve that would suggest values between the days) */}
+                <BarChart data={summary!.daily} margin={{ top: 8, right: 8, left: -4, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#313244" vertical={false} />
                   <XAxis dataKey="day" tick={{ fill: "#7f849c", fontSize: 11 }} tickFormatter={(d: string) => d.slice(5)} minTickGap={24} />
                   <YAxis allowDecimals={false} tick={{ fill: "#7f849c", fontSize: 11 }} width={44} />
@@ -200,8 +195,8 @@ export function AdminVpsActivity() {
                     contentStyle={{ background: "#181825", border: "1px solid #313244", borderRadius: 8, fontSize: 12 }}
                     labelStyle={{ color: "#cdd6f4" }}
                   />
-                  <Area type="monotone" dataKey="events" name="Events" stroke={BLUE} fill="url(#vpsActivityDaily)" strokeWidth={2} />
-                </AreaChart>
+                  <Bar dataKey="events" name="Events" fill={BLUE} radius={[4, 4, 0, 0]} maxBarSize={28} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           </Card>

@@ -245,6 +245,21 @@ describe("activity shipper", () => {
     expect(files()).toEqual([]);
   });
 
+  it("401 and 403 back off and retry: a rotated token doesn't lose events", async () => {
+    fs.writeFileSync(spool, line(1));
+    mgr.respond = (_r, n) => (n === 1 ? { status: 401 } : n === 2 ? { status: 403 } : { status: 200, body: { accepted: 1, duplicates: 0, rejected: 0 } });
+    const s = shipper();
+    await s.tick();
+    expect(s.backoffUntil).toBe(clock + 5_000);
+    clock += 5_000;
+    await s.tick();
+    expect(s.backoffUntil).toBe(clock + 10_000);
+    clock += 10_000;
+    await s.tick();
+    expect(mgr.received).toHaveLength(3);
+    expect(files()).toEqual([]);
+  });
+
   it("a network error backs off and keeps the file", async () => {
     fs.writeFileSync(spool, line(1));
     const s = shipper({ url: "http://127.0.0.1:1/api/vps/activity" });

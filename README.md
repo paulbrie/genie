@@ -371,8 +371,8 @@ A dependency-free metrics collector shared by the manager (types and parsers) an
   under 60 KB. The byte offset of the next unsent line is kept in `<file>.offset`, so a
   restart resumes where it stopped; the file and its offset are deleted once all of it is
   accepted. Pending files go oldest first. Files and events older than 7 days, oversize
-  lines and malformed lines are dropped with a stderr note. Network errors, 5xx and 429
-  back off (5 s doubling to 5 min) and retry the same batch; any other 4xx skips the batch.
+  lines and malformed lines are dropped with a stderr note. Network errors, 5xx, 429, 401 and 403
+  back off (5 s doubling to 5 min) and retry the same batch (so a rotated token loses nothing); any other 4xx skips the batch.
 - **`parse-probe.ts`**: parses the output of the older SSH probe (manager polling), which is
   kept as a fallback.
 
