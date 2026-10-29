@@ -936,6 +936,17 @@ VM Claude sessions run with bypass permissions, so two layers bound what they ca
 2. An **egress allowlist firewall** for the `genie` UID (`/usr/local/sbin/genie-firewall`).
    A systemd timer re-applies it every 10 minutes, and it is managed from the UI
    (`vps:firewall:*`).
+   - The allowlist (`/etc/genie/firewall-allow.txt`) takes domains, IPv4 addresses and
+     IPv4 ranges (`a.b.c.d/nn`, no wider than /16 from the UI), all in a `hash:net` ipset.
+   - A domain is looked up three times per refresh, since CDNs hand out rotating addresses.
+   - GitHub answers with one rotating address per lookup, so a domain-only allowlist let
+     git to GitHub through only part of the time. When the list names a GitHub host, the
+     script also allows GitHub's published `web`, `api` and `git` IPv4 ranges from
+     `api.github.com/meta`, cached in `/var/cache/genie-firewall` so a failed fetch keeps
+     the last ones.
+   - Existing VMs get the new script when the firewall is set up again: Genie Standard
+     Setup re-apply, or turning the firewall off and on in the UI. The allowlist file is
+     kept.
 
 ### Files, git and databases on the VM
 

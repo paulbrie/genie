@@ -52,15 +52,18 @@ function shSingleQuote(s: string): string {
   return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
-// Entries are restricted to a bare domain or IPv4 (no CIDR — the ipset is
-// hash:ip and large ranges would explode it; private ranges are already open).
+// Entries are a bare domain, an IPv4 address, or an IPv4 range a.b.c.d/nn (the
+// ipset is hash:net). A range no wider than /16 (65,536 addresses): wider ones
+// would all but undo the allowlist; private ranges are already open.
 const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
-const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/;
+export const MIN_RANGE_PREFIX = 16;
 
-function validEntry(entry: string): boolean {
+export function validEntry(entry: string): boolean {
   if (DOMAIN_RE.test(entry)) return true;
   const m = entry.match(IPV4_RE);
-  return !!m && m.slice(1).every((o) => Number(o) <= 255);
+  if (!m || !m.slice(1, 5).every((o) => Number(o) <= 255)) return false;
+  return m[5] === undefined || (Number(m[5]) >= MIN_RANGE_PREFIX && Number(m[5]) <= 32);
 }
 
 // One combined probe per request. Key=value lines, then the allowlist file,
@@ -152,10 +155,11 @@ async function probeStatus(conn: Awaited<ReturnType<typeof getVpsConnection>>): 
     const m = line.match(/^([A-Z]+)=(.*)$/);
     if (m) kv[m[1]] = m[2].trim();
   }
-  // STATE looks like: "genie egress firewall: ON (57 allowed IPs)" / ": OFF".
+  // STATE looks like: "genie egress firewall: ON (57 allowed IPs and ranges)" / ": OFF"
+  // (before ranges: "(57 allowed IPs)").
   const stateLine = kv.STATE ?? "";
   const enforced = /:\s*ON\b/.test(stateLine);
-  const allowedIps = Number(stateLine.match(/\((\d+) allowed IPs\)/)?.[1] ?? 0);
+  const allowedIps = Number(stateLine.match(/\((\d+) allowed IPs(?: and ranges)?\)/)?.[1] ?? 0);
   const blocks = parseBlocks(blockSection ?? "");
   await resolvePtrs(blocks);
   return {
@@ -207,7 +211,7 @@ export async function handleFirewallMessage(
       case "vps:firewall:add": {
         const value = (entry ?? "").trim().toLowerCase();
         if (!validEntry(value)) {
-          reply({ ok: false, error: "Enter a bare domain (example.com) or IPv4 address" });
+          reply({ ok: false, error: `Enter a bare domain (example.com), an IPv4 address, or an IPv4 range no wider than /${MIN_RANGE_PREFIX} (140.82.112.0/20)` });
           return true;
         }
         const stamp = new Date().toISOString().slice(0, 10);

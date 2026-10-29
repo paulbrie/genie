@@ -203,7 +203,9 @@ id genie > /dev/null 2>&1 || { log "ERROR: 'genie' user missing — run Genie St
   # downloads from as genie must be here or Re-apply breaks under enforcement.
   if [ ! -f /etc/genie/firewall-allow.txt ]; then
     sudo tee /etc/genie/firewall-allow.txt > /dev/null << 'GENIE_FW_ALLOW'
-# Outbound allowlist for the 'genie' user (one domain or IP per line, # comments).
+# Outbound allowlist for the 'genie' user (one domain, IPv4 address or IPv4 range
+# a.b.c.d/nn per line, # comments). Naming a GitHub host also allows GitHub's
+# published ranges (api.github.com/meta), since it rotates single addresses.
 # Applied by /usr/local/sbin/genie-firewall; re-resolved every 10 min by
 # genie-firewall.timer. Edit, then run: sudo genie-firewall
 
@@ -261,11 +263,42 @@ GENIE_FW_ALLOW
 # services run as genie with permission prompts bypassed; this limits where
 # that traffic can go. Root and other users are untouched.
 # Usage: genie-firewall [apply|off|status]   (default: apply/refresh)
+# The allowlist takes domains, IPv4 addresses and IPv4 ranges (a.b.c.d/nn). A
+# domain is looked up a few times per refresh: CDNs hand out rotating addresses,
+# one per lookup. GitHub answers with ONE rotating address per lookup, so when
+# the list names a GitHub host, GitHub's published ranges (api.github.com/meta:
+# web, api, git) are allowed too, cached so a failed fetch keeps the last ones.
+# (Paths overridable for the tests.)
 set -e
-ALLOW_FILE=/etc/genie/firewall-allow.txt
-SET=genie-egress
+ALLOW_FILE=\${GENIE_FW_ALLOW_FILE:-/etc/genie/firewall-allow.txt}
+CACHE_DIR=\${GENIE_FW_CACHE_DIR:-/var/cache/genie-firewall}
+LOCK_FILE=\${GENIE_FW_LOCK_FILE:-/run/genie-firewall.lock}
+# hash:net (addresses and ranges); genie-egress was the older hash:ip set, removed
+# once the chain no longer points at it.
+SET=genie-egress-net
+OLD_SET=genie-egress
 CHAIN=GENIE_EGRESS
 UID_GENIE=$(id -u genie)
+LOOKUPS=3
+
+# GitHub's published IPv4 ranges for the web, its API and git, one per line;
+# the last good fetch when GitHub can't be reached.
+github_ranges() {
+  mkdir -p "$CACHE_DIR"
+  local meta="$CACHE_DIR/github-meta.json" out="$CACHE_DIR/github-ranges.txt"
+  if curl -fsS --max-time 15 -H 'Accept: application/vnd.github+json' https://api.github.com/meta -o "$meta.tmp" 2>/dev/null; then
+    local parse='const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));for(const k of ["web","api","git"])for(const c of m[k]||[])if(/^\\d+\\.\\d+\\.\\d+\\.\\d+\\/\\d+$/.test(c))console.log(c)'
+    if command -v node > /dev/null 2>&1 && node -e "$parse" "$meta.tmp" > "$out.tmp" 2>/dev/null && [ -s "$out.tmp" ]; then
+      mv "$out.tmp" "$out"
+    elif command -v python3 > /dev/null 2>&1 && python3 -c 'import json,sys,re
+m=json.load(open(sys.argv[1]))
+print("\\n".join(c for k in ("web","api","git") for c in m.get(k,[]) if re.fullmatch(r"\\d+\\.\\d+\\.\\d+\\.\\d+/\\d+",c)))' "$meta.tmp" > "$out.tmp" 2>/dev/null && [ -s "$out.tmp" ]; then
+      mv "$out.tmp" "$out"
+    fi
+    rm -f "$meta.tmp" "$out.tmp"
+  fi
+  cat "$out" 2>/dev/null || true
+}
 
 off() {
   while iptables -D OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null; do :; done
@@ -281,7 +314,7 @@ off() {
 
 status() {
   if iptables -C OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null; then
-    echo "genie egress firewall: ON ($(ipset list "$SET" 2>/dev/null | grep -c '^[0-9]') allowed IPs)"
+    echo "genie egress firewall: ON ($(ipset list "$SET" 2>/dev/null | grep -c '^[0-9]') allowed IPs and ranges)"
     iptables -vL "$CHAIN"
   else
     echo "genie egress firewall: OFF"
@@ -292,18 +325,26 @@ apply() {
   # Serialize concurrent runs (timer fire + manual/UI apply) — the shared
   # temp-set name below otherwise races: one run flushes/destroys it under the
   # other, swapping an EMPTY set into place (observed on first enable).
-  exec 200>/run/genie-firewall.lock
+  exec 200>"$LOCK_FILE"
   flock -x 200
   # Resolve the allowlist into an ipset; build-and-swap so refreshes are atomic.
-  ipset create "$SET" hash:ip -exist
-  ipset create "$SET-new" hash:ip -exist
+  ipset create "$SET" hash:net -exist
+  ipset create "$SET-new" hash:net -exist
   ipset flush "$SET-new"
   while read -r host; do
     host="\${host%%#*}"; host=$(echo "$host" | xargs); [ -z "$host" ] && continue
-    for ip in $(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u); do
+    # an address or a range goes in as it is; a name, as what a few lookups return
+    if echo "$host" | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+(/[0-9]+)?$'; then
+      ipset add "$SET-new" "$host" -exist || echo "genie egress firewall: skipping bad entry $host"
+      continue
+    fi
+    for _ in $(seq "$LOOKUPS"); do getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}'; done | sort -u | while read -r ip; do
       ipset add "$SET-new" "$ip" -exist
     done
   done < "$ALLOW_FILE"
+  if grep -qiE '^[[:space:]]*([a-z0-9-]+\\.)*github(usercontent)?\\.com([[:space:]#]|$)' "$ALLOW_FILE"; then
+    for net in $(github_ranges); do ipset add "$SET-new" "$net" -exist; done
+  fi
   # Refuse to swap in an empty resolution when the file has entries — happens
   # when DNS isn't up yet (boot) and would blackhole genie until the next
   # refresh. Keep the previous set; the 10-min timer retries.
@@ -344,7 +385,9 @@ apply() {
     ip6tables -C OUTPUT -m owner --uid-owner "$UID_GENIE" -j "$CHAIN" 2>/dev/null || \\
       ip6tables -I OUTPUT 1 -m owner --uid-owner "$UID_GENIE" -j "$CHAIN"
   fi
-  echo "genie egress firewall: on ($(ipset list "$SET" | grep -c '^[0-9]') allowed IPs)"
+  # the chain now points at the hash:net set: the old hash:ip one can go
+  ipset destroy "$OLD_SET" 2>/dev/null || true
+  echo "genie egress firewall: on ($(ipset list "$SET" | grep -c '^[0-9]') allowed IPs and ranges)"
 }
 
 case "\${1:-apply}" in
